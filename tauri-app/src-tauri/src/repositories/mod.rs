@@ -5,6 +5,8 @@
 pub mod blueprint_repository;
 pub mod chapter_deletion_repository;
 pub mod character_repository;
+// B2：角色身份六表（m02：origins/aliases/proposals/approvals/relationships/meta）
+pub mod character_identity_repository;
 pub mod character_roster_repository;
 pub mod consistency_exemption_repository;
 pub mod content_repository;
