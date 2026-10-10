@@ -405,6 +405,7 @@ fn real_project_clear_moves_physical_files_and_keeps_library_test() {
             generated_text: Some(true),
             ..Default::default()
         },
+        None,
     )
     .expect("清理失败");
 

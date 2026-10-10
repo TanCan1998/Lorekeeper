@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::db::schema::migrate_character_roster_schema;
 use crate::repositories::blueprint_repository::clear_blueprint_facts_within_transaction;
+use crate::repositories::character_roster_repository as roster;
 
 /// 清理范围（对齐 `ProjectClearScope`）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +179,7 @@ pub fn clear_generated_data(
     conn: &Connection,
     project_path: Option<&Path>,
     options: &ProjectClearOptions,
+    session: Option<(&str, &str)>,
 ) -> Result<ProjectClearResult, String> {
     if options.wants_generated_text() && project_path.is_none() {
         return Err("项目路径未初始化".to_string());
@@ -217,25 +218,63 @@ pub fn clear_generated_data(
             cleared.push(ProjectClearScope::Blueprints);
         }
 
+        tx.commit()
+            .map_err(|error| format!("提交清空失败：{error}"))?;
+
+        // creativeFields：port 上游「作者退休路径」
+        // （electron/repositories/project-clear-repository.ts:107-131）。
+        // 角色身份域不再硬删：legacy 卡片先经 adoptLegacyCards 转为确定性投影，
+        // 现存角色卡经 commitAuthorCharacterRoster 以空 entries 退休（retired=1），
+        // 最后 clearLegacyCharacterArchitecture 清空旧架构文本。
+        // 偏差说明：上游用 better-sqlite3 嵌套事务（保存点）包住全流程；
+        // rusqlite 无法嵌套 BEGIN，且 commitCharacterIdentities 自带事务，
+        // 故各步骤在顶层依次执行，各自内部事务保证最终一致性。
         if options.wants_creative_fields() {
-            // 即使项目创建于 roster 元数据迁移之前，也必须先按唯一迁移规则建档，
-            // 再在同一事务内清空角色事实与 receipt，使下次 read 重新分类为空项目
-            migrate_character_roster_schema(&tx).map_err(|error| error.to_string())?;
-            for statement in [
-                // 批次 B1-W2：角色身份域（m02 六表，外键先于 characters）
-                "DELETE FROM character_relationships",
-                "DELETE FROM character_identity_proposals",
-                "DELETE FROM character_aliases",
-                "DELETE FROM character_identity_origins",
-                "DELETE FROM character_identity_approvals",
-                "DELETE FROM character_identity_meta",
-                "DELETE FROM character_roster_operations",
-                "DELETE FROM character_roster_meta",
-                "DELETE FROM characters",
-            ] {
-                tx.execute(statement, [])
-                    .map_err(|error| format!("清空创作字段失败：{error}"))?;
+            if crate::repositories::character_repository::has_character_identity_schema(conn) {
+                let operation_id =
+                    format!("project-clear:{}", crate::project_access::random_uuid_v4());
+                let roster_before = roster::read(conn)?;
+                if roster_before.migration_state
+                    == roster::CharacterRosterMigrationState::LegacyCardsPreserved
+                {
+                    let source = roster::read_legacy_roster_source(conn)?;
+                    let adoption = serde_json::json!({
+                        "operationId": operation_id,
+                        "expectedRevision": source.snapshot.revision,
+                        "expectedLegacyHash": source.legacy_hash,
+                        "expectedIdentityRevision": source.identity_revision,
+                        "expectedFactsHash": source.facts_hash,
+                    });
+                    roster::adopt_legacy_cards(conn, &adoption)?;
+                }
+
+                let current_roster = roster::read(conn)?;
+                if !current_roster.entries.is_empty() {
+                    let (project_id, epoch) =
+                        session.ok_or("CHARACTER_AUTHOR_SCOPE_REQUIRED".to_string())?;
+                    let author_request = serde_json::json!({
+                        "operationId": operation_id,
+                        "schemaVersion": roster::CHARACTER_ROSTER_SCHEMA_VERSION,
+                        "intent": "manual_edit",
+                        "expectedRevision": current_roster.revision,
+                        "expectedIdentityRevision": current_roster.identity_revision,
+                        "entries": [],
+                    });
+                    roster::commit_author_character_roster(
+                        conn,
+                        &author_request,
+                        project_id,
+                        epoch,
+                        || {},
+                    )?;
+                }
             }
+
+            // 事务二：旧架构文本清理 + 创作四大件清空
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|error| format!("开启事务失败：{error}"))?;
+            roster::clear_legacy_character_architecture(&tx)?;
             tx.execute(
                 "UPDATE project_core
                  SET writing_style = '', reference_works = '', global_guidance = '',
@@ -246,11 +285,10 @@ pub fn clear_generated_data(
                 [],
             )
             .map_err(|error| format!("清空创作字段失败：{error}"))?;
+            tx.commit()
+                .map_err(|error| format!("提交清空失败：{error}"))?;
             cleared.push(ProjectClearScope::CreativeFields);
         }
-
-        tx.commit()
-            .map_err(|error| format!("提交清空失败：{error}"))?;
 
         Ok(ProjectClearResult {
             cleared,
@@ -273,7 +311,7 @@ pub fn clear_generated_data(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::create_tables;
+    use crate::db::schema::{create_tables, migrate_character_roster_schema};
     use crate::repositories::character_repository as characters;
     use crate::repositories::draft_repository as drafts;
 
@@ -343,6 +381,7 @@ mod tests {
                 generated_text: Some(true),
                 ..Default::default()
             },
+            None,
         )
         .unwrap();
 
@@ -363,7 +402,7 @@ mod tests {
         // 未开启 generatedText 时不触碰文件
         let kept = dir.join("第2章 后续.txt");
         std::fs::write(&kept, "定稿").unwrap();
-        clear_generated_data(&conn, Some(&dir), &ProjectClearOptions::default()).unwrap();
+        clear_generated_data(&conn, Some(&dir), &ProjectClearOptions::default(), None).unwrap();
         assert!(kept.exists());
         assert!(drafts::list_all(&conn).unwrap().is_empty());
 
@@ -380,7 +419,8 @@ mod tests {
                 &ProjectClearOptions {
                     generated_text: Some(true),
                     ..Default::default()
-                }
+                },
+                None
             )
             .unwrap_err(),
             "项目路径未初始化"
@@ -398,31 +438,22 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "UPDATE project_core SET synopsis = '旧大纲', characters_arch = '旧图谱' WHERE id = 'main'",
+            "UPDATE project_core
+             SET synopsis = '旧大纲', characters_arch = '旧图谱',
+                 plot_tree_snapshot = 'plot-tree-before'
+             WHERE id = 'main'",
             [],
         )
         .unwrap();
-        characters::upsert(
-            &conn,
-            &characters::CharacterData {
-                character_id: None,
-                name: "林清玄".to_string(),
-                role: crate::character_role::CharacterRole::Protagonist,
-                gender: String::new(),
-                age: String::new(),
-                appearance: String::new(),
-                personality: String::new(),
-                background: String::new(),
-                abilities: String::new(),
-                motivation: String::new(),
-                relationships: String::new(),
-                arc: String::new(),
-                notes: String::new(),
-                current_state: None,
-            },
+        // 上游（project-clear-repositories.test.ts）用直接 SQL 播种角色卡：
+        // 身份 schema 项目上 characters::upsert 受 H2 写守卫限制
+        // （CHARACTER_ID_WRITE_REQUIRED），与上游保持一致走直接 INSERT。
+        conn.execute(
+            "INSERT INTO characters (character_id, name) VALUES ('char-lin-xuan', '林清玄')",
+            [],
         )
         .unwrap();
-        // 批次 B1-W2：身份域事实行（证明 creativeFields 清空覆盖 m02 六表）
+        // 批次 B1-W2：身份域事实行（证明 creativeFields 保留受保护事实）
         let character_id: String = conn
             .query_row(
                 "SELECT character_id FROM characters WHERE name = '林清玄'",
@@ -437,6 +468,13 @@ mod tests {
             [character_id],
         )
         .unwrap();
+        // 对齐上游：数据就绪后重建名单元数据，使 migration_state 按当前事实分类
+        // （create_tables 在空库时种子为 'empty'，此处需按角色卡重新分类）
+        conn.execute("DELETE FROM character_roster_meta", [])
+            .unwrap();
+        migrate_character_roster_schema(&conn)
+            .map_err(|error| error.to_string())
+            .unwrap();
         conn.execute(
             "INSERT INTO blueprint_commit_operations
              (operation_id, payload_hash, mode, start_chapter, end_chapter, character_sync_input)
@@ -458,6 +496,7 @@ mod tests {
                 creative_fields: Some(true),
                 ..Default::default()
             },
+            Some(("project", "lease")),
         )
         .unwrap();
         // 顺序对齐基线：blueprints 先于 creativeFields
@@ -478,7 +517,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(synopsis, "");
+        // 角色卡按上游「作者退休路径」退休（retired=1）而非硬删：
+        // characters_arch 与渲染投影一致且不含已退休角色名
         assert_eq!(characters_arch, "");
+        let snapshot = roster::read(&conn).unwrap();
+        assert_eq!(characters_arch, snapshot.rendered_markdown);
+        assert!(!characters_arch.contains("林清玄"));
+        assert!(snapshot.entries.is_empty());
         assert!(characters::get_all(&conn).unwrap().is_empty());
         let blueprints: i64 = conn
             .query_row("SELECT COUNT(*) FROM blueprints", [], |row| row.get(0))
@@ -492,36 +537,227 @@ mod tests {
             .unwrap();
         assert_eq!(blueprints, 0);
         assert_eq!(operations, 0);
-        // 名单元数据与 receipt 被清空（表中无 main 行，待下次读取重新建档）
-        let meta_rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM character_roster_meta", [], |row| {
-                row.get(0)
-            })
+        // 角色卡行保留（退休态），身份来源行与名单元数据行均保留
+        let character_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM characters", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(meta_rows, 0);
-        // 批次 B1-W2：m02 身份域六表随 creativeFields 一并清空
-        for table in [
-            "character_identity_origins",
-            "character_aliases",
-            "character_identity_proposals",
-            "character_identity_approvals",
-            "character_relationships",
-            "character_identity_meta",
+        let retired_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM characters WHERE retired = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(character_rows, 1, "角色卡行必须保留（退休而非删除）");
+        assert_eq!(retired_rows, 1);
+        let origin_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM character_identity_origins",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(origin_rows, 1, "身份来源行必须保留");
+        let (meta_rows, migration_state): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MIN(migration_state) FROM character_roster_meta",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(meta_rows, 1, "角色名单元数据行必须保留");
+        assert_eq!(migration_state, "ready");
+        let plot_tree_snapshot: String = conn
+            .query_row(
+                "SELECT plot_tree_snapshot FROM project_core WHERE id = 'main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(plot_tree_snapshot, "plot-tree-before");
+    }
+
+    #[test]
+    fn creative_fields_requires_session_when_entries_exist_test() {
+        let conn = memory_db();
+        crate::repositories::project_core_repository::init(
+            &conn,
+            "项目",
+            crate::repositories::project_core_repository::DEFAULT_WRITING_LANGUAGE,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO characters (character_id, name) VALUES ('char-active', '在职角色')",
+            [],
+        )
+        .unwrap();
+
+        let error = clear_generated_data(
+            &conn,
+            None,
+            &ProjectClearOptions {
+                creative_fields: Some(true),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "CHARACTER_AUTHOR_SCOPE_REQUIRED");
+    }
+
+    #[test]
+    fn creative_fields_clear_preserves_protected_facts_test() {
+        // port 自 electron/repositories/__tests__/project-clear-repositories.test.ts:44-75
+        // （it.each 四态：empty / legacy cards / legacy cards with old architecture text /
+        // old architecture text only）
+        for (name, with_cards, architecture_text, expected_state) in [
+            ("empty", false, "", "empty"),
+            ("legacy cards", true, "", "legacy_cards_preserved"),
+            (
+                "legacy cards with old architecture text",
+                true,
+                "# 旧角色图谱",
+                "legacy_cards_preserved",
+            ),
+            (
+                "old architecture text only",
+                false,
+                "# 旧角色图谱",
+                "legacy_markdown_pending",
+            ),
         ] {
-            let rows: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                    row.get(0)
-                })
+            let conn = Connection::open_in_memory().unwrap();
+            create_tables(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO project_core
+                   (id, premise, characters_arch, plot_tree_snapshot)
+                 VALUES ('main', '清空前提', ?1, 'plot-tree-before')",
+                [architecture_text],
+            )
+            .unwrap();
+            let mut character_id = String::new();
+            if with_cards {
+                character_id = format!("legacy-card-{name}");
+                conn.execute(
+                    "INSERT INTO characters (character_id, name, notes)
+                     VALUES (?1, '旧角色', '保留原文')",
+                    [&character_id],
+                )
                 .unwrap();
-            assert_eq!(rows, 0, "清空创作字段后 {table} 应为空");
+                // 受保护的身份域事实行（aliases / origins）
+                conn.execute(
+                    "INSERT INTO character_aliases
+                       (character_id, name, source_key, valid_from, valid_through)
+                     VALUES (?1, '旧别名', 'src-1', 1, NULL)",
+                    [&character_id],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO character_identity_origins
+                       (character_id, source_key, original_row_json, original_hash)
+                     VALUES (?1, 'src-1', '{}', 'hash-1')",
+                    [&character_id],
+                )
+                .unwrap();
+            }
+            // 重建名单元数据，使 migration_state 按当前数据分类
+            // （对齐上游 DELETE FROM character_roster_meta; initializeCharacterRosterMetadata; migrateSchema）
+            conn.execute("DELETE FROM character_roster_meta", [])
+                .unwrap();
+            migrate_character_roster_schema(&conn)
+                .map_err(|error| error.to_string())
+                .unwrap();
+            let seeded_state: String = conn
+                .query_row(
+                    "SELECT migration_state FROM character_roster_meta WHERE id = 'main'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(seeded_state, expected_state, "[{name}] 迁移态分类");
+
+            let result = clear_generated_data(
+                &conn,
+                None,
+                &ProjectClearOptions {
+                    creative_fields: Some(true),
+                    ..Default::default()
+                },
+                Some(("project", "lease")),
+            )
+            .unwrap();
+            assert_eq!(
+                result.cleared,
+                vec![ProjectClearScope::CreativeFields],
+                "[{name}]"
+            );
+
+            let snapshot = roster::read(&conn).unwrap();
+            assert_eq!(
+                snapshot.status,
+                crate::repositories::character_roster_repository::CharacterRosterStatus::Empty,
+                "[{name}] 清空后状态必须为 empty"
+            );
+            assert!(snapshot.entries.is_empty(), "[{name}]");
+            assert_eq!(
+                snapshot.legacy_markdown, None,
+                "[{name}] 旧架构文本必须清空"
+            );
+            assert_eq!(
+                snapshot.migration_state,
+                crate::repositories::character_roster_repository::CharacterRosterMigrationState::Ready,
+                "[{name}]"
+            );
+            let characters_arch: String = conn
+                .query_row(
+                    "SELECT characters_arch FROM project_core WHERE id = 'main'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(characters_arch, snapshot.rendered_markdown, "[{name}]");
+            assert!(!characters_arch.contains("旧角色"), "[{name}]");
+
+            // 受保护事实原样保留
+            let (aliases, origins): (i64, i64) = conn
+                .query_row(
+                    "SELECT
+                       (SELECT COUNT(*) FROM character_aliases),
+                       (SELECT COUNT(*) FROM character_identity_origins)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            let expected_protected = if with_cards { 1 } else { 0 };
+            assert_eq!(aliases, expected_protected, "[{name}] aliases 原样");
+            assert_eq!(origins, expected_protected, "[{name}] origins 原样");
+
+            if with_cards {
+                let retired: i64 = conn
+                    .query_row(
+                        "SELECT retired FROM characters WHERE character_id = ?1",
+                        [&character_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(retired, 1, "[{name}] 角色卡必须退休而非删除");
+            }
+
+            // 外键完整性
+            let mut check = conn.prepare("PRAGMA foreign_key_check").unwrap();
+            let violations = check.query_map([], |_| Ok(())).unwrap().count();
+            assert_eq!(violations, 0, "[{name}] foreign_key_check");
+
+            // plot_tree_snapshot 不在 creativeFields 范围
+            let plot: String = conn
+                .query_row(
+                    "SELECT plot_tree_snapshot FROM project_core WHERE id = 'main'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(plot, "plot-tree-before", "[{name}]");
         }
-        let snapshot = crate::repositories::character_roster_repository::read(&conn).unwrap();
-        assert_eq!(
-            snapshot.migration_state,
-            crate::repositories::character_roster_repository::CharacterRosterMigrationState::Empty,
-            "清空创作字段后必须重新分类为空项目"
-        );
-        assert!(snapshot.entries.is_empty());
     }
 
     #[test]

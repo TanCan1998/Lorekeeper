@@ -35,6 +35,8 @@ use crate::repositories::character_repository::{
     CharacterStateProvenance, CharacterStateTextField, FinalizedSourceIdentity,
 };
 use crate::repositories::project_core_repository as project_core;
+use regex::Regex;
+use std::sync::LazyLock;
 
 /// 角色名单 schema 版本（对齐 `CHARACTER_ROSTER_SCHEMA_VERSION`）
 pub const CHARACTER_ROSTER_SCHEMA_VERSION: i64 = 1;
@@ -2156,6 +2158,1260 @@ pub(crate) fn commit_in_transaction(
         idempotent: false,
         snapshot,
     })
+}
+
+// ---------------------------------------------------------------------------
+// 作者退休路径（project_clear creativeFields）
+// ---------------------------------------------------------------------------
+// Port of electron/services/legacy-roster-source.ts + character-roster-author.ts
+// + character-roster-repository.ts:855-890 (clearLegacyCharacterArchitecture /
+// refreshCharacterIdentityProjection)。
+// 事务说明：rusqlite 不支持嵌套 BEGIN，而
+// character_identity_repository::commit_character_identities 内部自开事务，
+// 故 commit_author_character_roster 拆为三阶段（见函数注释）。
+
+/// 手工作者角色名单请求（对齐 `AuthorRosterRequest`）。
+#[derive(Debug, Clone)]
+struct AuthorRosterRequest {
+    operation_id: String,
+    expected_revision: i64,
+    expected_identity_revision: i64,
+    entries: Vec<AuthorRosterEntry>,
+}
+
+/// 归一化后的手工条目（保留 `characterId` 原文，不 trim）。
+#[derive(Debug, Clone)]
+struct AuthorRosterEntry {
+    character_id: String,
+    entry: CharacterRosterEntry,
+    relationships: Vec<AuthorRosterRelationship>,
+}
+
+/// 手工关系（含 `targetCharacterId` 原文；`target` 在依赖校验后回填名称）。
+#[derive(Debug, Clone)]
+struct AuthorRosterRelationship {
+    target_character_id: String,
+    target: String,
+    relation: String,
+}
+
+/// 旧架构来源快照（对齐 `LegacyRosterSource`）。
+#[derive(Debug, Clone)]
+pub struct LegacyRosterSource {
+    pub snapshot: CharacterRosterSnapshot,
+    pub raw_legacy: String,
+    pub legacy_hash: String,
+    pub identity_revision: i64,
+    pub active_ids: Vec<String>,
+    pub facts_hash: String,
+    pub genre: Option<String>,
+    pub writing_language: String,
+}
+
+/// JS `Boolean(value)` 语义（null / false / 0 / "" 为 falsy）。
+fn js_truthy(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => false,
+        Some(serde_json::Value::Bool(true)) => true,
+        Some(serde_json::Value::Number(number)) => {
+            number.as_f64().map(|value| value != 0.0).unwrap_or(true)
+        }
+        Some(serde_json::Value::String(text)) => !text.is_empty(),
+        Some(serde_json::Value::Array(items)) => !items.is_empty(),
+        Some(serde_json::Value::Object(map)) => !map.is_empty(),
+    }
+}
+
+/// 非空字符串（`typeof value === 'string' && value.trim().length > 0`）。
+fn js_nonempty(value: Option<&serde_json::Value>) -> bool {
+    matches!(value,
+        Some(serde_json::Value::String(text)) if !text.trim().is_empty())
+}
+
+/// 安全整数（`Number.isSafeInteger(v) && v >= 0`）。
+fn js_safe_nonnegative_int(value: Option<&serde_json::Value>) -> Option<i64> {
+    let number = value?.as_i64()?;
+    (number >= 0 && number <= MAX_SAFE_INTEGER).then_some(number)
+}
+
+/// 关系键（对齐 `relationKey`）：`JSON.stringify([from, to, text])`。
+fn relation_key(from: &str, to: &str, text: &str) -> String {
+    serde_json::json!([from, to, text]).to_string()
+}
+
+/// 草稿选择键正则（`^draft:<UUID v4>$`，忽略大小写）。
+static DRAFT_ID_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("(?i)^draft:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
+        .expect("draft id regex")
+});
+
+fn is_draft_id(character_id: &str) -> bool {
+    DRAFT_ID_PATTERN.is_match(character_id)
+}
+
+/// 从角色表读取某角色当前生效的关系对 `(target_character_id, relation)`
+/// （与 `identity_projection_entries` 的查询一致：目标未退休、按 relationship_id 排序）。
+fn active_relationship_pairs(
+    conn: &Connection,
+    source_character_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.target_character_id, r.relation FROM character_relationships r 
+             JOIN characters c ON c.character_id = r.target_character_id 
+             WHERE r.source_character_id = ?1 AND c.retired = 0 ORDER BY r.relationship_id",
+        )
+        .map_err(|error| format!("读取角色关系失败: {error}"))?;
+    let rows = stmt
+        .query_map([source_character_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("读取角色关系失败: {error}"))?;
+    let mut pairs = Vec::new();
+    for row in rows {
+        pairs.push(row.map_err(|error| format!("读取角色关系失败: {error}"))?);
+    }
+    Ok(pairs)
+}
+
+/// 刷新身份投影（对齐 `refreshCharacterIdentityProjection`）。
+/// 必须在事务内调用。
+pub fn refresh_character_identity_projection(conn: &Connection) -> Result<(), String> {
+    if conn.is_autocommit() || !characters::has_character_identity_schema(conn) {
+        return Err("CHARACTER_ID_TRANSACTION_REQUIRED".to_string());
+    }
+    let entries = identity_projection_entries(conn, false)?;
+    let writing_language: String = conn
+        .query_row(
+            "SELECT writing_language FROM project_core WHERE id = 'main'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("读取项目核心配置失败: {error}"))?
+        .filter(|value| value == "en-US")
+        .unwrap_or_else(|| project_core::DEFAULT_WRITING_LANGUAGE.to_string());
+    let projection = render_character_roster_markdown(&entries, &writing_language);
+    conn.execute(
+        "UPDATE project_core SET characters_arch = ?1 WHERE id = 'main'",
+        [&projection],
+    )
+    .map_err(|error| format!("更新项目核心配置失败: {error}"))?;
+    conn.execute(
+        "UPDATE character_roster_meta SET revision = revision + 1, 
+         migration_state = 'ready', projection_hash = ?1, fact_hash = ?2, 
+         updated_at = datetime('now') WHERE id = 'main'",
+        rusqlite::params![hash_text(&projection), full_fact_hash(&entries)?],
+    )
+    .map_err(|error| format!("更新角色名单元数据失败: {error}"))?;
+    Ok(())
+}
+
+/// 清空旧架构文本（对齐 `clearLegacyCharacterArchitecture`）。
+/// 必须在事务内调用。
+pub fn clear_legacy_character_architecture(conn: &Connection) -> Result<(), String> {
+    if conn.is_autocommit() {
+        return Err("CHARACTER_ID_TRANSACTION_REQUIRED".to_string());
+    }
+    conn.execute(
+        "UPDATE character_roster_meta SET legacy_markdown = '' WHERE id = 'main'",
+        [],
+    )
+    .map_err(|error| format!("清空旧架构文本失败: {error}"))?;
+    refresh_character_identity_projection(conn)
+}
+
+/// 读取旧架构来源（对齐 `readLegacyRosterSource`）。
+pub fn read_legacy_roster_source(conn: &Connection) -> Result<LegacyRosterSource, String> {
+    if !characters::has_character_identity_schema(conn) {
+        return Err("LEGACY_ROSTER_ID_SCHEMA_REQUIRED".to_string());
+    }
+    let core: Option<(Option<String>, String)> = conn
+        .query_row(
+            "SELECT genre, writing_language FROM project_core WHERE id = 'main'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取项目核心配置失败: {error}"))?;
+    let identity_revision: Option<i64> = conn
+        .query_row(
+            "SELECT revision FROM character_identity_meta WHERE id = 'main'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("读取身份元数据失败: {error}"))?;
+    let raw_legacy: Option<String> = conn
+        .query_row(
+            "SELECT legacy_markdown FROM character_roster_meta WHERE id = 'main'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("读取角色名单元数据失败: {error}"))?;
+    let (genre, core_writing_language) = core.ok_or("LEGACY_ROSTER_SOURCE_INVALID")?;
+    let identity_revision = identity_revision.ok_or("LEGACY_ROSTER_SOURCE_INVALID")?;
+    let raw_legacy = raw_legacy.ok_or("LEGACY_ROSTER_SOURCE_INVALID")?;
+
+    let mut characters: Vec<(String, i64)> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT character_id, retired FROM characters ORDER BY character_id")
+            .map_err(|error| format!("读取角色失败: {error}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|error| format!("读取角色失败: {error}"))?;
+        for row in rows {
+            let (character_id, retired): (String, i64) =
+                row.map_err(|error| format!("读取角色失败: {error}"))?;
+            if character_id.trim().is_empty() {
+                return Err("LEGACY_ROSTER_ID_INVALID".to_string());
+            }
+            characters.push((character_id, retired));
+        }
+    }
+    let active_ids: Vec<String> = characters
+        .iter()
+        .filter(|(_, retired)| *retired == 0)
+        .map(|(character_id, _)| character_id.clone())
+        .collect();
+
+    let map_rows = |table: &str,
+                    order: &str|
+     -> Result<Vec<serde_json::Map<String, serde_json::Value>>, String> {
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))
+            .map_err(|error| format!("读取 {table} 失败: {error}"))?;
+        let columns: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let rows = stmt
+            .query_map([], |row| {
+                let mut map = serde_json::Map::new();
+                for (index, name) in columns.iter().enumerate() {
+                    let value: rusqlite::types::Value = row.get(index)?;
+                    map.insert(
+                        name.clone(),
+                        match value {
+                            rusqlite::types::Value::Null => serde_json::Value::Null,
+                            rusqlite::types::Value::Integer(number) => serde_json::json!(number),
+                            rusqlite::types::Value::Real(number) => serde_json::json!(number),
+                            rusqlite::types::Value::Text(text) => serde_json::json!(text),
+                            rusqlite::types::Value::Blob(blob) => serde_json::json!(blob),
+                        },
+                    );
+                }
+                Ok(map)
+            })
+            .map_err(|error| format!("读取 {table} 失败: {error}"))?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row.map_err(|error| format!("读取 {table} 失败: {error}"))?);
+        }
+        Ok(items)
+    };
+    let facts = serde_json::json!({
+        "characters": map_rows("characters", "character_id")?,
+        "aliases": map_rows("character_aliases", "character_id, name, source_key, valid_from")?,
+        "relationships": map_rows("character_relationships", "relationship_id")?,
+    });
+
+    let legacy_hash = hash_text(&raw_legacy);
+
+    Ok(LegacyRosterSource {
+        snapshot: read(conn)?,
+        raw_legacy,
+        legacy_hash,
+        identity_revision,
+        active_ids,
+        facts_hash: hash_text(&facts.to_string()),
+        genre,
+        writing_language: resolve_writing_language(&core_writing_language),
+    })
+}
+
+/// 书写语言归一化（对齐 `resolveWritingLanguage`）：仅接受 zh-CN / en-US。
+fn resolve_writing_language(value: &str) -> String {
+    match value {
+        "zh-CN" | "en-US" => value.to_string(),
+        _ => project_core::DEFAULT_WRITING_LANGUAGE.to_string(),
+    }
+}
+
+/// 旧卡片收养（对齐 `adoptLegacyCards`）。内部自开事务（上游 `db.transaction()`）。
+pub fn adopt_legacy_cards(
+    conn: &Connection,
+    request: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let object = request
+        .as_object()
+        .ok_or("LEGACY_ROSTER_ADOPTION_INVALID")?;
+    let allowed = [
+        "operationId",
+        "expectedRevision",
+        "expectedLegacyHash",
+        "expectedIdentityRevision",
+        "expectedFactsHash",
+    ];
+    if object.keys().any(|key| !allowed.contains(&key.as_str()))
+        || !js_nonempty(object.get("operationId"))
+        || object
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| value.len() > 200)
+            .unwrap_or(true)
+        || js_safe_nonnegative_int(object.get("expectedRevision")).is_none()
+        || js_safe_nonnegative_int(object.get("expectedIdentityRevision")).is_none()
+        || !is_64_hex(object.get("expectedLegacyHash"))
+        || !is_64_hex(object.get("expectedFactsHash"))
+    {
+        return Err("LEGACY_ROSTER_ADOPTION_INVALID".to_string());
+    }
+    if !characters::has_character_identity_schema(conn) {
+        return Err("LEGACY_ROSTER_ID_SCHEMA_REQUIRED".to_string());
+    }
+    let original = serde_json::json!({
+        "operationId": object.get("operationId").cloned().unwrap_or(serde_json::Value::Null),
+        "expectedRevision": object.get("expectedRevision").cloned().unwrap_or(serde_json::Value::Null),
+        "expectedLegacyHash": object.get("expectedLegacyHash").cloned().unwrap_or(serde_json::Value::Null),
+        "expectedIdentityRevision": object.get("expectedIdentityRevision").cloned().unwrap_or(serde_json::Value::Null),
+        "expectedFactsHash": object.get("expectedFactsHash").cloned().unwrap_or(serde_json::Value::Null),
+    });
+    let request_hash = hash_text(&original.to_string());
+    let operation_id = format!(
+        "legacy-cards-adoption:{}",
+        object
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    );
+
+    if let Some((payload_hash, receipt_json)) = conn
+        .query_row(
+            "SELECT payload_hash, receipt_json FROM character_identity_approvals WHERE operation_id = ?1",
+            [&operation_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取审批记录失败: {error}"))?
+    {
+        let saved: serde_json::Value = serde_json::from_str(&receipt_json)
+            .map_err(|_| "LEGACY_ROSTER_ADOPTION_RECEIPT_INVALID".to_string())?;
+        let saved_receipt = saved.get("receipt").cloned().unwrap_or_default();
+        let saved_request_hash = saved.get("requestHash").and_then(serde_json::Value::as_str);
+        if !(saved.get("version").and_then(serde_json::Value::as_i64) == Some(1)
+            && saved.get("kind").and_then(serde_json::Value::as_str) == Some("legacy-cards-adoption")
+            && saved_request_hash == Some(payload_hash.as_str())
+            && hash_text(&saved.get("request").cloned().unwrap_or_default().to_string())
+                == saved_request_hash.unwrap_or_default()
+            && hash_text(&saved_receipt.to_string())
+                == saved
+                    .get("receiptHash")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            && saved_receipt.get("success") == Some(&serde_json::Value::Bool(true))
+            && saved_receipt.get("operationId") == object.get("operationId")
+            && saved_receipt
+                .get("activeIds")
+                .map(serde_json::Value::is_array)
+                .unwrap_or(false)
+            && saved_receipt
+                .get("snapshot")
+                .and_then(|snapshot| snapshot.get("migrationState"))
+                .and_then(serde_json::Value::as_str)
+                == Some("ready")
+            && saved_receipt
+                .get("snapshot")
+                .and_then(|snapshot| snapshot.get("status"))
+                .and_then(serde_json::Value::as_str)
+                == Some("ready"))
+        {
+            return Err("LEGACY_ROSTER_ADOPTION_RECEIPT_INVALID".to_string());
+        }
+        if request_hash != saved_request_hash.unwrap_or_default()
+            || !deep_strict_equal(
+                &original,
+                saved.get("request").unwrap_or(&serde_json::Value::Null),
+            )
+        {
+            return Err("LEGACY_ROSTER_ADOPTION_NONCE_CONFLICT".to_string());
+        }
+        return Ok(saved_receipt);
+    }
+
+    let source = read_legacy_roster_source(conn)?;
+    let roster = read(conn)?;
+    if roster.migration_state != CharacterRosterMigrationState::LegacyCardsPreserved
+        || roster.status != CharacterRosterStatus::Inconsistent
+        || source.active_ids.is_empty()
+    {
+        return Err("LEGACY_ROSTER_CARDS_REQUIRED".to_string());
+    }
+    let expected_revision = js_safe_nonnegative_int(object.get("expectedRevision"))
+        .ok_or("LEGACY_ROSTER_ADOPTION_INVALID")?;
+    let expected_identity_revision =
+        js_safe_nonnegative_int(object.get("expectedIdentityRevision"))
+            .ok_or("LEGACY_ROSTER_ADOPTION_INVALID")?;
+    if roster.revision != expected_revision
+        || roster.identity_revision != Some(expected_identity_revision)
+        || source.legacy_hash
+            != object
+                .get("expectedLegacyHash")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+        || source.facts_hash
+            != object
+                .get("expectedFactsHash")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+    {
+        return Err("LEGACY_ROSTER_ADOPTION_SOURCE_CHANGED".to_string());
+    }
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|error| format!("开启事务失败: {error}"))?;
+    refresh_character_identity_projection(&tx)?;
+    let snapshot = read(&tx)?;
+    if snapshot.status != CharacterRosterStatus::Ready
+        || snapshot.migration_state != CharacterRosterMigrationState::Ready
+        || snapshot.legacy_markdown
+            != (if source.raw_legacy.is_empty() {
+                None
+            } else {
+                Some(source.raw_legacy.clone())
+            })
+    {
+        return Err("LEGACY_ROSTER_ADOPTION_READBACK_INVALID".to_string());
+    }
+    let receipt = serde_json::json!({
+        "success": true,
+        "operationId": object.get("operationId").cloned().unwrap_or(serde_json::Value::Null),
+        "snapshot": snapshot,
+        "activeIds": source.active_ids,
+    });
+    let envelope = serde_json::json!({
+        "version": 1,
+        "kind": "legacy-cards-adoption",
+        "request": original,
+        "requestHash": request_hash,
+        "receipt": receipt,
+        "receiptHash": hash_text(&receipt.to_string()),
+    });
+    tx.execute(
+        "INSERT INTO character_identity_approvals (operation_id, payload_hash, receipt_json) VALUES (?1, ?2, ?3)",
+        rusqlite::params![operation_id, request_hash, envelope.to_string()],
+    )
+    .map_err(|error| format!("写入审批记录失败: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("提交事务失败: {error}"))?;
+    Ok(receipt)
+}
+
+/// 64 位十六进制（对齐上游 64-hex 校验）。
+fn is_64_hex(value: Option<&serde_json::Value>) -> bool {
+    matches!(value,
+        Some(serde_json::Value::String(text)) if text.len() == 64 && text.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
+}
+
+/// `isDeepStrictEqual` 的 JSON 近似（深度相等，数组顺序敏感）。
+fn deep_strict_equal(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    match (left, right) {
+        (serde_json::Value::Array(left_items), serde_json::Value::Array(right_items)) => {
+            left_items.len() == right_items.len()
+                && left_items
+                    .iter()
+                    .zip(right_items.iter())
+                    .all(|(left_item, right_item)| deep_strict_equal(left_item, right_item))
+        }
+        (serde_json::Value::Object(left_map), serde_json::Value::Object(right_map)) => {
+            left_map.len() == right_map.len()
+                && left_map.iter().all(|(key, value)| {
+                    right_map
+                        .get(key)
+                        .map(|right_value| deep_strict_equal(value, right_value))
+                        .unwrap_or(false)
+                })
+        }
+        _ => left == right,
+    }
+}
+
+/// 手工角色名单提交（对齐 `commitAuthorCharacterRoster`）。
+///
+/// 事务说明（与上游单事务的偏差）：rusqlite 不支持嵌套 BEGIN，而
+/// `character_identity_repository::commit_character_identities` 内部自开事务，
+/// 故拆为三阶段——
+/// 1. 阶段一（无事务）：守卫 / 归一化 / 幂等读回 / 版本校验 / 身份请求构造；
+/// 2. 阶段二：`commit_character_identities`（自开事务，写身份表）；
+/// 3. 阶段三（自开事务）：过期关系删除 / 角色字段更新 / 投影刷新 / 读回校验 /
+///    审批信封写入。
+pub fn commit_author_character_roster(
+    conn: &Connection,
+    candidate: &serde_json::Value,
+    project_id: &str,
+    epoch: &str,
+    assert_current: impl Fn(),
+) -> Result<serde_json::Value, String> {
+    if !characters::has_character_identity_schema(conn)
+        || project_id.trim().is_empty()
+        || epoch.trim().is_empty()
+    {
+        return Err("CHARACTER_AUTHOR_SCOPE_REQUIRED".to_string());
+    }
+    let request = normalize_author_request(candidate)?;
+    let request_hash = hash_text(
+        &serde_json::json!({ "projectId": project_id, "request": candidate }).to_string(),
+    );
+    let operation_key = format!("author-roster-request:{}", request.operation_id);
+    let approval_id = format!("author-roster-effect:{}", request.operation_id);
+
+    // ---- 阶段一：幂等读回 + 版本校验 + 身份请求构造（无事务） ----
+    assert_current();
+    if let Some((payload_hash, receipt_json)) = conn
+        .query_row(
+            "SELECT payload_hash, receipt_json FROM character_identity_approvals WHERE operation_id = ?1",
+            [&operation_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取审批记录失败: {error}"))?
+    {
+        if payload_hash != request_hash {
+            return Err("CHARACTER_APPROVAL_NONCE_CONFLICT".to_string());
+        }
+        let saved: serde_json::Value = serde_json::from_str(&receipt_json)
+            .map_err(|_| "CHARACTER_AUTHOR_RECEIPT_INVALID".to_string())?;
+        let approval: Option<(String, String)> = conn
+            .query_row(
+                "SELECT payload_hash, receipt_json FROM character_identity_approvals WHERE operation_id = ?1",
+                [&approval_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("读取审批记录失败: {error}"))?;
+        let approval = approval.ok_or("CHARACTER_AUTHOR_RECEIPT_INVALID")?;
+        let saved_receipt = saved.get("receipt").cloned().unwrap_or_default();
+        if !(saved.get("version").and_then(serde_json::Value::as_i64) == Some(1)
+            && saved.get("kind").and_then(serde_json::Value::as_str) == Some("author-roster")
+            && saved.get("requestHash").and_then(serde_json::Value::as_str) == Some(request_hash.as_str())
+            && hash_text(&saved_receipt.to_string())
+                == saved
+                    .get("receiptHash")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            && saved.get("approvalId").and_then(serde_json::Value::as_str) == Some(approval_id.as_str())
+            && saved_receipt.get("operationId") == Some(&serde_json::Value::String(request.operation_id.clone()))
+            && saved_receipt.get("payloadHash").and_then(serde_json::Value::as_str) == Some(request_hash.as_str())
+            && saved.get("approvalPayloadHash").and_then(serde_json::Value::as_str) == Some(approval.0.as_str())
+            && hash_text(&approval.1)
+                == saved
+                    .get("approvalReceiptHash")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default())
+        {
+            return Err("CHARACTER_AUTHOR_RECEIPT_INVALID".to_string());
+        }
+        let snapshot = read(conn)?;
+        let mut receipt = saved_receipt;
+        receipt["idempotent"] = serde_json::Value::Bool(true);
+        receipt["revision"] = serde_json::json!(snapshot.revision);
+        receipt["snapshot"] =
+            serde_json::to_value(&snapshot).map_err(|_| "CHARACTER_AUTHOR_RECEIPT_INVALID".to_string())?;
+        return Ok(receipt);
+    }
+
+    let current = read(conn)?;
+    if current.revision != request.expected_revision
+        || current.identity_revision != Some(request.expected_identity_revision)
+    {
+        return Err("CHARACTER_ID_REVISION_CONFLICT".to_string());
+    }
+    if !matches!(
+        current.status,
+        CharacterRosterStatus::Ready | CharacterRosterStatus::Empty
+    ) {
+        return Err("CHARACTER_AUTHOR_ROSTER_NOT_READY".to_string());
+    }
+    let original: HashMap<&str, &CharacterRosterEntry> = current
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .character_id
+                .as_deref()
+                .map(|character_id| (character_id, entry))
+        })
+        .collect();
+    let kept: HashSet<&str> = request
+        .entries
+        .iter()
+        .filter(|entry| !is_draft_id(&entry.character_id))
+        .map(|entry| entry.character_id.as_str())
+        .collect();
+    for entry in &request.entries {
+        if !original.contains_key(entry.character_id.as_str()) && !is_draft_id(&entry.character_id)
+        {
+            return Err("CHARACTER_ID_UNKNOWN".to_string());
+        }
+    }
+
+    let mut identity = serde_json::json!({
+        "approval": {
+            "operationId": approval_id,
+            "expectedRevision": current.identity_revision,
+            "action": "author-edit",
+            "source": {
+                "kind": "author",
+                "source": {
+                    "projectId": project_id,
+                    "epoch": epoch,
+                    "sourceId": operation_key,
+                    "revision": current.identity_revision,
+                    "contentHash": request_hash,
+                },
+            },
+        },
+        "changes": [],
+        "creations": [],
+        "retireIds": original.keys().copied().collect::<Vec<_>>().into_iter()
+            .filter(|character_id| !kept.contains(*character_id))
+            .collect::<Vec<_>>(),
+        "relationships": [],
+        "resolutions": [],
+    });
+    let fields = [
+        "name",
+        "role",
+        "gender",
+        "age",
+        "appearance",
+        "personality",
+        "background",
+        "abilities",
+        "motivation",
+        "arc",
+        "notes",
+    ];
+    for entry in &request.entries {
+        let before = original.get(entry.character_id.as_str()).copied();
+        let mut changed = serde_json::Map::new();
+        for field in fields {
+            if before.is_none()
+                || entry_field(&entry.entry, field)
+                    != before.and_then(|before_entry| entry_field(before_entry, field))
+            {
+                if let Some(value) = entry_field_value(&entry.entry, field) {
+                    changed.insert(field.to_string(), value);
+                }
+            }
+        }
+        if before.is_none() {
+            let mut creation_fields = changed.clone();
+            creation_fields.insert("name".to_string(), serde_json::json!(entry.entry.name));
+            identity["creations"]
+                .as_array_mut()
+                .expect("array")
+                .push(serde_json::json!({
+                    "selectionKey": entry.character_id,
+                    "fields": creation_fields,
+                }));
+        } else if !changed.is_empty() {
+            identity["changes"]
+                .as_array_mut()
+                .expect("array")
+                .push(serde_json::json!({
+                    "characterId": entry.character_id,
+                    "fields": changed,
+                }));
+        }
+    }
+
+    let existing_relations: Vec<(String, String, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.relationship_id, r.source_character_id, r.target_character_id, r.relation 
+                 FROM character_relationships r 
+                 JOIN characters a ON a.character_id = r.source_character_id 
+                 JOIN characters b ON b.character_id = r.target_character_id 
+                 WHERE a.retired = 0 AND b.retired = 0",
+            )
+            .map_err(|error| format!("读取角色关系失败: {error}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| format!("读取角色关系失败: {error}"))?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row.map_err(|error| format!("读取角色关系失败: {error}"))?);
+        }
+        items
+    };
+    let mut desired: HashSet<String> = HashSet::new();
+    for entry in &request.entries {
+        for relationship in &entry.relationships {
+            desired.insert(relation_key(
+                &entry.character_id,
+                &relationship.target_character_id,
+                &relationship.relation,
+            ));
+        }
+    }
+    let previous_keys: HashSet<String> = existing_relations
+        .iter()
+        .map(|(_, source, target, relation)| relation_key(source, target, relation))
+        .collect();
+    let stale_relations: Vec<String> = existing_relations
+        .into_iter()
+        .filter(|(_, source, target, relation)| {
+            let key = relation_key(source, target, relation);
+            kept.contains(source.as_str())
+                && kept.contains(target.as_str())
+                && !desired.contains(&key)
+        })
+        .map(|(relationship_id, _, _, _)| relationship_id)
+        .collect();
+    for entry in &request.entries {
+        for relationship in &entry.relationships {
+            let key = relation_key(
+                &entry.character_id,
+                &relationship.target_character_id,
+                &relationship.relation,
+            );
+            if previous_keys.contains(&key) {
+                continue;
+            }
+            let mut link = serde_json::Map::new();
+            if is_draft_id(&entry.character_id) {
+                link.insert(
+                    "sourceSelectionKey".to_string(),
+                    serde_json::json!(entry.character_id),
+                );
+            } else {
+                link.insert(
+                    "sourceCharacterId".to_string(),
+                    serde_json::json!(entry.character_id),
+                );
+            }
+            if is_draft_id(&relationship.target_character_id) {
+                link.insert(
+                    "targetSelectionKey".to_string(),
+                    serde_json::json!(relationship.target_character_id),
+                );
+            } else {
+                link.insert(
+                    "targetCharacterId".to_string(),
+                    serde_json::json!(relationship.target_character_id),
+                );
+            }
+            link.insert(
+                "relation".to_string(),
+                serde_json::json!(relationship.relation),
+            );
+            identity["relationships"]
+                .as_array_mut()
+                .expect("array")
+                .push(serde_json::Value::Object(link));
+        }
+    }
+
+    // ---- 阶段二：身份提交（自开事务） ----
+    let committed =
+        crate::repositories::character_identity_repository::commit_character_identities(
+            conn,
+            &identity,
+            |_| {
+                assert_current();
+                true
+            },
+        )?;
+    let created: HashMap<&str, &str> = committed
+        .created
+        .iter()
+        .map(|item| (item.selection_key.as_str(), item.character_id.as_str()))
+        .collect();
+
+    // ---- 阶段三：角色字段更新 + 投影刷新 + 读回校验 + 审批信封 ----
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|error| format!("开启事务失败: {error}"))?;
+    for relationship_id in &stale_relations {
+        tx.execute(
+            "DELETE FROM character_relationships WHERE relationship_id = ?1",
+            [relationship_id],
+        )
+        .map_err(|error| format!("删除过期关系失败: {error}"))?;
+    }
+    for entry in &request.entries {
+        let id = created
+            .get(entry.character_id.as_str())
+            .copied()
+            .unwrap_or(entry.character_id.as_str());
+        let before = original.get(entry.character_id.as_str()).copied();
+        let before_pairs: Vec<(String, String)> =
+            match before.and_then(|before_entry| before_entry.character_id.as_deref()) {
+                Some(before_id) => active_relationship_pairs(&tx, before_id)?,
+                None => Vec::new(),
+            };
+        let entry_pairs: Vec<(String, String)> = entry
+            .relationships
+            .iter()
+            .map(|relationship| {
+                (
+                    relationship.target_character_id.clone(),
+                    relationship.relation.clone(),
+                )
+            })
+            .collect();
+        let relation_keys = |pairs: &[(String, String)]| -> String {
+            let mut keys: Vec<String> = pairs
+                .iter()
+                .map(|(target, relation)| serde_json::json!([target, relation]).to_string())
+                .collect();
+            keys.sort();
+            keys.join("\n")
+        };
+        let hidden_notes = if before
+            .and_then(|before_entry| before_entry.legacy_relationship_notes.as_deref())
+            .map(|notes| !notes.is_empty())
+            .unwrap_or(false)
+            && !before_pairs.is_empty()
+            && relation_keys(&before_pairs) == relation_keys(&entry_pairs)
+        {
+            before
+                .and_then(|before_entry| before_entry.legacy_relationship_notes.clone())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let legacy_notes = entry
+            .entry
+            .legacy_relationship_notes
+            .clone()
+            .unwrap_or(hidden_notes);
+        let before_notes = before
+            .and_then(|before_entry| before_entry.legacy_relationship_notes.clone())
+            .unwrap_or_default();
+        if legacy_notes != before_notes {
+            tx.execute(
+                "UPDATE characters SET relationships = ?1 WHERE character_id = ?2",
+                rusqlite::params![legacy_notes, id],
+            )
+            .map_err(|error| format!("更新角色关系文本失败: {error}"))?;
+        }
+        if let Some(state) = &entry.entry.current_state {
+            let old_state = before.and_then(|before_entry| before_entry.current_state.as_ref());
+            let changed_fields: Vec<CharacterStateTextField> = CharacterStateTextField::ALL
+                .into_iter()
+                .filter(|field| {
+                    old_state.is_none()
+                        || state_text(old_state.expect("checked"), *field)
+                            != state_text(state, *field)
+                })
+                .collect();
+            let updated_at_changed =
+                old_state.map(|state| state.updated_at_chapter) != Some(state.updated_at_chapter);
+            if !changed_fields.is_empty() || updated_at_changed {
+                let mut provenance = old_state
+                    .and_then(|state| state.provenance.clone())
+                    .unwrap_or_default();
+                for field in &changed_fields {
+                    provenance.insert(
+                        field.json_name().to_string(),
+                        CharacterStateFieldProvenance::Author {
+                            chapter_number: state.updated_at_chapter,
+                        },
+                    );
+                }
+                tx.execute(
+                    "UPDATE characters SET cs_location = ?1, cs_power_level = ?2, cs_physical_state = ?3, 
+                     cs_mental_state = ?4, cs_key_items = ?5, cs_recent_events = ?6, 
+                     cs_updated_at_chapter = ?7, cs_provenance = ?8 WHERE character_id = ?9",
+                    rusqlite::params![
+                        state.location,
+                        state.power_level,
+                        state.physical_state,
+                        state.mental_state,
+                        state.key_items,
+                        state.recent_events,
+                        state.updated_at_chapter,
+                        serde_json::to_string(&provenance)
+                            .map_err(|_| "CHARACTER_AUTHOR_READBACK_FAILED".to_string())?,
+                        id,
+                    ],
+                )
+                .map_err(|error| format!("更新角色状态失败: {error}"))?;
+            }
+        }
+    }
+    refresh_character_identity_projection(&tx)?;
+    let snapshot = read(&tx)?;
+
+    // 读回校验（对齐上游 readback gate）。
+    if snapshot.identity_revision != Some(committed.revision)
+        || snapshot.revision != current.revision + 1
+        || !matches!(
+            snapshot.status,
+            CharacterRosterStatus::Ready | CharacterRosterStatus::Empty
+        )
+        || snapshot.entries.len() != request.entries.len()
+    {
+        return Err("CHARACTER_AUTHOR_READBACK_FAILED".to_string());
+    }
+    for entry in &request.entries {
+        let observed_id = created
+            .get(entry.character_id.as_str())
+            .copied()
+            .unwrap_or(entry.character_id.as_str());
+        let observed = snapshot
+            .entries
+            .iter()
+            .find(|item| item.character_id.as_deref() == Some(observed_id))
+            .ok_or("CHARACTER_AUTHOR_READBACK_FAILED".to_string())?;
+        for field in fields {
+            if entry_field(&entry.entry, field) != entry_field(observed, field) {
+                return Err("CHARACTER_AUTHOR_READBACK_FAILED".to_string());
+            }
+        }
+        let mut observed_keys: Vec<String> = active_relationship_pairs(&tx, observed_id)?
+            .into_iter()
+            .map(|(target, relation)| relation_key(observed_id, &target, &relation))
+            .collect();
+        observed_keys.sort();
+        let mut expected_keys: Vec<String> = entry
+            .relationships
+            .iter()
+            .map(|relationship| {
+                let target_id = created
+                    .get(relationship.target_character_id.as_str())
+                    .copied()
+                    .unwrap_or(relationship.target_character_id.as_str());
+                relation_key(observed_id, target_id, &relationship.relation)
+            })
+            .collect();
+        expected_keys.sort();
+        if observed_keys != expected_keys {
+            return Err("CHARACTER_AUTHOR_READBACK_FAILED".to_string());
+        }
+        let expected_state = entry.entry.current_state.as_ref().or_else(|| {
+            original
+                .get(entry.character_id.as_str())
+                .and_then(|entry| entry.current_state.as_ref())
+        });
+        if let Some(expected_state) = expected_state {
+            let observed_state = observed
+                .current_state
+                .as_ref()
+                .ok_or("CHARACTER_AUTHOR_READBACK_FAILED".to_string())?;
+            if CharacterStateTextField::ALL
+                .into_iter()
+                .any(|field| state_text(observed_state, field) != state_text(expected_state, field))
+            {
+                return Err("CHARACTER_AUTHOR_READBACK_FAILED".to_string());
+            }
+        }
+    }
+
+    let receipt = serde_json::json!({
+        "operationId": request.operation_id,
+        "payloadHash": request_hash,
+        "revision": snapshot.revision,
+        "idempotent": false,
+        "snapshot": snapshot,
+        "created": committed.created,
+    });
+    let approval: (String, String) = tx
+        .query_row(
+            "SELECT payload_hash, receipt_json FROM character_identity_approvals WHERE operation_id = ?1",
+            [&approval_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "CHARACTER_AUTHOR_READBACK_FAILED".to_string())?;
+    let saved = serde_json::json!({
+        "version": 1,
+        "kind": "author-roster",
+        "requestHash": request_hash,
+        "receipt": receipt,
+        "receiptHash": hash_text(&receipt.to_string()),
+        "approvalId": approval_id,
+        "approvalPayloadHash": approval.0,
+        "approvalReceiptHash": hash_text(&approval.1),
+    });
+    tx.execute(
+        "INSERT INTO character_identity_approvals (operation_id, payload_hash, receipt_json) VALUES (?1, ?2, ?3)",
+        rusqlite::params![operation_key, request_hash, saved.to_string()],
+    )
+    .map_err(|error| format!("写入审批记录失败: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("提交事务失败: {error}"))?;
+    Ok(receipt)
+}
+
+/// 归一化手工请求（对齐 `character-roster-author.ts` 的 `normalize()`）。
+fn normalize_author_request(candidate: &serde_json::Value) -> Result<AuthorRosterRequest, String> {
+    let object = candidate
+        .as_object()
+        .ok_or("CHARACTER_AUTHOR_REQUEST_INVALID")?;
+    if object.get("intent").and_then(serde_json::Value::as_str) != Some("manual_edit")
+        || object
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_i64)
+            != Some(CHARACTER_ROSTER_SCHEMA_VERSION)
+        || !js_nonempty(object.get("operationId"))
+        || object
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| value.len() > 200)
+            .unwrap_or(true)
+        || js_safe_nonnegative_int(object.get("expectedRevision")).is_none()
+        || js_safe_nonnegative_int(object.get("expectedIdentityRevision")).is_none()
+        || !object
+            .get("entries")
+            .map(serde_json::Value::is_array)
+            .unwrap_or(false)
+        || js_truthy(object.get("generationRunHandle"))
+        || js_truthy(object.get("source"))
+        || object.get("expectedLegacyMarkdown").is_some()
+    {
+        return Err("CHARACTER_AUTHOR_REQUEST_INVALID".to_string());
+    }
+    let mut entries: Vec<AuthorRosterEntry> = Vec::new();
+    for raw in object
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        let raw_object = raw.as_object().ok_or("CHARACTER_ID_WRITE_REQUIRED")?;
+        let character_id = raw_object
+            .get("characterId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("CHARACTER_ID_WRITE_REQUIRED")?;
+        if character_id.trim().is_empty()
+            || !raw_object
+                .get("relationships")
+                .map(serde_json::Value::is_array)
+                .unwrap_or(false)
+        {
+            return Err("CHARACTER_ID_WRITE_REQUIRED".to_string());
+        }
+        let mut normalized = raw_object.clone();
+        normalized.insert("relationships".to_string(), serde_json::json!([]));
+        let mut entry = normalize_entry(&serde_json::Value::Object(normalized), true)?;
+        entry.character_id = Some(character_id.to_string());
+        for field in [
+            "name",
+            "role",
+            "gender",
+            "age",
+            "appearance",
+            "personality",
+            "background",
+            "abilities",
+            "motivation",
+            "arc",
+            "notes",
+        ] {
+            if let Some(serde_json::Value::String(text)) = raw_object.get(field) {
+                set_entry_field(&mut entry, field, text.clone());
+            }
+        }
+        if raw_object.get("legacyRelationshipNotes").is_some() {
+            let legacy_notes = raw_object
+                .get("legacyRelationshipNotes")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("CHARACTER_AUTHOR_ENTRY_INVALID")?;
+            entry.legacy_relationship_notes = Some(legacy_notes.to_string());
+        }
+        if let Some(serde_json::Value::Object(raw_state)) = raw_object.get("currentState") {
+            if let Some(state) = entry.current_state.as_mut() {
+                for field in CharacterStateTextField::ALL {
+                    if let Some(serde_json::Value::String(text)) = raw_state.get(field.json_name())
+                    {
+                        set_state_field(state, field, text.clone());
+                    }
+                }
+            }
+        }
+        let relationships: Vec<AuthorRosterRelationship> = raw_object
+            .get("relationships")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|relationship| {
+                let item = relationship
+                    .as_object()
+                    .ok_or("CHARACTER_RELATIONSHIP_ID_REQUIRED")?;
+                let target_character_id = item
+                    .get("targetCharacterId")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("CHARACTER_RELATIONSHIP_ID_REQUIRED")?;
+                let relation = item
+                    .get("relation")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("CHARACTER_RELATIONSHIP_ID_REQUIRED")?;
+                if target_character_id.trim().is_empty() || relation.trim().is_empty() {
+                    return Err("CHARACTER_RELATIONSHIP_ID_REQUIRED".to_string());
+                }
+                Ok(AuthorRosterRelationship {
+                    target_character_id: target_character_id.to_string(),
+                    target: String::new(),
+                    relation: relation.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        entries.push(AuthorRosterEntry {
+            character_id: character_id.to_string(),
+            entry,
+            relationships,
+        });
+    }
+    for entry in &mut entries {
+        entry.relationships.sort_by(|left, right| {
+            serde_json::json!([left.target_character_id, left.relation])
+                .to_string()
+                .cmp(&serde_json::json!([right.target_character_id, right.relation]).to_string())
+        });
+    }
+    entries.sort_by(|left, right| left.character_id.cmp(&right.character_id));
+    let mut names: HashMap<String, String> = HashMap::new();
+    for entry in &entries {
+        if names
+            .insert(entry.character_id.clone(), entry.entry.name.clone())
+            .is_some()
+        {
+            return Err("CHARACTER_ID_DUPLICATE".to_string());
+        }
+    }
+    for entry in &entries {
+        let mut seen: HashSet<String> = HashSet::new();
+        for relationship in &entry.relationships {
+            let key = serde_json::json!([relationship.target_character_id, relationship.relation])
+                .to_string();
+            if !names.contains_key(&relationship.target_character_id)
+                || relationship.target_character_id == entry.character_id
+                || !seen.insert(key)
+            {
+                return Err("CHARACTER_RELATIONSHIP_INVALID".to_string());
+            }
+        }
+    }
+    for entry in &mut entries {
+        for relationship in &mut entry.relationships {
+            relationship.target = names
+                .get(&relationship.target_character_id)
+                .cloned()
+                .unwrap_or_default();
+        }
+    }
+    if object.get("renames").is_some() {
+        let renames = object
+            .get("renames")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("CHARACTER_ID_WRITE_REQUIRED")?;
+        for rename in renames {
+            let item = rename.as_object().ok_or("CHARACTER_ID_WRITE_REQUIRED")?;
+            let character_id = item
+                .get("characterId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("CHARACTER_ID_WRITE_REQUIRED")?;
+            let new_name = item
+                .get("newName")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("CHARACTER_ID_WRITE_REQUIRED")?;
+            let target_name = names
+                .get(character_id)
+                .ok_or("CHARACTER_ID_WRITE_REQUIRED")?;
+            if character_id.trim().is_empty() || target_name != new_name {
+                return Err("CHARACTER_ID_WRITE_REQUIRED".to_string());
+            }
+        }
+    }
+    Ok(AuthorRosterRequest {
+        operation_id: object
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        expected_revision: js_safe_nonnegative_int(object.get("expectedRevision"))
+            .ok_or("CHARACTER_AUTHOR_REQUEST_INVALID")?,
+        expected_identity_revision: js_safe_nonnegative_int(object.get("expectedIdentityRevision"))
+            .ok_or("CHARACTER_AUTHOR_REQUEST_INVALID")?,
+        entries,
+    })
+}
+
+/// 读取条目文本字段（`before[field] !== entry[field]` 比较用）。
+fn entry_field(entry: &CharacterRosterEntry, field: &str) -> Option<String> {
+    match field {
+        "name" => Some(entry.name.clone()),
+        "role" => Some(entry.role.as_str().to_string()),
+        "gender" => Some(entry.gender.clone()),
+        "age" => Some(entry.age.clone()),
+        "appearance" => Some(entry.appearance.clone()),
+        "personality" => Some(entry.personality.clone()),
+        "background" => Some(entry.background.clone()),
+        "abilities" => Some(entry.abilities.clone()),
+        "motivation" => Some(entry.motivation.clone()),
+        "arc" => Some(entry.arc.clone()),
+        "notes" => Some(entry.notes.clone()),
+        _ => None,
+    }
+}
+
+fn entry_field_value(entry: &CharacterRosterEntry, field: &str) -> Option<serde_json::Value> {
+    entry_field(entry, field).map(serde_json::Value::String)
+}
+
+fn set_entry_field(entry: &mut CharacterRosterEntry, field: &str, value: String) {
+    match field {
+        "name" => entry.name = value,
+        "role" => entry.role = normalize_role(&value).unwrap_or(entry.role),
+        "gender" => entry.gender = value,
+        "age" => entry.age = value,
+        "appearance" => entry.appearance = value,
+        "personality" => entry.personality = value,
+        "background" => entry.background = value,
+        "abilities" => entry.abilities = value,
+        "motivation" => entry.motivation = value,
+        "arc" => entry.arc = value,
+        "notes" => entry.notes = value,
+        _ => {}
+    }
+}
+
+fn state_text(state: &CharacterStateData, field: CharacterStateTextField) -> String {
+    match field {
+        CharacterStateTextField::Location => state.location.clone(),
+        CharacterStateTextField::PowerLevel => state.power_level.clone(),
+        CharacterStateTextField::PhysicalState => state.physical_state.clone(),
+        CharacterStateTextField::MentalState => state.mental_state.clone(),
+        CharacterStateTextField::KeyItems => state.key_items.clone(),
+        CharacterStateTextField::RecentEvents => state.recent_events.clone(),
+    }
+}
+
+fn set_state_field(state: &mut CharacterStateData, field: CharacterStateTextField, value: String) {
+    match field {
+        CharacterStateTextField::Location => state.location = value,
+        CharacterStateTextField::PowerLevel => state.power_level = value,
+        CharacterStateTextField::PhysicalState => state.physical_state = value,
+        CharacterStateTextField::MentalState => state.mental_state = value,
+        CharacterStateTextField::KeyItems => state.key_items = value,
+        CharacterStateTextField::RecentEvents => state.recent_events = value,
+    }
 }
 
 #[cfg(test)]

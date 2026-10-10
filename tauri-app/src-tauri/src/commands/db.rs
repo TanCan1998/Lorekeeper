@@ -1988,6 +1988,7 @@ pub(crate) fn project_clear_generated_data_inner(
                 conn,
                 project_path.as_deref().map(Path::new),
                 options,
+                session.map(|session| (session.project_id.as_str(), session.lease_id.as_str())),
             )
         })
     });
