@@ -61,8 +61,10 @@
 //! - **事务**：基线 `db.transaction(fn).immediate()`（IMMEDIATE 锁）；
 //!   rusqlite `unchecked_transaction()` 为 DEFERRED——与 fork 内既有仓储
 //!   一致（单写入者模型下行为等价）。基线 `if (!db.inTransaction)` 的六处
-//!   前置检查改为公开方法开事务、委托 `*_in_transaction` 的编译期保证。
-//! - **嵌套事务**：`recoverInterrupted` 内调 `pause`——基线 better-sqlite3
+//!   一致（单写入者模型下行为等价）。基线 `if (!db.inTransaction)` 的六处
+//!   前置检查恢复为运行时守卫：公开方法先校验 `conn.is_in_transaction()`
+//!   （失败返回对应契约码），再直接于环境事务内执行 `*_in_transaction`；
+//!   `bindDirectoryContinuation` 的守卫与行查找合并判定（同基线）。
 //!   事务嵌套自动降级为 SAVEPOINT；rusqlite 无嵌套事务，改为
 //!   `pause_in_transaction` 直接复用外层事务。
 //! - **`GenerationTask` / `TaskBudgetDecision` / `sourceManifest`**：TS 为
@@ -2076,7 +2078,9 @@ impl GenerationRunRepository {
                     ))
                 },
             )
-            .map_err(|error| error.to_string())?;
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| GENERATION_RUN_MISSING.to_string())?;
         let mut binding: RunBinding = parse_json(&binding_json)?;
         // const { $runEffects, ...frozen } = JSON.parse(row.binding_json)
         binding.extra.remove("$runEffects");
@@ -2244,10 +2248,8 @@ impl GenerationRunRepository {
         let Some(receipt_value) = value.get("plotOutlineAuthorEdit").cloned() else {
             return Ok(None);
         };
-        let receipt: PlotOutlineAuthorEditReceipt =
-            serde_json::from_value(receipt_value).map_err(|error| {
-                format!("{GENERATION_PLOT_OUTLINE_AUTHOR_RECEIPT_INVALID}: {error}")
-            })?;
+        let receipt: PlotOutlineAuthorEditReceipt = serde_json::from_value(receipt_value)
+            .map_err(|_| GENERATION_PLOT_OUTLINE_AUTHOR_RECEIPT_INVALID.to_string())?;
         if !values_equal(
             &receipt,
             &self.plot_outline_author_edit_receipt(
@@ -2268,14 +2270,15 @@ impl GenerationRunRepository {
         conn: &Connection,
         receipt: &PlotOutlineAuthorEditReceipt,
     ) -> Result<(), String> {
-        in_transaction(conn, |tx| {
-            self.record_plot_outline_author_edit_in_transaction(tx, receipt)
-        })
+        if conn.is_autocommit() {
+            return Err(GENERATION_PLOT_OUTLINE_TRANSACTION_REQUIRED.to_string());
+        }
+        self.record_plot_outline_author_edit_in_transaction(conn, receipt)
     }
 
     fn record_plot_outline_author_edit_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         receipt: &PlotOutlineAuthorEditReceipt,
     ) -> Result<(), String> {
         let run_id = receipt.source_handle.run_id.clone();
@@ -2337,7 +2340,7 @@ impl GenerationRunRepository {
         };
         let value: Value = parse_json(&stored)?;
         let receipt: PlanningContinuationReceipt = serde_json::from_value(value.clone())
-            .map_err(|error| format!("{GENERATION_PLANNING_CONTINUATION_INVALID}: {error}"))?;
+            .map_err(|_| GENERATION_PLANNING_CONTINUATION_INVALID.to_string())?;
         let source = self.get(conn, run_id)?;
         if receipt.kind != "planning-continuation"
             || !complete_handle(value.get("sourceHandle").unwrap_or(&Value::Null))
@@ -2385,7 +2388,7 @@ impl GenerationRunRepository {
         };
         let value: Value = parse_json(&stored)?;
         let receipt: BlueprintAuthorEditReceipt = serde_json::from_value(value.clone())
-            .map_err(|error| format!("{GENERATION_BLUEPRINT_AUTHOR_RECEIPT_INVALID}: {error}"))?;
+            .map_err(|_| GENERATION_BLUEPRINT_AUTHOR_RECEIPT_INVALID.to_string())?;
         let run = self.get(conn, run_id)?;
         let input = run
             .binding
@@ -2486,14 +2489,15 @@ impl GenerationRunRepository {
         conn: &Connection,
         receipt: &BlueprintAuthorEditReceipt,
     ) -> Result<(), String> {
-        in_transaction(conn, |tx| {
-            self.record_blueprint_author_edit_in_transaction(tx, receipt)
-        })
+        if conn.is_autocommit() {
+            return Err(GENERATION_DIRECTORY_TRANSACTION_REQUIRED.to_string());
+        }
+        self.record_blueprint_author_edit_in_transaction(conn, receipt)
     }
 
     fn record_blueprint_author_edit_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         receipt: &BlueprintAuthorEditReceipt,
     ) -> Result<(), String> {
         self.assert_plot_outline_writable(tx, &receipt.source_handle.run_id)?;
@@ -2537,14 +2541,15 @@ impl GenerationRunRepository {
         conn: &Connection,
         receipt: &PlanningContinuationReceipt,
     ) -> Result<(), String> {
-        in_transaction(conn, |tx| {
-            self.record_planning_continuation_in_transaction(tx, receipt)
-        })
+        if conn.is_autocommit() {
+            return Err(GENERATION_PLOT_OUTLINE_TRANSACTION_REQUIRED.to_string());
+        }
+        self.record_planning_continuation_in_transaction(conn, receipt)
     }
 
     fn record_planning_continuation_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         receipt: &PlanningContinuationReceipt,
     ) -> Result<(), String> {
         if self
@@ -2610,19 +2615,9 @@ impl GenerationRunRepository {
                     ))
                 },
             )
-            .map_err(|error| error.to_string())?;
-        if conn
-            .query_row(
-                "SELECT 1 FROM generation_roots WHERE root_action_id=?",
-                [root_id],
-                |row| row.get::<_, i64>(0),
-            )
             .optional()
             .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Err(GENERATION_ROOT_MISSING.to_string());
-        }
+            .ok_or_else(|| GENERATION_ROOT_MISSING.to_string())?;
         let attempts = self
             .query_attempt_json(conn, root_id)?
             .into_iter()
@@ -2685,39 +2680,12 @@ impl GenerationRunRepository {
             || request.project_id.is_empty()
             || request.epoch.is_empty()
             || request.context_snapshot_id.is_empty()
-            || request.fingerprint != {
-                // Object.keys(request.fingerprint).length === 9 的等价物：
-                // FrozenInputFingerprint 恰有 9 个序列化键。
-                let mut probe = serde_json::Map::new();
-                probe.insert("chapterBriefHash".to_string(), Value::Null);
-                probe.insert("authorGuidanceHash".to_string(), Value::Null);
-                probe.insert("dependencyHash".to_string(), Value::Null);
-                probe.insert("contextSnapshotHash".to_string(), Value::Null);
-                probe.insert("templateHash".to_string(), Value::Null);
-                probe.insert("skillSnapshotHash".to_string(), Value::Null);
-                probe.insert("modelLeaseRevision".to_string(), Value::Null);
-                probe.insert("policyHash".to_string(), Value::Null);
-                probe.insert("outputContractHash".to_string(), Value::Null);
-                let expected_keys: HashSet<&str> = probe.keys().map(|key| key.as_str()).collect();
-                let actual_keys: HashSet<&str> = [
-                    "chapterBriefHash",
-                    "authorGuidanceHash",
-                    "dependencyHash",
-                    "contextSnapshotHash",
-                    "templateHash",
-                    "skillSnapshotHash",
-                    "modelLeaseRevision",
-                    "policyHash",
-                    "outputContractHash",
-                ]
-                .into_iter()
-                .collect();
-                if expected_keys != actual_keys {
-                    request.fingerprint.clone()
-                } else {
-                    request.fingerprint.clone()
-                }
-            }
+            // Object.keys(request.fingerprint).length !== 9 的等价物：
+            // FrozenInputFingerprint 恰有 9 个序列化键，键数不符即拒绝。
+            || serde_json::to_value(&request.fingerprint)
+                .ok()
+                .and_then(|value| value.as_object().map(|map| map.len() != 9))
+                .unwrap_or(true)
             || ![
                 request.fingerprint.chapter_brief_hash.as_str(),
                 request.fingerprint.author_guidance_hash.as_str(),
@@ -3008,7 +2976,7 @@ impl GenerationRunRepository {
             };
             let mut updated_receipt = initial_receipt;
             if let Some(object) = updated_receipt.as_object_mut() {
-                if let Some(purpose) = purpose {
+                if let Some(purpose) = purpose.filter(|purpose| !purpose.is_empty()) {
                     object.insert("purpose".to_string(), Value::String(purpose.to_string()));
                 }
                 if let Some(replay_task) = replay_task {
@@ -3096,6 +3064,7 @@ impl GenerationRunRepository {
                 || identity.as_ref().is_none_or(|identity| {
                     !values_equal(&identity.fingerprint, &visible.fingerprint)
                 })
+                || !values_equal(&visible.fingerprint, &run.binding.fingerprint)
                 || visible.project_id != run.binding.project_id
                 || row.revision != Some(visible.revision)
                 || text_hash(&visible.text) != visible.text_hash
@@ -3763,14 +3732,15 @@ impl GenerationRunRepository {
         conn: &Connection,
         progress: &DirectoryGenerationProgress,
     ) -> Result<(), String> {
-        in_transaction(conn, |tx| {
-            self.record_directory_progress_in_transaction(tx, progress)
-        })
+        if conn.is_autocommit() {
+            return Err(GENERATION_DIRECTORY_TRANSACTION_REQUIRED.to_string());
+        }
+        self.record_directory_progress_in_transaction(conn, progress)
     }
 
     fn record_directory_progress_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         progress: &DirectoryGenerationProgress,
     ) -> Result<(), String> {
         self.assert_plot_outline_writable(tx, &progress.source_handle.run_id)?;
@@ -3836,14 +3806,15 @@ impl GenerationRunRepository {
         root_id: &str,
         project: &ProjectEpoch,
     ) -> Result<(), String> {
-        in_transaction(conn, |tx| {
-            self.activate_root_for_committed_stage_in_transaction(tx, root_id, project)
-        })
+        if conn.is_autocommit() {
+            return Err(GENERATION_DIRECTORY_TRANSACTION_REQUIRED.to_string());
+        }
+        self.activate_root_for_committed_stage_in_transaction(conn, root_id, project)
     }
 
     fn activate_root_for_committed_stage_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         root_id: &str,
         project: &ProjectEpoch,
     ) -> Result<(), String> {
@@ -3877,14 +3848,12 @@ impl GenerationRunRepository {
         operation_id: &str,
         handle: &MainGenerationRunHandle,
     ) -> Result<(), String> {
-        in_transaction(conn, |tx| {
-            self.bind_directory_continuation_in_transaction(tx, operation_id, handle)
-        })
+        self.bind_directory_continuation_in_transaction(conn, operation_id, handle)
     }
 
     fn bind_directory_continuation_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         operation_id: &str,
         handle: &MainGenerationRunHandle,
     ) -> Result<(), String> {
@@ -3901,6 +3870,9 @@ impl GenerationRunRepository {
         let Some((attempt_id, usage_receipt_json)) = row else {
             return Err(GENERATION_DIRECTORY_PROGRESS_INVALID.to_string());
         };
+        if tx.is_autocommit() {
+            return Err(GENERATION_DIRECTORY_PROGRESS_INVALID.to_string());
+        }
         let mut receipt: Value = parse_json(usage_receipt_json)?;
         if matches!(
             receipt.get("directoryProgress").and_then(|progress| progress.get("continuationHandle")),
@@ -3956,6 +3928,9 @@ impl GenerationRunRepository {
                 continue;
             };
             let stored: Value = parse_json(&composition_json)?;
+            if stored.is_null() {
+                continue;
+            }
             let artifact_ids: Vec<String> = stored
                 .get("artifactIds")
                 .and_then(Value::as_array)
@@ -4012,6 +3987,13 @@ impl GenerationRunRepository {
                 if previous.algorithm != algorithm {
                     return Err(GENERATION_COMPOSITION_ALGORITHM_CHANGED.to_string());
                 }
+            }
+            if let Some(expected_text_hash) = expected_text_hash {
+                if next.text_hash != expected_text_hash {
+                    return Err(GENERATION_COMPOSITION_HASH_MISMATCH.to_string());
+                }
+            }
+            if let Some(previous) = &previous {
                 if previous
                     .artifact_ids
                     .iter()
@@ -4023,11 +4005,6 @@ impl GenerationRunRepository {
                     })
                 {
                     return Err(GENERATION_COMPOSITION_REGRESSION.to_string());
-                }
-            }
-            if let Some(expected_text_hash) = expected_text_hash {
-                if next.text_hash != expected_text_hash {
-                    return Err(GENERATION_COMPOSITION_HASH_MISMATCH.to_string());
                 }
             }
             let outline = self.plot_outline_from(&mut read, None, Some(previous.clone()))?;
@@ -4392,7 +4369,7 @@ impl GenerationRunRepository {
         &self,
         conn: &Connection,
         run_id: Option<&str>,
-    ) -> Result<Vec<VisibleArtifact>, String> {
+    ) -> Result<Vec<Option<VisibleArtifact>>, String> {
         let mut stmt = conn
             .prepare(
                 "SELECT attempt_id FROM generation_artifacts WHERE status!='discarded' AND (? IS NULL OR run_id=?) ORDER BY rowid",
@@ -4413,10 +4390,7 @@ impl GenerationRunRepository {
                 continue;
             }
             // 便携历史保留可见文本但没有当前执行收据。
-            let artifact = self
-                .receipt(conn, &attempt_id, budget.clone())?
-                .artifact
-                .ok_or_else(|| GENERATION_ATTEMPT_MISSING.to_string())?;
+            let artifact = self.receipt(conn, &attempt_id, budget.clone())?.artifact;
             artifacts.push(artifact);
         }
         Ok(artifacts)
@@ -5448,7 +5422,10 @@ mod tests {
         // 候选列表
         let candidates = repo.list_candidates(&conn, Some(&run.run_id)).unwrap();
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].artifact_id, artifact.artifact_id);
+        assert_eq!(
+            candidates[0].as_ref().unwrap().artifact_id,
+            artifact.artifact_id
+        );
         // discard
         repo.discard_candidate(&conn, &artifact.artifact_id)
             .unwrap();
