@@ -48,10 +48,18 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-use regex::Regex;
-use rusqlite::Connection;
+use serde::Serialize;
+use serde_json::{json, Map, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::repositories::generation_run_repository::GenerationRunRepository;
+use regex::Regex;
+use rusqlite::{Connection, OptionalExtension};
+
+use crate::repositories::generation_run_repository::{
+    DurableGenerationRun, FrozenInputFingerprint, GenerationExecutionReceipt,
+    GenerationRunRepository, GenerationTransportDiagnostics, PhysicalAttempt, PlotOutlineProgress,
+    RootBudget, RunView,
+};
 use crate::security::{self, ProjectSessionContext};
 use crate::state::ActiveProject;
 
@@ -84,6 +92,239 @@ const GENERATION_REQUEST_FAILED: &str = "GENERATION_REQUEST_FAILED";
 /// 基线透传字面量（generation-controller.ts:160）。
 const SOURCE_DRAFT_CHANGED: &str = "SOURCE_DRAFT_CHANGED";
 
+/// 基线 `readMainGenerationPolicy` 的版本允许集（main-generation-plan.ts:139）。
+const POLICY_VERSIONS: [&str; 3] = [
+    "s07-planning-v1",
+    "s07-capacity-v2",
+    "s07-task-and-liability-v1",
+];
+/// 基线 `MAIN_GENERATION_POLICY`（main-generation-plan.ts:26-33）的 `budget` 键集。
+const POLICY_BUDGET_KEYS: [&str; 4] = [
+    "maxActiveElapsedMs",
+    "maxOutputPerRequest",
+    "maxPhysicalRequests",
+    "maxTokenLiability",
+];
+/// 基线 `DRAFT_RECONCILE_PURPOSE`（src/shared/draft-reconciliation.ts）。
+const DRAFT_RECONCILE_PURPOSE: &str = "chapter-draft-reconcile";
+/// 基线 `DRAFT_SHORT_OUTLINE_PURPOSE`（src/shared/draft-short-outline.ts）。
+const DRAFT_SHORT_OUTLINE_PURPOSE: &str = "chapter-draft-short-outline";
+/// 基线 `DRAFT_VISIBLE_TEXT_VERSION`（src/shared/draft-visible-text.ts）。
+const DRAFT_VISIBLE_TEXT_VERSION: &str = "draft-visible-v2";
+
+/// 基线 `tokenLiability`（src/shared/generation-contract.ts:66-68）：
+/// 取消前不计负债；已结算且有实际用量按实际值；其余按预留值。
+fn token_liability(attempt: &PhysicalAttempt) -> i64 {
+    if attempt.status == "cancelled-before-dispatch" {
+        0
+    } else if attempt.status == "settled" && attempt.actual_tokens.is_some() {
+        attempt.actual_tokens.unwrap_or(0)
+    } else {
+        attempt.reserved_tokens
+    }
+}
+
+/// 基线 `Date.now()`（`viewOf` 的 `deadlineAt` 计算，main-generation-owner.ts:287）。
+fn default_now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 基线 `handleOf(run)`（main-generation-owner.ts:125-126）。
+fn handle_of(run: &DurableGenerationRun) -> Value {
+    json!({
+        "projectId": run.binding.project_id,
+        "epoch": run.binding.epoch,
+        "rootActionId": run.root_action_id,
+        "runId": run.run_id,
+    })
+}
+
+/// 基线 `isDraftVisibleTextVersion`（src/shared/draft-visible-text.ts）：
+/// 仅 `draft-visible-v1` / `draft-visible-v2` 命中。
+fn is_draft_visible_text_version(value: &str) -> bool {
+    value == "draft-visible-v1" || value == DRAFT_VISIBLE_TEXT_VERSION
+}
+
+/// 基线 `planningRecord`（main-generation-plan.ts:58-61）：非对象（含数组）
+/// → `GENERATION_PLANNING_INTENT_INVALID`。
+fn planning_record(value: Option<&Value>) -> Result<&Map<String, Value>, String> {
+    match value {
+        Some(Value::Object(map)) => Ok(map),
+        _ => Err("GENERATION_PLANNING_INTENT_INVALID".to_string()),
+    }
+}
+
+/// 基线 `readMainGenerationPolicy`（main-generation-plan.ts:131-158）的读面
+/// 投影：版本允许集 → `GENERATION_POLICY_UNSUPPORTED`；`budget` 键集与正整数
+/// 约束 → `GENERATION_PLANNING_BUDGET_INVALID`；其余字段（`taskBudgetPolicy` /
+/// `planning` 意图内部结构）由写面（`begin` / `execute`，B3）在写入前校验，
+/// 读面不重复深校验——读面只消费 `version` 与 `budget` 两个字段
+/// （`requireRun` / `rootPolicy` 的预算比对）。
+fn read_main_generation_policy(value: Option<&Value>) -> Result<Value, String> {
+    let record = planning_record(value)?;
+    let version = record
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !POLICY_VERSIONS.contains(&version) {
+        return Err("GENERATION_POLICY_UNSUPPORTED".to_string());
+    }
+    let budget = planning_record(record.get("budget"))?;
+    if budget.len() != POLICY_BUDGET_KEYS.len()
+        || !POLICY_BUDGET_KEYS.iter().all(|key| {
+            budget
+                .get(*key)
+                .and_then(Value::as_i64)
+                .is_some_and(|n| n > 0)
+        })
+    {
+        return Err("GENERATION_PLANNING_BUDGET_INVALID".to_string());
+    }
+    Ok(Value::Object(record.clone()))
+}
+
+// ============================================================================
+// 读面契约投影类型（serde camelCase，对齐 src/shared 的 TS 契约形状）
+// ============================================================================
+
+/// `MainGenerationSnapshot`（src/services/generation/generation-runtime.ts:76-88）。
+/// `fingerprint` / `nonReplayable` 仅候选（`candidates`）携带——基线在
+/// `snapshotOf` 结果上展开这两个字段（main-generation-owner.ts:251-252）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MainGenerationSnapshotProjection {
+    project_id: String,
+    epoch: String,
+    root_action_id: String,
+    run_id: String,
+    artifact_id: String,
+    attempt_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<GenerationTransportDiagnostics>,
+    revision: i64,
+    durable_revision: i64,
+    text: String,
+    text_hash: String,
+    status: String,
+    composition_eligible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<FrozenInputFingerprint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    non_replayable: Option<bool>,
+}
+
+/// `MainGenerationRunView['budgetDiagnostics'][number]`
+/// （src/services/generation/task-budget-planner.ts 的 `GenerationBudgetDiagnostic`）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationBudgetDiagnosticProjection {
+    attempt_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    planner_version: Option<String>,
+    requested_output_tokens: i64,
+    reserved_tokens: i64,
+    actual: Option<GenerationActualUsageProjection>,
+    actual_state: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    finish_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    failure_code: Option<String>,
+    reasons: Vec<Value>,
+}
+
+/// 诊断的受信实际用量（`actual`，基线仅 `usage.trusted` 时输出）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationActualUsageProjection {
+    input: Option<i64>,
+    completion: Option<i64>,
+    reasoning: Option<i64>,
+    total: Option<i64>,
+}
+
+/// `GenerationSessionBudget`（src/services/generation/generation-harness.ts）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationSessionBudgetProjection {
+    max_attempts: i64,
+    max_requested_output_tokens: i64,
+    max_requested_output_tokens_per_attempt: i64,
+    deadline_at: i64,
+}
+
+/// `MainGenerationRunView['ledger']`（generation-runtime.ts:100）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MainGenerationLedgerProjection {
+    policy: RootBudget,
+    token_liability: i64,
+    physical_requests: i64,
+    active_elapsed_ms: i64,
+    blocked_code: Option<String>,
+}
+
+/// `MainGenerationRunView`（src/services/generation/generation-runtime.ts:90-104）。
+/// 基线为宽松对象（`plotOutline?` / `candidates?` 等均可缺省）；本投影按
+/// `viewOf` 的实际输出建模——`plotOutline` 仅在存在时输出（`skip_serializing_if`），
+/// 其余字段基线恒输出。`unsavedTails` 依赖未迁移的生成运行服务
+/// （`service.readUnsavedTails`，generation-run-service.ts），恒为 `[]`。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MainGenerationRunViewProjection {
+    handle: Value,
+    status: String,
+    operation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plot_outline: Option<PlotOutlineProgress>,
+    budget_diagnostics: Vec<GenerationBudgetDiagnosticProjection>,
+    non_replayable: bool,
+    budget: GenerationSessionBudgetProjection,
+    ledger: MainGenerationLedgerProjection,
+    artifacts: Vec<MainGenerationSnapshotProjection>,
+    candidates: Vec<MainGenerationSnapshotProjection>,
+    unsaved_tails: Vec<Value>,
+}
+
+/// `attemptPurpose(attemptId)`（main-generation-owner.ts:165-169）：
+/// 读 `generation_attempts.usage_receipt_json.purpose`，缺失 → `"unknown"`。
+fn attempt_purpose(conn: &Connection, attempt_id: &str) -> Result<String, String> {
+    let row: Option<String> = conn
+        .query_row(
+            "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?1",
+            [attempt_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let Some(row) = row else {
+        return Ok("unknown".to_string());
+    };
+    let purpose = serde_json::from_str::<Value>(&row).ok().and_then(|value| {
+        value
+            .get("purpose")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    Ok(purpose.unwrap_or_else(|| "unknown".to_string()))
+}
+
+/// 基线 `snapshotOf` 的制品存活性校验（main-generation-owner.ts:235）：
+/// 无 `visiblePurpose`（`artifacts` 面）时要求制品未被丢弃
+/// （`generation_artifacts.status <> 'discarded'`）。
+fn artifact_is_kept(conn: &Connection, artifact_id: &str) -> Result<bool, String> {
+    let kept: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM generation_artifacts WHERE artifact_id=?1 AND status<>'discarded'",
+            [artifact_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    Ok(kept.is_some())
+}
 /// 基线 register catch 的透传正则（generation-controller.ts:160）：
 /// `^(?:GENERATION|ROOT_BUDGET|ARTIFACT|MAIN|CHARACTER|FINALIZED_CHARACTER|LEGACY_ROSTER)_[A-Z_]+$`
 static OWNER_ERROR_CODE: LazyLock<Regex> = LazyLock::new(|| {
@@ -152,6 +393,516 @@ impl MainGenerationOwner {
         }
     }
 
+    /// 基线 `handleOf(run)` 的句柄比对等价物（main-generation-owner.ts:145）：
+    /// 运行的项目归属 + 句柄四元组（`projectId` / `epoch` / `rootActionId` /
+    /// `runId`）必须与入参逐字段一致，否则 `GENERATION_RUN_IDENTITY_MISMATCH`。
+    fn require_run(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        execution: bool,
+    ) -> Result<DurableGenerationRun, String> {
+        self.assert_current()?;
+        let run_id = handle
+            .get("runId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"))?;
+        let run = self
+            .repository
+            .get(conn, run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if run.binding.project_id != self.session.project_id
+            || handle_of(&run).as_object() != handle.as_object()
+        {
+            return Err(mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"));
+        }
+        if execution {
+            self.repository
+                .assert_plot_outline_writable(conn, &run.run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+            if run.binding.epoch != self.session.lease_id {
+                return Err(mutating_error("GENERATION_EPOCH_STALE"));
+            }
+        }
+        if self
+            .repository
+            .is_private_planning_history(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+        {
+            return Ok(run);
+        }
+        let policy = read_main_generation_policy(run.binding.source_manifest.get("policy"))
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if policy.get("version").and_then(Value::as_str) != Some("s07-task-and-liability-v1")
+            && policy.get("budget")
+                != Some(
+                    &self
+                        .root_policy(conn, &run.root_action_id)?
+                        .get("budget")
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                )
+        {
+            return Err(mutating_error("GENERATION_POLICY_BUDGET_MISMATCH"));
+        }
+        Ok(run)
+    }
+
+    /// 基线 `rootPolicy(rootActionId)`（main-generation-owner.ts:126-137）：
+    /// 取根下首 run（`ORDER BY rowid LIMIT 1`）的策略并与当前根账本预算比对。
+    fn root_policy(&self, conn: &Connection, root_action_id: &str) -> Result<Value, String> {
+        let run_id: Option<String> = conn
+            .query_row(
+                "SELECT run_id FROM generation_runs WHERE root_action_id=?1 ORDER BY rowid LIMIT 1",
+                [root_action_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let Some(run_id) = run_id else {
+            return Err(mutating_error("GENERATION_ROOT_MISSING"));
+        };
+        let run = self
+            .repository
+            .get(conn, &run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let policy = read_main_generation_policy(run.binding.source_manifest.get("policy"))
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if policy.get("version").and_then(Value::as_str) != Some("s07-task-and-liability-v1") {
+            let budget = self
+                .repository
+                .budget(conn, root_action_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .policy;
+            if policy.get("budget") != Some(&serde_json::to_value(budget).unwrap_or(Value::Null)) {
+                return Err(mutating_error("GENERATION_POLICY_BUDGET_MISMATCH"));
+            }
+        }
+        Ok(policy)
+    }
+
+    /// 基线 `snapshotOf(receipt, visiblePurpose?)`（main-generation-owner.ts:224-241）：
+    /// 执行回执 → 运行快照（`MainGenerationSnapshot`）。`visible_purpose` 为
+    /// `Some` 时（候选面）跳过制品存活性 SQL 校验；`None` 时（`artifacts` 面）
+    /// 要求制品未被丢弃。`fingerprint` / `non_replayable` 由调用方按候选面补齐。
+    fn snapshot_of(
+        &self,
+        conn: &Connection,
+        receipt: &GenerationExecutionReceipt,
+        visible_purpose: Option<&str>,
+    ) -> Result<Option<MainGenerationSnapshotProjection>, String> {
+        let Some(artifact) = receipt.artifact.as_ref() else {
+            return Ok(None);
+        };
+        let attempt = &receipt.attempt;
+        let terminal = matches!(
+            attempt.status.as_str(),
+            "settled" | "unknown" | "cancelled-before-dispatch"
+        );
+        let status = if !terminal {
+            "running"
+        } else if receipt.failure_code.is_some() {
+            "failed"
+        } else if receipt
+            .result
+            .as_ref()
+            .and_then(|result| result.finish_reason.as_deref())
+            == Some("stop")
+        {
+            "completed"
+        } else if attempt.status == "cancelled-before-dispatch"
+            || receipt.budget.root.status == "cancelled"
+        {
+            "cancelled"
+        } else if receipt
+            .result
+            .as_ref()
+            .and_then(|result| result.finish_reason.as_deref())
+            .is_some()
+        {
+            "failed"
+        } else {
+            "unknown"
+        };
+        let purpose = visible_purpose
+            .map(str::to_string)
+            .map(Ok)
+            .unwrap_or_else(|| attempt_purpose(conn, &attempt.attempt_id))?;
+        let composition_eligible = matches!(attempt.status.as_str(), "settled" | "unknown")
+            && receipt.failure_code.is_none()
+            && receipt.budget.root.status != "cancelled"
+            && matches!(
+                receipt
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.finish_reason.as_deref()),
+                Some("stop") | Some("length")
+            )
+            && !artifact.text.trim().is_empty()
+            && (visible_purpose.is_some() || artifact_is_kept(conn, &artifact.artifact_id)?)
+            && purpose != DRAFT_RECONCILE_PURPOSE
+            && purpose != DRAFT_SHORT_OUTLINE_PURPOSE;
+        Ok(Some(MainGenerationSnapshotProjection {
+            project_id: receipt.run.binding.project_id.clone(),
+            epoch: artifact.epoch.clone(),
+            root_action_id: receipt.run.root_action_id.clone(),
+            run_id: receipt.run.run_id.clone(),
+            artifact_id: artifact.artifact_id.clone(),
+            attempt_id: artifact.attempt_id.clone(),
+            diagnostics: receipt.diagnostics.clone(),
+            revision: artifact.revision,
+            durable_revision: artifact.revision,
+            text: artifact.text.clone(),
+            text_hash: artifact.text_hash.clone(),
+            status: status.to_string(),
+            composition_eligible,
+            fingerprint: None,
+            non_replayable: None,
+        }))
+    }
+
+    /// 基线 `viewOf(run)`（main-generation-owner.ts:256-290）：持久账本 →
+    /// 只读运行视图（`MainGenerationRunView`）。易失性回执（基线
+    /// `volatileReceipts`）属执行编排面（`execute`，B3），读面恒用持久回执。
+    fn view_of(&self, conn: &Connection, run: &DurableGenerationRun) -> Result<Value, String> {
+        let RunView {
+            budget,
+            plot_outline,
+            attempts,
+        } = self
+            .repository
+            .read_run_view(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // 基线 `visibleIds`：候选 attempt 的制品 ID → 可见用途（:262）。
+        let visible_purposes: HashMap<String, String> = attempts
+            .iter()
+            .filter(|item| item.candidate)
+            .filter_map(|item| {
+                item.receipt
+                    .artifact
+                    .as_ref()
+                    .map(|artifact| (artifact.artifact_id.clone(), String::new()))
+            })
+            .collect();
+        let mut candidates: Vec<MainGenerationSnapshotProjection> = Vec::new();
+        let mut artifacts: Vec<MainGenerationSnapshotProjection> = Vec::new();
+        let mut budget_diagnostics: Vec<GenerationBudgetDiagnosticProjection> =
+            Vec::with_capacity(attempts.len());
+        for item in &attempts {
+            let receipt = &item.receipt;
+            let visible_purpose = receipt
+                .artifact
+                .as_ref()
+                .and_then(|artifact| visible_purposes.get(&artifact.artifact_id))
+                .map(|purpose| purpose.as_str());
+            if receipt.run.run_id == run.run_id
+                && receipt.artifact.is_some()
+                && visible_purpose.is_some()
+            {
+                if let Some(mut snapshot) = self.snapshot_of(conn, receipt, visible_purpose)? {
+                    // 基线候选面展开 `{ ...snapshotOf(...), fingerprint, nonReplayable: true }`
+                    // （main-generation-owner.ts:251-252）。
+                    snapshot.fingerprint =
+                        Some(receipt.artifact.as_ref().unwrap().fingerprint.clone());
+                    snapshot.non_replayable = Some(true);
+                    if snapshot.epoch == run.binding.epoch {
+                        artifacts.push(snapshot.clone());
+                    }
+                    candidates.push(snapshot);
+                }
+            }
+            let usage = receipt
+                .result
+                .as_ref()
+                .and_then(|result| result.usage.as_ref());
+            budget_diagnostics.push(GenerationBudgetDiagnosticProjection {
+                attempt_id: receipt.attempt.attempt_id.clone(),
+                planner_version: receipt
+                    .budget_decision
+                    .as_ref()
+                    .and_then(|decision| decision.get("policyVersion"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                requested_output_tokens: receipt.attempt.requested_output_tokens,
+                reserved_tokens: receipt.attempt.reserved_tokens,
+                actual: usage.filter(|usage| usage.trusted).map(|usage| {
+                    GenerationActualUsageProjection {
+                        input: usage.input_tokens,
+                        completion: usage.completion_tokens,
+                        reasoning: usage.reasoning_tokens,
+                        total: usage.actual_tokens,
+                    }
+                }),
+                actual_state: if receipt.attempt.status == "cancelled-before-dispatch" {
+                    "not-dispatched"
+                } else if receipt.attempt.status == "settled" {
+                    "settled"
+                } else if matches!(
+                    receipt.attempt.status.as_str(),
+                    "reserved" | "dispatch-marked"
+                ) {
+                    "reserved"
+                } else {
+                    "unknown"
+                }
+                .to_string(),
+                finish_reason: receipt
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.finish_reason.clone()),
+                failure_code: receipt
+                    .failure_code
+                    .clone()
+                    .or_else(|| budget.blocked_code.clone()),
+                reasons: receipt
+                    .budget_decision
+                    .as_ref()
+                    .and_then(|decision| decision.get("reasons"))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
+        }
+        let plot_outline_author_edit = match plot_outline {
+            Some(_) => self
+                .repository
+                .read_plot_outline_author_edit(conn, &run.run_id)
+                .map(|edit| edit.is_some())
+                .map_err(|error| mutating_error(map_generation_error(&error)))?,
+            None => false,
+        };
+        let non_replayable = run.binding.epoch != self.session.lease_id
+            || run.status != "running"
+            || budget.blocked_code.is_some()
+            || self
+                .repository
+                .is_private_planning_history(conn, &run.run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+            || self
+                .repository
+                .read_planning_continuation(conn, &run.run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .is_some()
+            || plot_outline_author_edit;
+        let token_liability: i64 = budget.attempts.iter().map(token_liability).sum();
+        let physical_requests: i64 = budget
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.status != "cancelled-before-dispatch")
+            .count() as i64;
+        let view = MainGenerationRunViewProjection {
+            handle: handle_of(run),
+            status: run.status.clone(),
+            operation: run
+                .binding
+                .source_manifest
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            plot_outline,
+            budget_diagnostics,
+            non_replayable,
+            budget: GenerationSessionBudgetProjection {
+                max_attempts: budget.policy.max_physical_requests,
+                max_requested_output_tokens: budget.policy.max_token_liability,
+                max_requested_output_tokens_per_attempt: budget.policy.max_output_per_request,
+                deadline_at: default_now_ms()
+                    + std::cmp::max(
+                        0,
+                        budget.policy.max_active_elapsed_ms - budget.active_elapsed_ms,
+                    ),
+            },
+            ledger: MainGenerationLedgerProjection {
+                policy: budget.policy.clone(),
+                token_liability,
+                physical_requests,
+                active_elapsed_ms: budget.active_elapsed_ms,
+                blocked_code: budget.blocked_code.clone(),
+            },
+            artifacts,
+            candidates,
+            // 基线 `service.readUnsavedTails()`（生成运行服务，B3 迁移）→ 恒空。
+            unsaved_tails: Vec::new(),
+        };
+        serde_json::to_value(view)
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))
+    }
+
+    /// 基线 `read(handle)`（main-generation-owner.ts:1315）：
+    /// `generation:read` 频道——句柄 → 运行视图。
+    pub fn read_run(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
+        let run = self.require_run(conn, handle, false)?;
+        self.view_of(conn, &run)
+    }
+
+    /// 基线 `list()`（main-generation-owner.ts:292-296）：`generation:list`
+    /// 频道——按创建时间倒序（`created_at_ms DESC, rowid DESC`）列出当前
+    /// 项目的全部运行视图。
+    pub fn list(&self, conn: &Connection) -> Result<Value, String> {
+        self.assert_current()?;
+        let mut statement = conn
+            .prepare("SELECT run_id FROM generation_runs ORDER BY created_at_ms DESC, rowid DESC")
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let run_ids: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?
+            .collect::<Result<_, _>>()
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let views: Vec<Value> = run_ids
+            .iter()
+            .map(|run_id| self.repository.get(conn, run_id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .into_iter()
+            .filter(|run| run.binding.project_id == self.session.project_id)
+            .map(|run| self.view_of(conn, &run))
+            .collect::<Result<_, _>>()?;
+        Ok(Value::Array(views))
+    }
+
+    /// 基线 `listDirectoryProgress()`（main-generation-owner.ts:1328-1331）：
+    /// `generation:list-directory-progress` 频道——目录生成进度清单，
+    /// 每条附源运行 `sourceManifest.authorInputs`（基线 `structuredClone`）。
+    pub fn list_directory_progress(&self, conn: &Connection) -> Result<Value, String> {
+        self.assert_current()?;
+        let progress = self
+            .repository
+            .list_directory_progress(conn)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let enriched: Vec<Value> = progress
+            .iter()
+            .map(|item| -> Result<Value, String> {
+                let run = self
+                    .repository
+                    .get(conn, &item.source_handle.run_id)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?;
+                let mut value = serde_json::to_value(item)
+                    .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+                // 基线 `{ ...progress, authorInputs: structuredClone(...) }`：
+                // 仓储结构体的 `authorInputs` 恒为 `None`（读面不消费），
+                // 这里按源运行 manifest 的实际值覆写（缺失 → 键删除，等价
+                // 基线 `undefined` 在 JSON 序列化时缺省）。
+                let author_inputs = run
+                    .binding
+                    .source_manifest
+                    .get("authorInputs")
+                    .cloned()
+                    .filter(|value| !value.is_null());
+                let object = value
+                    .as_object_mut()
+                    .expect("directory progress projection serializes to an object");
+                match author_inputs {
+                    Some(inputs) => {
+                        object.insert("authorInputs".to_string(), inputs);
+                    }
+                    None => {
+                        object.remove("authorInputs");
+                    }
+                }
+                Ok(value)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Value::Array(enriched))
+    }
+
+    /// 基线 `readVisibleComposition(handle)`（main-generation-owner.ts:1332-1336）：
+    /// `generation:read-visible-composition` 频道——可见合成回执（含源运行
+    /// `authorInputs`），无合成记录 → `null`。
+    pub fn read_visible_composition(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+    ) -> Result<Value, String> {
+        let run = self.require_run(conn, handle, false)?;
+        let composition = self
+            .repository
+            .read_visible_composition(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let Some(composition) = composition else {
+            return Ok(Value::Null);
+        };
+        let mut value = serde_json::to_value(composition)
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        // 基线 `{ ...composition, authorInputs: structuredClone(...) }`（同上）。
+        let author_inputs = run
+            .binding
+            .source_manifest
+            .get("authorInputs")
+            .cloned()
+            .filter(|value| !value.is_null());
+        let object = value
+            .as_object_mut()
+            .expect("visible composition projection serializes to an object");
+        match author_inputs {
+            Some(inputs) => {
+                object.insert("authorInputs".to_string(), inputs);
+            }
+            None => {
+                object.remove("authorInputs");
+            }
+        }
+        Ok(value)
+    }
+
+    /// 基线 `composeVisible(handle, artifactIds, expectedTextHash, algorithm?)`
+    /// （main-generation-owner.ts:1320-1327）：`generation:compose-visible`
+    /// 频道——按可见制品 ID 列表合成可见正文（追加/草稿可见文本算法）。
+    ///
+    /// ⚠️ 基线在 `requireRun(handle, true)` 前还执行 5 个可变性守卫
+    /// （`reviewRevisions` / `imports` / `finalizations` / `graphs` /
+    /// `legacyRosters` 的 `assertMutable`，:1322-1326）——对应服务尚未迁移，
+    /// 按 B2 范围此处**刻意省略**（B3 写面收口时补齐）。
+    pub fn compose_visible(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        artifact_ids: &[String],
+        expected_text_hash: Option<&str>,
+        algorithm: Option<&str>,
+    ) -> Result<Value, String> {
+        let algorithm = algorithm.unwrap_or("visible-continuation-v1");
+        let first = self.require_run(conn, handle, false)?;
+        if first
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            == Some("agent-round")
+        {
+            return Err(mutating_error("GENERATION_AGENT_CONTROL_IMMUTABLE"));
+        }
+        let run = self.require_run(conn, handle, true)?;
+        let budget = self
+            .repository
+            .budget(conn, &run.root_action_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if budget.root.status == "cancelled" {
+            return Err(mutating_error("GENERATION_ACTION_CANCELLED"));
+        }
+        if is_draft_visible_text_version(algorithm)
+            && first
+                .binding
+                .source_manifest
+                .get("operation")
+                .and_then(Value::as_str)
+                != Some("chapter-draft")
+        {
+            return Err(mutating_error("GENERATION_COMPOSITION_ALGORITHM_INVALID"));
+        }
+        let composition = self
+            .repository
+            .compose_visible(
+                conn,
+                &run.run_id,
+                artifact_ids,
+                expected_text_hash,
+                algorithm,
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        serde_json::to_value(composition)
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))
+    }
     /// 对齐基线 `assertCurrent`（main-generation-owner.ts:117-120）：
     /// owner 已挂起 → `GENERATION_OWNER_CLOSED`。
     ///
@@ -217,12 +968,6 @@ impl MainGenerationOwner {
     pub fn execute(&self, _conn: &Connection) -> Result<serde_json::Value, String> {
         self.assert_current()?;
         todo!("B3: 迁移自 electron/services/main-generation-owner.ts 的 execute")
-    }
-
-    /// 基线 `list`（按创建时间倒序列出当前项目的生成运行视图）。
-    pub fn list(&self, _conn: &Connection) -> Result<serde_json::Value, String> {
-        self.assert_current()?;
-        todo!("B3: 迁移自 electron/services/main-generation-owner.ts 的 list")
     }
 }
 
@@ -415,6 +1160,7 @@ fn emit_generation_reasoning(_subscribers: &HashSet<String>, _event: &serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repositories::generation_run_repository::OpenGenerationRunRequest;
 
     fn session(project_id: &str, lease_id: &str) -> ProjectSessionContext {
         ProjectSessionContext {
@@ -428,6 +1174,14 @@ mod tests {
         ActiveProject {
             project_id: "project-1".to_string(),
             lease_id: "lease-1".to_string(),
+            root_path: r"F:\novel\demo".to_string(),
+        }
+    }
+
+    fn active_with_lease(lease_id: &str) -> ActiveProject {
+        ActiveProject {
+            project_id: "project-1".to_string(),
+            lease_id: lease_id.to_string(),
             root_path: r"F:\novel\demo".to_string(),
         }
     }
@@ -508,9 +1262,11 @@ mod tests {
             .authorized_owner(&session("project-1", "lease-1"), Some(&active))
             .expect("first gate");
         // 租约变更（新会话）→ 旧 owner 挂起并逐出，新 owner 重建
+        // 租约变更（活跃上下文随新租约重新冻结）→ 旧 owner 挂起并逐出，新 owner 重建
+        let active2 = active_with_lease("lease-2");
         {
             let mut guard = cache
-                .authorized_owner(&session("project-1", "lease-2"), Some(&active))
+                .authorized_owner(&session("project-1", "lease-2"), Some(&active2))
                 .expect("second gate");
             guard.owner().assert_current().expect("new owner is open");
             assert_eq!(guard.session().lease_id, "lease-2");
@@ -536,6 +1292,260 @@ mod tests {
         };
         assert_eq!(error, mutating_error(GENERATION_REQUEST_FAILED));
         assert!(cache.is_empty());
+    }
+
+    // ========================================================================
+    // 读面方法（本批次新落地）——内存库 fixture
+    // ========================================================================
+
+    fn fake_content_hash() -> String {
+        "a".repeat(64)
+    }
+
+    /// 打开一个最小可运行的生成运行（`sourceManifest` 携带基线
+    /// `MAIN_GENERATION_POLICY` 的 `version` / `budget`，满足 `requireRun`
+    /// 的策略校验路径）。
+    fn open_run(
+        conn: &Connection,
+        project_id: &str,
+        epoch: &str,
+        operation: &str,
+    ) -> Result<DurableGenerationRun, String> {
+        let repository = GenerationRunRepository::default();
+        repository.open(
+            conn,
+            &OpenGenerationRunRequest {
+                project_id: project_id.to_string(),
+                epoch: epoch.to_string(),
+                fingerprint:
+                    crate::repositories::generation_run_repository::FrozenInputFingerprint {
+                        chapter_brief_hash: fake_content_hash(),
+                        author_guidance_hash: fake_content_hash(),
+                        dependency_hash: fake_content_hash(),
+                        context_snapshot_hash: fake_content_hash(),
+                        template_hash: fake_content_hash(),
+                        skill_snapshot_hash: fake_content_hash(),
+                        model_lease_revision: fake_content_hash(),
+                        policy_hash: fake_content_hash(),
+                        output_contract_hash: fake_content_hash(),
+                    },
+                context_snapshot_id: "context-snapshot-1".to_string(),
+                source_manifest: {
+                    let mut manifest = Map::new();
+                    manifest.insert(
+                        "operation".to_string(),
+                        Value::String(operation.to_string()),
+                    );
+                    manifest.insert(
+                        "policy".to_string(),
+                        json!({
+                            "version": "s07-task-and-liability-v1",
+                            "budget": {
+                                "maxPhysicalRequests": 32,
+                                "maxTokenLiability": 2097152,
+                                "maxOutputPerRequest": 32768,
+                                "maxActiveElapsedMs": 3600000,
+                            },
+                        }),
+                    );
+                    manifest
+                },
+                source_refs: Vec::new(),
+                operation: operation.to_string(),
+                ui_action_nonce: "owner-fixture-nonce".to_string(),
+                frozen_input_hash: fake_content_hash(),
+                budget: RootBudget {
+                    max_physical_requests: 32,
+                    max_token_liability: 2097152,
+                    max_output_per_request: 32768,
+                    max_active_elapsed_ms: 3600000,
+                },
+                parent_root_action_id: None,
+            },
+        )
+    }
+
+    fn owner_with(conn: &Connection) -> MainGenerationOwner {
+        let _ = conn;
+        MainGenerationOwner::new(session("project-1", "lease-1"))
+    }
+
+    fn handle_of_run(run: &DurableGenerationRun) -> Value {
+        handle_of(run)
+    }
+
+    #[test]
+    fn read_run_returns_view_with_handle_and_ledger() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("open run");
+        let owner = owner_with(&conn);
+        let view = owner
+            .read_run(&conn, &handle_of_run(&run))
+            .expect("read run");
+        assert_eq!(view["handle"]["runId"], Value::String(run.run_id.clone()));
+        assert_eq!(
+            view["handle"]["projectId"],
+            Value::String("project-1".to_string())
+        );
+        assert_eq!(view["status"], Value::String("running".to_string()));
+        assert_eq!(
+            view["operation"],
+            Value::String("chapter-draft".to_string())
+        );
+        assert_eq!(view["nonReplayable"], Value::Bool(false));
+        assert!(view["plotOutline"].is_null());
+        assert_eq!(view["budgetDiagnostics"], Value::Array(vec![]));
+        assert_eq!(view["artifacts"], Value::Array(vec![]));
+        assert_eq!(view["candidates"], Value::Array(vec![]));
+        assert_eq!(view["unsavedTails"], Value::Array(vec![]));
+        assert_eq!(view["budget"]["maxAttempts"], Value::Number(32.into()));
+        assert_eq!(
+            view["budget"]["maxRequestedOutputTokens"],
+            Value::Number(2097152.into())
+        );
+        assert_eq!(
+            view["budget"]["maxRequestedOutputTokensPerAttempt"],
+            Value::Number(32768.into())
+        );
+        assert!(view["budget"]["deadlineAt"]
+            .as_i64()
+            .is_some_and(|deadline| deadline > 0));
+        assert_eq!(
+            view["ledger"]["policy"]["maxPhysicalRequests"],
+            Value::Number(32.into())
+        );
+        assert_eq!(view["ledger"]["tokenLiability"], Value::Number(0.into()));
+        assert_eq!(view["ledger"]["physicalRequests"], Value::Number(0.into()));
+        assert_eq!(view["ledger"]["activeElapsedMs"], Value::Number(0.into()));
+        assert!(view["ledger"]["blockedCode"].is_null());
+    }
+
+    #[test]
+    fn read_run_rejects_identity_mismatch() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("open run");
+        let owner = owner_with(&conn);
+        // 篡改 rootActionId → 句柄与持久运行不一致
+        let mut tampered = handle_of_run(&run);
+        tampered["rootActionId"] = Value::String("other-root".to_string());
+        let error = owner
+            .read_run(&conn, &tampered)
+            .expect_err("identity mismatch");
+        assert_eq!(error, mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"));
+        // 他项目句柄 → 项目归属不匹配
+        let foreign =
+            open_run(&conn, "project-2", "lease-2", "chapter-draft").expect("foreign run");
+        let error = owner
+            .read_run(&conn, &handle_of_run(&foreign))
+            .expect_err("cross-project");
+        assert_eq!(error, mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"));
+    }
+
+    #[test]
+    fn read_run_short_circuits_private_planning_history() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "planning").expect("open run");
+        // 私有规划史：policy.planning.outlineProtocol='chapter-parts-v2' 且版本
+        // 非法。公开 API 无法改 manifest，测试直接改 binding_json 构造。
+        conn.execute(
+            "UPDATE generation_runs SET binding_json=json_set(binding_json,'$.sourceManifest.policy',json(?1)) WHERE run_id=?2",
+            [
+                json!({"version": "bogus-v9", "planning": {"outlineProtocol": "chapter-parts-v2"}}).to_string(),
+                run.run_id.clone(),
+            ],
+        )
+        .expect("patch policy");
+        let owner = owner_with(&conn);
+        // 基线在 isPrivatePlanningHistory 命中时直接返回 run，跳过策略校验
+        //（否则非法版本会报 GENERATION_POLICY_*）。
+        let view = owner
+            .read_run(&conn, &handle_of_run(&run))
+            .expect("private planning history short-circuits policy validation");
+        assert_eq!(view["status"], Value::String("running".to_string()));
+    }
+
+    #[test]
+    fn list_returns_current_project_views_newest_first() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let local = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("local run");
+        let _foreign =
+            open_run(&conn, "project-2", "lease-2", "chapter-draft").expect("foreign run");
+        let owner = owner_with(&conn);
+        let views = owner.list(&conn).expect("list");
+        let array = views.as_array().expect("list returns an array");
+        assert_eq!(array.len(), 1);
+        assert_eq!(
+            array[0]["handle"]["runId"],
+            Value::String(local.run_id.clone())
+        );
+        assert_eq!(
+            array[0]["operation"],
+            Value::String("chapter-draft".to_string())
+        );
+    }
+
+    #[test]
+    fn list_directory_progress_attaches_author_inputs() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "directory").expect("open run");
+        let owner = owner_with(&conn);
+        // 无目录进度记录 → 空数组
+        let progress = owner
+            .list_directory_progress(&conn)
+            .expect("list directory progress");
+        assert_eq!(progress, Value::Array(vec![]));
+        let _ = run;
+    }
+
+    #[test]
+    fn read_visible_composition_returns_null_without_record() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("open run");
+        let owner = owner_with(&conn);
+        let composition = owner
+            .read_visible_composition(&conn, &handle_of_run(&run))
+            .expect("read visible composition");
+        assert!(composition.is_null());
+    }
+
+    #[test]
+    fn compose_visible_rejects_agent_round_and_algorithm_mismatch() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        // agent-round 运行 → GENERATION_AGENT_CONTROL_IMMUTABLE
+        let agent_run = open_run(&conn, "project-1", "lease-1", "agent-round").expect("agent run");
+        let error = owner
+            .compose_visible(
+                &conn,
+                &handle_of_run(&agent_run),
+                &[],
+                None,
+                Some("visible-continuation-v1"),
+            )
+            .expect_err("agent round is immutable");
+        assert_eq!(error, mutating_error("GENERATION_AGENT_CONTROL_IMMUTABLE"));
+        // 非 chapter-draft 运行 + draft-visible 算法 → GENERATION_COMPOSITION_ALGORITHM_INVALID
+        let draft_run = open_run(&conn, "project-1", "lease-1", "directory").expect("draft run");
+        let error = owner
+            .compose_visible(
+                &conn,
+                &handle_of_run(&draft_run),
+                &[],
+                None,
+                Some(DRAFT_VISIBLE_TEXT_VERSION),
+            )
+            .expect_err("draft-visible algorithm on non chapter-draft");
+        assert_eq!(
+            error,
+            mutating_error("GENERATION_COMPOSITION_ALGORITHM_INVALID")
+        );
     }
 
     #[test]

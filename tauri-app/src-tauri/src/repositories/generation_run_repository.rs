@@ -2117,7 +2117,11 @@ impl GenerationRunRepository {
         Ok(())
     }
 
-    fn is_private_planning_history(&self, conn: &Connection, run_id: &str) -> Result<bool, String> {
+    pub fn is_private_planning_history(
+        &self,
+        conn: &Connection,
+        run_id: &str,
+    ) -> Result<bool, String> {
         conn.query_row(
             "SELECT 1 FROM generation_runs WHERE root_action_id=(SELECT root_action_id FROM generation_runs WHERE run_id=?) AND json_extract(binding_json,'$.sourceManifest.policy.planning.outlineProtocol')='chapter-parts-v2' LIMIT 1",
             [run_id],
