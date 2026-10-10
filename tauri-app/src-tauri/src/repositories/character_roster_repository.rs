@@ -12,6 +12,15 @@
 //! - `provenance` 用 `BTreeMap` 序列化，键序确定（基线为对象插入序）；
 //! - 空 `provenance` 一律折叠为「键缺失」——写入恒为 `{}`，读回恒为 `None`，
 //!   使「提交事实」与「回读事实」的规范 JSON 严格一致（回读校验的前提）。
+//! - 身份 schema 投影（`identityProjectionEntries`）的关系不含
+//!   `targetCharacterId`：本栈 `CharacterRosterRelationship` 仅
+//!   {target, relation}（与基线类型同形），`canonicalIdentityEntries`
+//!   的关系排序以 (target, relation) 代替基线的
+//!   (targetCharacterId ?? '', target, relation)；栈内哈希自洽即可；
+//! - 边缘字符大小写折叠用 Unicode 默认 `to_lowercase`，而非基线
+//!   `toLocaleLowerCase('en-US')`（İ 等少数字符结果不同）；排序按
+//!   UTF-8 字节序，与基线 UTF-16 码元序在极少数字符上可能不同
+//!   （L3/L4 文档化保留）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -281,6 +290,17 @@ pub struct CharacterRosterRename {
     pub new_name: String,
 }
 
+/// 身份 schema 下的角色别名（对齐 `character_aliases` 投影）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterRosterAlias {
+    pub character_id: String,
+    pub name: String,
+    pub source_key: String,
+    pub valid_from: i64,
+    pub valid_through: Option<i64>,
+}
+
 /// 角色名单快照（对齐 `CharacterRosterSnapshot`）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -293,6 +313,16 @@ pub struct CharacterRosterSnapshot {
     pub rendered_markdown: String,
     pub projection_hash: String,
     pub fact_hash: String,
+    /// 升级前的 `characters_arch` 原文，仅作迁移证据，绝不反向解析
+    /// 身份 schema 下的 `character_identity_meta.revision`（仅身份项目）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_revision: Option<i64>,
+    /// 身份 schema 下的活跃别名投影（仅身份项目）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<CharacterRosterAlias>>,
+    /// 仅含角色名的事实哈希（对齐 `nameOnlyFactHash` = `meta.fact_hash`）
+    #[serde(default)]
+    pub name_only_fact_hash: String,
     /// 升级前的 `characters_arch` 原文，仅作迁移证据，绝不反向解析
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_markdown: Option<String>,
@@ -766,6 +796,42 @@ fn full_fact_hash(entries: &[CharacterRosterEntry]) -> Result<String, String> {
     Ok(hash_text(&canonical_entries_json(entries)?))
 }
 
+/// 身份 schema 下的规范条目序列（对齐 `canonicalIdentityEntries`）：
+/// 关系按 (target, relation) 排序，条目按 (characterId ?? '', name) 排序。
+///
+/// 基线关系排序键为 (targetCharacterId ?? '', target, relation)；
+/// 本栈关系不含 targetCharacterId（见文件头差异声明）。
+fn canonical_identity_entries(entries: &[CharacterRosterEntry]) -> Vec<CharacterRosterEntry> {
+    let mut canonical: Vec<CharacterRosterEntry> = entries
+        .iter()
+        .map(|entry| {
+            let mut next = entry.clone();
+            next.relationships.sort_by(|left, right| {
+                compare_text(&left.target, &right.target)
+                    .then_with(|| compare_text(&left.relation, &right.relation))
+            });
+            next
+        })
+        .collect();
+    canonical.sort_by(|left, right| {
+        compare_text(
+            left.character_id.as_deref().unwrap_or(""),
+            right.character_id.as_deref().unwrap_or(""),
+        )
+        .then_with(|| compare_text(&left.name, &right.name))
+    });
+    canonical
+}
+
+fn canonical_identity_entries_json(entries: &[CharacterRosterEntry]) -> Result<String, String> {
+    serde_json::to_string(&canonical_identity_entries(entries)).map_err(|error| error.to_string())
+}
+
+/// 身份 schema 下的完整事实哈希（对齐 `fullIdentityFactHash`）
+fn full_identity_fact_hash(entries: &[CharacterRosterEntry]) -> Result<String, String> {
+    Ok(hash_text(&canonical_identity_entries_json(entries)?))
+}
+
 /// 幂等键：对规范化请求的规范 JSON 取 SHA-256
 fn payload_hash(request: &NormalizedRosterRequest) -> Result<String, String> {
     let shape = PayloadShape {
@@ -843,6 +909,88 @@ fn entry_from_character(character: &CharacterData) -> CharacterRosterEntry {
             Some(character.relationships.clone())
         },
     }
+}
+
+/// 身份 schema 下的公开事实投影（对齐 `identityProjectionEntries`）：
+/// 活跃角色的 [`entry_from_character`] 投影，关系一律改写为
+/// `character_relationships` 中 target 未退役的结构化关系
+/// （按 `relationship_id` 序，不二次排序）。
+///
+/// `include_ids = false` 清除条目级 `characterId`（公开事实）；
+/// `true` 时保留。基线关系投影含 `targetCharacterId`，本栈
+/// `CharacterRosterRelationship` 不含该字段（见文件头差异声明）。
+fn identity_projection_entries(
+    conn: &Connection,
+    include_ids: bool,
+) -> Result<Vec<CharacterRosterEntry>, String> {
+    let relationships: Vec<(String, String, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.source_character_id, r.target_character_id, c.name, r.relation \
+                 FROM character_relationships r \
+                 JOIN characters c ON c.character_id = r.target_character_id \
+                 WHERE c.retired = 0 \
+                 ORDER BY r.relationship_id",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        let mut collected = Vec::new();
+        for row in rows {
+            collected.push(row.map_err(|error| error.to_string())?);
+        }
+        collected
+    };
+    let active_ids: HashSet<String> = {
+        let mut stmt = conn
+            .prepare("SELECT character_id FROM characters WHERE retired = 0")
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        let mut collected = HashSet::new();
+        for row in rows {
+            collected.insert(row.map_err(|error| error.to_string())?);
+        }
+        collected
+    };
+    let raw_entries: Vec<CharacterRosterEntry> = characters::get_all(conn)?
+        .into_iter()
+        .filter(|character| {
+            character
+                .character_id
+                .as_deref()
+                .map(|id| active_ids.contains(id))
+                .unwrap_or(false)
+        })
+        .map(|character| {
+            let mut entry = entry_from_character(&character);
+            entry.character_id = if include_ids {
+                character.character_id.clone()
+            } else {
+                None
+            };
+            let source_id = character.character_id.clone().unwrap_or_default();
+            entry.relationships = relationships
+                .iter()
+                .filter(|(source_character_id, _, _, _)| *source_character_id == source_id)
+                .map(|(_, _, target, relation)| CharacterRosterRelationship {
+                    target: target.clone(),
+                    relation: relation.clone(),
+                })
+                .collect();
+            entry
+        })
+        .collect();
+    Ok(sorted_entries(&raw_entries))
 }
 
 fn character_from_entry(entry: &CharacterRosterEntry) -> CharacterData {
@@ -1626,15 +1774,28 @@ fn derive_roster_status(
 
 fn read_snapshot(conn: &Connection) -> Result<CharacterRosterSnapshot, String> {
     let meta = read_meta(conn)?;
-    let mut raw_entries: Vec<CharacterRosterEntry> = Vec::new();
-    for character in characters::get_all(conn)? {
-        raw_entries.push(entry_from_character(&character));
-    }
-    let entries = sorted_entries(&raw_entries);
+    let has_identity_schema = characters::has_character_identity_schema(conn);
     let writing_language = project_core::get(conn)?
         .map(|core| core.writing_language)
         .unwrap_or_else(|| project_core::DEFAULT_WRITING_LANGUAGE.to_string());
     let current_projection = read_current_projection(conn);
+    // 身份 schema：公开事实走身份投影（`identityProjectionEntries`）——
+    // `entries` 不含稳定 ID（界面展示/状态判定用），`identity_entries`
+    // 含稳定 ID（快照事实源）；否则走 legacy 角色卡投影。
+    let (entries, identity_entries, fact_hash) = if has_identity_schema {
+        let entries = identity_projection_entries(conn, false)?;
+        let identity_entries = identity_projection_entries(conn, true)?;
+        let fact_hash = full_identity_fact_hash(&identity_entries)?;
+        (entries, identity_entries, fact_hash)
+    } else {
+        let mut raw_entries: Vec<CharacterRosterEntry> = Vec::new();
+        for character in characters::get_all(conn)? {
+            raw_entries.push(entry_from_character(&character));
+        }
+        let entries = sorted_entries(&raw_entries);
+        let fact_hash = meta.fact_hash.clone();
+        (entries.clone(), entries, fact_hash)
+    };
     let localized_projection = render_character_roster_markdown(&entries, &writing_language);
     let previous_language = if writing_language == "en-US" {
         "zh-CN"
@@ -1655,15 +1816,57 @@ fn read_snapshot(conn: &Connection) -> Result<CharacterRosterSnapshot, String> {
     };
     let projection_hash = hash_text(&rendered_markdown);
     let status = derive_roster_status(&meta, &entries, &rendered_markdown, &current_projection)?;
+    let (identity_revision, aliases) = if has_identity_schema {
+        let identity_revision: i64 = conn
+            .query_row(
+                "SELECT revision FROM character_identity_meta WHERE id = 'main'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let aliases: Vec<CharacterRosterAlias> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT a.character_id, a.name, a.source_key, a.valid_from, a.valid_through \
+                     FROM character_aliases a \
+                     JOIN characters c ON c.character_id = a.character_id \
+                     WHERE c.retired = 0 \
+                     ORDER BY a.character_id, a.name, a.source_key, a.valid_from",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(CharacterRosterAlias {
+                        character_id: row.get(0)?,
+                        name: row.get(1)?,
+                        source_key: row.get(2)?,
+                        valid_from: row.get(3)?,
+                        valid_through: row.get(4)?,
+                    })
+                })
+                .map_err(|error| error.to_string())?;
+            let mut collected = Vec::new();
+            for row in rows {
+                collected.push(row.map_err(|error| error.to_string())?);
+            }
+            collected
+        };
+        (Some(identity_revision), Some(aliases))
+    } else {
+        (None, None)
+    };
     Ok(CharacterRosterSnapshot {
         schema_version: CHARACTER_ROSTER_SCHEMA_VERSION,
         revision: meta.revision,
         migration_state: meta.migration_state,
         status,
-        entries,
+        entries: identity_entries,
         rendered_markdown,
         projection_hash,
-        fact_hash: meta.fact_hash.clone(),
+        fact_hash,
+        identity_revision,
+        aliases,
+        name_only_fact_hash: meta.fact_hash.clone(),
         legacy_markdown: if meta.legacy_markdown.is_empty() {
             None
         } else {
@@ -1727,6 +1930,12 @@ pub fn commit(
     payload: &serde_json::Value,
 ) -> Result<CharacterRosterCommitReceipt, String> {
     migrate_character_roster_schema(conn).map_err(|error| error.to_string())?;
+    // 身份 schema 下名单写路径由 `character_identity_repository` 承载
+    // （对齐基线 `commit` 在 `ensureCharacterRosterSchema` 之后的
+    // `CHARACTER_ID_WRITE_REQUIRED` guard）
+    if characters::has_character_identity_schema(conn) {
+        return Err("CHARACTER_ID_WRITE_REQUIRED".to_string());
+    }
     let tx = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -1956,6 +2165,27 @@ mod tests {
     use serde_json::json;
 
     fn memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("内存库打开失败");
+        create_tables(&conn).expect("建表失败");
+        // 本文件测试覆盖 legacy 写路径（与基线测试同构）：拆除身份六表，
+        // 使 has_character_identity_schema 判定为无身份 schema。
+        // rusqlite 默认不启用外键级联，拆除无碍。
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS character_identity_origins;\
+             DROP TABLE IF EXISTS character_aliases;\
+             DROP TABLE IF EXISTS character_identity_proposals;\
+             DROP TABLE IF EXISTS character_identity_approvals;\
+             DROP TABLE IF EXISTS character_relationships;\
+             DROP TABLE IF EXISTS character_identity_meta;",
+        )
+        .expect("拆除身份表失败");
+        project_core::init(&conn, "测试项目", project_core::DEFAULT_WRITING_LANGUAGE)
+            .expect("主台账初始化失败");
+        conn
+    }
+
+    /// 全量 schema（含身份六表）：用于 guard 断言与身份形态读取测试
+    fn identity_schema_db() -> Connection {
         let conn = Connection::open_in_memory().expect("内存库打开失败");
         create_tables(&conn).expect("建表失败");
         project_core::init(&conn, "测试项目", project_core::DEFAULT_WRITING_LANGUAGE)
@@ -2478,5 +2708,83 @@ mod tests {
         assert_eq!(entry.relationships.len(), 1);
         assert_eq!(entry.relationships[0].target, "苏白");
         assert_eq!(entry.appearance, "", "蓝图同步不重写既有资料");
+    }
+
+    #[test]
+    fn commit_requires_legacy_schema_on_identity_projects_test() {
+        // H3：身份 schema 项目 roster commit 永久抛 CHARACTER_ID_WRITE_REQUIRED
+        let conn = identity_schema_db();
+        let error = commit(
+            &conn,
+            &initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]),
+        )
+        .unwrap_err();
+        assert_eq!(error, "CHARACTER_ID_WRITE_REQUIRED");
+    }
+
+    #[test]
+    fn read_returns_identity_projection_on_identity_schema_test() {
+        // H4：身份 schema 下 read 返回身份形态（identityRevision/aliases/
+        // 带稳定 ID 的 entries/关系来自 character_relationships）
+        let conn = identity_schema_db();
+        conn.execute(
+            "INSERT INTO characters (character_id, name, role) \
+             VALUES ('char-1', '林清玄', 'protagonist')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO characters (character_id, name, role) \
+             VALUES ('char-2', '苏白', 'supporting')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_aliases (character_id, name, source_key, valid_from) \
+             VALUES ('char-1', '林近妖', 'src-1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_identity_approvals \
+             (operation_id, payload_hash, receipt_json) \
+             VALUES ('approval-1', 'hash', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_relationships (relationship_id, source_character_id, \
+             target_character_id, relation, source_display_snapshot, target_display_snapshot, \
+             provenance_json, approval_id) \
+             VALUES ('rel-1', 'char-1', 'char-2', '盟友', '林清玄', '苏白', '{}', 'approval-1')",
+            [],
+        )
+        .unwrap();
+
+        let snapshot = read(&conn).expect("身份项目读取应成功");
+        assert_eq!(snapshot.identity_revision, Some(0));
+        assert_eq!(
+            snapshot.aliases,
+            Some(vec![CharacterRosterAlias {
+                character_id: "char-1".to_string(),
+                name: "林近妖".to_string(),
+                source_key: "src-1".to_string(),
+                valid_from: 1,
+                valid_through: None,
+            }])
+        );
+        // identityEntries 使用 includeIds=true 变体：条目带稳定 ID
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.entries[0].character_id.as_deref(), Some("char-1"));
+        assert_eq!(snapshot.entries[0].name, "林清玄");
+        assert_eq!(snapshot.entries[0].relationships.len(), 1);
+        assert_eq!(snapshot.entries[0].relationships[0].target, "苏白");
+        assert_eq!(snapshot.entries[0].relationships[0].relation, "盟友");
+        assert_eq!(snapshot.entries[1].character_id.as_deref(), Some("char-2"));
+        assert!(snapshot.entries[1].relationships.is_empty());
+        // 身份形态 factHash = fullIdentityFactHash(identityEntries)；
+        // nameOnlyFactHash 恒为 meta.fact_hash（空项目种子为 ''）
+        assert_eq!(snapshot.fact_hash.len(), 64);
+        assert_eq!(snapshot.name_only_fact_hash, "");
     }
 }

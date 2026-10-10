@@ -5,11 +5,23 @@
 //! - `cs_updated_at_chapter` 为 NULL 表示没有 `currentState`（第 0 章是合法状态值）；
 //! - `getAll` 按角色定位排序（主角 → 配角 → 反派 → 龙套）；
 //! - `saveAll` 承担改名的一致性校验与蓝图引用同步（两阶段临时键防主键冲突）。
-
+//!
+//! 身份 schema 项目（存在 `character_identity_meta` 表）的角色写路径由
+//! `character_identity_repository::commit_character_identities` 承载；本文件
+//! 四个写方法（`upsert`/`save_all`/`delete`/`update_state`）在身份 schema
+//! 下永久抛 `CHARACTER_ID_WRITE_REQUIRED`，与上游一致（H2 guard）。
+//! read 路径在身份 schema 下仍可读：`get_by_name` 按上游 `getByName(name, sourceKey?)`
+//! 分流——无 `sourceKey` 返回 `None`；有 `sourceKey` 则经 `character_aliases`
+//! 解析稳定 ID（恰好一条活跃别名才命中）。
+//!
+//! 边缘语义（L3/L4，文档化保留，非回归）：①名称归一用 Rust `to_lowercase`
+//!（Unicode full case folding），与上游 JS `toLocaleLowerCase('en-US')` 在
+//! `İ`（U+0130）等字符上结果不同；②`compare_text` 按 UTF-16 码元序比较
+//!（与上游 JS 字符串 `<` 比较同序）。
 use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::character_role::{normalize_character_role, CharacterRole};
@@ -118,6 +130,30 @@ fn default_character_role() -> CharacterRole {
     CharacterRole::Supporting
 }
 
+/// 检测身份 schema 是否已迁移（上游 `hasCharacterIdentitySchema`：
+/// `sqlite_master` 中存在 `character_identity_meta` 表）。
+pub fn has_character_identity_schema(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'character_identity_meta'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map(|row| row.is_some())
+    .unwrap_or(false)
+}
+
+/// 身份 schema 写守卫（H2）：上游四个写方法首行
+/// `if (hasCharacterIdentitySchema(db)) throw new Error('CHARACTER_ID_WRITE_REQUIRED')`。
+/// 身份 schema 项目的角色写路径由
+/// `character_identity_repository::commit_character_identities` 承载。
+fn require_legacy_character_schema(conn: &Connection) -> Result<(), String> {
+    if has_character_identity_schema(conn) {
+        return Err("CHARACTER_ID_WRITE_REQUIRED".to_string());
+    }
+    Ok(())
+}
+
 // 已平移但暂无调用点：由后续批次（drafts / reviews / post-process / import）接线。
 #[allow(dead_code)]
 /// 角色改名意图（对齐 `CharacterRenameData`）。
@@ -192,7 +228,7 @@ fn row_to_data(row: &rusqlite::Row) -> rusqlite::Result<CharacterData> {
 
     Ok(CharacterData {
         character_id: row.get("character_id")?,
-        name: row.get("name")?,
+        name: row.get::<_, Option<String>>("name")?.unwrap_or_default(),
         role: normalize_character_role(&row.get::<_, Option<String>>("role")?.unwrap_or_default()),
         gender: row.get::<_, Option<String>>("gender")?.unwrap_or_default(),
         age: row.get::<_, Option<String>>("age")?.unwrap_or_default(),
@@ -246,17 +282,60 @@ pub fn get_all(conn: &Connection) -> Result<Vec<CharacterData>, String> {
 
 // 已平移但暂无调用点：由后续批次（drafts / reviews / post-process / import）接线。
 #[allow(dead_code)]
-/// 读取单个角色。
-pub fn get_by_name(conn: &Connection, name: &str) -> Result<Option<CharacterData>, String> {
+/// 读取单个角色（上游 `getByName(name, sourceKey?)`）。
+///
+/// 身份 schema 项目：无 `source_key` 返回 `None`（角色以稳定 ID
+/// 寻址，姓名可复用）；有 `source_key` 则经 `character_aliases`
+/// 解析，恰好一条活跃别名命中才返回角色。legacy 项目按姓名直查
+/// （上游 legacy 分支无 `retired` 过滤）。
+pub fn get_by_name(
+    conn: &Connection,
+    name: &str,
+    source_key: Option<&str>,
+) -> Result<Option<CharacterData>, String> {
+    if has_character_identity_schema(conn) {
+        let source_key = match source_key {
+            Some(source_key) => source_key,
+            None => return Ok(None),
+        };
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.* FROM characters c \
+                 JOIN character_aliases a ON a.character_id = c.character_id \
+                 WHERE a.name = ?1 AND a.source_key = ?2 \
+                   AND a.valid_through IS NULL AND c.retired = 0",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows: Vec<CharacterData> = stmt
+            .query_map(params![name, source_key], |row| row_to_data(row))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(match rows.len() {
+            1 => Some(rows.into_iter().next().expect("恰好一条匹配")),
+            _ => None,
+        })
+    } else {
+        conn.query_row("SELECT * FROM characters WHERE name = ?1", [name], |row| {
+            row_to_data(row)
+        })
+        .optional()
+        .map_err(|error| error.to_string())
+    }
+}
+
+// 已平移但暂无调用点：由后续批次（drafts / reviews / post-process / import）接线。
+#[allow(dead_code)]
+/// 按稳定 ID 读取单个角色（上游 `getById`：身份 schema 下无 guard，可读）。
+pub fn get_by_id(conn: &Connection, character_id: &str) -> Result<Option<CharacterData>, String> {
     conn.query_row(
-        "SELECT * FROM characters WHERE name = ?1 AND retired = 0",
-        [name],
+        "SELECT * FROM characters WHERE character_id = ?1 AND retired = 0",
+        [character_id],
         |row| row_to_data(row),
     )
     .optional()
     .map_err(|error| error.to_string())
 }
-
 // 已平移但暂无调用点：由后续批次（drafts / reviews / post-process / import）接线。
 #[allow(dead_code)]
 /// 角色数量。
@@ -267,6 +346,8 @@ pub fn count(conn: &Connection) -> Result<i64, String> {
 
 /// 插入或更新角色（`currentState` 缺失即清空 `cs_*` 列，与基线 upsert 语义一致）。
 pub fn upsert(conn: &Connection, data: &CharacterData) -> Result<(), String> {
+    require_legacy_character_schema(conn)?;
+
     let current = data.current_state.clone().unwrap_or(CharacterStateData {
         location: String::new(),
         power_level: String::new(),
@@ -367,6 +448,8 @@ pub fn save_all(
     characters: &[CharacterData],
     renames: &[CharacterRenameData],
 ) -> Result<(), String> {
+    require_legacy_character_schema(conn)?;
+
     let tx = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -509,16 +592,13 @@ pub fn save_all(
             .iter()
             .map(|rename| (rename.original_name.clone(), rename.new_name.clone()))
             .collect();
-        let blueprints: Vec<(i64, String)> = {
+        let blueprints: Vec<(i64, Option<String>)> = {
             let mut stmt = tx
                 .prepare("SELECT chapter_number, characters FROM blueprints")
                 .map_err(|error| error.to_string())?;
             let rows = stmt
                 .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                    ))
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
                 })
                 .map_err(|error| error.to_string())?;
             let mut collected = Vec::new();
@@ -528,6 +608,10 @@ pub fn save_all(
             collected
         };
         for (chapter_number, characters_json) in blueprints {
+            let Some(characters_json) = characters_json else {
+                // 上游 JSON.parse(null) → null（非数组）→「格式错误」
+                return Err(format!("第 {chapter_number} 章蓝图角色列表格式错误"));
+            };
             let parsed: serde_json::Value = serde_json::from_str(&characters_json)
                 .map_err(|_| format!("第 {chapter_number} 章蓝图角色列表损坏"))?;
             let Some(items) = parsed.as_array() else {
@@ -572,6 +656,8 @@ pub fn save_all(
 #[allow(dead_code)]
 /// 删除角色。
 pub fn delete(conn: &Connection, name: &str) -> Result<(), String> {
+    require_legacy_character_schema(conn)?;
+
     conn.execute("DELETE FROM characters WHERE name = ?1", [name])
         .map(|_| ())
         .map_err(|error| error.to_string())
@@ -585,6 +671,8 @@ pub fn update_state(
     name: &str,
     state: &CharacterStateData,
 ) -> Result<(), String> {
+    require_legacy_character_schema(conn)?;
+
     conn.execute(
         "UPDATE characters SET \
            cs_location = ?1, cs_power_level = ?2, cs_physical_state = ?3, \
@@ -612,7 +700,27 @@ mod tests {
     use super::*;
     use crate::db::schema::create_tables;
 
+    /// 上游 `__tests__` 的 legacy 库：身份 schema 未迁移（无身份六表），
+    /// 写路径走 legacy 分支。Tauri 侧 `create_tables` 总是建身份表，
+    /// 故建表后拆除（rusqlite 默认不启用外键级联，拆除无碍）。
     fn memory_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("内存库打开失败");
+        create_tables(&conn).expect("建表失败");
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS character_identity_origins;
+             DROP TABLE IF EXISTS character_aliases;
+             DROP TABLE IF EXISTS character_identity_proposals;
+             DROP TABLE IF EXISTS character_identity_approvals;
+             DROP TABLE IF EXISTS character_relationships;
+             DROP TABLE IF EXISTS character_identity_meta;",
+        )
+        .expect("拆除身份 schema");
+        conn
+    }
+
+    /// 身份 schema 库（`create_tables` 原样：身份六表齐全），
+    /// 用于 guard 断言与身份形态读取测试。
+    fn identity_schema_db() -> Connection {
         let conn = Connection::open_in_memory().expect("内存库打开失败");
         create_tables(&conn).expect("建表失败");
         conn
@@ -657,7 +765,9 @@ mod tests {
         data.current_state = Some(state(0));
         upsert(&conn, &data).unwrap();
 
-        let loaded = get_by_name(&conn, "林清玄").unwrap().expect("角色应存在");
+        let loaded = get_by_name(&conn, "林清玄", None)
+            .unwrap()
+            .expect("角色应存在");
         assert_eq!(loaded.role, CharacterRole::Protagonist);
         let loaded_state = loaded.current_state.expect("第 0 章也是合法状态");
         assert_eq!(loaded_state.updated_at_chapter, 0);
@@ -673,7 +783,7 @@ mod tests {
         upsert(&conn, &data).unwrap();
         upsert(&conn, &character("苏白", CharacterRole::Supporting)).unwrap();
 
-        let loaded = get_by_name(&conn, "苏白").unwrap().unwrap();
+        let loaded = get_by_name(&conn, "苏白", None).unwrap().unwrap();
         assert!(
             loaded.current_state.is_none(),
             "currentState 缺失应清空 cs_* 列"
@@ -687,7 +797,7 @@ mod tests {
         upsert(&conn, &data).unwrap();
 
         // 无 character_id 的首次写入分配 UUID
-        let first = get_by_name(&conn, "林清玄").unwrap().unwrap();
+        let first = get_by_name(&conn, "林清玄", None).unwrap().unwrap();
         let character_id = first.character_id.clone().expect("应分配 character_id");
         assert_eq!(character_id.len(), 36, "应为 UUID v4");
 
@@ -702,7 +812,7 @@ mod tests {
         let mut explicit = character("苏白", CharacterRole::Supporting);
         explicit.character_id = Some("char-explicit-001".to_string());
         upsert(&conn, &explicit).unwrap();
-        let loaded = get_by_name(&conn, "苏白").unwrap().unwrap();
+        let loaded = get_by_name(&conn, "苏白", None).unwrap().unwrap();
         assert_eq!(loaded.character_id.as_deref(), Some("char-explicit-001"));
     }
 
@@ -747,7 +857,7 @@ mod tests {
         data.current_state = Some(current);
         upsert(&conn, &data).unwrap();
 
-        let loaded = get_by_name(&conn, "林清玄").unwrap().unwrap();
+        let loaded = get_by_name(&conn, "林清玄", None).unwrap().unwrap();
         assert_eq!(loaded.current_state.unwrap().provenance, Some(provenance));
 
         let json = serde_json::to_value(&data).unwrap();
@@ -769,7 +879,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let loaded = get_by_name(&conn, "旧角色").unwrap().unwrap();
+        let loaded = get_by_name(&conn, "旧角色", None).unwrap().unwrap();
         assert_eq!(loaded.current_state.unwrap().provenance, None);
     }
 
@@ -796,8 +906,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(get_by_name(&conn, "旧名").unwrap().is_none());
-        assert!(get_by_name(&conn, "新名").unwrap().is_some());
+        assert!(get_by_name(&conn, "旧名", None).unwrap().is_none());
+        assert!(get_by_name(&conn, "新名", None).unwrap().is_some());
         let renamed: String = conn
             .query_row(
                 "SELECT characters FROM blueprints WHERE chapter_number = 1",
@@ -846,11 +956,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            get_by_name(&conn, "乙").unwrap().unwrap().role,
+            get_by_name(&conn, "乙", None).unwrap().unwrap().role,
             CharacterRole::Protagonist
         );
         assert_eq!(
-            get_by_name(&conn, "甲").unwrap().unwrap().role,
+            get_by_name(&conn, "甲", None).unwrap().unwrap().role,
             CharacterRole::Supporting
         );
     }
@@ -917,7 +1027,7 @@ mod tests {
         assert_eq!(error, "第 3 章蓝图角色列表损坏");
 
         // 事务整体回滚：改名不落地
-        assert!(get_by_name(&conn, "旧名").unwrap().is_some());
+        assert!(get_by_name(&conn, "旧名", None).unwrap().is_some());
     }
 
     #[test]
@@ -929,7 +1039,7 @@ mod tests {
 
         update_state(&conn, "苏白", &state(4)).unwrap();
 
-        let loaded = get_by_name(&conn, "苏白").unwrap().unwrap();
+        let loaded = get_by_name(&conn, "苏白", None).unwrap().unwrap();
         assert_eq!(loaded.background, "世家子弟");
         assert_eq!(loaded.current_state.unwrap().updated_at_chapter, 4);
     }
@@ -941,5 +1051,143 @@ mod tests {
         assert_eq!(count(&conn).unwrap(), 1);
         delete(&conn, "甲").unwrap();
         assert_eq!(count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn write_methods_require_legacy_schema_on_identity_projects_test() {
+        // H2：身份 schema 项目四个写方法永久抛 CHARACTER_ID_WRITE_REQUIRED
+        let conn = identity_schema_db();
+        assert_eq!(
+            upsert(&conn, &character("林清玄", CharacterRole::Protagonist)).unwrap_err(),
+            "CHARACTER_ID_WRITE_REQUIRED"
+        );
+        assert_eq!(
+            save_all(
+                &conn,
+                &[character("林清玄", CharacterRole::Protagonist)],
+                &[]
+            )
+            .unwrap_err(),
+            "CHARACTER_ID_WRITE_REQUIRED"
+        );
+        assert_eq!(
+            update_state(&conn, "林清玄", &state(0)).unwrap_err(),
+            "CHARACTER_ID_WRITE_REQUIRED"
+        );
+        assert_eq!(
+            delete(&conn, "林清玄").unwrap_err(),
+            "CHARACTER_ID_WRITE_REQUIRED"
+        );
+        // 读路径不受 guard 影响（上游 getById/getAll/getByName 无 guard）
+        assert!(get_all(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_by_name_resolves_identity_aliases_test() {
+        // H1：身份 schema 下 getByName(name, sourceKey?) 分流
+        let conn = identity_schema_db();
+        conn.execute(
+            "INSERT INTO characters (character_id, name, role)
+             VALUES ('char-1', '林清玄', 'protagonist')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO characters (character_id, name, role)
+             VALUES ('char-2', '苏白', 'supporting')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_aliases (character_id, name, source_key, valid_from)
+             VALUES ('char-1', '林近妖', 'src-1', 1)",
+            [],
+        )
+        .unwrap();
+
+        // 身份 schema：无 sourceKey 一律 None（角色以稳定 ID 寻址，姓名可复用）
+        assert!(get_by_name(&conn, "林清玄", None).unwrap().is_none());
+        // 恰好一条活跃别名 → 命中并解析稳定 ID
+        let loaded = get_by_name(&conn, "林近妖", Some("src-1"))
+            .unwrap()
+            .expect("活跃别名应解析");
+        assert_eq!(loaded.character_id.as_deref(), Some("char-1"));
+        assert_eq!(loaded.name, "林清玄");
+        // source_key 不匹配 → None
+        assert!(get_by_name(&conn, "林近妖", Some("src-2"))
+            .unwrap()
+            .is_none());
+        // 不存在的姓名 → None
+        assert!(get_by_name(&conn, "不存在", Some("src-1"))
+            .unwrap()
+            .is_none());
+        // valid_through 已闭合的别名不参与匹配
+        conn.execute(
+            "UPDATE character_aliases SET valid_through = 9 WHERE character_id = 'char-1'",
+            [],
+        )
+        .unwrap();
+        assert!(get_by_name(&conn, "林近妖", Some("src-1"))
+            .unwrap()
+            .is_none());
+        // 两条活跃同名别名（不同角色）→ 不唯一，返回 None（上游 rows.length !== 1）
+        conn.execute(
+            "UPDATE character_aliases SET valid_through = NULL WHERE character_id = 'char-1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_aliases (character_id, name, source_key, valid_from)
+             VALUES ('char-2', '林近妖', 'src-1', 1)",
+            [],
+        )
+        .unwrap();
+        assert!(get_by_name(&conn, "林近妖", Some("src-1"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn get_by_id_reads_active_character_test() {
+        // M3：上游 getById 无身份 schema guard；retired 角色不可读
+        let conn = identity_schema_db();
+        conn.execute(
+            "INSERT INTO characters (character_id, name, role, retired)
+             VALUES ('char-1', '林清玄', 'protagonist', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO characters (character_id, name, role, retired)
+             VALUES ('char-2', '苏白', 'supporting', 1)",
+            [],
+        )
+        .unwrap();
+        let loaded = get_by_id(&conn, "char-1").unwrap().expect("活跃角色应可读");
+        assert_eq!(loaded.name, "林清玄");
+        assert!(get_by_id(&conn, "char-2").unwrap().is_none());
+        assert!(get_by_id(&conn, "char-3").unwrap().is_none());
+    }
+
+    #[test]
+    fn save_all_treats_null_blueprint_characters_as_format_error_test() {
+        // L2：上游 JSON.parse(null) → null（非数组）→「格式错误」
+        let conn = memory_db();
+        upsert(&conn, &character("旧名", CharacterRole::Protagonist)).unwrap();
+        conn.execute(
+            "INSERT INTO blueprints (chapter_number, characters) VALUES (1, NULL)",
+            [],
+        )
+        .unwrap();
+        let error = save_all(
+            &conn,
+            &[character("新名", CharacterRole::Protagonist)],
+            &[CharacterRenameData {
+                original_name: "旧名".to_string(),
+                new_name: "新名".to_string(),
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(error, "第 1 章蓝图角色列表格式错误");
     }
 }
