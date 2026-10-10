@@ -222,6 +222,13 @@ pub fn clear_generated_data(
             // 再在同一事务内清空角色事实与 receipt，使下次 read 重新分类为空项目
             migrate_character_roster_schema(&tx).map_err(|error| error.to_string())?;
             for statement in [
+                // 批次 B1-W2：角色身份域（m02 六表，外键先于 characters）
+                "DELETE FROM character_relationships",
+                "DELETE FROM character_identity_proposals",
+                "DELETE FROM character_aliases",
+                "DELETE FROM character_identity_origins",
+                "DELETE FROM character_identity_approvals",
+                "DELETE FROM character_identity_meta",
                 "DELETE FROM character_roster_operations",
                 "DELETE FROM character_roster_meta",
                 "DELETE FROM characters",
@@ -398,6 +405,7 @@ mod tests {
         characters::upsert(
             &conn,
             &characters::CharacterData {
+                character_id: None,
                 name: "林清玄".to_string(),
                 role: crate::character_role::CharacterRole::Protagonist,
                 gender: String::new(),
@@ -412,6 +420,21 @@ mod tests {
                 notes: String::new(),
                 current_state: None,
             },
+        )
+        .unwrap();
+        // 批次 B1-W2：身份域事实行（证明 creativeFields 清空覆盖 m02 六表）
+        let character_id: String = conn
+            .query_row(
+                "SELECT character_id FROM characters WHERE name = '林清玄'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO character_identity_origins
+             (character_id, source_key, original_row_json, original_hash)
+             VALUES (?1, 'src-1', '{}', 'hash-1')",
+            [character_id],
         )
         .unwrap();
         conn.execute(
@@ -476,6 +499,22 @@ mod tests {
             })
             .unwrap();
         assert_eq!(meta_rows, 0);
+        // 批次 B1-W2：m02 身份域六表随 creativeFields 一并清空
+        for table in [
+            "character_identity_origins",
+            "character_aliases",
+            "character_identity_proposals",
+            "character_identity_approvals",
+            "character_relationships",
+            "character_identity_meta",
+        ] {
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 0, "清空创作字段后 {table} 应为空");
+        }
         let snapshot = crate::repositories::character_roster_repository::read(&conn).unwrap();
         assert_eq!(
             snapshot.migration_state,

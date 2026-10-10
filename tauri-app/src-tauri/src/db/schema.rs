@@ -133,9 +133,20 @@ pub fn ensure_blueprint_commit_schema(conn: &Connection) -> SqlResult<()> {
 }
 
 /// characters —— 角色卡（`currentState` 拍平为 `cs_*` 列，杜绝 JSON 大字段）
+///
+/// m02 基线形态（见 `electron/migrations/m02-character-identity.ts` 的
+/// characters 重建）：`character_id` 为主键，`name` 退为普通列，
+/// 身份四列 `legacy_key` / `static_provenance` / `identity_revision` /
+/// `retired` 随 m02 引入。Tauri 是全新库、无迁移运行时，直接建
+/// m02 基线（不建临时表、不搬数据）。
 pub const CREATE_CHARACTERS: &str = r#"
 CREATE TABLE IF NOT EXISTS characters (
-  name TEXT PRIMARY KEY,
+  character_id TEXT PRIMARY KEY,
+  legacy_key TEXT,
+  static_provenance TEXT NOT NULL DEFAULT '{}',
+  identity_revision INTEGER NOT NULL DEFAULT 0,
+  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)),
+  name TEXT,
   role TEXT DEFAULT 'supporting',
   gender TEXT DEFAULT '',
   age TEXT DEFAULT '',
@@ -158,6 +169,43 @@ CREATE TABLE IF NOT EXISTS characters (
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
+"#;
+/// 批次 B1-W2：角色身份域（m02 六表）
+///
+/// 逐字平移自 `electron/migrations/m02-character-identity.ts` 的
+/// `M02_CHARACTER_AUXILIARY_SQL`。唯一适应性偏离：每表追加
+/// `IF NOT EXISTS`、meta 种子行改 `INSERT OR IGNORE`——
+/// `create_tables` 每次打开项目库都会复跑，必须幂等（本文件硬规则）。
+/// 列定义、NOT NULL、DEFAULT、UNIQUE、主键与外键逐字不变；M02 无索引。
+pub const CREATE_CHARACTER_IDENTITY: &str = r#"
+CREATE TABLE IF NOT EXISTS character_identity_origins (
+ character_id TEXT PRIMARY KEY REFERENCES characters(character_id), source_key TEXT NOT NULL UNIQUE,
+ original_row_json TEXT NOT NULL, original_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS character_aliases (
+ character_id TEXT NOT NULL REFERENCES characters(character_id), name TEXT NOT NULL,
+ source_key TEXT NOT NULL, valid_from INTEGER NOT NULL, valid_through INTEGER,
+ PRIMARY KEY(character_id,name,source_key,valid_from)
+);
+CREATE TABLE IF NOT EXISTS character_identity_proposals (
+ proposal_id TEXT PRIMARY KEY, owner_character_id TEXT REFERENCES characters(character_id),
+ source_key TEXT NOT NULL, source_hash TEXT NOT NULL, raw_value TEXT NOT NULL, candidate_ids_json TEXT NOT NULL,
+ resolved_character_id TEXT REFERENCES characters(character_id), approval_id TEXT REFERENCES character_identity_approvals(operation_id)
+);
+CREATE TABLE IF NOT EXISTS character_identity_approvals (
+ operation_id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, receipt_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS character_relationships (
+ relationship_id TEXT PRIMARY KEY,
+ source_character_id TEXT NOT NULL REFERENCES characters(character_id),
+ target_character_id TEXT NOT NULL REFERENCES characters(character_id),
+ relation TEXT NOT NULL, source_display_snapshot TEXT NOT NULL, target_display_snapshot TEXT NOT NULL,
+ provenance_json TEXT NOT NULL, approval_id TEXT NOT NULL REFERENCES character_identity_approvals(operation_id)
+);
+CREATE TABLE IF NOT EXISTS character_identity_meta (
+ id TEXT PRIMARY KEY CHECK(id='main'), revision INTEGER NOT NULL, legacy_count INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO character_identity_meta(id, revision, legacy_count) VALUES('main',0,0);
 "#;
 
 /// contents —— 文本内容池（正文与元数据分离）
@@ -798,6 +846,8 @@ pub fn create_tables(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(CREATE_BLUEPRINTS)?;
     ensure_blueprint_commit_schema(conn)?;
     conn.execute_batch(CREATE_CHARACTERS)?;
+    // 批次 B1-W2：角色身份域（m02 六表，外键依赖 characters）
+    conn.execute_batch(CREATE_CHARACTER_IDENTITY)?;
     conn.execute_batch(CREATE_CONTENTS)?;
     conn.execute_batch(CREATE_DRAFTS)?;
     conn.execute_batch(CREATE_REVISIONS)?;
@@ -1261,6 +1311,13 @@ mod tests {
             "finalization_outbox",
             "character_roster_meta",
             "character_roster_operations",
+            // 批次 B1-W2：角色身份域（m02 六表）
+            "character_identity_origins",
+            "character_aliases",
+            "character_identity_proposals",
+            "character_identity_approvals",
+            "character_relationships",
+            "character_identity_meta",
             // 批次 E（Schema 申报 v2.0）
             "recovery_candidates",
             "continuity_projection_meta",
@@ -1275,6 +1332,15 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "缺少表: {table}");
         }
+        // 批次 B1-W2：m02 meta 种子行（main, 0, 0）
+        let meta_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM character_identity_meta WHERE id = 'main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(meta_count, 1, "character_identity_meta 应种子化单行 main");
     }
 
     #[test]

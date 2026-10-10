@@ -1499,6 +1499,7 @@ mod tests {
     ) -> CharacterRosterEntry {
         use crate::character_role::CharacterRole;
         CharacterRosterEntry {
+            character_id: None,
             name: name.to_string(),
             role: CharacterRole::Supporting,
             gender: String::new(),

@@ -203,6 +203,11 @@ pub struct CharacterRosterRelationship {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CharacterRosterEntry {
+    /// 角色身份主键（m02；对齐基线 `characterId?`）。
+    /// `None` = 新建角色，由写入路径分配 UUID；`draft:<UUID>`
+    /// 仅是前端本地创建选择键，不落库。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_id: Option<String>,
     pub name: String,
     pub role: CharacterRole,
     #[serde(default)]
@@ -544,6 +549,11 @@ fn normalize_entry(
         .and_then(|role| role.as_str())
         .and_then(normalize_role)
         .ok_or_else(|| format!("角色「{name}」的定位无效"))?;
+    let character_id = value
+        .get("characterId")
+        .and_then(|id| id.as_str())
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
 
     if has_own(value, "legacyRelationshipNotes") && !allow_legacy_relationship_notes {
         return Err("只有手工角色管理可以提交自由文本关系".to_string());
@@ -561,6 +571,7 @@ fn normalize_entry(
     };
 
     Ok(CharacterRosterEntry {
+        character_id,
         name: name.clone(),
         role,
         gender: required_text(value.get("gender"), &format!("角色「{name}」的性别"))?,
@@ -812,6 +823,7 @@ fn entry_from_character(character: &CharacterData) -> CharacterRosterEntry {
     };
     sort_relationships(&mut relationships);
     CharacterRosterEntry {
+        character_id: character.character_id.clone(),
         name: character.name.clone(),
         role: character.role,
         gender: character.gender.clone(),
@@ -835,6 +847,7 @@ fn entry_from_character(character: &CharacterData) -> CharacterRosterEntry {
 
 fn character_from_entry(entry: &CharacterRosterEntry) -> CharacterData {
     CharacterData {
+        character_id: entry.character_id.clone(),
         name: entry.name.clone(),
         role: entry.role,
         gender: entry.gender.clone(),
@@ -1848,6 +1861,20 @@ pub(crate) fn commit_in_transaction(
         request.entries.clone()
     };
 
+    // m02：新建角色（character_id 缺省）在此分配身份 UUID。
+    // character_id 进入条目规范 JSON，必须先于投影/事实哈希分配，
+    // 写入与回读校验（assert_read_back）才一致。
+    let mut committed_entries = committed_entries;
+    for entry in &mut committed_entries {
+        if entry
+            .character_id
+            .as_deref()
+            .map(str::is_empty)
+            .unwrap_or(true)
+        {
+            entry.character_id = Some(crate::project_access::random_uuid_v4());
+        }
+    }
     let writing_language = project_core::get(&tx)?
         .map(|core| core.writing_language)
         .unwrap_or_else(|| project_core::DEFAULT_WRITING_LANGUAGE.to_string());
@@ -1969,6 +1996,7 @@ mod tests {
 
     fn empty_entry() -> CharacterRosterEntry {
         CharacterRosterEntry {
+            character_id: None,
             name: String::new(),
             role: CharacterRole::Supporting,
             gender: String::new(),

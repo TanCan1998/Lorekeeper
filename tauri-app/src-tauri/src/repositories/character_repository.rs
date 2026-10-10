@@ -83,6 +83,10 @@ pub struct CharacterStateData {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CharacterData {
+    /// 角色身份主键（m02；对齐基线 `characterId?`）。
+    /// `None` = 新建角色，由 `upsert` 分配 UUID。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_id: Option<String>,
     pub name: String,
     #[serde(default = "default_character_role")]
     pub role: CharacterRole,
@@ -187,6 +191,7 @@ fn row_to_data(row: &rusqlite::Row) -> rusqlite::Result<CharacterData> {
     };
 
     Ok(CharacterData {
+        character_id: row.get("character_id")?,
         name: row.get("name")?,
         role: normalize_character_role(&row.get::<_, Option<String>>("role")?.unwrap_or_default()),
         gender: row.get::<_, Option<String>>("gender")?.unwrap_or_default(),
@@ -219,7 +224,7 @@ fn row_to_data(row: &rusqlite::Row) -> rusqlite::Result<CharacterData> {
 pub fn get_all(conn: &Connection) -> Result<Vec<CharacterData>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT * FROM characters ORDER BY \
+            "SELECT * FROM characters WHERE retired = 0 ORDER BY \
              CASE role \
                WHEN 'protagonist' THEN 0 \
                WHEN 'supporting' THEN 1 \
@@ -243,9 +248,11 @@ pub fn get_all(conn: &Connection) -> Result<Vec<CharacterData>, String> {
 #[allow(dead_code)]
 /// 读取单个角色。
 pub fn get_by_name(conn: &Connection, name: &str) -> Result<Option<CharacterData>, String> {
-    conn.query_row("SELECT * FROM characters WHERE name = ?1", [name], |row| {
-        row_to_data(row)
-    })
+    conn.query_row(
+        "SELECT * FROM characters WHERE name = ?1 AND retired = 0",
+        [name],
+        |row| row_to_data(row),
+    )
     .optional()
     .map_err(|error| error.to_string())
 }
@@ -279,14 +286,31 @@ pub fn upsert(conn: &Connection, data: &CharacterData) -> Result<(), String> {
         .as_ref()
         .and_then(|state| state.provenance.as_ref());
 
+    // m02：显式 character_id 优先；缺省时按名称复用现有身份
+    // （保留基线 name 主键时代的幂等语义），否则分配新 UUID。
+    let character_id = match data.character_id.as_deref() {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => conn
+            .query_row(
+                "SELECT character_id FROM characters WHERE name = ?1 AND retired = 0",
+                [data.name.as_str()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .flatten()
+            .unwrap_or_else(crate::project_access::random_uuid_v4),
+    };
+
     conn.execute(
         "INSERT INTO characters (\
-           name, role, gender, age, appearance, personality, background, \
+           character_id, name, role, gender, age, appearance, personality, background, \
            abilities, motivation, relationships, arc, notes, \
            cs_location, cs_power_level, cs_physical_state, cs_mental_state, \
            cs_key_items, cs_recent_events, cs_updated_at_chapter, cs_provenance \
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20) \
-         ON CONFLICT(name) DO UPDATE SET \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21) \
+         ON CONFLICT(character_id) DO UPDATE SET \
+           name = excluded.name, \
            role = excluded.role, \
            gender = excluded.gender, \
            age = excluded.age, \
@@ -308,6 +332,7 @@ pub fn upsert(conn: &Connection, data: &CharacterData) -> Result<(), String> {
            cs_provenance = excluded.cs_provenance, \
            updated_at = datetime('now')",
         rusqlite::params![
+            character_id,
             data.name,
             data.role.as_str(),
             data.gender,
@@ -595,6 +620,7 @@ mod tests {
 
     fn character(name: &str, role: CharacterRole) -> CharacterData {
         CharacterData {
+            character_id: None,
             name: name.to_string(),
             role,
             gender: String::new(),
@@ -652,6 +678,32 @@ mod tests {
             loaded.current_state.is_none(),
             "currentState 缺失应清空 cs_* 列"
         );
+    }
+
+    #[test]
+    fn upsert_assigns_and_roundtrips_character_id_test() {
+        let conn = memory_db();
+        let data = character("林清玄", CharacterRole::Protagonist);
+        upsert(&conn, &data).unwrap();
+
+        // 无 character_id 的首次写入分配 UUID
+        let first = get_by_name(&conn, "林清玄").unwrap().unwrap();
+        let character_id = first.character_id.clone().expect("应分配 character_id");
+        assert_eq!(character_id.len(), 36, "应为 UUID v4");
+
+        // 同名缺省写入复用同一身份（幂等），不新增行
+        upsert(&conn, &character("林清玄", CharacterRole::Protagonist)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM characters", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "同名缺省写入应复用身份");
+
+        // 显式 character_id 精确落库并回读
+        let mut explicit = character("苏白", CharacterRole::Supporting);
+        explicit.character_id = Some("char-explicit-001".to_string());
+        upsert(&conn, &explicit).unwrap();
+        let loaded = get_by_name(&conn, "苏白").unwrap().unwrap();
+        assert_eq!(loaded.character_id.as_deref(), Some("char-explicit-001"));
     }
 
     #[test]
