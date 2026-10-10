@@ -579,6 +579,36 @@ CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
 );
 "#;
 
+/// 批次 B1：生成账本（m01 四表）。
+///
+/// 逐字平移自 `electron/migrations/m01-generation-runs.ts` 的 `M01_GENERATION_SQL`。
+/// 唯一适应性偏离：每表追加 `IF NOT EXISTS`——本文件硬规则要求 `create_tables`
+/// 每次打开项目库复跑必须幂等（上游 M01 由桌面 registry 一次性安装，仓储不执行 DDL）。
+/// 列定义、NOT NULL、DEFAULT、UNIQUE、外键与表顺序逐字不变；M01 无索引。
+pub const CREATE_GENERATION_LEDGER: &str = r#"
+CREATE TABLE IF NOT EXISTS generation_roots (
+ root_action_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+ action_json TEXT NOT NULL, budget_json TEXT NOT NULL,
+ active_elapsed_ms INTEGER NOT NULL DEFAULT 0, active_since_ms INTEGER,
+ blocked_code TEXT, revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS generation_runs (
+ run_id TEXT PRIMARY KEY, root_action_id TEXT NOT NULL REFERENCES generation_roots(root_action_id),
+ binding_json TEXT NOT NULL, status TEXT NOT NULL, created_at_ms INTEGER NOT NULL, open_key TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS generation_attempts (
+ attempt_id TEXT PRIMARY KEY, reservation_id TEXT NOT NULL UNIQUE,
+ run_id TEXT NOT NULL REFERENCES generation_runs(run_id), root_action_id TEXT NOT NULL REFERENCES generation_roots(root_action_id),
+ attempt_json TEXT NOT NULL, usage_receipt_json TEXT, invocation_nonce TEXT NOT NULL,
+ UNIQUE(run_id, invocation_nonce)
+);
+CREATE TABLE IF NOT EXISTS generation_artifacts (
+ artifact_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE REFERENCES generation_attempts(attempt_id),
+ run_id TEXT NOT NULL REFERENCES generation_runs(run_id), artifact_json TEXT NOT NULL,
+ revision INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'partial'
+);
+"#;
+
 /// 批次 G：import-run 状态机表（**Schema 申报已获批准**，见
 /// `docs-fork/research/2026-10-10-g-import-run-schema-proposal.md`）。
 ///
@@ -791,6 +821,8 @@ pub fn create_tables(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(CREATE_KB_CHUNKS)?;
     conn.execute_batch(CREATE_KB_EMBEDDING_SPACES)?;
     conn.execute_batch(CREATE_KB_FTS)?;
+    // 批次 B1：生成账本（m01 四表）
+    conn.execute_batch(CREATE_GENERATION_LEDGER)?;
     migrate_project_core_legacy_columns(conn)?;
     migrate_character_roster_schema(conn)?;
     fence_import_run_execution_leases(conn)?;
@@ -968,6 +1000,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+    #[test]
+    fn generation_ledger_tables_have_m01_column_set_test() {
+        let conn = memory_db();
+        create_tables(&conn).unwrap();
+        create_tables(&conn).unwrap(); // 幂等性由本调用一并验证
+
+        // 批次 B1：生成账本 m01 四表最终列集（逐字对齐 electron/migrations/m01-generation-runs.ts）
+        let expected: &[(&str, &[&str])] = &[
+            (
+                "generation_roots",
+                &[
+                    "root_action_id",
+                    "idempotency_key",
+                    "action_json",
+                    "budget_json",
+                    "active_elapsed_ms",
+                    "active_since_ms",
+                    "blocked_code",
+                    "revision",
+                ],
+            ),
+            (
+                "generation_runs",
+                &[
+                    "run_id",
+                    "root_action_id",
+                    "binding_json",
+                    "status",
+                    "created_at_ms",
+                    "open_key",
+                ],
+            ),
+            (
+                "generation_attempts",
+                &[
+                    "attempt_id",
+                    "reservation_id",
+                    "run_id",
+                    "root_action_id",
+                    "attempt_json",
+                    "usage_receipt_json",
+                    "invocation_nonce",
+                ],
+            ),
+            (
+                "generation_artifacts",
+                &[
+                    "artifact_id",
+                    "attempt_id",
+                    "run_id",
+                    "artifact_json",
+                    "revision",
+                    "status",
+                ],
+            ),
+        ];
+        for (table, columns) in expected {
+            let actual = table_columns(&conn, table).unwrap();
+            for column in *columns {
+                assert!(actual.contains(*column), "{table} 缺列: {column}");
+            }
+        }
     }
 
     #[test]
