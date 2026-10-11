@@ -8,7 +8,7 @@
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [`handoffs/2026-10-09-tauri-migration-status.md`](handoffs/2026-10-09-tauri-migration-status.md)（最新快照） |
+| 接续迁移任务 | [`handoffs/`](handoffs/)（按日期命名，最新日期即最新快照） |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
