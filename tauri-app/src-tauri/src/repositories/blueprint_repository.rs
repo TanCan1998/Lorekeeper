@@ -56,7 +56,11 @@ pub struct BlueprintData {
 impl BlueprintData {
     fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         let characters_json: Option<String> = row.get("characters")?;
-        // 基线 `rowToData` 对损坏 JSON 容错为空数组
+        // 基线 `rowToData` 对坏 JSON 容错为 []，但 NULL（JSON.parse(null)
+        // → null）与非数组 JSON 运行时原样透传（TS 类型标 string[]
+        // 而运行可 null）；Rust 将 NULL/非数组/坏 JSON 三者统一归一为
+        // vec![]，因 upsert 恒写数组 JSON（仅直改 DB 才可能触发）且
+        // 字段为非 Option 的 Vec<String>，改 Option 波及全部消费者故接受偏差。
         let characters = characters_json
             .as_deref()
             .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
@@ -258,9 +262,13 @@ pub struct BlueprintCommitRangeRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlueprintCharacterSyncCompletionRosterReceipt {
+    #[serde(default)]
     pub operation_id: String,
+    #[serde(default)]
     pub payload_hash: String,
+    #[serde(default)]
     pub revision: i64,
+    #[serde(default)]
     pub idempotent: bool,
 }
 
@@ -268,10 +276,13 @@ pub struct BlueprintCharacterSyncCompletionRosterReceipt {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlueprintCharacterSyncCompletionReceipt {
+    #[serde(default)]
     pub blueprint_commit_operation_id: String,
+    #[serde(default)]
     pub operation_id: String,
     /// `committed` | `already-satisfied`
     /// `committed` | `already-satisfied` | `proposal-staged`
+    #[serde(default)]
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roster_receipt: Option<BlueprintCharacterSyncCompletionRosterReceipt>,
@@ -471,9 +482,15 @@ fn parse_character_sync_input(serialized: &str) -> Result<Vec<BlueprintData>, St
 fn read_character_sync_input(
     row: &BlueprintCommitOperationRow,
 ) -> Result<Vec<BlueprintData>, String> {
-    parse_character_sync_input(&row.character_sync_input)
+    // 对齐基线 `readCharacterSyncInput`：自带解析，错误串用「幂等回执」
+    // 文案（与 `parse_character_sync_input` 的「同步操作」文案刻意不同）。
+    let parsed: serde_json::Value = serde_json::from_str(&row.character_sync_input)
+        .map_err(|_| "蓝图提交幂等回执损坏".to_string())?;
+    if !parsed.is_array() {
+        return Err("蓝图提交幂等回执格式无效".to_string());
+    }
+    serde_json::from_value(parsed).map_err(|_| "蓝图提交幂等回执格式无效".to_string())
 }
-
 fn parse_completion_receipt(
     serialized: Option<String>,
 ) -> Result<Option<BlueprintCharacterSyncCompletionReceipt>, String> {
@@ -485,6 +502,9 @@ fn parse_completion_receipt(
     if !parsed.is_object() {
         return Err("蓝图角色同步完成回执格式无效".to_string());
     }
+    // 基线 parseCompletionReceipt 仅 JSON.parse + is_object 检查后强转、
+    // 不校验字段；本实现靠上方结构体的 #[serde(default)] 使缺字段不报错，
+    // 仅类型不匹配才落入「格式无效」分支。
     serde_json::from_value(parsed)
         .map(Some)
         .map_err(|_| "蓝图角色同步完成回执格式无效".to_string())
