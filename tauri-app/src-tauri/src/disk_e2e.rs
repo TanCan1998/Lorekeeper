@@ -15,11 +15,12 @@ use crate::db::{project_database_path, ProjectDatabase};
 use crate::draft_source_guard::ExpectedDraftSource;
 use crate::repositories::{
     blueprint_repository as blueprints, character_roster_repository as roster,
-    draft_repository as drafts, llm_repository as llm, post_process_repository as post_process,
-    project_clear_repository as project_clear, project_core_repository as project_core,
-    review_repository as reviews, revision_repository as revisions,
+    draft_repository as drafts, generation_run_repository, llm_repository as llm,
+    post_process_repository as post_process, project_clear_repository as project_clear,
+    project_core_repository as project_core, review_repository as reviews,
+    revision_repository as revisions,
 };
-
+use crate::services::character_proposal;
 fn temp_project(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "anw-disk-e2e-{name}-{}",
@@ -58,7 +59,35 @@ fn draft_params(chapter: i64, content: &str) -> drafts::DraftCreateParams {
     }
 }
 
+/// 基线 `stageDirectory`：身份 schema 项目完成角色同步前，
+/// 先 stage 同一 operationId 的目录源提案（完成收据为 `proposal-staged`）
+fn stage_directory_proposal(conn: &rusqlite::Connection, operation_id: &str) {
+    let project_id = "disk-e2e-lifecycle";
+    let service = character_proposal::CharacterProposalService::new(
+        conn,
+        project_id,
+        |candidate, _for_write, _architecture_derivation_version| {
+            character_proposal::prove_character_proposal(
+                conn,
+                &generation_run_repository::GenerationRunRepository::default(),
+                project_id,
+                candidate,
+                false,
+                |_, _| Ok(()),
+                1,
+            )
+        },
+    );
+    service
+        .stage(&serde_json::json!({
+            "kind": "directory",
+            "operationId": operation_id,
+        }))
+        .expect("目录源提案应 stage");
+}
+
 #[test]
+
 fn real_project_creation_lifecycle_persists_across_reopen_test() {
     let root = temp_project("lifecycle");
 
@@ -93,15 +122,16 @@ fn real_project_creation_lifecycle_persists_across_reopen_test() {
             "蓝图应真实落盘"
         );
 
-        // 3) 蓝图角色同步：pending → complete（无名单证据 → already-satisfied）
+        // 3) 蓝图角色同步：pending → stage 目录源提案 → complete（身份 schema → proposal-staged）
         let pending = blueprints::list_pending_character_sync_operations(conn).unwrap();
         assert_eq!(pending.len(), 1);
+        stage_directory_proposal(conn, &pending[0].operation_id);
         let completed =
             blueprints::complete_character_sync_operation(conn, &pending[0].operation_id).unwrap();
         assert_eq!(completed.status, "completed");
         assert_eq!(
             completed.completion_receipt.map(|receipt| receipt.status),
-            Some("already-satisfied".to_string())
+            Some("proposal-staged".to_string())
         );
 
         // 4) 草稿创建 + 改正文

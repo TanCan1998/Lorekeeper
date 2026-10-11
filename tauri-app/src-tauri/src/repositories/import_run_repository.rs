@@ -3421,6 +3421,67 @@ fn assert_committed_effect_schema(
             Ok(())
         }
         ImportRunEffectKind::ProjectGlobalFacts => {
+            // m02 身份分支：收据含 characterProposal + proposalSource（无 roster）
+            if receipt_map
+                .get("characterProposal")
+                .is_some_and(|value| value.is_object())
+            {
+                let character_proposal = receipt_map
+                    .get("characterProposal")
+                    .and_then(|value| value.as_object())
+                    .ok_or_else(String::new)?;
+                let domain_payload = serde_json::Map::from_iter(
+                    payload_map
+                        .iter()
+                        .filter(|(key, _)| key.as_str() != "generationRunHandle")
+                        .map(|(key, value)| (key.clone(), value.clone())),
+                );
+                let proposal_source_matches = match receipt_map.get("proposalSource") {
+                    Some(proposal_source) => {
+                        canonical_equal(proposal_source, &serde_json::Value::Object(domain_payload))
+                    }
+                    None => false,
+                };
+                let valid_proposal_batch_id = character_proposal
+                    .get("proposalBatchId")
+                    .and_then(|value| value.as_str())
+                    .map(|text| {
+                        text.strip_prefix("cpb:").is_some_and(|suffix| {
+                            suffix.len() == 64
+                                && suffix
+                                    .bytes()
+                                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+                        })
+                    })
+                    .unwrap_or(false);
+                if !exact_keys(
+                    receipt_map,
+                    &[
+                        "operationId",
+                        "payloadHash",
+                        "idempotent",
+                        "core",
+                        "characterProposal",
+                        "proposalSource",
+                    ],
+                ) || receipt_map.get("operationId") != payload_map.get("operationId")
+                    || !is_sha256_value(receipt_map.get("payloadHash"))
+                    || receipt_map
+                        .get("idempotent")
+                        .and_then(|value| value.as_bool())
+                        .is_none()
+                    || !receipt_map
+                        .get("core")
+                        .is_some_and(|value| value.is_object())
+                    || !proposal_source_matches
+                    || !exact_keys(character_proposal, &["proposalBatchId", "sourceHash"])
+                    || !valid_proposal_batch_id
+                    || !is_sha256_value(character_proposal.get("sourceHash"))
+                {
+                    return Err(String::new());
+                }
+                return Ok(());
+            }
             if !exact_keys(
                 receipt_map,
                 &["operationId", "payloadHash", "idempotent", "core", "roster"],
@@ -3521,6 +3582,42 @@ fn assert_completed_blueprint_sync_operation(
                 completion,
                 &["blueprintCommitOperationId", "operationId", "status"],
             ) {
+                return Err(String::new());
+            }
+            Ok(())
+        }
+        Some("proposal-staged") => {
+            if !exact_keys(
+                completion,
+                &[
+                    "blueprintCommitOperationId",
+                    "operationId",
+                    "status",
+                    "proposalReceipt",
+                ],
+            ) || !completion
+                .get("proposalReceipt")
+                .is_some_and(|value| value.is_object())
+            {
+                return Err(String::new());
+            }
+            let proposal_receipt = completion
+                .get("proposalReceipt")
+                .and_then(|value| value.as_object())
+                .ok_or_else(String::new)?;
+            let valid_proposal_batch_id = proposal_receipt
+                .get("proposalBatchId")
+                .and_then(|value| value.as_str())
+                .map(|text| {
+                    text.strip_prefix("cpb:").is_some_and(|suffix| {
+                        suffix.len() == 64
+                            && suffix
+                                .bytes()
+                                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+                    })
+                })
+                .unwrap_or(false);
+            if !valid_proposal_batch_id || !is_sha256_value(proposal_receipt.get("sourceHash")) {
                 return Err(String::new());
             }
             Ok(())
@@ -4031,6 +4128,7 @@ pub fn commit_effect_receipt(
     batch_id: &str,
     execution: &ImportRunExecutionLease,
     now: i64,
+    session: Option<(&str, &str)>,
 ) -> Result<ImportRunEffectCommitResult, String> {
     let tx = conn
         .unchecked_transaction()
@@ -4074,7 +4172,7 @@ pub fn commit_effect_receipt(
                     serde_json::from_value(validated_receipt.payload.clone())
                         .map_err(|_| String::new())?;
                 serde_json::to_value(import_global_facts_repository::commit_in_transaction(
-                    &tx, request,
+                    &tx, request, session,
                 )?)
                 .map_err(|_| String::new())?
             }
@@ -4692,7 +4790,8 @@ pub fn complete_run(
 mod tests {
     use super::*;
     use crate::db::schema;
-    use crate::repositories::character_roster_repository;
+    use crate::repositories::generation_run_repository::GenerationRunRepository;
+    use crate::services::character_proposal;
 
     fn memory_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("内存库应可打开");
@@ -6486,6 +6585,7 @@ mod tests {
             &batch_id,
             &started.execution,
             now,
+            None,
         )
         .expect("blueprints receipt 应 commit");
         batch_id
@@ -6493,7 +6593,11 @@ mod tests {
 
     /// 基线 `prepareCommittedGlobalReceipt`：推进到 global 并
     /// prepare + commit 全局事实 receipt
-    fn prepare_committed_global_receipt(conn: &Connection, now: i64) {
+    fn prepare_committed_global_receipt(
+        conn: &Connection,
+        now: i64,
+        session: Option<(&str, &str)>,
+    ) {
         let started = start_or_resume(conn, "receipt-run", "renderer-a", now, 60_000)
             .expect("执行租约应获取");
         move_run_to_stage(conn, "global", r#"{"knowledge":["1-1"]}"#);
@@ -6553,32 +6657,55 @@ mod tests {
             "done",
             &started.execution,
             now,
+            session,
         )
         .expect("global receipt 应 commit");
     }
 
-    /// 基线角色同步名单提交载荷（`blueprint_sync` 意图）
-    fn roster_sync_payload(operation_id: &str) -> serde_json::Value {
-        serde_json::json!({
-            "operationId": operation_id,
-            "expectedRevision": 0,
-            "schemaVersion": 1,
-            "intent": "blueprint_sync",
-            "entries": [{
-                "name": "Protagonist",
-                "role": "supporting",
-                "gender": "",
-                "age": "",
-                "appearance": "",
-                "personality": "",
-                "background": "",
-                "abilities": "",
-                "motivation": "",
-                "relationships": [],
-                "arc": "",
-                "notes": "",
-            }],
-        })
+    /// 基线 `stageDirectory`：完成同步前先 stage 同一 operationId 的目录源提案
+    /// （身份 schema 项目下完成收据为 `proposal-staged`）
+    fn stage_directory_proposal(conn: &Connection, operation_id: &str) {
+        let project_id = "receipt-blueprint-project";
+        let service = character_proposal::CharacterProposalService::new(
+            conn,
+            project_id,
+            |candidate, _for_write, _architecture_derivation_version| {
+                character_proposal::prove_character_proposal(
+                    conn,
+                    &GenerationRunRepository::default(),
+                    project_id,
+                    candidate,
+                    false,
+                    |_, _| Ok(()),
+                    1,
+                )
+            },
+        );
+        service
+            .stage(&serde_json::json!({
+                "kind": "directory",
+                "operationId": operation_id,
+            }))
+            .expect("目录源提案应 stage");
+    }
+
+    /// 基线 `openCanonicalProjectFixture`：写入合法项目清单，
+    /// 使 `probe_existing_project` 返回 `Manifest`（身份分支需要）
+    fn write_project_manifest(dir: &std::path::Path, project_id: &str) {
+        let manifest_file = dir.join(".lore").join("project.json");
+        std::fs::create_dir_all(manifest_file.parent().expect("清单应有父目录"))
+            .expect("应创建 .lore 目录");
+        std::fs::write(
+            manifest_file,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "kind": "ai-novel-project",
+                "projectId": project_id,
+                "createdAt": "2026-10-06T12:00:00.000Z",
+            })
+            .to_string(),
+        )
+        .expect("应写入项目清单");
     }
 
     /// 基线 `getProjectDb().prepare('SELECT stage, status ...').get()`
@@ -6618,11 +6745,7 @@ mod tests {
         .expect("范围操作应存在");
         assert_eq!(operation.character_sync_operation.status, "pending");
 
-        character_roster_repository::commit(
-            &conn,
-            &roster_sync_payload(&operation.character_sync_operation.operation_id),
-        )
-        .expect("角色同步名单应提交");
+        stage_directory_proposal(&conn, &operation.character_sync_operation.operation_id);
         let completed = blueprint_repository::complete_character_sync_operation(
             &conn,
             &operation.character_sync_operation.operation_id,
@@ -6660,14 +6783,6 @@ mod tests {
         let now = now_ms();
         let batch_id = prepare_committed_blueprint_receipt(&conn, now);
 
-        // 提交一个「不相干」的名单操作：权威证据查不到同步操作的名单提交，
-        // 权威回执将降级为 already-satisfied，与离线伪造的 committed 不匹配
-        character_roster_repository::commit(
-            &conn,
-            &roster_sync_payload("different-roster-operation"),
-        )
-        .expect("无关名单操作应提交");
-        drop(conn);
         tamper_offline(
             &dir,
             &format!(
@@ -6698,13 +6813,13 @@ mod tests {
     }
 
     #[test]
-    fn receipt_accepts_already_satisfied_sync_completion_test() {
+    fn receipt_rejects_already_satisfied_claim_without_durable_proposal_test() {
         let (dir, conn) = receipt_file_conn("receipt-already-satisfied");
         let now = now_ms();
         let batch_id = prepare_committed_blueprint_receipt(&conn, now);
         drop(conn);
-        // 无名单提交的已完成同步：权威回执同样是 already-satisfied（无 rosterReceipt），
-        // 与离线补齐的完成回执一致，应接受重放
+        // 身份 schema 下无持久化提案的 already-satisfied 声明：权威完成回执
+        // 推导失败（查不到目录源提案证据），离线补齐的完成回执应按损坏拒绝
         tamper_offline(
             &dir,
             r#"
@@ -6720,10 +6835,12 @@ mod tests {
       "#,
         );
         let conn = file_conn(&dir);
-        let receipt = get_effect_receipt(&conn, "receipt-run", "blueprints", &batch_id)
-            .expect("reopen 后 receipt 应重放")
-            .expect("committed receipt 应存在");
-        assert_eq!(receipt.state, "committed");
+        expect_receipt_corrupted(
+            &conn,
+            "blueprints",
+            &batch_id,
+            "无持久化提案的 already-satisfied 声明",
+        );
 
         cleanup_receipt_dir(conn, &dir);
     }
@@ -6782,6 +6899,7 @@ mod tests {
             "done",
             &started.execution,
             now_ms(),
+            None,
         )
         .expect("style receipt 应 commit");
         assert_eq!(
@@ -6811,6 +6929,7 @@ mod tests {
             "done",
             &started.execution,
             now_ms(),
+            None,
         )
         .expect("已提交 receipt 应幂等重放");
         assert_eq!(replayed.receipt.state, "committed");
@@ -6857,6 +6976,7 @@ mod tests {
             "done",
             &first.execution,
             base + 102,
+            None,
         )
         .expect_err("过期执行租约应拒绝");
         assert!(error.contains("执行租约"), "实际：{error}");
@@ -6915,8 +7035,17 @@ mod tests {
         let (dir, conn) = receipt_file_conn("receipt-effect-result");
         let now = now_ms();
         let execution = prepare_style_receipt(&conn, now);
-        commit_effect_receipt(&conn, "", "receipt-run", "style", "done", &execution, now)
-            .expect("style receipt 应 commit");
+        commit_effect_receipt(
+            &conn,
+            "",
+            "receipt-run",
+            "style",
+            "done",
+            &execution,
+            now,
+            None,
+        )
+        .expect("style receipt 应 commit");
         drop(conn);
         tamper_offline(
             &dir,
@@ -7097,7 +7226,9 @@ mod tests {
     fn receipt_rejects_global_receipt_with_changed_ledger_hash_test() {
         let (dir, conn) = receipt_file_conn("receipt-global-ledger");
         let now = now_ms();
-        prepare_committed_global_receipt(&conn, now);
+        let project_id = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+        write_project_manifest(&dir, project_id);
+        prepare_committed_global_receipt(&conn, now, Some((project_id, &dir.to_string_lossy())));
         drop(conn);
         tamper_offline(
             &dir,

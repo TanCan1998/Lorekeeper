@@ -537,104 +537,112 @@ impl<'a> CharacterProposalService<'a> {
     }
 
     pub fn stage(&self, source: &Value) -> Result<Value, String> {
-        let tx = self
-            .conn
-            .unchecked_transaction()
-            .map_err(|error| error.to_string())?;
-        let result = (|| -> Result<Value, String> {
-            let mut source = source.clone();
-            if source["kind"].as_str() == Some("legacy-roster-generation") {
-                let runs = GenerationRunRepository::default();
-                let result = read_legacy_roster_generation_proof(
-                    self.conn,
-                    &runs,
-                    self.project_id,
-                    &source,
-                )?;
-                source = result["source"].clone();
+        if self.conn.is_autocommit() {
+            let tx = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
+            let result = self.stage_in_transaction(source);
+            result.and_then(|value| {
+                tx.commit()
+                    .map(|_| value)
+                    .map_err(|error| error.to_string())
+            })
+        } else {
+            // 调用方已持有事务（上游 `db.transaction()` 内调用 `stage` 的形
+            // 态）：语句直接加入调用方事务，不重复 BEGIN（rusqlite 不支持
+            // 嵌套事务）。
+            self.stage_in_transaction(source)
+        }
+    }
+
+    /// 与 `stage` 相同的写入逻辑，但由调用方持有事务。rusqlite 事务是
+    /// 连接级状态，语句直接在 `self.conn` 上执行并随调用方事务一起
+    /// 提交/回滚（对齐上游 `db.transaction(() => stage(...))()` 的原子性）。
+    pub fn stage_in_transaction(&self, source: &Value) -> Result<Value, String> {
+        let mut source = source.clone();
+        if source["kind"].as_str() == Some("legacy-roster-generation") {
+            let runs = GenerationRunRepository::default();
+            let result =
+                read_legacy_roster_generation_proof(self.conn, &runs, self.project_id, &source)?;
+            source = result["source"].clone();
+            let proposal_batch_id = proposal_batch_id_for(self.project_id, &source);
+            if proposal_exists(self.conn, &proposal_batch_id)? {
+                return self.read_in_tx(&proposal_batch_id);
+            }
+        }
+        if source["kind"].as_str() == Some("finalized-generation") {
+            let runs = GenerationRunRepository::default();
+            let normalized = normalize_finalized_character_proposal_source(
+                self.conn,
+                &runs,
+                self.project_id,
+                &source,
+            )?;
+            source = normalized["source"].clone();
+            // 仅专用主上下文支持历史 ACK；legacy 种类保留写入门禁。
+            if normalized["stableFinalizationSource"]
+                .as_bool()
+                .unwrap_or(false)
+            {
                 let proposal_batch_id = proposal_batch_id_for(self.project_id, &source);
                 if proposal_exists(self.conn, &proposal_batch_id)? {
                     return self.read_in_tx(&proposal_batch_id);
                 }
             }
-            if source["kind"].as_str() == Some("finalized-generation") {
-                let runs = GenerationRunRepository::default();
-                let normalized = normalize_finalized_character_proposal_source(
-                    self.conn,
-                    &runs,
-                    self.project_id,
-                    &source,
-                )?;
-                source = normalized["source"].clone();
-                // 仅专用主上下文支持历史 ACK；legacy 种类保留写入门禁。
-                if normalized["stableFinalizationSource"]
-                    .as_bool()
-                    .unwrap_or(false)
-                {
-                    let proposal_batch_id = proposal_batch_id_for(self.project_id, &source);
-                    if proposal_exists(self.conn, &proposal_batch_id)? {
-                        return self.read_in_tx(&proposal_batch_id);
-                    }
-                }
-            }
-            let proposal_batch_id = proposal_batch_id_for(self.project_id, &source);
-            if proposal_exists(self.conn, &proposal_batch_id)? {
-                let envelope = self.read_envelope(&proposal_batch_id)?;
-                let version = envelope.architecture_derivation_version.unwrap_or(1) as u8;
-                self.source_proof(&source, true, version)?;
-                return self.read_in_tx(&proposal_batch_id);
-            }
-            let architecture_derivation_version = if source["kind"].as_str() == Some("generation")
-                && source["inputKind"].as_str() == Some("architecture")
-            {
-                Some(2)
-            } else {
-                None
-            };
-            let version = architecture_derivation_version.unwrap_or(1) as u8;
-            let proof = self.source_proof(&source, true, version)?;
-            let revision = self.revision()?;
-            let snapshot = read_identity_snapshot(self.conn)?;
-            let items = self.resolve_items(&proof, &source, &snapshot)?;
-            let batch = json!({
-                "proposalBatchId": proposal_batch_id,
-                "revision": revision,
-                "status": "pending-approval",
-                "source": source,
-                "items": items,
-            });
-            let envelope = Envelope {
-                version: 1,
-                architecture_derivation_version,
-                project_id: self.project_id.to_string(),
-                proof: proof.clone(),
-                batch: batch.clone(),
-                decision: None,
-                created: None,
-                approval_proof: None,
-                author_edit_proof: None,
-            };
-            self.assert_finalized_source_current(&envelope)?;
-            let encoded = serde_json::to_string(&envelope).map_err(|error| error.to_string())?;
-            self.conn
-                .execute(
-                    "INSERT INTO character_identity_proposals(proposal_id,owner_character_id,source_key,source_hash,raw_value,candidate_ids_json) VALUES(?,NULL,?,?,?,?)",
-                    [
-                        proposal_batch_id.clone(),
-                        format!("character-proposal-v1:{}", self.project_id),
-                        text_hash(&encoded),
-                        encoded,
-                        "[]".to_string(),
-                    ],
-                )
-                .map_err(|error| error.to_string())?;
-            Ok(batch)
-        })();
-        result.and_then(|value| {
-            tx.commit()
-                .map(|_| value)
-                .map_err(|error| error.to_string())
-        })
+        }
+        let proposal_batch_id = proposal_batch_id_for(self.project_id, &source);
+        if proposal_exists(self.conn, &proposal_batch_id)? {
+            let envelope = self.read_envelope(&proposal_batch_id)?;
+            let version = envelope.architecture_derivation_version.unwrap_or(1) as u8;
+            self.source_proof(&source, true, version)?;
+            return self.read_in_tx(&proposal_batch_id);
+        }
+        let architecture_derivation_version = if source["kind"].as_str() == Some("generation")
+            && source["inputKind"].as_str() == Some("architecture")
+        {
+            Some(2)
+        } else {
+            None
+        };
+        let version = architecture_derivation_version.unwrap_or(1) as u8;
+        let proof = self.source_proof(&source, true, version)?;
+        let revision = self.revision()?;
+        let snapshot = read_identity_snapshot(self.conn)?;
+        let items = self.resolve_items(&proof, &source, &snapshot)?;
+        let batch = json!({
+            "proposalBatchId": proposal_batch_id,
+            "revision": revision,
+            "status": "pending-approval",
+            "source": source,
+            "items": items,
+        });
+        let envelope = Envelope {
+            version: 1,
+            architecture_derivation_version,
+            project_id: self.project_id.to_string(),
+            proof: proof.clone(),
+            batch: batch.clone(),
+            decision: None,
+            created: None,
+            approval_proof: None,
+            author_edit_proof: None,
+        };
+        self.assert_finalized_source_current(&envelope)?;
+        let encoded = serde_json::to_string(&envelope).map_err(|error| error.to_string())?;
+        self.conn
+            .execute(
+                "INSERT INTO character_identity_proposals(proposal_id,owner_character_id,source_key,source_hash,raw_value,candidate_ids_json) VALUES(?,NULL,?,?,?,?)",
+                [
+                    proposal_batch_id.clone(),
+                    format!("character-proposal-v1:{}", self.project_id),
+                    text_hash(&encoded),
+                    encoded,
+                    "[]".to_string(),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(batch)
     }
 
     pub fn cancel(&self, request: &Value) -> Result<Value, String> {

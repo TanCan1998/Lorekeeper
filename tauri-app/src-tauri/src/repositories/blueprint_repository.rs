@@ -14,10 +14,14 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::db::schema::ensure_blueprint_commit_schema;
+use crate::repositories::character_repository as characters;
 use crate::repositories::character_roster_repository::{
     self as roster, CharacterRosterEntry, CharacterRosterStatus,
 };
-
+use crate::repositories::generation_run_repository::GenerationRunRepository;
+use crate::services::character_proposal::{
+    find_character_proposal_evidence, prove_character_proposal,
+};
 /// 前端驼峰接口（对齐基线 `BlueprintData`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,9 +271,14 @@ pub struct BlueprintCharacterSyncCompletionReceipt {
     pub blueprint_commit_operation_id: String,
     pub operation_id: String,
     /// `committed` | `already-satisfied`
+    /// `committed` | `already-satisfied` | `proposal-staged`
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roster_receipt: Option<BlueprintCharacterSyncCompletionRosterReceipt>,
+    /// 身份分支（`hasCharacterIdentitySchema` 命中）返回的目录源提案
+    /// 证据；legacy 名单路径为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_receipt: Option<serde_json::Value>,
 }
 
 /// 持久的提交后工作项（可跨渲染层/应用重启恢复）
@@ -819,6 +828,36 @@ fn authoritative_character_sync_completion_receipt(
     conn: &Connection,
     operation: &BlueprintCharacterSyncOperation,
 ) -> Result<BlueprintCharacterSyncCompletionReceipt, String> {
+    // 身份 schema 项目：完成同步 = 同一 operationId 的目录源提案证据
+    // 已就位（对齐基线身份分支），不再比对名单事实。
+    if characters::has_character_identity_schema(conn) {
+        let proposal_receipt = find_character_proposal_evidence(
+            conn,
+            &serde_json::json!({
+                "kind": "directory",
+                "operationId": operation.operation_id,
+            }),
+            |project_id, candidate| {
+                prove_character_proposal(
+                    conn,
+                    &GenerationRunRepository::default(),
+                    project_id,
+                    candidate,
+                    false,
+                    |_, _| Ok(()),
+                    1,
+                )
+            },
+        )?;
+        return Ok(BlueprintCharacterSyncCompletionReceipt {
+            blueprint_commit_operation_id: operation.blueprint_commit_operation_id.clone(),
+            operation_id: operation.operation_id.clone(),
+            status: "proposal-staged".to_string(),
+            roster_receipt: None,
+            proposal_receipt: Some(proposal_receipt),
+        });
+    }
+
     let snapshot = roster::read(conn)?;
     if !matches!(
         snapshot.status,
@@ -855,6 +894,7 @@ fn authoritative_character_sync_completion_receipt(
             operation_id: operation.operation_id.clone(),
             status: "already-satisfied".to_string(),
             roster_receipt: None,
+            proposal_receipt: None,
         });
     };
 
@@ -879,6 +919,7 @@ fn authoritative_character_sync_completion_receipt(
             revision: evidence.committed_revision,
             idempotent: false,
         }),
+        proposal_receipt: None,
     })
 }
 
@@ -1138,6 +1179,16 @@ pub(crate) fn commit_range_in_transaction(
 mod tests {
     use super::*;
     use crate::db::schema::create_tables;
+
+    /// 退化为 legacy schema（无身份表）：身份分支不命中，走名单事实
+    /// 路径。对齐基线测试的 `createBlueprintDb`（只建蓝图/主台账/
+    /// 角色表，不建身份表）。
+    fn legacy_schema_db() -> Connection {
+        let conn = memory_db();
+        conn.execute_batch("DROP TABLE character_identity_meta;")
+            .expect("退化身份 schema 失败");
+        conn
+    }
 
     fn memory_db() -> Connection {
         let conn = Connection::open_in_memory().expect("内存库打开失败");
@@ -1631,7 +1682,9 @@ mod tests {
 
     #[test]
     fn list_and_get_character_sync_operations_test() {
-        let conn = memory_db();
+        // legacy schema：身份分支不命中，走名单事实路径（对齐基线
+        // createBlueprintDb 的无身份表测试库）
+        let conn = legacy_schema_db();
         assert!(list_pending_character_sync_operations(&conn)
             .unwrap()
             .is_empty());
@@ -1675,7 +1728,9 @@ mod tests {
 
     #[test]
     fn complete_character_sync_without_roster_evidence_is_already_satisfied_test() {
-        let conn = memory_db();
+        // legacy schema：身份分支不命中，走名单事实路径（对齐基线
+        // createBlueprintDb 的无身份表测试库）
+        let conn = legacy_schema_db();
         commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1])).unwrap();
 
         let completed =
@@ -1690,8 +1745,76 @@ mod tests {
     }
 
     #[test]
-    fn complete_character_sync_reports_committed_with_roster_evidence_test() {
+    fn complete_character_sync_reports_proposal_staged_with_identity_evidence_test() {
         let conn = memory_db();
+        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1])).unwrap();
+        let sync_id = character_sync_operation_id("op-1");
+
+        // 身份分支前置：渲染层以同一 operationId stage 一个目录源提案，
+        // 使 find_character_proposal_evidence 恰命中 1 个信封。
+        let project_id = "proj-test";
+        let service = crate::services::character_proposal::CharacterProposalService::new(
+            &conn,
+            project_id,
+            |source, for_write, version| {
+                prove_character_proposal(
+                    &conn,
+                    &GenerationRunRepository::default(),
+                    project_id,
+                    source,
+                    for_write,
+                    |_, _| Ok(()),
+                    version,
+                )
+            },
+        );
+        service
+            .stage(&serde_json::json!({
+                "kind": "directory",
+                "operationId": sync_id,
+            }))
+            .unwrap();
+
+        let completed = complete_character_sync_operation(&conn, &sync_id).unwrap();
+        assert_eq!(completed.status, "completed");
+        let receipt = completed.completion_receipt.clone().expect("应有完成回执");
+        assert_eq!(receipt.status, "proposal-staged");
+        assert!(receipt.roster_receipt.is_none(), "身份分支不返回名单证据");
+        let proposal_receipt = receipt.proposal_receipt.expect("应有提案证据");
+        assert!(
+            proposal_receipt["proposalBatchId"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("cpb:")),
+            "提案批次 ID 应为 cpb: 前缀哈希：{:?}",
+            proposal_receipt
+        );
+        assert!(
+            proposal_receipt["sourceHash"]
+                .as_str()
+                .is_some_and(is_sha256_hex),
+            "提案证据应含 sha256 sourceHash：{:?}",
+            proposal_receipt
+        );
+
+        // 幂等：重复完成返回同一回执（不回退已提交状态）
+        let again = complete_character_sync_operation(&conn, &sync_id).unwrap();
+        assert_eq!(again.completion_receipt, completed.completion_receipt);
+
+        // 完成后的回读仍通过权威校验
+        let fetched = get_character_sync_operation(&conn, &sync_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.status, "completed");
+        assert!(list_pending_character_sync_operations(&conn)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn complete_character_sync_reports_committed_with_roster_evidence_test() {
+        // legacy schema：名单事实路径仍返回 committed 回执（对齐基线
+        // createBlueprintDb 的无身份表测试库）
+        let conn = legacy_schema_db();
         commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1])).unwrap();
         let sync_id = character_sync_operation_id("op-1");
 
@@ -1752,7 +1875,9 @@ mod tests {
 
     #[test]
     fn complete_character_sync_rejects_missing_declared_candidate_test() {
-        let conn = memory_db();
+        // legacy schema：身份分支不命中，走名单事实路径（对齐基线
+        // createBlueprintDb 的无身份表测试库）
+        let conn = legacy_schema_db();
         let mut request = commit_request(COMMIT_MODE_FULL, 1, 1, &[1]);
         request.blueprints[0].new_character_candidates = Some(vec![serde_json::json!({
             "name": "苏晚",

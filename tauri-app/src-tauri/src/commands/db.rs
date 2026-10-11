@@ -265,8 +265,46 @@ pub(crate) fn character_roster_commit_inner(
     expected_project_path: &str,
     session: Option<&ProjectSessionContext>,
 ) -> CharacterRosterCommitResult {
-    let outcome = guard_read(state, expected_project_path, session)
-        .and_then(|()| state.with_project_db(|conn| roster::commit(conn, request)));
+    let outcome = guard_read(state, expected_project_path, session).and_then(|()| {
+        state.with_project_db(|conn| {
+            if request["intent"].as_str() == Some("manual_edit")
+                && characters::has_character_identity_schema(conn)
+            {
+                // 身份 schema 项目上的 manual_edit：作者会话提交（对齐基线
+                // captureCurrentSession + commitAuthorCharacterRoster）。
+                // guard_read 已先行校验会话，此处 None 为防御性拒绝。
+                let author_session =
+                    session.ok_or_else(|| "CHARACTER_AUTHOR_SCOPE_REQUIRED".to_string())?;
+                let assert_current = || {
+                    // 基线在作者提交内重校验 assertCurrentSession +
+                    // assertRequiredExpectedProjectPath；M8 约定断言失败
+                    // 以 panic 中断提交（闭包签名无返回通道）。
+                    let session_current = state.active_project_snapshot().is_some_and(|project| {
+                        project.project_id == author_session.project_id
+                            && project.lease_id == author_session.lease_id
+                    });
+                    let path_current =
+                        state.current_project_path().as_deref() == Some(expected_project_path);
+                    if !session_current || !path_current {
+                        panic!("项目会话已失效，已拒绝操作");
+                    }
+                };
+                let receipt = roster::commit_author_character_roster(
+                    conn,
+                    request,
+                    author_session.project_id.as_str(),
+                    author_session.lease_id.as_str(),
+                    assert_current,
+                )?;
+                serde_json::from_value(receipt)
+                    .map_err(|error| format!("作者名单提交回执解析失败：{error}"))
+            } else {
+                // TODO(B3-M5)：generationRunHandle 的 assertGenerationSources
+                // 钩子（本波不实现）
+                roster::commit(conn, request)
+            }
+        })
+    });
     match outcome {
         Ok(receipt) => CharacterRosterCommitResult {
             success: true,
@@ -3778,6 +3816,7 @@ pub(crate) fn import_run_effect_receipt_commit_inner(
             batch_id,
             execution,
             import_run_now_ms(),
+            session.map(|context| (context.project_id.as_str(), context.project_path.as_str())),
         )
     })?;
     Ok(ImportRunEffectReceiptCommitResult {
@@ -3819,7 +3858,11 @@ pub(crate) fn import_global_facts_commit_inner(
 ) -> Result<ImportGlobalFactsCommitResult, String> {
     guard_read(state, expected_project_path, session)?;
     let receipt = state.with_project_db(|conn| {
-        import_global_facts::ImportGlobalFactsRepository::commit(conn, request.clone())
+        import_global_facts::ImportGlobalFactsRepository::commit(
+            conn,
+            request.clone(),
+            session.map(|context| (context.project_id.as_str(), context.project_path.as_str())),
+        )
     })?;
     Ok(ImportGlobalFactsCommitResult {
         success: true,
@@ -4023,12 +4066,16 @@ mod tests {
     #[test]
     fn character_roster_channels_guard_and_commit_test() {
         let (state, root, session) = activated_state("roster");
+        // 身份 schema 项目上的 manual_edit 走作者会话提交（对齐基线
+        // captureCurrentSession + commitAuthorCharacterRoster）。
         let payload = serde_json::json!({
             "operationId": "op-1",
             "expectedRevision": 0,
+            "expectedIdentityRevision": 0,
             "schemaVersion": 1,
-            "intent": "initialize",
+            "intent": "manual_edit",
             "entries": [{
+                "characterId": "draft:11111111-1111-4111-8111-111111111111",
                 "name": "林清玄",
                 "role": "protagonist",
                 "gender": "",
@@ -4046,6 +4093,9 @@ mod tests {
 
         let missing_session = character_roster_commit_inner(&state, &payload, &root, None);
         assert!(!missing_session.success);
+        // 注：基线仅在 manual_edit 分支内捕获会话并抛
+        // CHARACTER_AUTHOR_SCOPE_REQUIRED；Tauri 侧 guard_read 对全部
+        // db:* 频道先行校验会话（已上线行为），故此处为门禁文案。
         assert_eq!(
             missing_session.error.as_deref(),
             Some("Error: 缺少项目会话上下文，已拒绝操作")
@@ -4065,7 +4115,9 @@ mod tests {
         assert_eq!(receipt.revision, 1);
         assert!(!receipt.idempotent);
 
-        // 校验失败同样走 MUTATING 包装
+        // 畸形负载同样走 MUTATING 包装。身份 schema 下 roster::commit
+        // 的 CHARACTER_ID_WRITE_REQUIRED guard 先于 normalizeRequest
+        // （与基线 character-roster-repository.ts:984-985 同序）。
         let invalid = character_roster_commit_inner(
             &state,
             &serde_json::json!([1, 2, 3]),
@@ -4075,7 +4127,7 @@ mod tests {
         assert!(!invalid.success);
         assert_eq!(
             invalid.error.as_deref(),
-            Some("Error: 角色名单提交请求格式无效")
+            Some("Error: CHARACTER_ID_WRITE_REQUIRED")
         );
 
         let characters = character_get_all_inner(&state, &root, Some(&session)).unwrap();
@@ -4089,7 +4141,7 @@ mod tests {
             roster::CharacterRosterMigrationState::Ready
         );
 
-        // 读频道缺会话 → 直接拒绝（不包装）
+        // 读频道缺会话 → 直接拒绝（不包裹）
         let denied = character_get_all_inner(&state, &root, None).unwrap_err();
         assert_eq!(denied, "缺少项目会话上下文，已拒绝操作");
 
@@ -4317,6 +4369,14 @@ mod tests {
     #[test]
     fn blueprint_character_sync_channels_test() {
         let (state, root, session) = activated_state("sync");
+        // legacy schema：身份分支不命中，同步完成走名单事实路径
+        // （对齐基线 createBlueprintDb 的无身份表测试库）
+        state
+            .with_project_db(|conn| {
+                conn.execute_batch("DROP TABLE character_identity_meta;")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
         let request = commit_request("full", "op-1", 1, 1, &[1]);
         assert!(blueprint_commit_range_inner(&state, &request, &root, Some(&session)).success);
         let sync_id = "blueprint-sync-op-1";
