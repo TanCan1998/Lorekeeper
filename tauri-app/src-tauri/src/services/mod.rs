@@ -10,3 +10,25 @@
 pub mod avatar_image;
 pub mod character_proposal;
 pub mod main_generation_owner;
+
+// ── 批次 G4-1：生成采集器与纯逻辑面（移植自 electron/services/）──
+// 依赖关系：source_ref 为共享内核（SourceRef/FrozenInputFingerprint 等）；
+// 各采集器（import/graph/legacy-roster/portable/current-character-projection）
+// 与纯逻辑层（plot_tree/narrative_thread/legacy_roster）互依于 services 内部，
+// 由 commands 层按需调用。
+pub mod current_character_projection;
+pub mod graph_generation;
+pub mod graph_generation_source;
+pub mod import_generation;
+pub mod import_generation_source;
+pub mod legacy_roster_generation;
+pub mod legacy_roster_generation_context;
+pub mod legacy_roster_generation_pure;
+pub mod legacy_roster_source;
+pub mod narrative_thread_generation_pure;
+pub mod plot_tree_generation_pure;
+pub mod portable_current_authority;
+pub mod portable_project_format;
+pub mod portable_runtime_freeze;
+pub mod portable_transfer_authority;
+pub mod source_ref;

@@ -14,7 +14,7 @@
 //! `source_revision_golden_test` 用基线实测输出锁定该口径。
 
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::plot_tree::{
     assert_plot_tree_snapshot, assert_stored_plot_tree_snapshot, PlotTreeBlueprintFact,
@@ -29,7 +29,7 @@ use crate::repositories::project_core_repository::resolve_writing_language;
 ///
 /// 序列化形状 = 事实集（展平）+ `sourceRevision` + `snapshot` + 可选
 /// `storedSnapshotInvalid`，与基线的对象展开顺序一致。
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlotTreeSourceBundle {
     #[serde(flatten)]

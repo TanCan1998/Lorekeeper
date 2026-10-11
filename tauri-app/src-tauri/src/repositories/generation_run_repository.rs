@@ -407,7 +407,7 @@ pub struct SourceSpan {
     pub unit: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrozenInputFingerprint {
     pub chapter_brief_hash: String,
