@@ -113,7 +113,7 @@ fn real_project_creation_lifecycle_persists_across_reopen_test() {
             end_chapter: 3,
             blueprints: (1..=3).map(blueprint).collect(),
         };
-        let receipt = blueprints::commit_range(conn, &request).expect("蓝图提交失败");
+        let receipt = blueprints::commit_range(conn, &request, None).expect("蓝图提交失败");
         assert!(!receipt.idempotent);
         assert_eq!(receipt.chapter_numbers, vec![1, 2, 3]);
         assert_eq!(

@@ -1927,9 +1927,11 @@ pub fn read(conn: &Connection) -> Result<CharacterRosterSnapshot, String> {
 ///
 /// 外部输入保持 `serde_json::Value`（而非强类型）：校验与错误文案与基线
 /// `normalizeRequest` 逐条对齐，确保失败信息仍与 Electron 一致。
+/// 对齐基线 commit 的可选 assertGenerationSources 钩子（生成源校验，事务内生效前调用）。
 pub fn commit(
     conn: &Connection,
     payload: &serde_json::Value,
+    assert_generation_sources: Option<&dyn Fn()>,
 ) -> Result<CharacterRosterCommitReceipt, String> {
     migrate_character_roster_schema(conn).map_err(|error| error.to_string())?;
     // 身份 schema 下名单写路径由 `character_identity_repository` 承载
@@ -1941,7 +1943,7 @@ pub fn commit(
     let tx = conn
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let receipt = commit_in_transaction(&tx, payload)?;
+    let receipt = commit_in_transaction(&tx, payload, assert_generation_sources)?;
     tx.commit().map_err(|error| error.to_string())?;
     Ok(receipt)
 }
@@ -1949,9 +1951,11 @@ pub fn commit(
 /// 事务体内的提交逻辑（批次 G3a 抽取）：供 [`commit`] 与
 /// `import_global_facts_repository` 的跨仓原子事务复用。
 /// 错误提前返回时 `tx` drop 即回滚，与基线 `db.transaction()` 语义一致。
+/// 对齐基线 commit 的可选 assertGenerationSources 钩子（生成源校验，事务内生效前调用）。
 pub(crate) fn commit_in_transaction(
     tx: &Transaction<'_>,
     payload: &serde_json::Value,
+    assert_generation_sources: Option<&dyn Fn()>,
 ) -> Result<CharacterRosterCommitReceipt, String> {
     let request = normalize_request(payload)?;
     let request_payload_hash = payload_hash(&request)?;
@@ -1978,6 +1982,10 @@ pub(crate) fn commit_in_transaction(
             idempotent: true,
             snapshot,
         });
+    }
+
+    if let Some(assert_sources) = assert_generation_sources {
+        assert_sources();
     }
 
     let meta = read_meta(&tx)?;
@@ -3534,6 +3542,7 @@ mod tests {
         let receipt = commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]),
+            None,
         )
         .expect("首次建档应成功");
 
@@ -3572,8 +3581,8 @@ mod tests {
     fn committing_same_operation_again_is_idempotent_test() {
         let conn = memory_db();
         let payload = initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]);
-        let first = commit(&conn, &payload).unwrap();
-        let replay = commit(&conn, &payload).expect("幂等 replay 应成功");
+        let first = commit(&conn, &payload, None).unwrap();
+        let replay = commit(&conn, &payload, None).expect("幂等 replay 应成功");
 
         assert!(replay.idempotent);
         assert_eq!(replay.revision, first.revision);
@@ -3583,6 +3592,7 @@ mod tests {
         let conflict = commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("苏白", "supporting")]),
+            None,
         );
         assert_eq!(
             conflict.unwrap_err(),
@@ -3596,11 +3606,13 @@ mod tests {
         commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]),
+            None,
         )
         .unwrap();
         let error = commit(
             &conn,
             &initialize_payload("op-2", 0, vec![entry_payload("苏白", "supporting")]),
+            None,
         )
         .unwrap_err();
         assert_eq!(error, "角色名单 revision 已过期，已拒绝覆盖");
@@ -3612,7 +3624,7 @@ mod tests {
         let mut bad_version = initialize_payload("op", 0, vec![entry_payload("甲", "protagonist")]);
         bad_version["schemaVersion"] = json!(2);
         assert_eq!(
-            commit(&conn, &bad_version).unwrap_err(),
+            commit(&conn, &bad_version, None).unwrap_err(),
             "角色名单 schema 版本不受支持"
         );
 
@@ -3620,13 +3632,13 @@ mod tests {
             "expectedRevision": 0, "schemaVersion": 1, "entries": []
         });
         assert_eq!(
-            commit(&conn, &missing_operation).unwrap_err(),
+            commit(&conn, &missing_operation, None).unwrap_err(),
             "操作 ID必须是文本"
         );
 
         let empty_entries = initialize_payload("op", 0, vec![]);
         assert_eq!(
-            commit(&conn, &empty_entries).unwrap_err(),
+            commit(&conn, &empty_entries, None).unwrap_err(),
             "角色名单不能为空"
         );
 
@@ -3638,7 +3650,7 @@ mod tests {
             "entries": [entry_payload("甲", "protagonist")],
         });
         assert_eq!(
-            commit(&conn, &bad_intent).unwrap_err(),
+            commit(&conn, &bad_intent, None).unwrap_err(),
             "角色名单提交意图无效"
         );
 
@@ -3650,11 +3662,14 @@ mod tests {
                 entry_payload("甲", "minor"),
             ],
         );
-        assert_eq!(commit(&conn, &duplicates).unwrap_err(), "角色名必须唯一");
+        assert_eq!(
+            commit(&conn, &duplicates, None).unwrap_err(),
+            "角色名必须唯一"
+        );
 
         let bad_role = initialize_payload("op", 0, vec![entry_payload("甲", "hero")]);
         assert_eq!(
-            commit(&conn, &bad_role).unwrap_err(),
+            commit(&conn, &bad_role, None).unwrap_err(),
             "角色「甲」的定位无效"
         );
 
@@ -3662,7 +3677,7 @@ mod tests {
         dangling["relationships"] = json!([{"target": "不存在", "relation": "朋友"}]);
         let payload = initialize_payload("op", 0, vec![dangling]);
         assert_eq!(
-            commit(&conn, &payload).unwrap_err(),
+            commit(&conn, &payload, None).unwrap_err(),
             "角色「甲」引用了不存在的关系目标「不存在」"
         );
     }
@@ -3680,6 +3695,7 @@ mod tests {
                     entry_payload("路人", "minor"),
                 ],
             ),
+            None,
         )
         .unwrap();
         conn.execute(
@@ -3696,7 +3712,7 @@ mod tests {
             "entries": [entry_payload("新名", "protagonist")],
             "renames": [{"originalName": "旧名", "newName": "新名"}],
         });
-        let receipt = commit(&conn, &payload).expect("手工保存应成功");
+        let receipt = commit(&conn, &payload, None).expect("手工保存应成功");
         assert_eq!(receipt.revision, 2);
         let names: Vec<String> = receipt
             .snapshot
@@ -3726,6 +3742,7 @@ mod tests {
         commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]),
+            None,
         )
         .unwrap();
         let payload = json!({
@@ -3735,7 +3752,7 @@ mod tests {
             "intent": "manual_edit",
             "entries": [],
         });
-        let receipt = commit(&conn, &payload).expect("空名单应可保存");
+        let receipt = commit(&conn, &payload, None).expect("空名单应可保存");
         assert_eq!(receipt.snapshot.status, CharacterRosterStatus::Empty);
         assert_eq!(receipt.snapshot.rendered_markdown, "");
         let left: i64 = conn
@@ -3750,6 +3767,7 @@ mod tests {
         commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]),
+            None,
         )
         .unwrap();
         let content_hash = "a".repeat(64);
@@ -3780,7 +3798,7 @@ mod tests {
             "source": source.clone(),
             "entries": [candidate],
         });
-        let receipt = commit(&conn, &payload).expect("章节推进应成功");
+        let receipt = commit(&conn, &payload, None).expect("章节推进应成功");
         let state = receipt.snapshot.entries[0]
             .current_state
             .clone()
@@ -3807,6 +3825,7 @@ mod tests {
         commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]),
+            None,
         )
         .unwrap();
 
@@ -3818,7 +3837,7 @@ mod tests {
             "entries": [entry_payload("林清玄", "protagonist")],
         });
         assert_eq!(
-            commit(&conn, &missing).unwrap_err(),
+            commit(&conn, &missing, None).unwrap_err(),
             "章节状态更新缺少定稿来源收据"
         );
 
@@ -3846,7 +3865,7 @@ mod tests {
             "entries": [candidate],
         });
         assert_eq!(
-            commit(&conn, &stale).unwrap_err(),
+            commit(&conn, &stale, None).unwrap_err(),
             "角色状态来源已失效，已拒绝过期后处理写入"
         );
     }
@@ -3893,6 +3912,7 @@ mod tests {
         let mismatch = commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("甲", "protagonist")]),
+            None,
         );
         assert_eq!(
             mismatch.unwrap_err(),
@@ -3905,7 +3925,7 @@ mod tests {
         let conn = memory_db();
         let mut existing = entry_payload("林清玄", "protagonist");
         existing["gender"] = json!("男");
-        commit(&conn, &initialize_payload("op-1", 0, vec![existing])).unwrap();
+        commit(&conn, &initialize_payload("op-1", 0, vec![existing]), None).unwrap();
 
         let mut generated = entry_payload("林清玄", "supporting");
         generated["gender"] = json!("女");
@@ -3917,7 +3937,7 @@ mod tests {
             "intent": "architecture_generation",
             "entries": [generated],
         });
-        let receipt = commit(&conn, &payload).expect("架构重生成应成功");
+        let receipt = commit(&conn, &payload, None).expect("架构重生成应成功");
         let entry = &receipt.snapshot.entries[0];
         assert_eq!(entry.gender, "男", "非空旧字段必须保留");
         assert_eq!(entry.appearance, "青衫", "空字段可由新候选补齐");
@@ -3941,6 +3961,7 @@ mod tests {
                     entry_payload("苏白", "supporting"),
                 ],
             ),
+            None,
         )
         .unwrap();
 
@@ -3954,7 +3975,7 @@ mod tests {
             "intent": "blueprint_sync",
             "entries": [candidate],
         });
-        let receipt = commit(&conn, &payload).expect("蓝图同步应成功");
+        let receipt = commit(&conn, &payload, None).expect("蓝图同步应成功");
         let entry = receipt
             .snapshot
             .entries
@@ -3973,6 +3994,7 @@ mod tests {
         let error = commit(
             &conn,
             &initialize_payload("op-1", 0, vec![entry_payload("林清玄", "protagonist")]),
+            None,
         )
         .unwrap_err();
         assert_eq!(error, "CHARACTER_ID_WRITE_REQUIRED");

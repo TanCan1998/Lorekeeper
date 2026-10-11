@@ -1026,9 +1026,11 @@ fn receipt_from_existing_operation(
 }
 
 /// `db:blueprint-commit-range` —— 单个逻辑范围只提交一次，并在同一事务内回读校验后返回收据。
+/// 对齐基线 commitRange 的可选 assertGenerationSources 钩子（生成源校验，事务内生效前调用）。
 pub fn commit_range(
     conn: &Connection,
     request: &BlueprintCommitRangeRequest,
+    assert_generation_sources: Option<&dyn Fn()>,
 ) -> Result<BlueprintCommitRangeReceipt, String> {
     assert_exact_range(request)?;
     ensure_blueprint_commit_schema(conn).map_err(|error| error.to_string())?;
@@ -1037,7 +1039,8 @@ pub fn commit_range(
     let tx = conn
         .unchecked_transaction()
         .map_err(|error| format!("开启事务失败：{error}"))?;
-    let receipt = commit_range_in_transaction(&tx, request, payload_hash)?;
+    let receipt =
+        commit_range_in_transaction(&tx, request, payload_hash, assert_generation_sources)?;
     tx.commit()
         .map_err(|error| format!("提交蓝图失败：{error}"))?;
     Ok(receipt)
@@ -1090,16 +1093,22 @@ pub fn get_committed_range_operation(
 /// 事务体内的范围提交逻辑（批次 G3a 抽取）：供 [`commit_range`] 与
 /// `import_run_repository::commit_effect_receipt` 的跨仓原子事务复用。
 /// 错误返回时 `tx` drop 即回滚，与基线 `db.transaction()` 语义一致。
+/// 对齐基线 commitRange 的可选 assertGenerationSources 钩子（生成源校验，事务内生效前调用）。
 pub(crate) fn commit_range_in_transaction(
     tx: &Transaction<'_>,
     request: &BlueprintCommitRangeRequest,
     payload_hash: String,
+    assert_generation_sources: Option<&dyn Fn()>,
 ) -> Result<BlueprintCommitRangeReceipt, String> {
     if let Some(existing) = read_commit_operation(tx, &request.operation_id)? {
         if existing.payload_hash != payload_hash {
             return Err("操作 ID 已被用于不同的蓝图提交，已拒绝覆盖".to_string());
         }
         return receipt_from_existing_operation(tx, &existing, payload_hash);
+    }
+
+    if let Some(assert_sources) = assert_generation_sources {
+        assert_sources();
     }
 
     if request.mode == COMMIT_MODE_FULL {
@@ -1484,7 +1493,7 @@ mod tests {
         let conn = memory_db();
         let request = commit_request(COMMIT_MODE_FULL, 1, 2, &[1, 2]);
 
-        let first = commit_range(&conn, &request).unwrap();
+        let first = commit_range(&conn, &request, None).unwrap();
         assert!(!first.idempotent);
         assert_eq!(first.chapter_numbers, vec![1, 2]);
         assert_eq!(first.snapshot.len(), 2);
@@ -1497,7 +1506,7 @@ mod tests {
         assert_eq!(get_all(&conn).unwrap().len(), 2);
 
         // 幂等重放
-        let replay = commit_range(&conn, &request).unwrap();
+        let replay = commit_range(&conn, &request, None).unwrap();
         assert!(replay.idempotent);
         assert_eq!(replay.payload_hash, first.payload_hash);
         assert_eq!(replay.chapter_numbers, vec![1, 2]);
@@ -1514,7 +1523,7 @@ mod tests {
         let mut conflicting = request.clone();
         conflicting.blueprints[0].title = "被篡改".to_string();
         assert_eq!(
-            commit_range(&conn, &conflicting).unwrap_err(),
+            commit_range(&conn, &conflicting, None).unwrap_err(),
             "操作 ID 已被用于不同的蓝图提交，已拒绝覆盖"
         );
     }
@@ -1529,6 +1538,7 @@ mod tests {
         let replaced = commit_range(
             &conn,
             &commit_request(COMMIT_MODE_REPLACE_RANGE, 2, 2, &[2]),
+            None,
         )
         .unwrap();
         assert_eq!(replaced.snapshot.len(), 1);
@@ -1537,7 +1547,7 @@ mod tests {
         // full：裁剪范围外章节（不同操作 ID，避免幂等冲突）
         let mut shrink = commit_request(COMMIT_MODE_FULL, 1, 1, &[1]);
         shrink.operation_id = "op-shrink".to_string();
-        commit_range(&conn, &shrink).unwrap();
+        commit_range(&conn, &shrink, None).unwrap();
         assert_eq!(get_all(&conn).unwrap().len(), 1);
     }
 
@@ -1552,7 +1562,7 @@ mod tests {
         request.blueprints[0].relationship_hints =
             Some(serde_json::json!([{ "from": "林清玄", "to": "苏晚", "relation": "师徒" }]));
 
-        let receipt = commit_range(&conn, &request).unwrap();
+        let receipt = commit_range(&conn, &request, None).unwrap();
         // 非表列字段不落库，但冻结在回执快照与角色同步输入中
         assert!(receipt.snapshot[0].new_character_candidates.is_some());
         assert!(receipt.snapshot[0].relationship_hints.is_some());
@@ -1655,7 +1665,7 @@ mod tests {
     fn read_character_sync_operation_rejects_inconsistent_status_test() {
         let conn = memory_db();
         let request = commit_request(COMMIT_MODE_FULL, 1, 1, &[1]);
-        commit_range(&conn, &request).unwrap();
+        commit_range(&conn, &request, None).unwrap();
         let sync_id = character_sync_operation_id("op-1");
 
         let pending = read_character_sync_operation(&conn, &sync_id)
@@ -1709,10 +1719,10 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1])).unwrap();
+        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1]), None).unwrap();
         let mut second = commit_request(COMMIT_MODE_REPLACE_RANGE, 2, 2, &[2]);
         second.operation_id = "op-2".to_string();
-        commit_range(&conn, &second).unwrap();
+        commit_range(&conn, &second, None).unwrap();
 
         let pending = list_pending_character_sync_operations(&conn).unwrap();
         assert_eq!(pending.len(), 2);
@@ -1751,7 +1761,7 @@ mod tests {
         // legacy schema：身份分支不命中，走名单事实路径（对齐基线
         // createBlueprintDb 的无身份表测试库）
         let conn = legacy_schema_db();
-        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1])).unwrap();
+        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1]), None).unwrap();
 
         let completed =
             complete_character_sync_operation(&conn, &character_sync_operation_id("op-1")).unwrap();
@@ -1767,7 +1777,7 @@ mod tests {
     #[test]
     fn complete_character_sync_reports_proposal_staged_with_identity_evidence_test() {
         let conn = memory_db();
-        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1])).unwrap();
+        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1]), None).unwrap();
         let sync_id = character_sync_operation_id("op-1");
 
         // 身份分支前置：渲染层以同一 operationId stage 一个目录源提案，
@@ -1835,7 +1845,7 @@ mod tests {
         // legacy schema：名单事实路径仍返回 committed 回执（对齐基线
         // createBlueprintDb 的无身份表测试库）
         let conn = legacy_schema_db();
-        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1])).unwrap();
+        commit_range(&conn, &commit_request(COMMIT_MODE_FULL, 1, 1, &[1]), None).unwrap();
         let sync_id = character_sync_operation_id("op-1");
 
         // 角色名单提交要求主台账已初始化（基线：打开项目时 init）
@@ -1867,7 +1877,7 @@ mod tests {
                 "notes": ""
             }],
         });
-        roster::commit(&conn, &payload).unwrap();
+        roster::commit(&conn, &payload, None).unwrap();
 
         let completed = complete_character_sync_operation(&conn, &sync_id).unwrap();
         assert_eq!(completed.status, "completed");
@@ -1903,7 +1913,7 @@ mod tests {
             "name": "苏晚",
             "role": "supporting"
         })]);
-        commit_range(&conn, &request).unwrap();
+        commit_range(&conn, &request, None).unwrap();
         let sync_id = character_sync_operation_id("op-1");
 
         assert_eq!(

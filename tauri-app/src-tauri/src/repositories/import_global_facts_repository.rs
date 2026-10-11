@@ -347,7 +347,7 @@ pub(crate) fn commit_in_transaction(
     });
     // 基线在 db.transaction() 内嵌套调用 CharacterRosterRepository.commit；
     // rusqlite 不支持嵌套 BEGIN，故复用抽取出的事务体（G3a）。
-    let roster = character_roster::commit_in_transaction(tx, &roster_payload)?;
+    let roster = character_roster::commit_in_transaction(tx, &roster_payload, None)?;
     let receipt = ImportGlobalFactsReceipt {
         operation_id: request.operation_id.clone(),
         payload_hash: payload_hash.clone(),

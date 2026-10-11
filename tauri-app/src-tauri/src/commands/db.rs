@@ -299,9 +299,10 @@ pub(crate) fn character_roster_commit_inner(
                 serde_json::from_value(receipt)
                     .map_err(|error| format!("作者名单提交回执解析失败：{error}"))
             } else {
-                // TODO(B3-M5)：generationRunHandle 的 assertGenerationSources
-                // 钩子（本波不实现）
-                roster::commit(conn, request)
+                // 仓储层 `assert_generation_sources` 形参已就位；真实闭包
+                // 待 generation-owner 移植批次接线（上游 db:character-roster-commit
+                // 的 generationRunHandle 分支）。
+                roster::commit(conn, request, None)
             }
         })
     });
@@ -626,7 +627,7 @@ pub(crate) fn blueprint_commit_range_inner(
     session: Option<&ProjectSessionContext>,
 ) -> BlueprintCommitRangeResult {
     let outcome = guard_read(state, expected_project_path, session)
-        .and_then(|()| state.with_project_db(|conn| blueprints::commit_range(conn, request)));
+        .and_then(|()| state.with_project_db(|conn| blueprints::commit_range(conn, request, None)));
     match outcome {
         Ok(receipt) => BlueprintCommitRangeResult {
             success: true,

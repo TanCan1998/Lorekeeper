@@ -4201,6 +4201,7 @@ pub fn commit_effect_receipt(
                     &tx,
                     &request,
                     payload_hash,
+                    None,
                 )?)
                 .map_err(|_| String::new())?
             }
