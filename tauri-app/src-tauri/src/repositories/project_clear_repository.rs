@@ -279,7 +279,7 @@ pub fn clear_generated_data(
                 "UPDATE project_core
                  SET writing_style = '', reference_works = '', global_guidance = '',
                      golden_finger = '', premise = '', worldbuilding = '',
-                     characters_arch = '', synopsis = '', character_states = '',
+                     synopsis = '', character_states = '',
                      updated_at = datetime('now')
                  WHERE id = 'main'",
                 [],
