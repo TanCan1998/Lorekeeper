@@ -83,10 +83,10 @@ describe('FinalizeChapterCommand blueprint character fallback', () => {
 
   it('uses a positive source revision when a batch draft has no editor tab', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:draft-get-meta') return { id: 33, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_draft_get_meta') return { id: 33, version: 1, status: 'draft', source: 'write' }
       throw new Error(`unexpected IPC: ${channel}`)
     })
-    vi.stubGlobal('window', { aiNovelAPI: { invoke } })
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
     const command = new FinalizeChapterCommand({
       draftPath: 'ai-novel://draft/33',
       draftContent: CONTENT,
@@ -103,36 +103,36 @@ describe('FinalizeChapterCommand blueprint character fallback', () => {
     })
     const snapshot = await command['createBatchSnapshot'](workflowContext(), PROJECT_PATH)
     expect(snapshot).toMatchObject({ contentRevision: 1, content: CONTENT, draftId: 33 })
-    expect(invoke).toHaveBeenCalledWith('db:draft-get-meta', 33, PROJECT_PATH, PROJECT_SESSION)
+    expect(invoke).toHaveBeenCalledWith('db_draft_get_meta', { id: 33, expectedProjectPath: PROJECT_PATH, projectSession: PROJECT_SESSION }, undefined)
   })
 
   it('uses this chapter blueprint characters when direct finalization omits them', async () => {
     const completedSteps = new Set<string>()
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'finalization-generation:read': {
-          const slot = (args[0] as { slot: { source: unknown; stepKey: string } }).slot
+        case 'finalization_generation_read': {
+          const slot = (args as { slot: { source: unknown; stepKey: string } }).slot
           return { view: { handle: { projectId: PROJECT_SESSION.projectId, epoch: PROJECT_SESSION.leaseId, rootActionId: 'main-root', runId: slot.stepKey }, artifacts: [], status: 'completed' },
             modelId: 'original-main-model', context: { slot }, sourceStatus: 'current',
             effect: slot.stepKey === 'chapter_notes' ? { success: true, stepKey: slot.stepKey, chapterNotes: '韩峥被洪水卷入排水井，当场死亡。', factCount: 1, blueprintUpdated: true }
               : { success: true, stepKey: slot.stepKey, applied: 0, unchanged: 0, candidates: [], unresolved: [] } }
         }
 
-        case 'prompt:load-global':
+        case 'prompt_load_global':
           return { templates: [], diagnostics: [] }
-        case 'fs:check-exists':
+        case 'fs_check_exists':
           return false
-        case 'finalized-character:read-context':
+        case 'finalized_character_read_context':
           return { contextId: 'synthetic-context-33', context: finalizedContext() }
-        case 'finalized-character:commit':
+        case 'finalized_character_commit':
           return { applied: 0, unchanged: 0, candidates: [], unresolved: [] }
-        case 'db:blueprint-get':
+        case 'db_blueprint_get':
           return { chapterNumber: 3, title: '钟楼真相', characters: ['韩峥'] }
-        case 'db:post-process-get-latest-run':
+        case 'db_post_process_get_latest_run':
           return null
-        case 'db:post-process-create-run':
+        case 'db_post_process_create_run':
           return { success: true, id: 'post-process-3' }
-        case 'db:post-process-get-steps':
+        case 'db_post_process_get_steps':
           return [...completedSteps].map((stepKey, index) => ({
             id: index + 1,
             runId: 'post-process-3',
@@ -144,16 +144,16 @@ describe('FinalizeChapterCommand blueprint character fallback', () => {
             completedAt: '2026-08-29T00:00:00.000Z',
             lastAttemptAt: '2026-08-29T00:00:00.000Z',
           }))
-        case 'db:post-process-mark-step-ok':
-          completedSteps.add(String(args[1]))
+        case 'db_post_process_mark_step_ok':
+          completedSteps.add(String(args.stepKey))
           return { success: true }
-        case 'kb:import-text':
+        case 'kb_import_text':
           return { success: true, docId: 'knowledge-3', chunkCount: 1 }
-        case 'db:finalization-link-knowledge-document':
+        case 'db_finalization_link_knowledge_document':
           return { success: true }
-        case 'db:continuity-save-finalized':
+        case 'db_continuity_save_finalized':
           return { success: true }
-        case 'db:continuity-read-source':
+        case 'db_continuity_read_source':
           return {
             status: 'valid',
             snapshot: {
@@ -168,15 +168,15 @@ describe('FinalizeChapterCommand blueprint character fallback', () => {
               projectionGeneration: 0,
             },
           }
-        case 'db:blueprint-update-notes':
+        case 'db_blueprint_update_notes':
           return { success: true, updated: true }
-        case 'db:character-roster-read':
+        case 'db_character_roster_read':
           return { status: 'empty', revision: 0, entries: [] }
         default:
           throw new Error(`unexpected IPC: ${channel}`)
       }
     })
-    vi.stubGlobal('window', { aiNovelAPI: { invoke } })
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
 
     let completionIndex = 0
     useLLMStore.setState({
@@ -227,16 +227,15 @@ describe('FinalizeChapterCommand blueprint character fallback', () => {
     })
 
     expect(invoke).toHaveBeenCalledWith(
-      'db:blueprint-get',
-      3,
-      PROJECT_PATH,
-      PROJECT_SESSION,
+      'db_blueprint_get',
+      { chapterNumber: 3, expectedProjectPath: PROJECT_PATH, projectSession: PROJECT_SESSION },
+      undefined,
     )
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'finalization-generation:read').map(([, request]) => request)).toEqual([
-      { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'chapter_notes' } },
-      { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'character_cards' } },
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'finalization_generation_read').map(([, request]) => request)).toEqual([
+      { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'chapter_notes' }, projectSession: PROJECT_SESSION },
+      { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'character_cards' }, projectSession: PROJECT_SESSION },
     ])
-    expect(invoke.mock.calls.some(([channel]) => ['db:continuity-save-finalized', 'db:blueprint-update-notes', 'finalization-generation:begin', 'finalization-generation:execute', 'finalization-generation:commit'].includes(channel))).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => ['db_continuity_save_finalized', 'db_blueprint_update_notes', 'finalization_generation_begin', 'finalization_generation_execute', 'finalization_generation_commit'].includes(channel))).toBe(false)
     expect(completedSteps).toEqual(new Set(['kb_import', 'chapter_notes', 'character_cards']))
     const visibleLogs = vi.mocked(stepCallbacks.log).mock.calls.flat().join('\n')
     expect(visibleLogs).toContain('Starting finalization and post-processing analysis')

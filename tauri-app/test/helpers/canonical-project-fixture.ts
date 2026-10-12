@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createProjectDatabase, initProjectDatabase } from '@baseline/database'
-import { CANONICAL_PROJECT_DIRECTORY, CANONICAL_PROJECT_DATABASE, createCanonicalProjectManifest } from '../../src/shared/project-format'
+import { CANONICAL_PROJECT_DIRECTORY, CANONICAL_PROJECT_DATABASE, createCanonicalProjectManifest } from '../../../src/shared/project-format'
 import { activateCanonicalProjectData } from '@baseline/services/project-data-locator'
 
 /** Test-owned new-project setup. Reopen exercises the actual production verifier;

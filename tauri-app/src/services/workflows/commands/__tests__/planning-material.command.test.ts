@@ -38,11 +38,11 @@ const originalDefaultModelId = useLLMStore.getState().defaultModelId
 describe('planning material character extraction', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.stubGlobal('window', { aiNovelAPI: { invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-proposal:stage') return proposalBatchFixture((args[0] as { source: CharacterProposalSource }).source)
-      if (channel === 'character-proposal:approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
-      if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-      if (channel === 'fs:check-exists') return false
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke: vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
+      if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
+      if (channel === 'fs_check_exists') return false
       throw new Error(`Unexpected IPC channel: ${channel}`)
     }) } })
     context.data = {}
@@ -59,16 +59,16 @@ describe('planning material character extraction', () => {
   })
 
   it('keeps extracted candidates uncommitted until the confirmation command runs', async () => {
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-proposal:stage') return proposalBatchFixture((args[0] as { source: CharacterProposalSource }).source)
-      if (channel === 'character-proposal:approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
-      if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-      if (channel === 'fs:check-exists') return false
-      if (channel === 'db:character-roster-read') {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
+      if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
+      if (channel === 'fs_check_exists') return false
+      if (channel === 'db_character_roster_read') {
         return { status: 'ready', revision: 4, entries: [] }
       }
-      if (channel === 'db:character-roster-commit') {
-        const request = args[0] as { entries: unknown[] }
+      if (channel === 'db_character_roster_commit') {
+        const request = args.request as { entries: unknown[] }
         return {
           success: true,
           receipt: { snapshot: { entries: request.entries, renderedMarkdown: '# 角色图谱' } },
@@ -77,7 +77,7 @@ describe('planning material character extraction', () => {
       throw new Error(`Unexpected IPC channel: ${channel}`)
     })
     vi.stubGlobal('window', {
-      aiNovelAPI: { invoke, on: vi.fn(), once: vi.fn(), send: vi.fn() },
+      __TAURI_INTERNALS__: { invoke },
     })
     const generateStream = vi.fn(async (_messages, streamCallbacks) => {
       streamCallbacks.onDone?.(JSON.stringify({
@@ -111,31 +111,33 @@ describe('planning material character extraction', () => {
       proposalBatchId: 'fixture-proposals', status: 'pending-approval',
     })
     expect(invoke).not.toHaveBeenCalledWith(
-      'db:character-roster-commit',
+      'db_character_roster_commit',
       expect.anything(),
-      expect.anything(),
-      expect.anything(),
+      undefined,
     )
 
     await new CommitPlanningMaterialCharactersCommand().execute({ step: {}, context, callbacks })
 
     expect(generateStream).toHaveBeenCalledOnce()
-    expect(invoke).toHaveBeenCalledWith('character-proposal:approve', expect.objectContaining({
-      proposalBatchId: 'fixture-proposals', expectedRevision: 0,
-      selections: [{ selectionKey: '1:1:character:1', action: 'create' }],
-    }), projectSession)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:character-roster-commit')).toBe(false)
+    expect(invoke).toHaveBeenCalledWith('character_proposal_approve', expect.objectContaining({
+      request: expect.objectContaining({
+        proposalBatchId: 'fixture-proposals', expectedRevision: 0,
+        selections: [{ selectionKey: '1:1:character:1', action: 'create' }],
+      }),
+      projectSession,
+    }), undefined)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_character_roster_commit')).toBe(false)
   })
 
   it('submits the author choice from the confirmation panel instead of the default adoption', async () => {
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-proposal:stage') return proposalBatchFixture((args[0] as { source: CharacterProposalSource }).source)
-      if (channel === 'character-proposal:approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
-      if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-      if (channel === 'fs:check-exists') return false
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
+      if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
+      if (channel === 'fs_check_exists') return false
       throw new Error(`Unexpected IPC channel: ${channel}`)
     })
-    vi.stubGlobal('window', { aiNovelAPI: { invoke, on: vi.fn(), once: vi.fn(), send: vi.fn() } })
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream: vi.fn(async (_messages, streamCallbacks) => {
       streamCallbacks.onDone?.(JSON.stringify({ results: [{ sourceId: '1:1', characterCards: [{ name: '周岚', role: 'supporting' }] }] }), undefined, 'stop')
       return 'planning-material-request'
@@ -149,21 +151,24 @@ describe('planning material character extraction', () => {
 
     await new CommitPlanningMaterialCharactersCommand().execute({ step: {}, context, callbacks })
 
-    expect(invoke).toHaveBeenCalledWith('character-proposal:approve', expect.objectContaining({
-      selections: [{ selectionKey: '1:1:character:1', action: 'keep-unresolved' }],
-    }), projectSession)
+    expect(invoke).toHaveBeenCalledWith('character_proposal_approve', expect.objectContaining({
+      request: expect.objectContaining({
+        selections: [{ selectionKey: '1:1:character:1', action: 'keep-unresolved' }],
+      }),
+      projectSession,
+    }), undefined)
   })
 
   it('does not commit extracted candidates after confirmation is cancelled', async () => {
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-proposal:stage') return proposalBatchFixture((args[0] as { source: CharacterProposalSource }).source)
-      if (channel === 'character-proposal:approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
-      if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-      if (channel === 'fs:check-exists') return false
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
+      if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
+      if (channel === 'fs_check_exists') return false
       throw new Error(`Unexpected IPC channel: ${channel}`)
     })
     vi.stubGlobal('window', {
-      aiNovelAPI: { invoke, on: vi.fn(), once: vi.fn(), send: vi.fn() },
+      __TAURI_INTERNALS__: { invoke },
     })
     const generateStream = vi.fn(async (_messages, streamCallbacks) => {
       streamCallbacks.onDone?.(JSON.stringify({
@@ -203,16 +208,16 @@ describe('planning material character extraction', () => {
   it.each(['bare JSON', 'one full JSON fence'] as const)(
     'accepts %s and stages normalized cards without committing them',
     async (responseFormat) => {
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-proposal:stage') return proposalBatchFixture((args[0] as { source: CharacterProposalSource }).source)
-      if (channel === 'character-proposal:approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
-      if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-      if (channel === 'fs:check-exists') return false
-      if (channel === 'db:character-roster-read') {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
+      if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
+      if (channel === 'fs_check_exists') return false
+      if (channel === 'db_character_roster_read') {
         return { status: 'ready', revision: 4, entries: [] }
       }
-      if (channel === 'db:character-roster-commit') {
-        const request = args[0] as { entries: unknown[] }
+      if (channel === 'db_character_roster_commit') {
+        const request = args.request as { entries: unknown[] }
         return {
           success: true,
           receipt: {
@@ -223,7 +228,7 @@ describe('planning material character extraction', () => {
       throw new Error(`Unexpected IPC channel: ${channel}`)
     })
     vi.stubGlobal('window', {
-      aiNovelAPI: { invoke, on: vi.fn(), once: vi.fn(), send: vi.fn() },
+      __TAURI_INTERNALS__: { invoke },
     })
     let observedPrompt = ''
     useLLMStore.setState({
@@ -260,10 +265,9 @@ describe('planning material character extraction', () => {
     expect(observedPrompt).not.toContain('缺失信息使用空字符串')
     expect(observedPrompt).not.toContain('"currentState"')
     expect(invoke).not.toHaveBeenCalledWith(
-      'db:character-roster-commit',
+      'db_character_roster_commit',
       expect.anything(),
-      expect.anything(),
-      expect.anything(),
+      undefined,
     )
     },
   )
@@ -329,16 +333,16 @@ describe('planning material character extraction', () => {
   )
 
   it('preserves separate source facts when equal names appear in two material chunks', async () => {
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-proposal:stage') return proposalBatchFixture((args[0] as { source: CharacterProposalSource }).source)
-      if (channel === 'character-proposal:approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
-      if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-      if (channel === 'fs:check-exists') return false
-      if (channel === 'db:character-roster-read') {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
+      if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
+      if (channel === 'fs_check_exists') return false
+      if (channel === 'db_character_roster_read') {
         return { status: 'ready', revision: 4, entries: [] }
       }
-      if (channel === 'db:character-roster-commit') {
-        const request = args[0] as { entries: unknown[] }
+      if (channel === 'db_character_roster_commit') {
+        const request = args.request as { entries: unknown[] }
         return {
           success: true,
           receipt: { snapshot: { entries: request.entries, renderedMarkdown: '# 角色图谱' } },
@@ -347,7 +351,7 @@ describe('planning material character extraction', () => {
       throw new Error(`Unexpected IPC channel: ${channel}`)
     })
     vi.stubGlobal('window', {
-      aiNovelAPI: { invoke, on: vi.fn(), once: vi.fn(), send: vi.fn() },
+      __TAURI_INTERNALS__: { invoke },
     })
     const generateStream = vi.fn(async (_messages, streamCallbacks) => {
       streamCallbacks.onDone?.(JSON.stringify({
@@ -466,15 +470,15 @@ describe('planning material character extraction', () => {
     ['missing', { name: '林晓' }],
     ['unsupported', { name: '林晓', role: 'mentor' }],
   ] as const)('rejects a %s character role before committing the roster', async (_case, card) => {
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-proposal:stage') return proposalBatchFixture((args[0] as { source: CharacterProposalSource }).source)
-      if (channel === 'character-proposal:approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
-      if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-      if (channel === 'fs:check-exists') return false
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
+      if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
+      if (channel === 'fs_check_exists') return false
       throw new Error(`Unexpected IPC channel: ${channel}`)
     })
     vi.stubGlobal('window', {
-      aiNovelAPI: { invoke, on: vi.fn(), once: vi.fn(), send: vi.fn() },
+      __TAURI_INTERNALS__: { invoke },
     })
     useLLMStore.setState({
       defaultModelId: 'model-1',
@@ -497,10 +501,9 @@ describe('planning material character extraction', () => {
       '角色卡提取失败（code=invalid_output；reason=invalid_item）。',
     )
     expect(invoke).not.toHaveBeenCalledWith(
-      'db:character-roster-commit',
+      'db_character_roster_commit',
       expect.anything(),
-      expect.anything(),
-      expect.anything(),
+      undefined,
     )
   })
 

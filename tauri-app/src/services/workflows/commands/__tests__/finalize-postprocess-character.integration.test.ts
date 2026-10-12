@@ -173,24 +173,24 @@ function insertFinalizedDraft(
 
 function installRealRepositoryIpc(): void {
   vi.stubGlobal('window', {
-    aiNovelAPI: {
-      invoke: async (channel: string, ...args: unknown[]) => {
+    __TAURI_INTERNALS__: {
+      invoke: async (channel: string, args: Record<string, unknown>) => {
         switch (channel) {
-          case 'finalization-generation:read': {
-            const value = owner().readFinalizationGeneration(args[0] as Parameters<ReturnType<typeof owner>['readFinalizationGeneration']>[0])
+          case 'finalization_generation_read': {
+            const value = owner().readFinalizationGeneration(args.request as Parameters<ReturnType<typeof owner>['readFinalizationGeneration']>[0])
             if (value) stageByRun.set(value.view.handle.runId, value.context.slot.stepKey)
             return value
           }
-          case 'finalization-generation:begin': {
-            selections.push(structuredClone(args[0]))
-            const value = owner().beginFinalizationGeneration(args[0] as Parameters<ReturnType<typeof owner>['beginFinalizationGeneration']>[0])
+          case 'finalization_generation_begin': {
+            selections.push(structuredClone(args.request))
+            const value = owner().beginFinalizationGeneration(args.request as Parameters<ReturnType<typeof owner>['beginFinalizationGeneration']>[0])
             stageByRun.set(value.view.handle.runId, value.context.slot.stepKey)
             return value
           }
-          case 'finalization-generation:execute': { const r = await owner().executeFinalizationGeneration(args[0] as Parameters<ReturnType<typeof owner>['executeFinalizationGeneration']>[0]); return r }
-          case 'finalization-generation:cancel': return owner().cancelFinalizationGeneration(args[0] as Parameters<ReturnType<typeof owner>['cancelFinalizationGeneration']>[0])
-          case 'finalization-generation:commit': {
-            const request = args[0] as Parameters<ReturnType<typeof owner>['commitFinalizationGeneration']>[0]
+          case 'finalization_generation_execute': { const r = await owner().executeFinalizationGeneration(args.request as Parameters<ReturnType<typeof owner>['executeFinalizationGeneration']>[0]); return r }
+          case 'finalization_generation_cancel': return owner().cancelFinalizationGeneration(args.request as Parameters<ReturnType<typeof owner>['cancelFinalizationGeneration']>[0])
+          case 'finalization_generation_commit': {
+            const request = args.request as Parameters<ReturnType<typeof owner>['commitFinalizationGeneration']>[0]
             if (stageByRun.get(request.handle.runId) === 'character_cards') {
               commitRequests.push(structuredClone(request))
               if (commitFailures-- > 0) throw new Error('network error: synthetic temporary commit failure')
@@ -198,81 +198,81 @@ function installRealRepositoryIpc(): void {
             }
             return owner().commitFinalizationGeneration(request)
           }
-          case 'prompt:load-global':
+          case 'prompt_load_global':
             return { templates: [], diagnostics: [] }
-          case 'fs:check-exists':
+          case 'fs_check_exists':
             return false
-          case 'db:draft-get-latest':
+          case 'db_draft_get_latest':
             return null
-          case 'kb:import-text':
+          case 'kb_import_text':
             return { success: true, chunkCount: 1, docId: 'doc-1' }
-          case 'db:finalization-link-knowledge-document':
+          case 'db_finalization_link_knowledge_document':
             return { success: true }
-          case 'db:continuity-save-finalized':
+          case 'db_continuity_save_finalized':
             try {
-              SummaryRepository.saveFinalizedContinuity(args[0] as SaveFinalizedContinuityRequest)
+              SummaryRepository.saveFinalizedContinuity(args.request as SaveFinalizedContinuityRequest)
               return { success: true }
             } catch (error) {
               return { success: false, error: String(error) }
             }
-          case 'db:continuity-save-character-state-candidates':
+          case 'db_continuity_save_character_state_candidates':
             try {
               SummaryRepository.saveFinalizedCharacterStateCandidates(
-                args[0] as SaveFinalizedCharacterStateCandidatesRequest,
+                args.request as SaveFinalizedCharacterStateCandidatesRequest,
               )
               return { success: true }
             } catch (error) {
               return { success: false, error: String(error) }
             }
-          case 'db:continuity-read-source':
-            return SummaryRepository.readFinalizedSource(Number(args[0]))
-          case 'db:blueprint-update-notes':
+          case 'db_continuity_read_source':
+            return SummaryRepository.readFinalizedSource(Number(args.draftId))
+          case 'db_blueprint_update_notes':
             return { success: true, updated: false }
-          case 'db:project-core-get':
+          case 'db_project_core_get':
             return ProjectCoreRepository.get()
-          case 'db:character-get-all':
+          case 'db_character_get_all':
             return CharacterRepository.getAll()
-          case 'fs:list-dir':
-          case 'db:blueprint-get-all':
-          case 'db:narrative-thread-list-relevant':
+          case 'fs_list_dir':
+          case 'db_blueprint_get_all':
+          case 'db_narrative_thread_list_relevant':
             return []
-          case 'db:continuity-list-before':
-            return SummaryRepository.listFinalizedContinuityBefore(Number(args[0]))
-          case 'kb:search-writing-context':
+          case 'db_continuity_list_before':
+            return SummaryRepository.listFinalizedContinuityBefore(Number(args.chapterNumber))
+          case 'kb_search_writing_context':
             return { success: true, value: [] }
-          case 'db:blueprint-get':
+          case 'db_blueprint_get':
             return null
-          case 'db:draft-get-finalized':
+          case 'db_draft_get_finalized':
             return getProjectDb()?.prepare(`
               SELECT id FROM drafts
               WHERE chapter_number = ? AND status = 'finalized'
               ORDER BY version DESC, id DESC LIMIT 1
-            `).get(Number(args[0])) ?? null
-          case 'db:character-roster-read':
+            `).get(Number(args.chapterNumber)) ?? null
+          case 'db_character_roster_read':
             return CharacterRosterRepository.read()
-          case 'db:character-roster-commit':
+          case 'db_character_roster_commit':
             try {
               return {
                 success: true,
-                receipt: CharacterRosterRepository.commit(args[0] as CharacterRosterCommitRequest),
+                receipt: CharacterRosterRepository.commit(args.request as CharacterRosterCommitRequest),
               }
             } catch (error) {
               return { success: false, error: String(error) }
             }
-          case 'db:post-process-get-latest-run':
-            return PostProcessRepository.getLatestRun(String(args[0]), String(args[1]))
-          case 'db:post-process-create-run':
+          case 'db_post_process_get_latest_run':
+            return PostProcessRepository.getLatestRun(String(args.sourceType), String(args.sourceId))
+          case 'db_post_process_create_run':
             return {
               success: true,
-              id: PostProcessRepository.createRun(args[0] as Parameters<typeof PostProcessRepository.createRun>[0]),
+              id: PostProcessRepository.createRun(args.params as Parameters<typeof PostProcessRepository.createRun>[0]),
             }
-          case 'db:post-process-get-steps':
-            return PostProcessRepository.getSteps(String(args[0]))
-          case 'db:post-process-mark-step-ok':
-            PostProcessRepository.markStepOk(String(args[0]), String(args[1]))
+          case 'db_post_process_get_steps':
+            return PostProcessRepository.getSteps(String(args.runId))
+          case 'db_post_process_mark_step_ok':
+            PostProcessRepository.markStepOk(String(args.runId), String(args.stepKey))
             return { success: true }
-          case 'db:post-process-mark-step-failed':
-            PostProcessRepository.markStepFailed(String(args[0]), String(args[1]), String(args[2]))
+          case 'db_post_process_mark_step_failed':
+            PostProcessRepository.markStepFailed(String(args.runId), String(args.stepKey), String(args.errorMsg))
             return { success: true }
           default:
             throw new Error(`unexpected IPC: ${channel}`)
