@@ -41,21 +41,21 @@ beforeEach(() => {
     activeRequests: new Map(),
   })
   const recoveries = new Map<string, unknown>()
-  invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'editor-inline:begin') {
+  invoke = vi.fn(async (channel: string, args: Record<string, unknown> = {}) => {
+    if (channel === 'editor_inline_begin') {
       leaseRequestCount += 1
       if (deferFirstLease && leaseRequestCount === 1) return new Promise((_resolve, reject) => { rejectFirstLease = reject })
-      const input = (args[0] as { input: { documentText: string } }).input
+      const input = (args.request as { input: { documentText: string } }).input
       const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input.documentText))), byte => byte.toString(16).padStart(2, '0')).join('')
       const recovery = { view: { handle: { projectId: 'editor-project', epoch: 'editor-epoch', rootActionId: 'root', runId: `run-${leaseRequestCount}` }, status: 'running', artifacts: [] }, modelId: 'editor-model', sourceStatus: 'current', context: { ...input, kind: 'author-draft', documentHash: hash } }
       recoveries.set(recovery.view.handle.runId, recovery)
       return recovery
     }
-    if (channel === 'editor-inline:read-recovery') return recoveries.get((args[0] as { handle: { runId: string } }).handle.runId)
-    if (channel === 'generation:read') return { handle: args[0], status: 'running', artifacts: [] }
-    if (channel === 'editor-inline:cancel') return { handle: (args[0] as { handle: object }).handle, status: 'cancelled', artifacts: [] }
-    if (channel === 'editor-inline:execute') {
-      const handle = (args[0] as { handle: object }).handle
+    if (channel === 'editor_inline_read_recovery') return recoveries.get((args.request as { handle: { runId: string } }).handle.runId)
+    if (channel === 'generation_read') return { handle: args.request, status: 'running', artifacts: [] }
+    if (channel === 'editor_inline_cancel') return { handle: (args.request as { handle: object }).handle, status: 'cancelled', artifacts: [] }
+    if (channel === 'editor_inline_execute') {
+      const handle = (args.request as { handle: object }).handle
       pendingRequestId = 'synthetic'
       return new Promise(resolve => {
         const finish = (data: { fullText: string; finishReason: string }) => {
@@ -71,21 +71,7 @@ beforeEach(() => {
     }
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn((channel: string, listener: EventListener) => {
-        listeners.set(channel, listener)
-        return () => listeners.delete(channel)
-      }),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 })
 
 afterEach(async () => {
@@ -94,7 +80,7 @@ afterEach(async () => {
   useProjectStore.setState({ currentProject: null })
   useLLMStore.setState({ defaultModelId: null, activeRequests: new Map() })
   useLocaleStore.setState({ locale: 'zh-CN' })
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 describe('CodeMirror editor AI generation boundary', () => {
@@ -133,8 +119,8 @@ describe('CodeMirror editor AI generation boundary', () => {
     await expect.element(page.getByText('生成未完整完成，结果不可应用')).toBeVisible()
     await expect.element(page.getByRole('button', { name: '替换' })).toBeDisabled()
     await expect.element(page.getByText('残缺片段')).not.toBeInTheDocument()
-    expect(invoke).toHaveBeenCalledWith('editor-inline:begin', expect.objectContaining({ input: expect.objectContaining({ action: 'refine', documentText: '原文段落' }) }), expect.any(Object))
-    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('llm:'))).toBe(false)
+    expect(invoke).toHaveBeenCalledWith('editor_inline_begin', expect.objectContaining({ request: expect.objectContaining({ input: expect.objectContaining({ action: 'refine', documentText: '原文段落' }) }), projectSession: expect.any(Object) }), undefined)
+    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('llm_'))).toBe(false)
 
   })
 
@@ -265,7 +251,7 @@ it.each([false, true])('明确 handle 恢复原候选；文件改变=%s 时只�
   const documentText = '甲😀乙'
   const documentHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(documentText))), byte => byte.toString(16).padStart(2, '0')).join('')
   invoke.mockImplementation(async (channel: string) => {
-    if (channel !== 'editor-inline:read-recovery') throw new Error('恢复不可创建或执行新请求:' + channel)
+    if (channel !== 'editor_inline_read_recovery') throw new Error('恢复不可创建或执行新请求:' + channel)
     return { view: { handle, status: 'completed', artifacts: [{ ...handle, artifactId: '原artifact', textHash: 'proof-hash', text: '替换表情', status: 'completed', compositionEligible: true }] }, modelId: '原模型', sourceStatus: 'current', context: { action: 'refine', kind: 'author-draft', documentText, documentHash, from: 1, to: 3, selectedText: '😀' } }
   })
   useLLMStore.setState({ defaultModelId: null })
@@ -288,9 +274,9 @@ it('取消调用 main；卸载仅脱离且已交付明确恢复 handle', async (
   await act(async () => page.getByRole('button', { name: '润色' }).click())
   await vi.waitFor(() => expect(navigation).toHaveBeenCalledTimes(1))
   await act(async () => page.getByRole('button', { name: '取消' }).click())
-  await vi.waitFor(() => expect(invoke.mock.calls.filter(([channel]) => channel === 'editor-inline:cancel')).toHaveLength(1))
+  await vi.waitFor(() => expect(invoke.mock.calls.filter(([channel]) => channel === 'editor_inline_cancel')).toHaveLength(1))
   await act(async () => root.render(<div />))
-  expect(invoke.mock.calls.filter(([channel]) => channel === 'editor-inline:cancel')).toHaveLength(1)
+  expect(invoke.mock.calls.filter(([channel]) => channel === 'editor_inline_cancel')).toHaveLength(1)
 })
 it('接受前 main 重读等待期间正文变化，仍保留作者新文稿', async () => {
   const handle = { projectId: 'editor-project', epoch: 'editor-epoch', rootActionId: '原预算', runId: 'CAS运行' }

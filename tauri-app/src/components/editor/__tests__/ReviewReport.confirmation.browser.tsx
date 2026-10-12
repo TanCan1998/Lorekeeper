@@ -118,8 +118,8 @@ function installIpc(confirmationId: number, currentDraftContent: string = REVIEW
     createdAt: string
     content: string
   } | null = null
-  invoke = vi.fn(async (channel: string) => {
-    if (channel === 'db:draft-get-meta') {
+  invoke = vi.fn(async (command: string) => {
+    if (command === 'db_draft_get_meta') {
       return {
         id: 1,
         chapterNumber: 1,
@@ -129,10 +129,10 @@ function installIpc(confirmationId: number, currentDraftContent: string = REVIEW
         source: 'write',
       }
     }
-    if (channel === 'db:draft-get-full') return { id: 1, content: draftContent }
-    if (channel === 'db:review-next-index') return 2
-    if (channel === 'db:review-create') return { success: true, id: confirmationId }
-    if (channel === 'db:review-get-full') {
+    if (command === 'db_draft_get_full') return { id: 1, content: draftContent }
+    if (command === 'db_review_next_index') return 2
+    if (command === 'db_review_create') return { success: true, id: confirmationId }
+    if (command === 'db_review_get_full') {
       return {
         id: 41,
         baseDraftId: 1,
@@ -143,22 +143,11 @@ function installIpc(confirmationId: number, currentDraftContent: string = REVIEW
         sourceDraft: REVIEW_SOURCE_DRAFT,
       }
     }
-    if (channel === 'db:review-get-latest') return latestReview
-    if (channel === 'db:review-cycle-get') return reviewCycle
-    throw new Error(`Unexpected IPC channel: ${channel}`)
+    if (command === 'db_review_get_latest') return latestReview
+    if (command === 'db_review_cycle_get') return reviewCycle
+    throw new Error(`Unexpected IPC channel: ${command}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   return {
     setDraftContent(content: string) {
       draftContent = content
@@ -183,15 +172,17 @@ function installIpc(confirmationId: number, currentDraftContent: string = REVIEW
 }
 
 function confirmationCreateParams() {
-  const call = invoke.mock.calls.find(([channel]) => channel === 'db:review-create')
+  const call = invoke.mock.calls.find(([channel]) => channel === 'db_review_create')
   if (!call) throw new Error('Expected the confirmed review snapshot to be persisted')
-  return call[1] as {
-    baseDraftId: number
-    reviewIndex: number
-    content: string
-    expectedSource: typeof REVIEW_SOURCE_DRAFT
-    reviewCycleId?: string
-  }
+  return (call[1] as {
+    params: {
+      baseDraftId: number
+      reviewIndex: number
+      content: string
+      expectedSource: typeof REVIEW_SOURCE_DRAFT
+      reviewCycleId?: string
+    }
+  }).params
 }
 
 function selectedModel(): HTMLSelectElement {
@@ -276,7 +267,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useLLMStore.setState(originalLLMState)
   useLocaleStore.setState(originalLocaleState)
@@ -346,7 +337,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     await act(async () => page.getByRole('button', { name: '带建议完成' }).first().click())
     expect(container?.textContent).toContain('作者带建议完成')
     await act(async () => page.getByRole('button', { name: '确认审稿清单' }).click())
-    await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
 
     const snapshot = parseHumanConfirmedReviewSnapshot(confirmationCreateParams().content)
     expect(snapshot).toMatchObject({ schemaVersion: 2, cycleId: 'cycle-1' })
@@ -364,7 +355,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     await changeSelect(severity, 'unknown')
     await act(async () => {
       await page.getByRole('button', { name: '确认审稿清单', exact: true }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
     const ignored = parseHumanConfirmedReviewSnapshot(confirmationCreateParams().content)!
     expect(ignored.items[0]).toMatchObject({ severity: 'unknown', decision: 'ignore' })
@@ -373,7 +364,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     invoke.mockClear()
     await act(async () => {
       await page.getByRole('button', { name: '重新确认审稿清单', exact: true }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
     expect(parseHumanConfirmedReviewSnapshot(confirmationCreateParams().content)!.items[0])
       .toMatchObject({ severity: 'unknown', decision: 'apply' })
@@ -404,7 +395,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     expect(container!.textContent).toContain('本章装好相册封面 — 未完成')
     await act(async () => {
       await page.getByRole('button', { name: '确认审稿清单', exact: true }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
     const ignored = parseHumanConfirmedReviewSnapshot(confirmationCreateParams().content)!
     expect(ignored.items[1]).toMatchObject({ goalId: 'uncertain', severity: 'unknown', decision: 'ignore' })
@@ -417,7 +408,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     invoke.mockClear()
     await act(async () => {
       await page.getByRole('button', { name: '重新确认审稿清单', exact: true }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
     const applied = parseHumanConfirmedReviewSnapshot(confirmationCreateParams().content)!
     expect(applied.items[1]).toMatchObject({ goalId: 'uncertain', severity: 'unknown', decision: 'apply' })
@@ -446,7 +437,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     expect(container?.textContent).toContain(RAW_AI_REPORT)
     await act(async () => {
       await page.getByRole('button', { name: '确认审稿清单' }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
 
     const confirmation = confirmationCreateParams()
@@ -505,7 +496,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     await act(async () => page.getByRole('button', { name: '确认审稿清单' }).click())
 
     await expect.element(page.getByRole('alert')).toHaveTextContent('源草稿已变化')
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(false)
   })
 
   it('rejects starting review refinement when the draft changes after confirmation', async () => {
@@ -513,7 +504,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     await renderReport()
     await act(async () => {
       await page.getByRole('button', { name: '确认审稿清单' }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
     ipc.setDraftContent(`${REVIEW_SOURCE_DRAFT.content}确认后保存的新正文。`)
 
@@ -533,7 +524,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
 
     await act(async () => {
       await page.getByRole('button', { name: 'Confirm review checklist' }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
     await act(async () => page.getByRole('button', { name: 'Revise from confirmed checklist' }).click())
 
@@ -553,7 +544,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
     await fillTextarea('#review-author-guidance', '这条总体说明不能单独启动模型。')
     await act(async () => {
       await page.getByRole('button', { name: '确认审稿清单' }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
 
     const snapshot = parseHumanConfirmedReviewSnapshot(confirmationCreateParams().content)
@@ -585,7 +576,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
 
     await act(async () => page.getByRole('button', { name: '确认审稿清单' }).click())
     await expect.element(page.getByRole('alert')).toHaveTextContent('请填写或移除空白的人工问题后再确认')
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(false)
   })
 
   it('restores persisted confirmation after leaving and returning', async () => {
@@ -596,7 +587,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
 
     await act(async () => {
       await page.getByRole('button', { name: '确认审稿清单' }).click()
-      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-create')).toBe(true))
+      await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_create')).toBe(true))
     })
     const persistedContent = confirmationCreateParams().content
     expect(parseHumanConfirmedReviewSnapshot(persistedContent)?.sourceReviewId).toBe(41)
@@ -613,7 +604,7 @@ describe('ReviewReport human-confirmed revision flow', () => {
 
     await act(async () => {
       await vi.waitFor(() => {
-        expect(invoke.mock.calls.some(([channel]) => channel === 'db:review-get-latest')).toBe(true)
+        expect(invoke.mock.calls.some(([channel]) => channel === 'db_review_get_latest')).toBe(true)
       })
     })
     await expect.element(page.getByRole('button', { name: '按确认意见修稿' })).toBeVisible()

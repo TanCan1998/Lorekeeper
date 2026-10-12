@@ -70,9 +70,9 @@ function installIpc(options: {
   authoritySequence?: AuthoritativeChapterSequence | (() => AuthoritativeChapterSequence)
   saveError?: string
 } = {}) {
-  const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'db:blueprint-get-all') return options.blueprints ?? [blueprint(1)]
-    if (channel === 'db:draft-authority-sequence') return typeof options.authoritySequence === 'function'
+  const invoke = vi.fn(async (channel: string, args: Record<string, unknown> = {}) => {
+    if (channel === 'db_blueprint_get_all') return options.blueprints ?? [blueprint(1)]
+    if (channel === 'db_draft_authority_sequence') return typeof options.authoritySequence === 'function'
       ? options.authoritySequence()
       : options.authoritySequence ?? {
           status: 'empty',
@@ -81,35 +81,24 @@ function installIpc(options: {
           duplicateChapterNumbers: [],
           authorityFingerprint: 'a'.repeat(64),
         }
-    if (channel === 'db:draft-get-finalized') {
-      const chapterNumber = args[0] as number
+    if (channel === 'db_draft_get_finalized') {
+      const chapterNumber = args.chapterNumber as number
       return options.finalizedChapter?.(chapterNumber) ?? null
     }
-    if (channel === 'db:project-clear-generated-data') {
+    if (channel === 'db_project_clear_generated_data') {
       options.onClearGeneratedText?.()
       return { success: true, cleared: ['generatedText'] }
     }
-    if (channel === 'db:blueprint-upsert-many') {
+    if (channel === 'db_blueprint_upsert_many') {
       return options.saveError
         ? { success: false, error: options.saveError }
         : { success: true }
     }
-    if (channel === 'db:blueprint-upsert') return { success: true }
-    if (channel === 'fs:list-dir') return []
+    if (channel === 'db_blueprint_upsert') return { success: true }
+    if (channel === 'fs_list_dir') return []
     throw new Error(`unexpected IPC ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   return invoke
 }
 
@@ -139,7 +128,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   useEditorStore.setState(originalEditorState)
   useLayoutStore.setState(originalLayoutState)
   useProjectStore.setState(originalProjectState)
@@ -155,8 +144,8 @@ describe('ChapterCardEditor writing entry', () => {
       expect(container?.querySelector('select')?.selectedOptions[0]?.textContent).toBe(stored.trim() ? stored : '未设定')
       const buttons = Array.from(container!.querySelectorAll('button'))
       await act(async () => buttons.find(button => button.textContent?.trim() === '保存')!.click())
-      await vi.waitFor(() => expect(invoke.mock.calls.find(call => call[0] === 'db:blueprint-upsert')?.[1])
-        .toEqual(expect.objectContaining({ role: stored })))
+      await vi.waitFor(() => expect(invoke.mock.calls.find(call => call[0] === 'db_blueprint_upsert')?.[1])
+        .toEqual(expect.objectContaining({ data: expect.objectContaining({ role: stored }) })))
       await act(async () => buttons.find(button => button.textContent?.trim() === '写作此章')!.click())
       expect(useLayoutStore.getState().chapterCreationPrefill?.role).toBe(stored)
     },
@@ -173,8 +162,8 @@ describe('ChapterCardEditor writing entry', () => {
     })
     await act(async () => Array.from(container!.querySelectorAll('button'))
       .find(button => button.textContent?.trim() === '保存')!.click())
-    await vi.waitFor(() => expect(invoke.mock.calls.find(call => call[0] === 'db:blueprint-upsert')?.[1])
-      .toEqual(expect.objectContaining({ role: '高潮' })))
+    await vi.waitFor(() => expect(invoke.mock.calls.find(call => call[0] === 'db_blueprint_upsert')?.[1])
+      .toEqual(expect.objectContaining({ data: expect.objectContaining({ role: '高潮' }) })))
     await act(async () => Array.from(container!.querySelectorAll('button'))
       .find(button => button.textContent?.trim() === '写作此章')!.click())
     expect(useLayoutStore.getState().chapterCreationPrefill?.role).toBe('高潮')
@@ -336,12 +325,14 @@ describe('ChapterCardEditor writing entry', () => {
     })
     expect(container?.textContent).not.toContain('写作第1章')
     expect(invoke).not.toHaveBeenCalledWith(
-      'db:project-clear-generated-data',
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
+      'db_project_clear_generated_data',
+      expect.objectContaining({
+        options: expect.anything(),
+        expectedProjectPath: expect.anything(),
+        projectSession: expect.anything(),
+      }),
+      undefined,
     )
-
     const recoveryButton = Array.from(container?.querySelectorAll('button') ?? [])
       .find((button) => button.textContent?.includes('清除误导入正文'))
     expect(recoveryButton).toBeDefined()
@@ -360,10 +351,13 @@ describe('ChapterCardEditor writing entry', () => {
 
     await vi.waitFor(() => {
       expect(invoke).toHaveBeenCalledWith(
-        'db:project-clear-generated-data',
-        expect.objectContaining({ generatedText: true }),
-        PROJECT_PATH,
-        expect.objectContaining({ projectPath: PROJECT_PATH }),
+        'db_project_clear_generated_data',
+        expect.objectContaining({
+          options: expect.objectContaining({ generatedText: true }),
+          expectedProjectPath: PROJECT_PATH,
+          projectSession: expect.objectContaining({ projectPath: PROJECT_PATH }),
+        }),
+        undefined,
       )
       expect(container?.textContent).toContain('写作第1章')
     })

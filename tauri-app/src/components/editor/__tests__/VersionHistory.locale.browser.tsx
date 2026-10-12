@@ -42,10 +42,7 @@ beforeEach(() => {
   })
   setActiveProjectSessionContext(PROJECT_SESSION)
   invoke = vi.fn()
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: { invoke, on: vi.fn(() => () => {}), once: vi.fn(), send: vi.fn() },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -54,8 +51,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Reflect.deleteProperty(window, 'aiNovelAPI')
-  setActiveProjectSessionContext(null)
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   useLocaleStore.setState(originalLocaleState)
   useProjectStore.setState(originalProjectState)
   vi.restoreAllMocks()
@@ -67,10 +63,10 @@ describe('VersionHistory locale', () => {
     const blueprints = new Promise<Array<{ chapterNumber: number; title: string }>>((resolve) => {
       resolveBlueprints = resolve
     })
-    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'db:blueprint-get-all') return blueprints
-      if (channel === 'db:draft-list') {
-        return args[0] === 2
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+      if (command === 'db_blueprint_get_all') return blueprints
+      if (command === 'db_draft_list') {
+        return args.chapterNumber === 2
           ? [
               { id: 21, version: 1, status: 'draft', wordCount: 1234, createdAt },
               { id: 22, version: 2, status: 'revised', wordCount: 1250, createdAt, dependenciesStale: true },
@@ -78,7 +74,7 @@ describe('VersionHistory locale', () => {
             ]
           : []
       }
-      throw new Error(`unexpected IPC: ${channel}`)
+      throw new Error(`unexpected IPC: ${command}`)
     })
 
     await act(async () => root.render(<VersionHistory projectKey={PROJECT_PATH} />))
@@ -112,9 +108,9 @@ describe('VersionHistory locale', () => {
   })
 
   it('renders the chapter-list empty state in English', async () => {
-    invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db:blueprint-get-all') return []
-      throw new Error(`unexpected IPC: ${channel}`)
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'db_blueprint_get_all') return []
+      throw new Error(`unexpected IPC: ${command}`)
     })
 
     await act(async () => root.render(<VersionHistory projectKey={PROJECT_PATH} />))

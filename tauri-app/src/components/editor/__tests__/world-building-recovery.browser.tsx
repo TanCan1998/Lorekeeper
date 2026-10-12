@@ -53,28 +53,18 @@ beforeEach(() => {
   useWorkflowStore.setState({ activeRuns: [], history: [] })
   setActiveProjectSessionContext(projectSession)
 
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke: vi.fn(async (channel: string) => {
-        if (channel === 'db:project-core-get') {
-          return { premise: '故事前提'.repeat(20), worldbuilding: '', synopsis: '', totalChapters: 20 }
-        }
-        if (channel === 'fs:read-json') return { success: true, data: structuredClone(partialFile) }
-        if (channel === 'db:character-roster-read') {
-          return { status: 'empty', revision: 0, entries: [], renderedMarkdown: '' }
-        }
-        if (channel === 'generation:list') return []
-        throw new Error(`未预期的 IPC 通道：${channel}`)
-      }),
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(),
-    },
+  const invoke = vi.fn(async (command: string) => {
+    if (command === 'db_project_core_get') {
+      return { premise: '故事前提'.repeat(20), worldbuilding: '', synopsis: '', totalChapters: 20 }
+    }
+    if (command === 'fs_read_json') return { success: true, data: structuredClone(partialFile) }
+    if (command === 'db_character_roster_read') {
+      return { status: 'empty', revision: 0, entries: [], renderedMarkdown: '' }
+    }
+    if (command === 'generation_list') return []
+    throw new Error(`未预期的 IPC 通道：${command}`)
   })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 
   container = document.createElement('div')
   document.body.append(container)
@@ -84,7 +74,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useLocaleStore.setState(originalLocaleState)
   useProjectStore.setState(originalProjectState)

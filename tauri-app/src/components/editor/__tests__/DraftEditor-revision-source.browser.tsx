@@ -33,7 +33,7 @@ beforeEach(async () => {
   document.body.append(container)
   root = createRoot(container)
   invoke = vi.fn(async (channel: string) => {
-    if (channel === 'db:draft-get-meta') {
+    if (channel === 'db_draft_get_meta') {
       return {
         id: 7,
         chapterNumber: 1,
@@ -46,9 +46,9 @@ beforeEach(async () => {
         updatedAt: '',
       }
     }
-    if (channel === 'db:blueprint-get-all' || channel === 'db:review-list') return []
-    if (channel === 'db:draft-list') return [{ id: 7, version: 1 }]
-    if (channel === 'db:revision-get-pending') {
+    if (channel === 'db_blueprint_get_all' || channel === 'db_review_list') return []
+    if (channel === 'db_draft_list') return [{ id: 7, version: 1 }]
+    if (channel === 'db_revision_get_pending') {
       return [{
         id: 31,
         baseDraftId: 7,
@@ -71,7 +71,7 @@ beforeEach(async () => {
         updatedAt: '',
       }]
     }
-    if (channel === 'db:revision-get-full') {
+    if (channel === 'db_revision_get_full') {
       return {
         id: 31,
         baseDraftId: 7,
@@ -95,21 +95,10 @@ beforeEach(async () => {
         content: REVISION,
       }
     }
-    if (channel === 'db:draft-get-full') return { id: 7, content: CURRENT }
+    if (channel === 'db_draft_get_full') return { id: 7, content: CURRENT }
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   useProjectStore.setState({
     currentProject: {
       id: PROJECT_SESSION.projectId,
@@ -153,7 +142,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useEditorStore.getState().clearTabs()
   useEditorStore.setState(originalEditorState)
@@ -174,7 +163,7 @@ describe('DraftEditor revision source binding', () => {
     expect(merge?.textContent).toContain(REVISION)
 
     await act(async () => page.getByRole('button', { name: '完成合并' }).click())
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:revision-merge')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_revision_merge')).toBe(false)
   })
 
   it('saves each dirty draft through its own retained handler after switching the active tab', async () => {
@@ -199,8 +188,8 @@ describe('DraftEditor revision source binding', () => {
     ]
     useEditorStore.setState({ tabs, activeTabId: 'draft-7', draftLedgers: {} })
     invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'db:draft-get-meta') {
-        const id = Number(args[0])
+      if (channel === 'db_draft_get_meta') {
+        const id = Number((args[0] as { id: number }).id)
         return {
           id,
           chapterNumber: id === 7 ? 1 : 2,
@@ -213,9 +202,9 @@ describe('DraftEditor revision source binding', () => {
           updatedAt: '',
         }
       }
-      if (channel === 'db:draft-list') return [{ id: 7, version: 1 }, { id: 8, version: 1 }]
-      if (channel === 'db:blueprint-get-all' || channel === 'db:review-list' || channel === 'db:revision-get-pending') return []
-      if (channel === 'db:draft-update-content') return { success: true }
+      if (channel === 'db_draft_list') return [{ id: 7, version: 1 }, { id: 8, version: 1 }]
+      if (channel === 'db_blueprint_get_all' || channel === 'db_review_list' || channel === 'db_revision_get_pending') return []
+      if (channel === 'db_draft_update_content') return { success: true }
       throw new Error(`Unexpected IPC channel: ${channel}`)
     })
 
@@ -229,8 +218,8 @@ describe('DraftEditor revision source binding', () => {
 
     await act(async () => saveDirtyEditorChangesForExit(PROJECT_PATH))
 
-    const writes = invoke.mock.calls.filter(([channel]) => channel === 'db:draft-update-content')
-    expect(writes.map(([, id, content]) => [id, content])).toEqual([
+    const writes = invoke.mock.calls.filter(([channel]) => channel === 'db_draft_update_content')
+    expect(writes.map(([, named]) => [(named as { id: number }).id, (named as { content: string }).content])).toEqual([
       [7, firstContent],
       [8, secondContent],
     ])

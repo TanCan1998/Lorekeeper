@@ -45,15 +45,7 @@ beforeEach(() => {
     projectPath: PROJECT_PATH,
   })
   invoke = vi.fn().mockResolvedValue({ success: true })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -62,7 +54,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useLocaleStore.setState(originalLocaleState)
   useProjectStore.setState(originalProjectState)

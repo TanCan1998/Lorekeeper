@@ -43,7 +43,7 @@ beforeEach(async () => {
   root = createRoot(container)
 
   invoke = vi.fn(async (channel: string) => {
-    if (channel === 'db:draft-get-meta') {
+    if (channel === 'db_draft_get_meta') {
       return {
         id: 7,
         chapterNumber: 1,
@@ -56,24 +56,13 @@ beforeEach(async () => {
         updatedAt: '2026-09-06T00:00:00.000Z',
       }
     }
-    if (channel === 'db:blueprint-get-all') return [{ chapterNumber: 1, title: '雨夜启程' }]
-    if (channel === 'db:draft-list') return [{ id: 7, version: 1 }]
-    if (channel === 'db:revision-get-pending' || channel === 'db:review-list') return []
-    if (channel === 'db:draft-update-content') return { success: true }
+    if (channel === 'db_blueprint_get_all') return [{ chapterNumber: 1, title: '雨夜启程' }]
+    if (channel === 'db_draft_list') return [{ id: 7, version: 1 }]
+    if (channel === 'db_revision_get_pending' || channel === 'db_review_list') return []
+    if (channel === 'db_draft_update_content') return { success: true }
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 
   useProjectStore.setState({
     currentProject: {
@@ -155,7 +144,7 @@ afterEach(async () => {
   refineExecute.mockRestore()
   reviewExecute.mockRestore()
   setActiveProjectSessionContext(null)
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 describe('DraftEditor AI source snapshot', () => {
@@ -184,14 +173,17 @@ describe('DraftEditor AI source snapshot', () => {
       contentRevision: 1,
     })
     expect(invoke.mock.calls).toContainEqual([
-      'db:draft-update-content',
-      7,
-      SCREEN_BODY,
-      SCREEN_BODY.length,
-      PROJECT_PATH,
-      PROJECT_SESSION,
+      'db_draft_update_content',
+      {
+        id: 7,
+        content: SCREEN_BODY,
+        wordCount: SCREEN_BODY.length,
+        expectedProjectPath: PROJECT_PATH,
+        projectSession: PROJECT_SESSION,
+      },
+      undefined,
     ])
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:draft-get-full')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_draft_get_full')).toBe(false)
   })
 
   it.each(['AI 修稿', 'AI 审稿'] as const)(
@@ -206,14 +198,14 @@ describe('DraftEditor AI source snapshot', () => {
         releaseDraftSave = resolve
       })
       invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
-        if (channel === 'db:draft-update-content') await draftSaveGate
+        if (channel === 'db_draft_update_content') await draftSaveGate
         return originalInvoke(channel, ...args)
       })
 
       await act(async () => page.getByRole('button', { name: action }).click())
       await act(async () => page.getByRole('button', { name: '确认执行' }).click())
       await vi.waitFor(() => expect(
-        invoke.mock.calls.some(([channel]) => channel === 'db:draft-update-content'),
+        invoke.mock.calls.some(([channel]) => channel === 'db_draft_update_content'),
       ).toBe(true))
 
       const bodyAfterConfirmation = `${SCREEN_BODY}，确认后继续输入。`
@@ -247,7 +239,7 @@ describe('DraftEditor AI source snapshot', () => {
     let releaseSecondSave!: () => void
     const secondSaveGate = new Promise<void>(resolve => { releaseSecondSave = resolve })
     invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'db:draft-update-content') {
+      if (channel === 'db_draft_update_content') {
         saveAttempt += 1
         if (saveAttempt === 1) return { success: false, error: '磁盘已满' }
         if (saveAttempt === 2) await secondSaveGate
