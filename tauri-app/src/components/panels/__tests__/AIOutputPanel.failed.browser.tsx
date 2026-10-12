@@ -16,7 +16,6 @@ const originalLocaleState = useLocaleStore.getState()
 const originalProjectState = useProjectStore.getState()
 const originalEditorState = useEditorStore.getState()
 const originalLayoutState = useLayoutStore.getState()
-const originalBridge = Object.getOwnPropertyDescriptor(window, 'aiNovelAPI')
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -136,13 +135,20 @@ function activeEnglishBlueprintRun(): WorkflowRun {
 }
 
 beforeEach(() => {
-  Object.defineProperty(window, 'aiNovelAPI', { configurable: true, value: {
-    invoke: async (channel: string) => {
-      if (channel === 'db:recovery-candidate-list' || channel === 'generation:list' || channel === 'generation:list-batches') return []
-      throw new Error(`Unexpected IPC: ${channel}`)
-    },
-    on: () => () => {},
-  } })
+  const invoke = vi.fn(async (command: string) => {
+    if (command === 'plugin:event|listen') return 1
+    if (command === 'plugin:event|unlisten') return undefined
+    if (command === 'db_recovery_candidate_list' || command === 'generation_list' || command === 'generation_list_batches') return []
+    throw new Error(`Unexpected IPC: ${command}`)
+  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+    invoke,
+    transformCallback: () => 1,
+  }
+  Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+    configurable: true,
+    value: { unregisterListener: vi.fn() },
+  })
   useWorkflowStore.setState({
     activeRuns: [],
     history: [failedChapterDraft()],
@@ -177,8 +183,8 @@ afterEach(async () => {
   useProjectStore.setState(originalProjectState)
   useEditorStore.setState(originalEditorState)
   useLayoutStore.setState(originalLayoutState)
-  if (originalBridge) Object.defineProperty(window, 'aiNovelAPI', originalBridge)
-  else Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  delete (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__?: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__
 })
 
 describe('AIOutputPanel failed chapter draft', () => {

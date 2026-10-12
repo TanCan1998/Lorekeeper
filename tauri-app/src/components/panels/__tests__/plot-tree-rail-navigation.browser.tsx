@@ -85,31 +85,25 @@ beforeEach(async () => {
     leaseId: project.sessionLease!,
     projectPath: project.path,
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke: vi.fn(async (channel: string) => {
-        if (channel === 'db:plot-tree-read') {
-          return {
-            writingLanguage: 'zh-CN',
-            synopsis: { content: '' },
-            blueprints: [],
-            finalizedChapters: [],
-            narrativeThreads: [],
-            sourceRevision: '0'.repeat(64),
-            snapshot: null,
-          }
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+    invoke: vi.fn(async (command: string) => {
+      if (command === 'db_plot_tree_read') {
+        return {
+          writingLanguage: 'zh-CN',
+          synopsis: { content: '' },
+          blueprints: [],
+          finalizedChapters: [],
+          narrativeThreads: [],
+          sourceRevision: '0'.repeat(64),
+          snapshot: null,
         }
-        if (channel === 'db:narrative-thread-list') return []
-        if (channel === 'db:draft-list-all') return []
-        if (channel === 'db:blueprint-get-all') return []
-        throw new Error(`unexpected IPC ${channel}`)
-      }),
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-    },
-  })
+      }
+      if (command === 'db_narrative_thread_list') return []
+      if (command === 'db_draft_list_all') return []
+      if (command === 'db_blueprint_get_all') return []
+      throw new Error(`unexpected IPC ${command}`)
+    }),
+  }
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -131,7 +125,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root?.unmount())
   container?.remove()
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useEditorStore.setState(originalEditorState)
   useLayoutStore.setState(originalLayoutState)

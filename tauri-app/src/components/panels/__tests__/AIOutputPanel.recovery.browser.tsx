@@ -91,27 +91,26 @@ beforeEach(() => {
   useEditorStore.setState({ tabs: [], activeTabId: null, draftLedgers: {} })
   useLayoutStore.setState({ sidebarView: 'project' })
   storedCandidate = candidate()
-  invoke = vi.fn(async (channel: string, candidateId?: string, visibleText?: string) => {
-    if (channel === 'db:recovery-candidate-list') return [storedCandidate]
-    if (channel === 'generation:list' || channel === 'generation:list-batches') return []
-    if (channel === 'db:recovery-candidate-update') {
-      storedCandidate = candidate({ candidateId, visibleText })
+  invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === 'plugin:event|listen') return 1
+    if (command === 'plugin:event|unlisten') return undefined
+    if (command === 'db_recovery_candidate_list') return [storedCandidate]
+    if (command === 'generation_list' || command === 'generation_list_batches') return []
+    if (command === 'db_recovery_candidate_update') {
+      storedCandidate = candidate({ candidateId: args.candidateId as string, visibleText: args.visibleText as string })
       return { success: true, candidate: storedCandidate }
     }
-    if (channel === 'db:recovery-candidate-resolve') return { success: true }
-    throw new Error(`unexpected IPC: ${channel}`)
+    if (command === 'db_recovery_candidate_resolve') return { success: true }
+    throw new Error(`unexpected IPC: ${command}`)
   })
   clipboardWrite = vi.fn().mockResolvedValue(undefined)
-  Object.assign(window, {
-    aiNovelAPI: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(),
-    },
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+    invoke,
+    transformCallback: () => 1,
+  }
+  Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+    configurable: true,
+    value: { unregisterListener: vi.fn() },
   })
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -128,7 +127,8 @@ afterEach(async () => {
   root = undefined
   container = undefined
   setActiveProjectSessionContext(null)
-  delete (window as typeof window & { aiNovelAPI?: unknown }).aiNovelAPI
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  delete (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__?: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__
 })
 
 describe('AI output recovery candidates', () => {
@@ -148,18 +148,24 @@ describe('AI output recovery candidates', () => {
       await Promise.resolve()
     })
     expect(invoke).toHaveBeenCalledWith(
-      'db:recovery-candidate-update',
-      'candidate-1',
-      '林岚推开驾驶室的门。',
-      projectPath,
-      session,
+      'db_recovery_candidate_update',
+      {
+        candidateId: 'candidate-1',
+        visibleText: '林岚推开驾驶室的门。',
+        expectedProjectPath: projectPath,
+        projectSession: session,
+      },
+      undefined,
     )
     expect(invoke).not.toHaveBeenCalledWith(
-      'db:recovery-candidate-resolve',
-      'candidate-1',
-      'continued',
-      projectPath,
-      session,
+      'db_recovery_candidate_resolve',
+      {
+        candidateId: 'candidate-1',
+        status: 'continued',
+        expectedProjectPath: projectPath,
+        projectSession: session,
+      },
+      undefined,
     )
     expect(useEditorStore.getState().tabs).toEqual([
       expect.objectContaining({
@@ -201,18 +207,21 @@ describe('AI output recovery candidates', () => {
       }),
     )
     expect(invoke).toHaveBeenCalledWith(
-      'db:recovery-candidate-update',
-      'candidate-1',
-      '林岚停下列车，保存现场。',
-      projectPath,
-      session,
+      'db_recovery_candidate_update',
+      {
+        candidateId: 'candidate-1',
+        visibleText: '林岚停下列车，保存现场。',
+        expectedProjectPath: projectPath,
+        projectSession: session,
+      },
+      undefined,
     )
-    expect(invoke.mock.calls.some(([channel]) => (
-      channel === 'fs:write-file'
-      || channel === 'db:draft-create'
-      || channel === 'db:draft-update-content'
-      || channel === 'db:finalization-upsert'
-      || channel.startsWith('kb:')
+    expect(invoke.mock.calls.some(([command]) => (
+      command === 'fs_write_file'
+      || command === 'db_draft_create'
+      || command === 'db_draft_update_content'
+      || command === 'db_finalization_upsert'
+      || command.startsWith('kb_')
     ))).toBe(false)
 
     expect(container?.querySelector('[data-shell-presentation="writer"]')).not.toBeNull()
@@ -227,20 +236,25 @@ describe('AI output recovery candidates', () => {
     })
 
     expect(invoke).toHaveBeenCalledWith(
-      'db:recovery-candidate-resolve',
-      'candidate-1',
-      'discarded',
-      projectPath,
-      session,
+      'db_recovery_candidate_resolve',
+      {
+        candidateId: 'candidate-1',
+        status: 'discarded',
+        expectedProjectPath: projectPath,
+        projectSession: session,
+      },
+      undefined,
     )
     expect(useEditorStore.getState().tabs).toEqual([])
   })
 
   it('blocks continue after the source changed while keeping copy and discard available', async () => {
-    invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db:recovery-candidate-list') return [candidate({ sourceCurrent: false })]
-      if (channel === 'db:recovery-candidate-resolve') return { success: true }
-      throw new Error(`unexpected IPC: ${channel}`)
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'plugin:event|listen') return 1
+      if (command === 'plugin:event|unlisten') return undefined
+      if (command === 'db_recovery_candidate_list') return [candidate({ sourceCurrent: false })]
+      if (command === 'db_recovery_candidate_resolve') return { success: true }
+      throw new Error(`unexpected IPC: ${command}`)
     })
     await renderWriter()
 

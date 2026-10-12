@@ -76,81 +76,72 @@ function model(overrides: Partial<ModelProfile>): ModelProfile {
 }
 
 function installIpc() {
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
-        if (channel === 'db:draft-authority-sequence') {
-          if (authorityInvalid) {
-            return {
-              status: 'invalid',
-              lastChapterNumber: 9,
-              firstGapChapterNumber: authorityInvalid.gap,
-              duplicateChapterNumbers: authorityInvalid.duplicates ?? [],
-              authorityFingerprint: 'f'.repeat(64),
-            }
-          }
+  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+    invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+      if (command === 'db_draft_authority_sequence') {
+        if (authorityInvalid) {
           return {
-            status: authoritativeNextChapter === 1 ? 'empty' : 'continuous',
-            lastChapterNumber: authoritativeNextChapter - 1,
-            nextChapterNumber: authoritativeNextChapter,
-            duplicateChapterNumbers: [],
-            authorityFingerprint: 'e'.repeat(64),
+            status: 'invalid',
+            lastChapterNumber: 9,
+            firstGapChapterNumber: authorityInvalid.gap,
+            duplicateChapterNumbers: authorityInvalid.duplicates ?? [],
+            authorityFingerprint: 'f'.repeat(64),
           }
         }
-        if (channel === 'db:blueprint-get-all') return [{ chapterNumber: 1 }]
-        if (channel === 'db:continuity-list-before') {
-          if (continuityProjectionReadError) throw continuityProjectionReadError
-          return continuityProjections
+        return {
+          status: authoritativeNextChapter === 1 ? 'empty' : 'continuous',
+          lastChapterNumber: authoritativeNextChapter - 1,
+          nextChapterNumber: authoritativeNextChapter,
+          duplicateChapterNumbers: [],
+          authorityFingerprint: 'e'.repeat(64),
         }
-        if (channel === 'db:consistency-exemption-list') return consistencyExemptions
-        if (channel === 'db:consistency-exemption-save') {
-          consistencyExemptions = [{ stableFactKey: String(args[0]), reason: String(args[1]), revoked: false }]
-          return { success: true }
+      }
+      if (command === 'db_blueprint_get_all') return [{ chapterNumber: 1 }]
+      if (command === 'db_continuity_list_before') {
+        if (continuityProjectionReadError) throw continuityProjectionReadError
+        return continuityProjections
+      }
+      if (command === 'db_consistency_exemption_list') return consistencyExemptions
+      if (command === 'db_consistency_exemption_save') {
+        consistencyExemptions = [{ stableFactKey: String(args.stableFactKey), reason: String(args.reason), revoked: false }]
+        return { success: true }
+      }
+      if (command === 'db_consistency_exemption_revoke') {
+        consistencyExemptions = consistencyExemptions.map(item => ({ ...(item as object), revoked: true }))
+        return { success: true }
+      }
+      if (command === 'db_character_get_all') return [{ id: 1 }]
+      if (command === 'db_blueprint_get') {
+        if (Number(args.chapterNumber) === missingBlueprintChapter) return null
+        return {
+          chapterNumber: 1,
+          title: '雨夜启程',
+          role: '开篇',
+          purpose: '开始旅程',
+          characters: ['沈砺'],
+          keyEvents: '收到匿名信',
+          suspenseHook: '信封背面出现陌生署名。',
+          userGuidance: '',
         }
-        if (channel === 'db:consistency-exemption-revoke') {
-          consistencyExemptions = consistencyExemptions.map(item => ({ ...(item as object), revoked: true }))
-          return { success: true }
-        }
-        if (channel === 'db:character-get-all') return [{ id: 1 }]
-        if (channel === 'db:blueprint-get') {
-          if (Number(args[0]) === missingBlueprintChapter) return null
-          return {
-            chapterNumber: 1,
-            title: '雨夜启程',
-            role: '开篇',
-            purpose: '开始旅程',
-            characters: ['沈砺'],
-            keyEvents: '收到匿名信',
-            suspenseHook: '信封背面出现陌生署名。',
-            userGuidance: '',
-          }
-        }
-        if (channel === 'fs:read-json') return creationHistoryChapter === null
-          ? { success: false }
-          : {
-              success: true,
-              data: {
-                lastUsed: {
-                  chapterNumber: creationHistoryChapter,
-                  role: '发展',
-                  purpose: '历史目的',
-                  keyEvents: '历史事件',
-                  characters: '',
-                },
+      }
+      if (command === 'fs_read_json') return creationHistoryChapter === null
+        ? { success: false }
+        : {
+            success: true,
+            data: {
+              lastUsed: {
+                chapterNumber: creationHistoryChapter,
+                role: '发展',
+                purpose: '历史目的',
+                keyEvents: '历史事件',
+                characters: '',
               },
-            }
-        if (channel === 'fs:write-json') return { success: true }
-        throw new Error(`Unexpected IPC channel: ${channel}`)
-      }),
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+            },
+          }
+      if (command === 'fs_write_json') return { success: true }
+      throw new Error(`Unexpected IPC channel: ${command}`)
+    }),
+  }
 }
 
 function selectedModel(id: string): HTMLSelectElement {
@@ -218,7 +209,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useLayoutStore.setState(originalLayoutState)
   useLLMStore.setState(originalLLMState)

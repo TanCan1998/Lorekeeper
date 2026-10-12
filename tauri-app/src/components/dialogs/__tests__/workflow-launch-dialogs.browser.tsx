@@ -13,7 +13,7 @@ import DirectoryConfigDialog from '../DirectoryConfigDialog'
 
 let root: Root
 let container: HTMLDivElement
-let invoke: ReturnType<typeof vi.fn<(channel: string, ...args: unknown[]) => Promise<unknown>>>
+let invoke: ReturnType<typeof vi.fn>
 let authoritativeNextChapter: number
 let authorityGap: number | null
 let blueprintChapterNumbers: number[]
@@ -42,20 +42,20 @@ beforeEach(() => {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
-  invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'config:get') return planningPreferences
-    if (channel === 'config:set') {
-      const patch = args[0]
+  invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === 'config_get') return planningPreferences
+    if (command === 'config_set') {
+      const patch = args.config
       if (typeof patch !== 'object' || patch === null) throw new Error('Invalid preference patch')
       planningPreferences = { ...planningPreferences, ...patch }
       return { success: true }
     }
-    if (channel === 'generation:list-directory-progress') return []
-    if (channel === 'db:blueprint-character-sync-list-pending') return []
-    if (channel === 'db:blueprint-get-all') {
+    if (command === 'generation_list_directory_progress') return []
+    if (command === 'db_blueprint_character_sync_list_pending') return []
+    if (command === 'db_blueprint_get_all') {
       return blueprintChapterNumbers.map(chapterNumber => ({ chapterNumber }))
     }
-    if (channel === 'db:draft-authority-sequence') return authorityGap === null
+    if (command === 'db_draft_authority_sequence') return authorityGap === null
       ? {
           status: authoritativeNextChapter === 1 ? 'empty' : 'continuous',
           lastChapterNumber: authoritativeNextChapter - 1,
@@ -72,25 +72,14 @@ beforeEach(() => {
         }
     return { success: true }
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 })
 
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
   useProjectStore.setState({ currentProject: null })
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 describe('workflow launch dialogs', () => {
@@ -373,26 +362,26 @@ describe('workflow launch dialogs', () => {
       createdAt: '2026-01-01 00:00:00',
       updatedAt: '2026-01-01 00:00:00',
     }
-    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'generation:list-directory-progress') return []
-      if (channel === 'db:blueprint-get-all') return []
-      if (channel === 'db:draft-authority-sequence') return {
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+      if (command === 'generation_list_directory_progress') return []
+      if (command === 'db_blueprint_get_all') return []
+      if (command === 'db_draft_authority_sequence') return {
         status: 'empty',
         lastChapterNumber: 0,
         nextChapterNumber: 1,
         duplicateChapterNumbers: [],
         authorityFingerprint: 'c'.repeat(64),
       }
-      if (channel === 'db:blueprint-character-sync-list-pending') return pending ? [operation] : []
-      if (channel === 'db:blueprint-character-sync-get') return operation
-      if (channel === 'db:blueprint-character-sync-complete') {
+      if (command === 'db_blueprint_character_sync_list_pending') return pending ? [operation] : []
+      if (command === 'db_blueprint_character_sync_get') return operation
+      if (command === 'db_blueprint_character_sync_complete') {
         pending = false
         return {
           success: true,
           operation: {
             ...operation,
             status: 'completed',
-            completionReceipt: args[1],
+            completionReceipt: args.expectedProjectPath,
           },
         }
       }
@@ -412,8 +401,8 @@ describe('workflow launch dialogs', () => {
     await expect.element(page.getByRole('button', { name: '开始生成' })).toBeEnabled()
     await act(async () => page.getByRole('button', { name: '重试角色同步' }).click())
 
-    expect(invoke.mock.calls.some(([channel]) => (
-      channel === 'db:blueprint-character-sync-complete'
+    expect(invoke.mock.calls.some(([command]) => (
+      command === 'db_blueprint_character_sync_complete'
     ))).toBe(true)
     expect(onConfirm).not.toHaveBeenCalled()
     await expect.element(page.getByRole('button', { name: '开始生成' })).toBeEnabled()
@@ -424,9 +413,9 @@ describe('workflow launch dialogs', () => {
 it('shows the committed directory chain endpoint and resumes only its explicit remaining receipt', async () => {
   const handle = { projectId: project.id, epoch: '上次会话', rootActionId: '原作者动作', runId: '最初运行' }
   const nextHandle = { ...handle, runId: '后续运行' }
-  const original = invoke.getMockImplementation() as (channel: string, ...args: unknown[]) => Promise<unknown>
-  invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'generation:list-directory-progress') return [
+  const original = invoke.getMockImplementation() as (command: string, args: Record<string, unknown>) => Promise<unknown>
+  invoke.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === 'generation_list_directory_progress') return [
       { operationId: '父提交', payloadHash: 'a'.repeat(64), sourceHandle: handle,
         requestedRange: { startChapter: 1, endChapter: 200 }, committedRange: { startChapter: 1, endChapter: 160 },
         remainingRange: { startChapter: 161, endChapter: 200 }, continuationHandle: nextHandle },
@@ -434,7 +423,7 @@ it('shows the committed directory chain endpoint and resumes only its explicit r
         requestedRange: { startChapter: 161, endChapter: 200 }, committedRange: { startChapter: 161, endChapter: 180 },
         remainingRange: { startChapter: 181, endChapter: 200 } },
     ]
-    return original(channel, ...args)
+    return original(command, args)
   })
   const onConfirm = vi.fn(async () => {})
   await act(async () => root.render(<DirectoryConfigDialog isOpen onClose={() => {}} existingCount={180} onConfirm={onConfirm} />))
@@ -500,14 +489,14 @@ it.each(['outline', 'blueprint'] as const)('rejects eleven chapters and target 1
   })
   await expect.element(page.getByText(/目标须为 1–1000 的整数/)).toBeVisible()
   expect(onConfirm).not.toHaveBeenCalled()
-  expect(invoke.mock.calls.some(([channel]) => channel === 'config:set')).toBe(false)
+  expect(invoke.mock.calls.some(([command]) => command === 'config_set')).toBe(false)
 })
 
 it.each(['outline', 'blueprint'] as const)('retains %s input and does not start generation when saving preferences fails', async kind => {
-  const original = invoke.getMockImplementation()!
-  invoke.mockImplementation(async (channel, ...args) => {
-    if (channel === 'config:set') return { success: false, error: 'disk unavailable' }
-    return original(channel, ...args)
+  const original = invoke.getMockImplementation() as (command: string, args: Record<string, unknown>) => Promise<unknown>
+  invoke.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === 'config_set') return { success: false, error: 'disk unavailable' }
+    return original(command, args)
   })
   const onConfirm = vi.fn(async () => {})
   const onClose = vi.fn()
