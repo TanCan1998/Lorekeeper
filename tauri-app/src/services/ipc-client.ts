@@ -253,6 +253,13 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'db:draft-export-snapshot': ['expectedProjectPath'],
   'db:draft-export-authority-current': ['receipt', 'expectedProjectPath'],
   'db:draft-import-finalized-batch': ['request', 'expectedProjectPath'],
+  // 批次 G4-5：主生成 owner 读面（generation:* 7 频道；
+  // 无参频道 list / list-directory-progress / list-batches
+  // 无需登记）
+  'generation:read': ['handle'],
+  'generation:read-visible-composition': ['handle'],
+  'generation:read-context': ['handle'],
+  'generation:read-batch': ['batchId'],
 }
 
 /** 频道 → Tauri 命令名（`channel:seg-name` → `channel_seg_name`）。 */

@@ -37,6 +37,7 @@ pub mod source_ref;
 pub mod agent_generation_context;
 pub mod editor_inline_generation;
 pub mod finalization_generation_source;
+pub mod generation_draft_effects; // 批次 G4-5：批量草稿效应读面（generation:* 读面依赖）
 pub mod generation_task;
 pub mod prompt_system_role;
 pub mod render_prompt;

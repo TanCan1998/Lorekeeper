@@ -257,6 +257,14 @@ pub fn run() {
             commands::review_revision_commit_review,
             commands::review_revision_commit_revision,
             commands::review_revision_read_recovery,
+            // 批次 G4-5：主生成 owner 读面（generation:* 7 频道）
+            commands::generation_read,
+            commands::generation_list,
+            commands::generation_list_directory_progress,
+            commands::generation_read_visible_composition,
+            commands::generation_read_context,
+            commands::generation_read_batch,
+            commands::generation_list_batches,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,
