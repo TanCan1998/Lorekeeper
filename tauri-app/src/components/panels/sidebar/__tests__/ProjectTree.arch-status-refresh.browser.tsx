@@ -67,11 +67,11 @@ beforeEach(() => {
   setActiveProjectSessionContext(PROJECT_SESSION)
 
   invoke = vi.fn(async (channel: string) => {
-    if (channel === 'fs:list-dir' || channel === 'db:draft-list-all') return []
-    if (channel === 'db:blueprint-get-all') {
+    if (channel === 'fs_list_dir' || channel === 'db_draft_list_all') return []
+    if (channel === 'db_blueprint_get_all') {
       return Array.from({ length: blueprintCount }, (_, index) => ({ chapterNumber: index + 1 }))
     }
-    if (channel === 'db:project-core-get') {
+    if (channel === 'db_project_core_get') {
       return {
         premise: 'P'.repeat(60),
         charactersArch: 'C'.repeat(60),
@@ -79,21 +79,13 @@ beforeEach(() => {
         synopsis,
       }
     }
-    if (channel === 'db:character-roster-read') {
+    if (channel === 'db_character_roster_read') {
       return { status: 'ready', revision: 1, entries: [], renderedMarkdown: 'Character roster' }
     }
-    if (channel === 'chapter:list-incomplete-deletions') return { success: true, operations: [] }
+    if (channel === 'chapter_list_incomplete_deletions') return { success: true, operations: [] }
     throw new Error(`Unexpected IPC channel in ProjectTree refresh test: ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 
   container = document.createElement('div')
   document.body.append(container)
@@ -103,7 +95,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useDraftStore.setState(originalDraftState)
   useLocaleStore.setState(originalLocaleState)
@@ -116,7 +108,7 @@ describe('ProjectTree architecture status refresh', () => {
   it('reflects a committed architecture file event without waiting for another workflow state change', async () => {
     await act(async () => root.render(<ProjectTree />))
 
-    const coreReadCount = () => invoke.mock.calls.filter(([channel]) => channel === 'db:project-core-get').length
+    const coreReadCount = () => invoke.mock.calls.filter(([channel]) => channel === 'db_project_core_get').length
     await act(async () => {
       await vi.waitFor(() => expect(coreReadCount()).toBeGreaterThanOrEqual(2))
     })
@@ -140,7 +132,7 @@ describe('ProjectTree architecture status refresh', () => {
   it('reflects committed blueprint count when the blueprint resource event arrives', async () => {
     await act(async () => root.render(<ProjectTree />))
 
-    const blueprintReadCount = () => invoke.mock.calls.filter(([channel]) => channel === 'db:blueprint-get-all').length
+    const blueprintReadCount = () => invoke.mock.calls.filter(([channel]) => channel === 'db_blueprint_get_all').length
     await act(async () => {
       await vi.waitFor(() => expect(blueprintReadCount()).toBeGreaterThanOrEqual(2))
     })

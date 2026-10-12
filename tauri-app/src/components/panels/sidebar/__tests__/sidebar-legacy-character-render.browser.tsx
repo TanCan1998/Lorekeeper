@@ -22,16 +22,6 @@ const originalProjectState = useProjectStore.getState()
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-interface TestVelaApi {
-  invoke: ReturnType<typeof vi.fn>
-  on: () => () => void
-  once: () => void
-  send: () => void
-  setZoomLevel: () => void
-  setZoomFactor: () => void
-  getZoomLevel: () => number
-}
-
 let root: Root | undefined
 let container: HTMLDivElement | undefined
 
@@ -74,18 +64,10 @@ function rosterRead() {
 
 function installVelaApi(response: ReturnType<typeof rosterRead>) {
   const invoke = vi.fn(async (channel: string) => {
-    if (channel === 'db:character-roster-read') return response
+    if (channel === 'db_character_roster_read') return response
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  ;(window as unknown as { aiNovelAPI: TestVelaApi }).aiNovelAPI = {
-    invoke,
-    on: () => () => {},
-    once: () => {},
-    send: () => {},
-    setZoomLevel: () => {},
-    setZoomFactor: () => {},
-    getZoomLevel: () => 0,
-  }
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 }
 
 beforeEach(() => {
@@ -110,7 +92,7 @@ afterEach(async () => {
   useLayoutStore.setState(originalLayoutState)
   useLocaleStore.setState(originalLocaleState)
   useProjectStore.setState(originalProjectState)
-  delete (window as unknown as { aiNovelAPI?: TestVelaApi }).aiNovelAPI
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 describe('Sidebar legacy character rendering', () => {

@@ -16,16 +16,6 @@ const originalProjectState = useProjectStore.getState()
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-interface TestVelaApi {
-  invoke: ReturnType<typeof vi.fn>
-  on: () => () => void
-  once: () => void
-  send: () => void
-  setZoomLevel: () => void
-  setZoomFactor: () => void
-  getZoomLevel: () => number
-}
-
 let root: Root | undefined
 let container: HTMLDivElement | undefined
 let invoke: ReturnType<typeof vi.fn>
@@ -75,28 +65,20 @@ beforeEach(() => {
       novelConfig: {},
     } as never,
   })
-  invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'db:blueprint-get') {
-      if (args[0] === 1 && args[1] === PROJECT_PATH) return { chapterNumber: 1, title: '旧码头的红钟' }
-      if (args[0] === 3) return { chapterNumber: 3, title: '计划中的第三章' }
-      if (args[0] === 4) return { chapterNumber: 4, title: '旧项目第四章' }
+  invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+    if (channel === 'db_blueprint_get') {
+      if (args.chapterNumber === 1 && args.expectedProjectPath === PROJECT_PATH) return { chapterNumber: 1, title: '旧码头的红钟' }
+      if (args.chapterNumber === 3) return { chapterNumber: 3, title: '计划中的第三章' }
+      if (args.chapterNumber === 4) return { chapterNumber: 4, title: '旧项目第四章' }
       return null
     }
-    if (channel === 'chapter:list-incomplete-deletions') return { success: true, operations: [] }
-    if (channel === 'db:draft-get-full') {
-      return { id: args[0], content: '# 不应读取的正文首行' }
+    if (channel === 'chapter_list_incomplete_deletions') return { success: true, operations: [] }
+    if (channel === 'db_draft_get_full') {
+      return { id: args.id, content: '# 不应读取的正文首行' }
     }
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  ;(window as unknown as { aiNovelAPI: TestVelaApi }).aiNovelAPI = {
-    invoke,
-    on: () => () => {},
-    once: () => {},
-    send: () => {},
-    setZoomLevel: () => {},
-    setZoomFactor: () => {},
-    getZoomLevel: () => 0,
-  }
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 })
 
 afterEach(async () => {
@@ -107,7 +89,7 @@ afterEach(async () => {
   clearChapterTitleCache()
   useLocaleStore.setState(originalLocaleState)
   useProjectStore.setState(originalProjectState)
-  delete (window as unknown as { aiNovelAPI?: TestVelaApi }).aiNovelAPI
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 describe('authoritative finalized chapter titles', () => {

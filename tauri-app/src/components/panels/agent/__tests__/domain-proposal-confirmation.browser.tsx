@@ -40,19 +40,12 @@ beforeEach(() => {
   cancelGeneration.mockReset()
   invoke.mockReset()
   invoke.mockImplementation(async (channel: string) => {
-    if (channel === 'db:blueprint-get-all' || channel === 'db:draft-list-all' || channel === 'db:narrative-thread-list') return []
+    if (channel === 'db_blueprint_get_all' || channel === 'db_draft_list_all' || channel === 'db_narrative_thread_list') return []
     return undefined
   })
   useAgentStore.setState({ resolveToolConfirmation, cancelGeneration })
   useProjectStore.setState({ currentProject: project as never })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke: invoke,
-      on: vi.fn(), once: vi.fn(), send: vi.fn(),
-      setZoomLevel: vi.fn(), setZoomFactor: vi.fn(), getZoomLevel: vi.fn(),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -143,23 +136,23 @@ describe('Agent domain proposal confirmation', () => {
     await page.getByRole('button', { name: 'Cancel this Agent task' }).click()
     expect(cancelGeneration).toHaveBeenCalledOnce()
     expect(resolveToolConfirmation).not.toHaveBeenCalled()
-    expect(invoke.mock.calls.every(([channel]) => channel !== 'project:update-config' && channel !== 'db:blueprint-upsert')).toBe(true)
+    expect(invoke.mock.calls.every(([channel]) => channel !== 'project_update_config' && channel !== 'db_blueprint_upsert')).toBe(true)
   })
 
   it('previews English config impacts and sends only the selected unwritten blueprint diff to the existing gate', async () => {
     useLocaleStore.setState({ locale: 'en-US', initialized: true })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db:blueprint-get-all') return [
+      if (channel === 'db_blueprint_get_all') return [
         { ...blueprint, chapterNumber: 2, title: 'The sealed door' },
         { ...blueprint, chapterNumber: 3, title: 'The old verdict' },
         { ...blueprint, chapterNumber: 4, title: 'Draft in progress' },
       ]
-      if (channel === 'db:draft-list-all') return [
+      if (channel === 'db_draft_list_all') return [
         { id: 1, chapterNumber: 1, chapterTitle: 'Opening', version: 1, status: 'finalized' },
         { id: 3, chapterNumber: 3, chapterTitle: 'The old verdict', version: 1, status: 'finalized' },
         { id: 4, chapterNumber: 4, version: 1, status: 'draft' },
       ]
-      if (channel === 'db:narrative-thread-list') return [
+      if (channel === 'db_narrative_thread_list') return [
         {
           id: 7, title: 'The blue key', type: 'foreshadowing', status: 'progressing',
           targetStartChapter: 2, targetEndChapter: 6, authorIntent: 'Reveal the witness later',
@@ -207,16 +200,16 @@ describe('Agent domain proposal confirmation', () => {
       }],
     })
     expect(invoke.mock.calls.map(([channel]) => channel)).toEqual(expect.arrayContaining([
-      'db:blueprint-get-all', 'db:draft-list-all', 'db:narrative-thread-list',
+      'db_blueprint_get_all', 'db_draft_list_all', 'db_narrative_thread_list',
     ]))
   })
 
   it('shows the Chinese impact preview but cancels it without any domain write', async () => {
     useLocaleStore.setState({ locale: 'zh-CN', initialized: true })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db:blueprint-get-all') return [{ ...blueprint, chapterNumber: 2, title: '封闭的门' }]
-      if (channel === 'db:draft-list-all') return []
-      if (channel === 'db:narrative-thread-list') return []
+      if (channel === 'db_blueprint_get_all') return [{ ...blueprint, chapterNumber: 2, title: '封闭的门' }]
+      if (channel === 'db_draft_list_all') return []
+      if (channel === 'db_narrative_thread_list') return []
       throw new Error(`unexpected channel ${channel}`)
     })
 
@@ -234,6 +227,6 @@ describe('Agent domain proposal confirmation', () => {
     await page.getByRole('button', { name: '取消本次助手任务' }).click()
     expect(cancelGeneration).toHaveBeenCalledOnce()
     expect(resolveToolConfirmation).not.toHaveBeenCalled()
-    expect(invoke.mock.calls.every(([channel]) => channel !== 'project:update-config' && channel !== 'db:blueprint-upsert')).toBe(true)
+    expect(invoke.mock.calls.every(([channel]) => channel !== 'project_update_config' && channel !== 'db_blueprint_upsert')).toBe(true)
   })
 })

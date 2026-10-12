@@ -23,21 +23,10 @@ let invoke: ReturnType<typeof vi.fn>
 
 beforeEach(async () => {
   invoke = vi.fn(async (channel: string) => {
-    if (channel === 'project:recent-remove') return { success: true }
+    if (channel === 'project_recent_remove') return { success: true }
     throw new Error(`unexpected channel ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   useLocaleStore.setState({ locale: 'zh-CN' })
   useProjectStore.setState({ currentProject: null, recentProjects: [movedProject] })
   container = document.createElement('div')
@@ -49,7 +38,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   useLocaleStore.setState(originalLocaleState)
   useProjectStore.setState(originalProjectState)
 })
@@ -64,8 +53,8 @@ describe('HomeSidebarPanel recent project removal', () => {
       await new Promise(resolve => setTimeout(resolve, 250))
     })
 
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('project:recent-remove', movedProject.path))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('project_recent_remove', { projectPath: movedProject.path }, undefined))
     expect(useProjectStore.getState().recentProjects).toEqual([])
-    expect(invoke.mock.calls.some(([channel]) => channel === 'project:delete')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'project_delete')).toBe(false)
   })
 })

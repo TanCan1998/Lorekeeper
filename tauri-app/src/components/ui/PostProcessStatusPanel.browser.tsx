@@ -53,7 +53,7 @@ function project(): ProjectData {
 
 function installIpc(steps: Array<Record<string, unknown>>, sourceLabel = '第1章定稿') {
   invoke = vi.fn(async (channel: string) => {
-    if (channel === 'db:post-process-get-latest-run') {
+    if (channel === 'db_post_process_get_latest_run') {
       return {
         id: 'run-1',
         sourceLabel,
@@ -62,21 +62,10 @@ function installIpc(steps: Array<Record<string, unknown>>, sourceLabel = '第1�
         updatedAt: '2026-08-22T09:59:36.000Z',
       }
     }
-    if (channel === 'db:post-process-get-steps') return steps
+    if (channel === 'db_post_process_get_steps') return steps
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
-    },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 }
 
 async function renderPanel(
@@ -109,7 +98,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   setActiveProjectSessionContext(null)
   useProjectStore.setState(originalProjectState)
   useLocaleStore.setState(originalLocaleState)

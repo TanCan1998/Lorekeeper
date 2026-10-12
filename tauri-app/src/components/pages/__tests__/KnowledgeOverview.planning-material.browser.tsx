@@ -39,7 +39,6 @@ const originalLocaleState = useLocaleStore.getState()
 const originalLLMState = useLLMStore.getState()
 const originalLayoutState = useLayoutStore.getState()
 const originalWorkflowState = useWorkflowStore.getState()
-const originalVelaAPI = Object.getOwnPropertyDescriptor(window, 'aiNovelAPI')
 
 let root: Root
 let container: HTMLDivElement
@@ -62,9 +61,9 @@ function workflowContext(definition: WorkflowDefinition, runId: string): Workflo
 
 beforeEach(async () => {
   invoke = vi.fn(async (channel: string) => {
-    if (channel === 'kb:list-documents') return []
-    if (channel === 'kb:stats') return { documentCount: 0, totalChunks: 0, vectorDimension: 0 }
-    if (channel === 'kb:get-vector-rebuild-status') {
+    if (channel === 'kb_list_documents') return []
+    if (channel === 'kb_stats') return { documentCount: 0, totalChunks: 0, vectorDimension: 0 }
+    if (channel === 'kb_get_vector_rebuild_status') {
       return {
         embeddingConfigured: true,
         canRebuild: false,
@@ -73,21 +72,18 @@ beforeEach(async () => {
         activeVectorDimension: 0,
       }
     }
-    if (channel === 'dialog:select-knowledge-files') {
+    if (channel === 'dialog_select_knowledge_files') {
       return [{ grantId: 'planning-grant', displayName: 'characters.md' }]
     }
-    if (channel === 'fs:grant-read-file') {
+    if (channel === 'fs_grant_read_file') {
       return { success: true, content: 'Lin Xiao is the protagonist.' }
     }
-    if (channel === 'kb:import-planning-text') {
+    if (channel === 'kb_import_planning_text') {
       return { success: true, docId: 'planning-document', chunkCount: 1 }
     }
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: { invoke, on: () => () => {}, once: () => {}, send: () => {} },
-  })
+  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
   useLocaleStore.setState({ locale: 'en-US', initialized: true })
   useLayoutStore.setState({ bottomPanelOpen: false, bottomTab: 'log' })
   useProjectStore.setState({
@@ -152,8 +148,7 @@ afterEach(async () => {
   useLLMStore.setState(originalLLMState)
   useLayoutStore.setState(originalLayoutState)
   useWorkflowStore.setState(originalWorkflowState)
-  if (originalVelaAPI) Object.defineProperty(window, 'aiNovelAPI', originalVelaAPI)
-  else Reflect.deleteProperty(window, 'aiNovelAPI')
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 async function importAndWaitForDisclosure() {
@@ -172,11 +167,14 @@ describe('planning material import disclosure', () => {
     expect(disclosure).toContain('DeepSeek V3')
     expect(disclosure).toContain('https://models.example/v1')
     expect(invoke).toHaveBeenCalledWith(
-      'kb:import-planning-text',
-      'Lin Xiao is the protagonist.',
-      'characters.md',
-      projectSession.projectPath,
-      projectSession,
+      'kb_import_planning_text',
+      {
+        text: 'Lin Xiao is the protagonist.',
+        fileName: 'characters.md',
+        expectedProjectPath: projectSession.projectPath,
+        projectSession,
+      },
+      undefined,
     )
 
     await act(async () => {
