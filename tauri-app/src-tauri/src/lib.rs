@@ -252,6 +252,11 @@ pub fn run() {
             // 批次 E（G1）：定稿提交 / 实体稿重试（finalization:* 2 频道）
             commands::finalization_commit,
             commands::finalization_retry,
+            // 批次 G4-3b：审稿修稿服务层（review-revision:* 4 频道）
+            commands::review_revision_prepare,
+            commands::review_revision_commit_review,
+            commands::review_revision_commit_revision,
+            commands::review_revision_read_recovery,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,

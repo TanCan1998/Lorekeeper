@@ -40,3 +40,9 @@ pub mod finalization_generation_source;
 pub mod generation_task;
 pub mod prompt_system_role;
 pub mod render_prompt;
+
+// ── 批次 G4-3b：审稿修稿服务层（移植自 electron/services/review-revision-*.ts）──
+// 依赖关系：review_revision_context 为纯捕获层（仓储只读 + 共享纯函数私有平移）；
+// review_revision_generation 依赖前者与生成账本仓储，由 commands 层按需调用。
+pub mod review_revision_context;
+pub mod review_revision_generation;
