@@ -25,6 +25,10 @@ import type { GenerationOutcome } from '../../../services/generation/generation-
 import { hashAuthorText } from '../../../shared/source-ref'
 import { composeDraftVisibleContinuation, isDraftVisibleTextVersion } from '../../../shared/draft-visible-text'
 import { countDraftUnits } from '../../../services/workflows/commands/generate-draft.command'
+import {
+  installTauriInternals,
+  type TauriInternalsHandle,
+} from '../../../../test/helpers/tauri-internals'
 
 const PROJECT_PATH = 'C:\\novels\\batch-completion-mode'
 const PROJECT_SESSION = {
@@ -49,6 +53,7 @@ const originalWorkflowState = useWorkflowStore.getState()
 let root: Root | undefined
 let container: HTMLDivElement | undefined
 let invoke: ReturnType<typeof vi.fn>
+let tauriInternals: TauriInternalsHandle
 let draftRecord: {
   id: number
   chapterNumber: number
@@ -228,13 +233,22 @@ function installIpc() {
   const selections = new Map<string, BeginGenerationRequest>()
   const compositions = new Map<string, VisibleCompositionReceipt>()
   const purposes = new Map<string, string>()
-  const listeners = new Map<string, Set<(data: unknown) => void>>()
-  const emit = (channel: string, data: unknown) => {
-    for (const listener of listeners.get(channel) ?? []) listener(data)
+  const readBatchProgress = () => {
+    if (batch?.mode === 'auto_finalize' && draftRecord?.status === 'finalized' && postProcessRunCreated
+      && postProcessSteps.filter(step => step.critical).every(step => step.ok)) {
+      const saved = batch.completedChapters.find(item => item.chapterNumber === draftRecord!.chapterNumber)!
+      saved.finalizationId = FINALIZATION_ID
+      saved.postProcessComplete = true
+      batch.nextChapterNumber = saved.chapterNumber === batch.range.endChapter ? null : saved.chapterNumber + 1
+    }
+    return structuredClone(batch)
   }
-  invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'generation:prepare-draft-context') {
-      const input = args[0] as { chapterNumber: number; query: string; selectedDraftIds: number[] }
+  // generation:* / finalization-generation:* 尚未迁移（不在 MIGRATED_CHANNELS，
+  // ipc-client 前置拒绝），以下命令桩当前不可达；其命名参数键按契约元组推导，
+  // 待迁移批次登记 CHANNEL_ARG_NAMES 后核对。
+  const commands: Record<string, (args: Record<string, unknown>) => unknown> = {
+    generation_prepare_draft_context: async args => {
+      const input = args.request as { chapterNumber: number; query: string; selectedDraftIds: number[] }
       return { preparationId: `browser-preparation-${input.chapterNumber}`,
         knowledgeSnapshot: { version: 1, state: 'empty', storageState: 'absent', query: input.query, topK: 5, canonicalRevision: null, documentsRevision: null, items: [] },
         selectedDrafts: await Promise.all(input.selectedDraftIds.map(async draftId => {
@@ -242,36 +256,29 @@ function installIpc() {
           return { draftId, chapterNumber: draftRecord.chapterNumber, version: draftRecord.version, content: draftRecord.content,
             contentHash: await hashAuthorText(draftRecord.content) }
         })) }
-    }
-    if (channel === 'generation:begin-batch') {
-      const input = args[0] as BeginGenerationBatchRequest
+    },
+    generation_begin_batch: args => {
+      const input = args.request as BeginGenerationBatchRequest
       batch = { ...input, batchId: 'browser-batch', rootHandle: { projectId: PROJECT_SESSION.projectId,
         epoch: PROJECT_SESSION.leaseId, rootActionId: 'browser-root', runId: 'browser-batch' },
         completedChapters: [], nextChapterNumber: input.range.startChapter }
       return structuredClone(batch)
-    }
-    if (channel === 'generation:read-batch' || channel === 'generation:confirm-batch-finalization') {
-      if (batch?.mode === 'auto_finalize' && draftRecord?.status === 'finalized' && postProcessRunCreated
-        && postProcessSteps.filter(step => step.critical).every(step => step.ok)) {
-        const saved = batch.completedChapters.find(item => item.chapterNumber === draftRecord!.chapterNumber)!
-        saved.finalizationId = FINALIZATION_ID
-        saved.postProcessComplete = true
-        batch.nextChapterNumber = saved.chapterNumber === batch.range.endChapter ? null : saved.chapterNumber + 1
-      }
-      return structuredClone(batch)
-    }
-    if (channel === 'generation:begin') {
-      const input = args[0] as BeginGenerationRequest
+    },
+    generation_read_batch: () => readBatchProgress(),
+    generation_confirm_batch_finalization: () => readBatchProgress(),
+    generation_begin: args => {
+      const input = args.request as BeginGenerationRequest
       if (!input.preparationId) throw new Error('GENERATION_DRAFT_PREPARATION_REQUIRED')
       const handle = { ...batch!.rootHandle, runId: `browser-chapter-${input.chapterNumber}` }
       const view: MainGenerationRunView = { handle, status: 'running', nonReplayable: false, artifacts: [],
         budget: { maxAttempts: 32, maxRequestedOutputTokens: 2000000, maxRequestedOutputTokensPerAttempt: 32768, deadlineAt: Date.now() + 3600000 } }
       selections.set(handle.runId, input); views.set(handle.runId, view)
       return structuredClone(view)
-    }
-    if (channel === 'generation:read' || channel === 'generation:cancel') return structuredClone(views.get((args[0] as MainGenerationRunHandle).runId))
-    if (channel === 'generation:execute') {
-      const request = args[0] as { handle: MainGenerationRunHandle; task: { purpose: string } }
+    },
+    generation_read: args => structuredClone(views.get((args.handle as MainGenerationRunHandle).runId)),
+    generation_cancel: args => structuredClone(views.get((args.handle as MainGenerationRunHandle).runId)),
+    generation_execute: async args => {
+      const request = args.request as { handle: MainGenerationRunHandle; task: { purpose: string } }
       const view = views.get(request.handle.runId)!
       const isOutline = request.task.purpose === 'chapter-draft-short-outline'
       const text = isOutline ? '目标：收到匿名信；行动：沈砺拆信检查署名；结果：开始调查。'
@@ -288,7 +295,7 @@ function installIpc() {
         revision: 1, durableRevision: 1, text, textHash: await hashAuthorText(text), status: 'completed' as const }
       view.artifacts = [...view.artifacts, artifact]
       purposes.set(artifact.artifactId, request.task.purpose)
-      emit('generation:snapshot', artifact)
+      tauriInternals.emit('generation:snapshot', artifact)
       const outcome: GenerationOutcome = { status: 'completed', content: text, finishReason: 'stop', receipt: {
         model: { id: 'grok-browser', configurationRevision: 'a'.repeat(64), endpointFingerprint: 'b'.repeat(64) },
         capabilities: { contextWindowTokens: null, maxOutputTokens: 4096, reasoning: false, structuredOutput: false, usage: false,
@@ -299,11 +306,11 @@ function installIpc() {
         visibleArtifact: { artifactId: artifact.artifactId, attemptId: artifact.attemptId, revision: 1, textHash: artifact.textHash },
       } }
       return { outcome, run: structuredClone(view) }
-    }
-    if (channel === 'generation:compose-visible') {
-      const handle = args[0] as MainGenerationRunHandle, ids = args[1] as string[]
+    },
+    generation_compose_visible: async args => {
+      const handle = args.handle as MainGenerationRunHandle, ids = args.artifactIds as string[]
       const view = views.get(handle.runId)!
-      const algorithm = args[3]
+      const algorithm = args.algorithm
       if (!isDraftVisibleTextVersion(algorithm)) throw new Error('GENERATION_COMPOSITION_ALGORITHM_INVALID')
       const text = ids.reduce((text, id) => {
         const artifact = view.artifacts.find(item => item.artifactId === id)!
@@ -311,10 +318,10 @@ function installIpc() {
       }, '')
       const receipt: VisibleCompositionReceipt = { algorithm, text, textHash: await hashAuthorText(text),
         artifactIds: ids, sources: view.artifacts.map(item => ({ artifactId: item.artifactId, revision: item.revision, textHash: item.textHash })) }
-      expect(receipt.textHash).toBe(args[2]); compositions.set(handle.runId, receipt); return receipt
-    }
-    if (channel === 'generation:commit-draft') {
-      const request = args[0] as { handle: MainGenerationRunHandle; chapterNumber: number; expectedCompositionHash: string }
+      expect(receipt.textHash).toBe(args.expectedCompositionHash); compositions.set(handle.runId, receipt); return receipt
+    },
+    generation_commit_draft: args => {
+      const request = args.request as { handle: MainGenerationRunHandle; chapterNumber: number; expectedCompositionHash: string }
       const composition = compositions.get(request.handle.runId)!
       expect(request.expectedCompositionHash).toBe(composition.textHash)
       expect(selections.get(request.handle.runId)?.batchId).toBe(batch!.batchId)
@@ -324,22 +331,20 @@ function installIpc() {
         contentHash: composition.textHash, sourceRunHandle: request.handle })
       if (batch!.mode === 'draft_review') batch!.nextChapterNumber = request.chapterNumber === batch!.range.endChapter ? null : request.chapterNumber + 1
       return { success: true, id: 101, version: 1, content: composition.text, contentHash: composition.textHash }
-    }
-    if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-    if (channel === 'db:draft-authority-sequence') {
-      return {
-        status: 'empty',
-        lastChapterNumber: 0,
-        nextChapterNumber: 1,
-        duplicateChapterNumbers: [],
-        authorityFingerprint: 'a'.repeat(64),
-      }
-    }
-    if (channel === 'llm:begin-execution-lease') return { success: true, lease: MODEL_LEASE }
-    if (channel === 'llm:close-execution-lease') return { success: true }
-    if (channel === 'llm:generate-stream') {
-      const requestId = String(args[0])
-      const request = args[1] as { purpose?: string; responseFormat?: { type?: string } }
+    },
+    prompt_load_global: () => ({ templates: [], diagnostics: [] }),
+    db_draft_authority_sequence: () => ({
+      status: 'empty',
+      lastChapterNumber: 0,
+      nextChapterNumber: 1,
+      duplicateChapterNumbers: [],
+      authorityFingerprint: 'a'.repeat(64),
+    }),
+    llm_begin_execution_lease: () => ({ success: true, lease: MODEL_LEASE }),
+    llm_close_execution_lease: () => ({ success: true }),
+    llm_generate_stream: args => {
+      const requestId = String(args.requestId)
+      const request = args.request as { purpose?: string; responseFormat?: { type?: string } }
       const completion = request.purpose === 'post-process'
         ? request.responseFormat?.type === 'json_object'
           ? '{"updates":[],"newCharacters":[]}'
@@ -349,8 +354,8 @@ function installIpc() {
         useLLMStore.setState({ defaultModelId: 'changed-default-model' })
       }
       const complete = () => {
-        emit('llm:stream-chunk', { requestId, chunk: completion })
-        emit('llm:stream-done', { requestId, fullText: completion, finishReason: 'stop' })
+        tauriInternals.emit('llm:stream-chunk', { requestId, chunk: completion })
+        tauriInternals.emit('llm:stream-done', { requestId, fullText: completion, finishReason: 'stop' })
       }
       if (deferDraftCompletion && request.purpose === 'chapter-draft') {
         pendingDraftCompletions.push(complete)
@@ -358,32 +363,21 @@ function installIpc() {
         queueMicrotask(complete)
       }
       return { requestId, started: true }
-    }
-    if (channel === 'fs:check-exists') return false
-    if (channel === 'fs:list-dir') return args[0] === PROJECT_PATH ? fileTree() : []
-    if (channel === 'db:blueprint-get-all') {
-      return importedFinalizedDrafts ? [] : [blueprint(), blueprint(2)]
-    }
-    if (channel === 'db:continuity-list-before' || channel === 'db:consistency-exemption-list') return []
-    if (channel === 'db:blueprint-get') {
-      return importedFinalizedDrafts ? null : blueprint(Number(args[0]))
-    }
-    if (channel === 'db:character-get-all') {
-      return [{ id: 1, name: '沈砺', role: 'protagonist', currentState: null }]
-    }
-    if (channel === 'db:project-core-get') {
-      return { premise: '雨夜来信开启调查。', charactersArch: '', worldbuilding: '', synopsis: '' }
-    }
-    if (channel === 'db:draft-get-latest') {
-      return draftRecord?.chapterNumber === Number(args[0]) ? draftRecord : null
-    }
-    if (channel === 'db:draft-get-finalized') return null
-    if (channel === 'db:draft-get-full') {
-      return importedFinalizedDrafts?.find(draft => draft.id === Number(args[0])) ?? draftRecord
-    }
-    if (channel === 'db:draft-next-version') return 1
-    if (channel === 'db:draft-create') {
-      const input = args[0] as { chapterNumber: number; version: number; content: string; wordCount: number }
+    },
+    fs_check_exists: () => false,
+    fs_list_dir: args => args.dirPath === PROJECT_PATH ? fileTree() : [],
+    db_blueprint_get_all: () => importedFinalizedDrafts ? [] : [blueprint(), blueprint(2)],
+    db_continuity_list_before: () => [],
+    db_consistency_exemption_list: () => [],
+    db_blueprint_get: args => importedFinalizedDrafts ? null : blueprint(Number(args.chapterNumber)),
+    db_character_get_all: () => [{ id: 1, name: '沈砺', role: 'protagonist', currentState: null }],
+    db_project_core_get: () => ({ premise: '雨夜来信开启调查。', charactersArch: '', worldbuilding: '', synopsis: '' }),
+    db_draft_get_latest: args => draftRecord?.chapterNumber === Number(args.chapterNumber) ? draftRecord : null,
+    db_draft_get_finalized: () => null,
+    db_draft_get_full: args => importedFinalizedDrafts?.find(draft => draft.id === Number(args.id)) ?? draftRecord,
+    db_draft_next_version: () => 1,
+    db_draft_create: args => {
+      const input = args.params as { chapterNumber: number; version: number; content: string; wordCount: number }
       draftRecord = {
         id: 101,
         chapterNumber: input.chapterNumber,
@@ -395,19 +389,16 @@ function installIpc() {
         content: input.content,
       }
       return { success: true, id: draftRecord.id }
-    }
-    if (channel === 'db:draft-list') return draftRecord ? [draftRecord] : []
-    if (channel === 'db:draft-list-all') {
-      return importedFinalizedDrafts ?? (draftRecord ? [draftRecord] : [])
-    }
-    if (channel === 'db:draft-get-meta') return draftRecord
-    if (channel === 'db:revision-get-pending' || channel === 'db:review-list') return []
-    if (channel === 'chapter:list-incomplete-deletions') {
-      return { success: true, operations: [] }
-    }
-    if (channel === 'finalization:commit') {
+    },
+    db_draft_list: () => draftRecord ? [draftRecord] : [],
+    db_draft_list_all: () => importedFinalizedDrafts ?? (draftRecord ? [draftRecord] : []),
+    db_draft_get_meta: () => draftRecord,
+    db_revision_get_pending: () => [],
+    db_review_list: () => [],
+    chapter_list_incomplete_deletions: () => ({ success: true, operations: [] }),
+    finalization_commit: args => {
       if (!draftRecord) throw new Error('Missing generated draft before finalization')
-      const snapshot = args[0] as { contentRevision: number }
+      const snapshot = args.snapshot as { contentRevision: number }
       expect(snapshot.contentRevision).toBe(1)
       draftRecord = { ...draftRecord, status: 'finalized' }
       return {
@@ -419,9 +410,9 @@ function installIpc() {
         draftId: draftRecord.id,
         publicationStatus: 'published',
       }
-    }
-    if (channel === 'db:continuity-read-source') {
-      const draftId = Number(args[0])
+    },
+    db_continuity_read_source: args => {
+      const draftId = Number(args.draftId)
       if (!draftRecord || draftRecord.status !== 'finalized' || draftRecord.id !== draftId) {
         return { status: 'invalid' } satisfies FinalizedSourceReadResult
       }
@@ -439,42 +430,36 @@ function installIpc() {
           projectionGeneration: 0,
         },
       } satisfies FinalizedSourceReadResult
-    }
-    if (channel === 'finalization-generation:read') {
-      const slot = (args[0] as { slot: { source: { draftId: number; finalizationId: string; chapterNumber: number; contentHash: string }; stepKey: string } }).slot
-      expect(args[1]).toEqual(PROJECT_SESSION)
+    },
+    finalization_generation_read: args => {
+      const slot = (args.request as { slot: { source: { draftId: number; finalizationId: string; chapterNumber: number; contentHash: string }; stepKey: string } }).slot
+      expect(args.projectSession).toEqual(PROJECT_SESSION)
       expect(slot.source).toEqual({ draftId: 101, finalizationId: FINALIZATION_ID,
         chapterNumber: 1, contentHash: FINALIZED_CONTENT_HASH })
       expect(['chapter_notes', 'character_cards']).toContain(slot.stepKey)
       return { attemptCount: 0, view: { handle: { projectId: PROJECT_SESSION.projectId,
         epoch: PROJECT_SESSION.leaseId, rootActionId: 'browser-finalization', runId: `browser-${slot.stepKey}` },
-      status: 'completed', artifacts: [] }, modelId: 'grok-browser', context: { slot }, sourceStatus: 'current',
-      effect: slot.stepKey === 'chapter_notes'
-        ? { success: true, stepKey: 'chapter_notes', chapterNotes: '匿名信引发调查。', factCount: 1, blueprintUpdated: true }
-        : { success: true, stepKey: 'character_cards', applied: 0, unchanged: 0, candidates: [], unresolved: [] } }
-    }
-    if (channel === 'kb:import-text') {
-      return { success: true, chunkCount: 1, docId: 'knowledge-browser-1' }
-    }
-    if (channel === 'db:finalization-link-knowledge-document') return { success: true }
-    if (channel === 'db:continuity-save-finalized') return { success: true }
-    if (channel === 'db:blueprint-update-notes') return { success: true, updated: true }
-    if (channel === 'db:character-roster-read') {
-      return { status: 'empty', revision: 0, entries: [] }
-    }
-    if (channel === 'db:post-process-get-latest-run') {
-      return postProcessRunCreated
-        ? {
-          id: 701,
-          sourceLabel: '第1章定稿',
-          allCriticalPassed: postProcessSteps.filter(step => step.critical).every(step => step.ok),
-          createdAt: '2026-08-28T00:00:00.000Z',
-          updatedAt: '2026-08-28T00:00:00.000Z',
-        }
-        : null
-    }
-    if (channel === 'db:post-process-create-run') {
-      const input = args[0] as { steps: Array<{ key: string; label: string; critical: boolean }> }
+        status: 'completed', artifacts: [] }, modelId: 'grok-browser', context: { slot }, sourceStatus: 'current',
+        effect: slot.stepKey === 'chapter_notes'
+          ? { success: true, stepKey: 'chapter_notes', chapterNotes: '匿名信引发调查。', factCount: 1, blueprintUpdated: true }
+          : { success: true, stepKey: 'character_cards', applied: 0, unchanged: 0, candidates: [], unresolved: [] } }
+    },
+    kb_import_text: () => ({ success: true, chunkCount: 1, docId: 'knowledge-browser-1' }),
+    db_finalization_link_knowledge_document: () => ({ success: true }),
+    db_continuity_save_finalized: () => ({ success: true }),
+    db_blueprint_update_notes: () => ({ success: true, updated: true }),
+    db_character_roster_read: () => ({ status: 'empty', revision: 0, entries: [] }),
+    db_post_process_get_latest_run: () => postProcessRunCreated
+      ? {
+        id: 701,
+        sourceLabel: '第1章定稿',
+        allCriticalPassed: postProcessSteps.filter(step => step.critical).every(step => step.ok),
+        createdAt: '2026-08-28T00:00:00.000Z',
+        updatedAt: '2026-08-28T00:00:00.000Z',
+      }
+      : null,
+    db_post_process_create_run: args => {
+      const input = args.params as { steps: Array<{ key: string; label: string; critical: boolean }> }
       postProcessRunCreated = true
       postProcessSteps = input.steps.map(step => ({
         stepKey: step.key,
@@ -487,10 +472,10 @@ function installIpc() {
         attemptCount: 0,
       }))
       return { success: true, id: 701 }
-    }
-    if (channel === 'db:post-process-get-steps') return postProcessSteps
-    if (channel === 'db:post-process-mark-step-ok') {
-      const stepKey = String(args[1])
+    },
+    db_post_process_get_steps: () => postProcessSteps,
+    db_post_process_mark_step_ok: args => {
+      const stepKey = String(args.stepKey)
       postProcessSteps = postProcessSteps.map(step => step.stepKey === stepKey
         ? {
           ...step,
@@ -501,10 +486,10 @@ function installIpc() {
         }
         : step)
       return { success: true }
-    }
-    if (channel === 'db:post-process-mark-step-failed') {
-      const stepKey = String(args[1])
-      const errorMsg = String(args[2])
+    },
+    db_post_process_mark_step_failed: args => {
+      const stepKey = String(args.stepKey)
+      const errorMsg = String(args.errorMsg)
       postProcessSteps = postProcessSteps.map(step => step.stepKey === stepKey
         ? {
           ...step,
@@ -515,27 +500,10 @@ function installIpc() {
         }
         : step)
       return { success: true }
-    }
-    throw new Error(`Unexpected IPC channel in batch completion browser test: ${channel}`)
-  })
-
-  Object.defineProperty(window, 'aiNovelAPI', {
-    configurable: true,
-    value: {
-      invoke,
-      on: vi.fn((channel: string, callback: (data: unknown) => void) => {
-        const channelListeners = listeners.get(channel) ?? new Set<(data: unknown) => void>()
-        channelListeners.add(callback)
-        listeners.set(channel, channelListeners)
-        return () => channelListeners.delete(callback)
-      }),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(() => 0),
     },
-  })
+  }
+  tauriInternals = installTauriInternals({ commands })
+  invoke = tauriInternals.invoke
 }
 
 beforeEach(() => {
@@ -593,7 +561,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
-  Reflect.deleteProperty(window, 'aiNovelAPI')
+  tauriInternals.uninstall()
   disposeProjectService()
   setActiveProjectSessionContext(null)
   clearProjectCustomPrompts()
@@ -637,8 +605,12 @@ describe('batch chapter completion mode browser flow', () => {
       expect(manuscriptSectionText).toContain('第2章')
       expect(manuscriptSectionText).not.toContain('暂无定稿章节')
     })
-    expect(invoke).toHaveBeenCalledWith('db:draft-list-all', PROJECT_PATH, PROJECT_SESSION)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:draft-list')).toBe(false)
+    expect(invoke).toHaveBeenCalledWith(
+      'db_draft_list_all',
+      { expectedProjectPath: PROJECT_PATH, projectSession: PROJECT_SESSION },
+      undefined,
+    )
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_draft_list')).toBe(false)
   })
 
   it.each([
@@ -753,21 +725,21 @@ describe('batch chapter completion mode browser flow', () => {
 
     const draftRequests = invoke.mock.calls
       .filter(([channel, request]) => (
-        channel === 'generation:execute'
-        && (request as { task?: { purpose?: string } } | undefined)?.task?.purpose === 'chapter-draft'
+        channel === 'generation_execute'
+        && (request as { request?: { task?: { purpose?: string } } } | undefined)?.request?.task?.purpose === 'chapter-draft'
       ))
-      .map(([, request]) => (request as { task: { messages: Array<{ content: string }> } }).task)
+      .map(([, request]) => (request as { request: { task: { messages: Array<{ content: string }> } } }).request.task)
     expect(draftRequests).toHaveLength(2)
     expect(draftRequests[1].messages.map(message => message.content).join('\n')).toContain(FIRST_DRAFT_TAIL)
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'generation:begin').map(([, input]) => (input as BeginGenerationRequest).modelId))
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'generation_begin').map(([, input]) => (input as { request: BeginGenerationRequest }).request.modelId))
       .toEqual(['grok-browser', 'grok-browser'])
-    expect(invoke.mock.calls.some(([channel]) => channel === 'llm:begin-execution-lease')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'llm_begin_execution_lease')).toBe(false)
     expect(invoke.mock.calls.some(([channel]) => (
-      channel === 'finalization:commit'
-      || channel === 'kb:import-text'
-      || channel === 'db:blueprint-update-notes'
-      || channel === 'db:character-roster-commit'
-      || String(channel).startsWith('db:post-process-')
+      channel === 'finalization_commit'
+      || channel === 'kb_import_text'
+      || channel === 'db_blueprint_update_notes'
+      || channel === 'db_character_roster_commit'
+      || String(channel).startsWith('db_post_process_')
     ))).toBe(false)
   })
 
@@ -809,18 +781,18 @@ describe('batch chapter completion mode browser flow', () => {
     expect(run.steps).toHaveLength(10)
     expect(run.steps.every(step => step.status === 'completed')).toBe(true)
     expect(run.steps.flatMap(step => step.logs).filter(log => log.includes('字数超过约定'))).toEqual([expect.stringContaining('第5章字数超过约定')])
-    const requests = invoke.mock.calls.filter(([channel]) => channel === 'generation:execute')
-      .map(([, request]) => request as { task: { purpose: string; messages: Array<{ content: string }> } })
+    const requests = invoke.mock.calls.filter(([channel]) => channel === 'generation_execute')
+      .map(([, request]) => (request as { request: { task: { purpose: string; messages: Array<{ content: string }> } } }).request)
     expect(requests.filter(request => request.task.purpose === 'chapter-draft-condense')).toHaveLength(1)
     const drafts = requests.filter(request => request.task.purpose === 'chapter-draft')
     expect(drafts).toHaveLength(10)
-    const preparationIndex = invoke.mock.calls.findIndex(([channel, request]) => channel === 'generation:prepare-draft-context'
-      && (request as { chapterNumber: number }).chapterNumber === 6)
+    const preparationIndex = invoke.mock.calls.findIndex(([channel, request]) => channel === 'generation_prepare_draft_context'
+      && (request as { request: { chapterNumber: number } }).request.chapterNumber === 6)
     const preparation = await invoke.mock.results[preparationIndex].value
     expect(preparation.selectedDrafts).toEqual([expect.objectContaining({ content: condensed, contentHash: await hashAuthorText(condensed) })])
     expect(drafts[5].task.messages.map(message => message.content).join('\n')).toContain(condensed.slice(-500))
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'generation:commit-draft')).toHaveLength(10)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'generation:pause')).toBe(false)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'generation_commit_draft')).toHaveLength(10)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'generation_pause')).toBe(false)
     expect(draftRecord?.chapterNumber).toBe(10)
     await expect.element(page.getByText('第5章字数超过约定', { exact: true })).toBeVisible()
   })
@@ -861,12 +833,19 @@ describe('batch chapter completion mode browser flow', () => {
     expect(useWorkflowStore.getState().history[0]?.steps[0]?.logs.some(log => (
       log.includes('开始第1章：生成草稿待审。')
     ))).toBe(true)
-    expect(invoke).toHaveBeenCalledWith('generation:begin', expect.objectContaining({ modelId: 'grok-browser' }), PROJECT_SESSION)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'llm:begin-execution-lease')).toBe(false)
+    expect(invoke).toHaveBeenCalledWith(
+      'generation_begin',
+      expect.objectContaining({
+        request: expect.objectContaining({ modelId: 'grok-browser' }),
+        projectSession: PROJECT_SESSION,
+      }),
+      undefined,
+    )
+    expect(invoke.mock.calls.some(([channel]) => channel === 'llm_begin_execution_lease')).toBe(false)
     expect(invoke.mock.calls.some(([channel]) => (
-      channel === 'finalization:commit'
-      || channel === 'kb:import-text'
-      || String(channel).startsWith('db:post-process-')
+      channel === 'finalization_commit'
+      || channel === 'kb_import_text'
+      || String(channel).startsWith('db_post_process_')
     ))).toBe(false)
   })
 
@@ -879,7 +858,7 @@ describe('batch chapter completion mode browser flow', () => {
     await act(async () => page.getByRole('radio', { name: '自动定稿' }).click())
     await expect.element(page.getByText(/发布实体稿并运行角色与连续性后处理/)).toBeVisible()
     await act(async () => page.getByRole('button', { name: '继续确认自动定稿' }).click())
-    expect(invoke.mock.calls.some(([channel]) => channel === 'finalization:commit')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalization_commit')).toBe(false)
 
     await expect.element(page.getByText('即将自动定稿第1–1章（共1章）。完成后章节只读，不能直接编辑。')).toBeVisible()
     await act(async () => page.getByRole('button', { name: '确认自动定稿并启动' }).click())
@@ -908,17 +887,16 @@ describe('batch chapter completion mode browser flow', () => {
       log.includes('开始第1章：生成草稿、自动定稿并完成后处理。')
       && !log.includes('生成草稿待审')
     ))).toBe(true)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'finalization:commit')).toBe(true)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'kb:import-text')).toBe(true)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:post-process-mark-step-ok')).toBe(true)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'finalization_commit')).toBe(true)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'kb_import_text')).toBe(true)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_post_process_mark_step_ok')).toBe(true)
     expect(invoke).toHaveBeenCalledWith(
-      'db:continuity-read-source',
-      101,
-      PROJECT_PATH,
-      PROJECT_SESSION,
+      'db_continuity_read_source',
+      { draftId: 101, expectedProjectPath: PROJECT_PATH, projectSession: PROJECT_SESSION },
+      undefined,
     )
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'finalization-generation:read')
-      .map(([, request]) => (request as { slot: { stepKey: string } }).slot.stepKey))
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'finalization_generation_read')
+      .map(([, request]) => (request as { request: { slot: { stepKey: string } } }).request.slot.stepKey))
       .toEqual(['chapter_notes', 'character_cards'])
   })
 })
