@@ -38,17 +38,9 @@ const blueprint: ChapterBlueprint = {
 
 function stubIpcInvoke(result: unknown) {
   const invoke = vi.fn().mockResolvedValue(result)
-  vi.stubGlobal('window', {
-    aiNovelAPI: {
-      invoke,
-      on: vi.fn(),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(),
-    },
-  })
+  // Tauri 语义：ipc-client 直接调 `@tauri-apps/api/core` 的 invoke
+  // （命名参数），经 `window.__TAURI_INTERNALS__.invoke` 进入。
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
   return invoke
 }
 
@@ -303,7 +295,11 @@ describe('blueprint persistence helpers', () => {
     const invoke = stubIpcInvoke({ success: true })
 
     await expect(saveAllBlueprints([blueprint], 'C:/NovelA', session)).resolves.toBeUndefined()
-    expect(invoke).toHaveBeenCalledWith('db:blueprint-upsert-many', [blueprint], 'C:/NovelA', session)
+    expect(invoke).toHaveBeenCalledWith('db_blueprint_upsert_many', {
+      items: [blueprint],
+      expectedProjectPath: 'C:/NovelA',
+      projectSession: session,
+    }, undefined)
   })
 
   it('throws when persisted blueprint content does not match the generated result', async () => {
@@ -341,16 +337,19 @@ describe('blueprint persistence helpers', () => {
       session,
     )).resolves.toEqual(receipt)
     expect(invoke).toHaveBeenCalledWith(
-      'db:blueprint-commit-range',
+      'db_blueprint_commit_range',
       {
-        mode: 'replace-range',
-        operationId: 'directory-run-1',
-        startChapter: 1,
-        endChapter: 1,
-        blueprints: [blueprint],
+        request: {
+          mode: 'replace-range',
+          operationId: 'directory-run-1',
+          startChapter: 1,
+          endChapter: 1,
+          blueprints: [blueprint],
+        },
+        expectedProjectPath: 'C:/NovelA',
+        projectSession: session,
       },
-      'C:/NovelA',
-      session,
+      undefined,
     )
     unsubscribe()
     expect(refreshEvents).toEqual([{
@@ -449,8 +448,8 @@ describe('directory workflow project context', () => {
     useProjectStore.setState({ currentProject: projectA })
     useLocaleStore.setState({ locale: 'en-US', initialized: true })
     const invoke = stubIpcInvoke(null)
-    invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db:project-core-get') return null
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'db_project_core_get') return null
       return []
     })
     const workflow = createDirectoryWorkflow({ mode: 'full' }, projectA.path, projectSession)
@@ -523,9 +522,9 @@ describe('directory workflow project context', () => {
     useProjectStore.setState({ currentProject: projectA })
     useLocaleStore.setState({ locale: 'en-US', initialized: true })
     const invoke = stubIpcInvoke([])
-    invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'fs:check-exists') return false
-      if (channel === 'db:project-core-get') {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'fs_check_exists') return false
+      if (command === 'db_project_core_get') {
         return { premise: 'Story premise. '.repeat(12), charactersArch: '', worldbuilding: '', synopsis: '' }
       }
       return []
@@ -556,8 +555,8 @@ describe('directory workflow project context', () => {
     const projectA = project('C:\\novels\\A')
     useProjectStore.setState({ currentProject: projectA })
     const invoke = stubIpcInvoke({ success: true })
-    invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db:project-core-get') {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'db_project_core_get') {
         return {
           premise: '故事前提'.repeat(30),
           charactersArch: '',
@@ -598,10 +597,10 @@ describe('directory workflow project context', () => {
 
     await expect(workflow.steps[0].executor(workflowStep('读取架构'), context, callbacks))
       .resolves.toContain('架构加载完成')
-    expect(invoke).toHaveBeenCalledWith('db:project-core-get', projectA.path, context.projectSession)
+    expect(invoke).toHaveBeenCalledWith('db_project_core_get', { expectedProjectPath: projectA.path, projectSession: context.projectSession }, undefined)
 
     expect(workflow.steps.map(step => step.name)).toEqual(['读取架构', '生成蓝图'])
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:blueprint-upsert-many')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_blueprint_upsert_many')
   })
 })
 
@@ -620,7 +619,7 @@ describe('durable directory continuation selection', () => {
     const invoke = arrange([base])
     await expect(resolveDirectoryContinuation({ mode: 'full', startChapter: 1, count: 200, continueDirectoryOperationId: base.operationId }, session))
       .resolves.toMatchObject({ mode: 'append', pacingGuidance: '  缓慢递进。\r\n', startChapter: 161, count: 40, continueDirectoryOperationId: base.operationId })
-    expect(invoke).toHaveBeenCalledWith('generation:list-directory-progress', session)
+    expect(invoke).toHaveBeenCalledWith('generation_list_directory_progress', { projectSession: session }, undefined)
   })
   it('uses an issued exact handle after restart instead of starting the continuation twice', async () => {
     const continuationHandle = { ...handle, runId: '已有剩余运行' }

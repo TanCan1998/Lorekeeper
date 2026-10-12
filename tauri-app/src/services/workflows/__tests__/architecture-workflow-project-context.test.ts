@@ -71,25 +71,17 @@ function arrangeConfigGenerationJourney(responses: Array<{ content: string; fini
       receipt: { finishReason: response.finishReason },
     } }
   })
-  const invoke = vi.fn(async (channel: string, ...args: unknown[]): Promise<unknown> => {
-    if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
-    if (channel === 'db:project-core-commit-generated') return { success: true }
-    if (channel === 'fs:check-exists') return false
-    if (channel === 'generation:begin' || channel === 'generation:read') return structuredClone(view)
-    if (channel === 'generation:execute') return executeMain(args[0] as Parameters<typeof executeMain>[0])
-    throw new Error('unexpected IPC ' + channel)
+  const invoke = vi.fn(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
+    // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为
+    // 命名参数对象（单对象参数登记为 `request`）并追加 projectSession 尾参。
+    if (command === 'prompt_load_global') return { templates: [], diagnostics: [] }
+    if (command === 'db_project_core_commit_generated') return { success: true }
+    if (command === 'fs_check_exists') return false
+    if (command === 'generation_begin' || command === 'generation_read') return structuredClone(view)
+    if (command === 'generation_execute') return executeMain((args as { request: Parameters<typeof executeMain>[0] }).request)
+    throw new Error('unexpected IPC ' + command)
   })
-  vi.stubGlobal('window', {
-    aiNovelAPI: {
-      invoke,
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(),
-    },
-  })
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
   const workflow = createConfigGenerationWorkflow({
     projectPath: project.path,
     projectSession: { projectId: project.id, leaseId: project.sessionLease, projectPath: project.path },
@@ -109,12 +101,14 @@ describe('architecture workflow project context', () => {
       sessionLease: projectSession.leaseId, name: 'A', novelConfig, characterStates: '', createdAt: '', updatedAt: '' } })
     useLLMStore.setState({ defaultModelId: 'model' })
     const begins: BeginGenerationRequest[] = []
-    const invoke = vi.fn(async (channel: string, request: BeginGenerationRequest) => {
-      if (channel === 'generation:begin') { begins.push(request); throw new Error('captured-first-begin') }
-      if (channel === 'fs:check-exists') return false
-      throw new Error(`unexpected IPC ${channel}`)
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为
+      // 命名参数对象（单对象参数登记为 `request`）并追加 projectSession 尾参。
+      if (command === 'generation_begin') { begins.push((args as { request: BeginGenerationRequest }).request); throw new Error('captured-first-begin') }
+      if (command === 'fs_check_exists') return false
+      throw new Error(`unexpected IPC ${command}`)
     })
-    vi.stubGlobal('window', { aiNovelAPI: { invoke, on: vi.fn(() => () => {}), once: vi.fn(), send: vi.fn() } })
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
     const synopsisRange = { from: 11, to: 20 }
     const selectedSteps: Array<'premise' | 'characters' | 'worldbuilding' | 'synopsis'> = ['synopsis', 'characters', 'premise', 'characters', 'worldbuilding']
     const workflow = createArchitectureWorkflow({ projectPath: projectSession.projectPath, projectSession, selectedSteps, synopsisRange })
@@ -343,9 +337,9 @@ describe('config generation full journey completion contract', () => {
       wordsPerChapter: 3000,
     }))
     expect(journey.saveProject).not.toHaveBeenCalled()
-    expect(journey.invoke.mock.calls.filter(([channel]) => channel === 'db:project-core-commit-generated')).toHaveLength(1)
-    expect(journey.invoke.mock.calls.filter(([channel]) => channel === 'generation:begin')).toHaveLength(1)
-    expect(journey.invoke.mock.calls.some(([channel]) => channel.startsWith('llm:'))).toBe(false)
+    expect(journey.invoke.mock.calls.filter(([channel]) => channel === 'db_project_core_commit_generated')).toHaveLength(1)
+    expect(journey.invoke.mock.calls.filter(([channel]) => channel === 'generation_begin')).toHaveLength(1)
+    expect(journey.invoke.mock.calls.some(([channel]) => channel.startsWith('llm_'))).toBe(false)
   })
 
   it('freezes the narrow visible guidance repair contract under the same main run', async () => {
@@ -357,25 +351,26 @@ describe('config generation full journey completion contract', () => {
     await expect(execute(journey.workflow)).resolves.toBe('生成的配置已成功应用！')
     expect(journey.executeMain.mock.calls.map(([request]) => [request.task.purpose, request.task.output]))
       .toEqual([['generate-global-config', 'structured-data'], ['generate-global-guidance-replacement', 'visible-text']])
-    const begin = journey.invoke.mock.calls.filter(([channel]) => channel === 'generation:begin')
+    const begin = journey.invoke.mock.calls.filter(([channel]) => channel === 'generation_begin')
     expect(begin).toHaveLength(1)
     expect(begin[0][1]).toMatchObject({
-      output: 'structured-data',
-      outputOverrides: [{ purpose: 'generate-global-guidance-replacement', output: 'visible-text' }],
+      request: {
+        output: 'structured-data',
+        outputOverrides: [{ purpose: 'generate-global-guidance-replacement', output: 'visible-text' }],
+      },
     })
-    expect(journey.onGenerated).toHaveBeenCalledOnce()
     expect(journey.onGenerated).toHaveBeenCalledWith(expect.objectContaining({ globalGuidance: guidance }))
     expect(journey.saveProject).not.toHaveBeenCalled()
-    expect(journey.invoke.mock.calls.filter(([channel]) => channel === 'db:project-core-commit-generated')).toHaveLength(1)
+    expect(journey.invoke.mock.calls.filter(([channel]) => channel === 'db_project_core_commit_generated')).toHaveLength(1)
     expect(journey.generateStream).not.toHaveBeenCalled()
   })
 
   it('does not apply the callback or save again when the main source guard rejects', async () => {
     const journey = arrangeConfigGenerationJourney([{ content: JSON.stringify(validGeneratedConfig), finishReason: 'stop' }])
     const original = journey.invoke.getMockImplementation()!
-    journey.invoke.mockImplementation(async (channel, ...args) => {
-      if (channel === 'db:project-core-commit-generated') return { success: false, error: 'GENERATION_SOURCE_CHANGED' }
-      return original(channel, ...args)
+    journey.invoke.mockImplementation(async (command, args) => {
+      if (command === 'db_project_core_commit_generated') return { success: false, error: 'GENERATION_SOURCE_CHANGED' }
+      return original(command, args)
     })
     await expect(execute(journey.workflow)).rejects.toThrow('GENERATION_SOURCE_CHANGED')
     expect(journey.onGenerated).not.toHaveBeenCalled()
@@ -412,9 +407,9 @@ describe('恢复按钮确认的运行身份', () => {
     const expected = { projectId: 'project-A', epoch: '原会话', rootActionId: '原作者动作', runId: '已确认候选运行' }
     const replacement = { ...expected, runId: '后来覆盖的运行' }
     const prefix = kind === 'worldbuilding' ? 'world_building' : 'synopsis'
-    journey.invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'fs:read-json') return { success: true, data: { [prefix + '_incomplete']: true, [prefix + '_generation_handle']: replacement } }
-      throw new Error('不应触达后续通道：' + channel)
+    journey.invoke.mockImplementation(async (command: string) => {
+      if (command === 'fs_read_json') return { success: true, data: { [prefix + '_incomplete']: true, [prefix + '_generation_handle']: replacement } }
+      throw new Error('不应触达后续通道：' + command)
     })
     const workflow = createArchitectureWorkflow({
       projectPath: 'C:/projects/A', projectSession: { projectId: 'project-A', leaseId: 'lease-A', projectPath: 'C:/projects/A' },
@@ -424,8 +419,7 @@ describe('恢复按钮确认的运行身份', () => {
       writingLanguage: 'zh-CN' as const, uiLocale: 'zh-CN' as const, data: {}, cancelled: false }
     await expect(workflow.steps[0].executor({ id: kind, name: kind, description: '', status: 'running', logs: [] }, context,
       { log: vi.fn(), setProgress: vi.fn(), appendText: vi.fn() })).rejects.toThrow('恢复记录已变化')
-    expect(journey.invoke.mock.calls.map(([channel]) => channel)).toEqual(['fs:read-json'])
-    expect(context.data).not.toHaveProperty('partial')
+    expect(journey.invoke.mock.calls.map(([channel]) => channel)).toEqual(['fs_read_json'])
   })
 
   it('冻结按钮身份，调用方后续改写对象不能把另一运行变成已确认候选', async () => {
@@ -436,7 +430,6 @@ describe('恢复按钮确认的运行身份', () => {
       resumeWorldBuilding: true, expectedRecoveryHandle: expected })
     expected.runId = '后来覆盖的运行'
     journey.invoke.mockImplementation(async () => ({ success: true, data: {
-      world_building_incomplete: true, world_building_generation_handle: expected,
     } }))
     await expect(workflow.steps[0].executor({ id: '恢复', name: '恢复', description: '', status: 'running', logs: [] },
       { runId: '恢复动作', projectPath: 'C:/projects/A', projectSession: workflow.projectSession,

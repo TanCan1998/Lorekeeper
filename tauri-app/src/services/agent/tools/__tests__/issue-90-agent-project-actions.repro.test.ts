@@ -50,10 +50,12 @@ const startWorkflowTool = {
 }
 
 function stubWorkflowIpc(overrides: Partial<Record<string, unknown>> = {}): ReturnType<typeof vi.fn> {
-  const invoke = vi.fn((channel: string, request?: unknown) => {
-    if (channel in overrides) return Promise.resolve(overrides[channel])
-    if (channel === 'agent-generation:register-workflow') {
-      const ref = (request as { ref: AgentToolActionRef }).ref
+  const invoke = vi.fn((command: string, args?: Record<string, unknown>) => {
+    // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为
+    // 命名参数对象（单对象参数登记为 `request`）并追加 projectSession 尾参。
+    if (command in overrides) return Promise.resolve(overrides[command])
+    if (command === 'agent_generation_register_workflow') {
+      const ref = (args as { request: { ref: AgentToolActionRef } }).request.ref
       const issued = issuedActions.get(ref.toolCallId)
       if (!issued) return Promise.reject(new Error('Synthetic main action missing'))
       if (['review', 'refine', 'finalize'].includes(String(issued.args.workflow))) {
@@ -63,13 +65,13 @@ function stubWorkflowIpc(overrides: Partial<Record<string, unknown>> = {}): Retu
         chapterNumber: issued.args.chapter_number, parentHandle: ref.handle, modelId: issued.modelId,
         state: 'registered', childHandles: [] })
     }
-    if (channel === 'db:project-core-get') {
+    if (command === 'db_project_core_get') {
       const longEnough = '完整架构信息'.repeat(20)
       return Promise.resolve({ premise: longEnough, charactersArch: longEnough, worldbuilding: longEnough, synopsis: longEnough })
     }
-    if (channel === 'db:character-get-all') return Promise.resolve([{ name: '林舟' }])
-    if (channel === 'db:blueprint-get-all') return Promise.resolve([{ chapterNumber: 1 }])
-    if (channel === 'db:blueprint-get') {
+    if (command === 'db_character_get_all') return Promise.resolve([{ name: '林舟' }])
+    if (command === 'db_blueprint_get_all') return Promise.resolve([{ chapterNumber: 1 }])
+    if (command === 'db_blueprint_get') {
       return Promise.resolve({
         chapterNumber: 1,
         title: '最后的灯',
@@ -86,17 +88,7 @@ function stubWorkflowIpc(overrides: Partial<Record<string, unknown>> = {}): Retu
     // Keep the real workflow registered while this launcher-seam test observes it.
     return new Promise(() => {})
   })
-  vi.stubGlobal('window', {
-    aiNovelAPI: {
-      invoke,
-      on: vi.fn(),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(),
-    },
-  })
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
   return invoke
 }
 
@@ -134,30 +126,30 @@ describe('Issue #90 AI assistant project actions', () => {
     {
       label: 'directory prerequisites',
       intent: { workflow: 'generate_blueprint' } as const,
-      prepare: () => stubWorkflowIpc({ 'db:project-core-get': { premise: '', charactersArch: '', worldbuilding: '', synopsis: '' } }),
+      prepare: () => stubWorkflowIpc({ db_project_core_get: { premise: '', charactersArch: '', worldbuilding: '', synopsis: '' } }),
       expected: '故事前提',
     },
     {
       label: 'draft character roster',
       intent: { workflow: 'generate_draft', chapterNumber: 1 } as const,
-      prepare: () => stubWorkflowIpc({ 'db:character-get-all': [] }),
+      prepare: () => stubWorkflowIpc({ db_character_get_all: [] }),
       expected: '角色卡',
     },
     {
       label: 'previous chapter finalization',
       intent: { workflow: 'generate_draft', chapterNumber: 2 } as const,
-      prepare: () => stubWorkflowIpc({ 'db:draft-get-finalized': null }),
+      prepare: () => stubWorkflowIpc({ db_draft_get_finalized: null }),
       expected: '第 1 章尚未定稿',
     },
     {
       label: 'previous chapter post-processing',
       intent: { workflow: 'generate_draft', chapterNumber: 2 } as const,
       prepare: () => stubWorkflowIpc({
-        'db:draft-get-finalized': { id: 1 },
-        'db:post-process-get-latest-run': {
+        db_draft_get_finalized: { id: 1 },
+        db_post_process_get_latest_run: {
           id: 'post-1', sourceLabel: '第1章定稿', createdAt: '', updatedAt: '', allCriticalPassed: false,
         },
-        'db:post-process-get-steps': [{
+        db_post_process_get_steps: [{
           id: 1, runId: 'post-1', stepKey: 'chapter_notes', label: '章节要点', critical: true,
           ok: false, errorMsg: 'failed', attemptCount: 1, completedAt: '', lastAttemptAt: '',
         }],
@@ -226,7 +218,7 @@ describe('Issue #90 AI assistant project actions', () => {
     const guardResult = new Promise<{ premise: string; charactersArch: string; worldbuilding: string; synopsis: string }>((resolve) => {
       finishGuard = resolve
     })
-    const invoke = stubWorkflowIpc({ 'db:project-core-get': guardResult })
+    const invoke = stubWorkflowIpc({ db_project_core_get: guardResult })
     const controller = new AbortController()
     const markSideEffectStarted = vi.fn()
     const launched = startWorkflowTool.execute(
@@ -234,9 +226,9 @@ describe('Issue #90 AI assistant project actions', () => {
       { ...createAgentExecutionContext(), abortSignal: controller.signal, markSideEffectStarted },
     )
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith(
-      'db:project-core-get',
-      projectPath,
-      expect.anything(),
+      'db_project_core_get',
+      { expectedProjectPath: projectPath, projectSession: expect.anything() },
+      undefined,
     ))
 
     controller.abort()
@@ -256,7 +248,7 @@ describe('Issue #90 AI assistant project actions', () => {
     const guardResult = new Promise<{ premise: string; charactersArch: string; worldbuilding: string; synopsis: string }>((resolve) => {
       finishGuard = resolve
     })
-    stubWorkflowIpc({ 'db:project-core-get': guardResult })
+    stubWorkflowIpc({ db_project_core_get: guardResult })
     toolRegistry.register(startWorkflowTool)
     const callbacks = {
       onTextChunk: vi.fn(),

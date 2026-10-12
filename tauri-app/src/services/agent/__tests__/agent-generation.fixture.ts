@@ -15,18 +15,20 @@ export class AgentHostFixture {
   writingLanguage: 'zh-CN' | 'en-US' = 'zh-CN'
   claimOverride?: (action: AgentToolAction) => AgentToolClaim
   response: (index: number) => Promise<string | { status: 'unknown' | 'incomplete'; text?: string }> = async () => '完成。'
-  readonly invoke = vi.fn(async (channel: string, ...args: unknown[]): Promise<unknown> => {
-    const request = args[0] as Record<string, unknown>
-    if (channel === 'skills:list-user') return []
-    if (channel === 'fs:check-exists') return false
-    if (channel === 'agent-generation:begin') {
+  readonly invoke = vi.fn(async (command: string, args: Record<string, unknown>): Promise<unknown> => {
+    // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为命名参数
+    // 对象（单对象参数登记为 `request`）并追加 projectSession 尾参。
+    const request = ((args as { request?: Record<string, unknown> }).request ?? args) as Record<string, unknown>
+    if (command === 'skills_list_user') return []
+    if (command === 'fs_check_exists') return false
+    if (command === 'agent_generation_begin') {
       if (this.beginError) throw this.beginError
       this.initialize(request.input as AgentGenerationInput, request.modelId as string)
       return structuredClone(this.recovery)
     }
-    if (channel === 'agent-generation:read' || channel === 'agent-generation:resume') return structuredClone(this.recovery)
-    if (channel === 'generation:cancel') { this.recovery.run.status = 'cancelled'; return this.recovery.run }
-    if (channel === 'agent-generation:round') {
+    if (command === 'agent_generation_read' || command === 'agent_generation_resume') return structuredClone(this.recovery)
+    if (command === 'generation_cancel') { this.recovery.run.status = 'cancelled'; return this.recovery.run }
+    if (command === 'agent_generation_round') {
       const index = request.index as number
       let round = this.recovery.rounds.find(entry => entry.index === index)
       if (round && round.status !== 'not-started') return structuredClone(this.recovery)
@@ -43,7 +45,7 @@ export class AgentHostFixture {
       this.recovery.nextRound = null
       return structuredClone(this.recovery)
     }
-    if (channel === 'agent-generation:claim-tool') {
+    if (command === 'agent_generation_claim_tool') {
       const action = this.action(request.ref as AgentToolActionRef)
       if (this.claimOverride) return structuredClone(this.claimOverride(action))
       if (action.status !== 'pending') return { action: structuredClone(action), execute: false }
@@ -53,7 +55,7 @@ export class AgentHostFixture {
       }
       return { action: structuredClone(action), execute: request.confirmed === true }
     }
-    if (channel === 'agent-generation:commit-domain-tool') {
+    if (command === 'agent_generation_commit_domain_tool') {
       const action = this.action(request.ref as AgentToolActionRef)
       if (action.status !== 'running' || !['propose_novel_config', 'propose_chapter_blueprint'].includes(action.name)) throw new Error('Synthetic domain action not claimed')
       this.domainEffects.add(action.ref.toolCallId)
@@ -61,7 +63,7 @@ export class AgentHostFixture {
         changes: structuredClone(action.arguments.changes), chapterNumber: action.arguments.chapter_number,
         beforeHash: 'synthetic-before', afterHash: 'synthetic-after', current: true }
     }
-    if (channel === 'agent-generation:finish-tool') {
+    if (command === 'agent_generation_finish_tool') {
       if (this.finishFailures-- > 0) throw new Error('synthetic storage failure')
       const action = this.action(request.ref as AgentToolActionRef)
       action.status = request.status as AgentToolAction['status']
@@ -79,7 +81,7 @@ export class AgentHostFixture {
       if (this.loseFinishAck) { this.loseFinishAck = false; throw new Error('synthetic lost finish ACK') }
       return structuredClone(action)
     }
-    throw new Error(`Unexpected synthetic Agent IPC: ${channel}`)
+    throw new Error(`Unexpected synthetic Agent IPC: ${command}`)
   })
 
   constructor(readonly session: ProjectSessionContext) {}
@@ -100,7 +102,7 @@ export class AgentHostFixture {
   }
 
   install() {
-    vi.stubGlobal('window', { aiNovelAPI: { invoke: this.invoke, on: vi.fn(), once: vi.fn(), send: vi.fn() } })
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke: this.invoke } })
     return this
   }
 }

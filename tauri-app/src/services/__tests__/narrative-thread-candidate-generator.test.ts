@@ -21,16 +21,21 @@ describe('narrative thread AI candidate boundary', () => {
     const view = { handle, status: 'completed', artifacts: [] }
     const candidates = kind === 'plan' ? [{ title: 'main-plan' }] : [{ evidence: 'main-evidence' }]
     const recovery = { view, context: { projectId: 'project', kind, input }, sourceStatus: 'current', attemptCount: 1, result: { kind, candidates }, effects: [], modelId: 'model' }
-    const invoke = vi.fn(async (channel: string, request: unknown) => {
-      if (channel === 'graph-generation:begin') {
-        expect(request).toEqual({ input, modelId: 'model', uiActionNonce: expect.any(String) })
+    const invoke = vi.fn(async (command: string, args: Record<string, unknown>) => {
+      if (command === 'graph_generation_begin') {
+        // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为命名参数
+        // 对象并追加 projectSession 尾参（captureProjectSession 冻结的会话）。
+        expect(args).toEqual({
+          request: { input, modelId: 'model', uiActionNonce: expect.any(String) },
+          projectSession: { projectId: 'project', leaseId: 'lease', projectPath: 'C:/synthetic' },
+        })
         return { ...recovery, attemptCount: 0, result: undefined }
       }
-      if (channel === 'graph-generation:execute') return { run: view, outcome: { status: 'completed', finishReason: 'stop' } }
-      expect(channel).toBe('graph-generation:read')
+      if (command === 'graph_generation_execute') return { run: view, outcome: { status: 'completed', finishReason: 'stop' } }
+      expect(command).toBe('graph_generation_read')
       return recovery
     })
-    vi.stubGlobal('window', { aiNovelAPI: { invoke, on: () => () => {} } })
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
     try {
       const generator = createNarrativeThreadCandidateGenerator()
       const common = { modelId: 'model', writingLanguage: 'zh-CN' as const, signal: new AbortController().signal }
@@ -38,7 +43,7 @@ describe('narrative thread AI candidate boundary', () => {
         ? await generator.generatePlanCandidates({ ...common, totalChapters: 999, blueprint: { chapterNumber: 2, title: 'renderer stale' } as never })
         : await generator.generateEventCandidates({ ...common, plan: { id: 7, title: 'renderer stale' } as never, draftId: 41, chapterNumber: 999, finalizedContent: 'renderer stale' })
       expect(result).toEqual(candidates)
-      expect(invoke.mock.calls.some(([channel]) => channel === 'graph-generation:confirm')).toBe(false)
+      expect(invoke.mock.calls.some(([channel]) => channel === 'graph_generation_confirm')).toBe(false)
     } finally { useProjectStore.setState({ currentProject: previous }); vi.unstubAllGlobals() }
   })
   it.each(['zh-CN', 'en-US'] as const)('pure %s event task preserves finalized bytes and omits transport identity', writingLanguage => {

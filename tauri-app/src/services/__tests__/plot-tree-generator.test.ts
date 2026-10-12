@@ -32,21 +32,26 @@ it('default facade sends only the main selector and confirms its artifact instea
   const view = { handle, status: 'completed', artifacts: [] }
   const context = { projectId: PROJECT_SESSION.projectId, kind: 'plot', input: { kind: 'plot' } }
   const recovery = { context, view, artifact, modelId: 'main-model', attemptCount: 1, sourceStatus: 'current', result: { kind: 'plot', snapshot, derivation: 'model' }, effects: [] }
-  const invoke = vi.fn(async (channel: string, request: unknown) => {
-    if (channel === 'graph-generation:begin') {
-      expect(request).toEqual({ input: { kind: 'plot' }, modelId: 'main-model', uiActionNonce: expect.any(String) })
+  const invoke = vi.fn(async (command: string, args: Record<string, unknown>) => {
+    if (command === 'graph_generation_begin') {
+      // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为命名参数
+      // 对象并追加 projectSession 尾参（调用方冻结的会话）。
+      expect(args).toEqual({
+        request: { input: { kind: 'plot' }, modelId: 'main-model', uiActionNonce: expect.any(String) },
+        projectSession: PROJECT_SESSION,
+      })
       return { ...recovery, attemptCount: 0, result: undefined, artifact: undefined }
     }
-    if (channel === 'graph-generation:execute') return { run: view, outcome: { status: 'completed', finishReason: 'stop' } }
-    if (channel === 'graph-generation:read') return recovery
-    expect(channel).toBe('graph-generation:confirm')
-    expect(request).toEqual({ handle, artifact, index: 0 })
+    if (command === 'graph_generation_execute') return { run: view, outcome: { status: 'completed', finishReason: 'stop' } }
+    if (command === 'graph_generation_read') return recovery
+    expect(command).toBe('graph_generation_confirm')
+    expect(args).toEqual({ request: { handle, artifact, index: 0 }, projectSession: PROJECT_SESSION })
     return { success: true, index: 0, kind: 'plot', snapshot, derivation: 'model' }
   })
-  vi.stubGlobal('window', { aiNovelAPI: { invoke, on: () => () => {} } })
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
   try {
     await expect(generatePlotTree({ modelId: 'main-model', projectSession: PROJECT_SESSION, sources: sources(), signal: new AbortController().signal })).resolves.toEqual(snapshot)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:plot-tree-save')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_plot_tree_save')).toBe(false)
   } finally { vi.unstubAllGlobals() }
 })
 
