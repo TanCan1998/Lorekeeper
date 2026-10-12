@@ -113,11 +113,11 @@ function validInference() {
 }
 
 function successfulInferenceIpc() {
-  return stubIpcInvoke((channel, request) => {
-    if (channel === 'kb:search') return []
-    if (channel === 'db:character-roster-read') return { status: 'ready', revision: 7, entries: [] }
-    if (channel === 'db:import-global-facts-commit') {
-      const candidate = request as {
+  return stubIpcInvoke((channel, args) => {
+    if (channel === 'kb_search') return []
+    if (channel === 'db_character_roster_read') return { status: 'ready', revision: 7, entries: [] }
+    if (channel === 'db_import_global_facts_commit') {
+      const candidate = args.request as {
         operationId: string
         core: object
         characterEntries: unknown[]
@@ -137,23 +137,13 @@ function successfulInferenceIpc() {
   })
 }
 
-function stubIpcInvoke(handler: (channel: string, ...args: unknown[]) => unknown) {
-  const invoke = vi.fn((channel: string, ...args: unknown[]) => Promise.resolve(
-    channel === 'prompt:load-global' ? { templates: [], diagnostics: [] }
-      : channel === 'fs:check-exists' && String(args[0]).endsWith('/.lore/prompts') ? false
-        : handler(channel, ...args),
+function stubIpcInvoke(handler: (channel: string, args: Record<string, unknown>) => unknown) {
+  const invoke = vi.fn((channel: string, args: Record<string, unknown>) => Promise.resolve(
+    channel === 'prompt_load_global' ? { templates: [], diagnostics: [] }
+      : channel === 'fs_check_exists' && String(args.filePath).endsWith('/.lore/prompts') ? false
+        : handler(channel, args),
   ))
-  vi.stubGlobal('window', {
-    aiNovelAPI: {
-      invoke,
-      on: vi.fn(),
-      once: vi.fn(),
-      send: vi.fn(),
-      setZoomLevel: vi.fn(),
-      setZoomFactor: vi.fn(),
-      getZoomLevel: vi.fn(),
-    },
-  })
+  vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
   return invoke
 }
 
@@ -217,7 +207,7 @@ describe('InferBlueprintsPerChapterCommand', () => {
     const malformed = `${valid.slice(0, -1)},}`
     const observed: Array<Array<{ role: string; content: string }>> = []
     stubIpcInvoke((channel) => {
-      if (channel === 'db:blueprint-commit-range') return { success: false, error: 'captured after repair' }
+      if (channel === 'db_blueprint_commit_range') return { success: false, error: 'captured after repair' }
       throw new Error(`unexpected IPC ${channel}`)
     })
     useProjectStore.setState(state => ({
@@ -277,7 +267,7 @@ describe('InferBlueprintsPerChapterCommand', () => {
 
   it('performs zero per-chapter writes and throws when the one range commit fails', async () => {
     const invoke = stubIpcInvoke((channel) => {
-      if (channel === 'db:blueprint-commit-range') return { success: false, error: 'DB 写入失败' }
+      if (channel === 'db_blueprint_commit_range') return { success: false, error: 'DB 写入失败' }
       return { success: true }
     })
     useLLMStore.setState({
@@ -301,7 +291,7 @@ describe('InferBlueprintsPerChapterCommand', () => {
     const command = new InferBlueprintsPerChapterCommand()
 
     await expect(command.execute({ step: {}, context: createContext(), callbacks })).rejects.toThrow(/DB 写入失败/)
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:blueprint-upsert')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_blueprint_upsert')
   })
 
   it('fails closed with a stable relationship diagnostic when relation is missing', async () => {
@@ -336,7 +326,7 @@ describe('InferBlueprintsPerChapterCommand', () => {
     )
 
     expect(generateStream).toHaveBeenCalledOnce()
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:blueprint-commit-range')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_blueprint_commit_range')
   })
 
   it('records the atomic commit receipt and completes its durable character-sync operation before success', async () => {
@@ -355,7 +345,7 @@ describe('InferBlueprintsPerChapterCommand', () => {
       notesUpdatedAt: '',
     }]
     const invoke = stubIpcInvoke((channel) => {
-      if (channel === 'db:blueprint-commit-range') {
+      if (channel === 'db_blueprint_commit_range') {
         return {
           success: true,
           receipt: {
@@ -382,22 +372,22 @@ describe('InferBlueprintsPerChapterCommand', () => {
           },
         }
       }
-      if (channel === 'db:blueprint-character-sync-get') {
+      if (channel === 'db_blueprint_character_sync_get') {
         return {
           operationId: 'import-sync',
           status: 'pending',
           characterSyncInput: snapshot,
         }
       }
-      if (channel === 'character-proposal:stage') return { proposalBatchId: 'import-proposal', revision: 0, status: 'pending-approval', items: [], source: { kind: 'directory', operationId: 'import-sync' } }
-      if (channel === 'db:character-roster-read') {
+      if (channel === 'character_proposal_stage') return { proposalBatchId: 'import-proposal', revision: 0, status: 'pending-approval', items: [], source: { kind: 'directory', operationId: 'import-sync' } }
+      if (channel === 'db_character_roster_read') {
         return {
           status: 'ready',
           revision: 1,
           entries: [{ name: '主角' }],
         }
       }
-      if (channel === 'db:blueprint-character-sync-complete') {
+      if (channel === 'db_blueprint_character_sync_complete') {
         return {
           success: true,
           operation: {
@@ -447,9 +437,9 @@ describe('InferBlueprintsPerChapterCommand', () => {
     expect(generationPrompt).toContain('relationships 必须是数组')
     expect(generationPrompt).toContain('每项必须含非空 from、to、relation')
     expect(generationPrompt).not.toContain('relationshipHints（无关系时为空数组）')
-    expect(invoke.mock.calls.map(([channel]) => channel)).toContain('db:blueprint-character-sync-complete')
-    expect(invoke.mock.calls.map(([channel]) => channel)).toContain('character-proposal:stage')
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:character-roster-commit')
+    expect(invoke.mock.calls.map(([channel]) => channel)).toContain('db_blueprint_character_sync_complete')
+    expect(invoke.mock.calls.map(([channel]) => channel)).toContain('character_proposal_stage')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_character_roster_commit')
   })
 })
 
@@ -556,9 +546,9 @@ describe('InferGlobalSettingsCommand', () => {
     expect(callbacks.log).toHaveBeenCalledWith(
       `The novel configuration, non-character architecture, and ${inferred.characterCards.length} character cards were committed atomically`,
     )
-    const commitCalls = invoke.mock.calls.filter(([channel]) => channel === 'db:import-global-facts-commit')
+    const commitCalls = invoke.mock.calls.filter(([channel]) => channel === 'db_import_global_facts_commit')
     expect(commitCalls).toHaveLength(1)
-    const committedCore = (commitCalls[0]?.[1] as { core: { coreOutline: string } }).core
+    const committedCore = (commitCalls[0]?.[1] as { request: { core: { coreOutline: string } } }).request.core
     expect(committedCore.coreOutline).toBe(inferred.novelConfig.coreOutline)
     expect(new TextEncoder().encode(committedCore.coreOutline))
       .toEqual(new TextEncoder().encode(inferred.novelConfig.coreOutline))
@@ -570,7 +560,7 @@ describe('InferGlobalSettingsCommand', () => {
     const malformed = `${valid.slice(0, -1)},}`
     const generateStream = vi.fn<ReturnType<typeof useLLMStore.getState>['generateStream']>(
       async (_messages, streamCallbacks, _modelId, options) => {
-        expect(invoke.mock.calls.filter(([channel]) => channel === 'kb:search')).toHaveLength(4)
+        expect(invoke.mock.calls.filter(([channel]) => channel === 'kb_search')).toHaveLength(4)
         streamCallbacks.onDone?.(generateStream.mock.calls.length === 1 ? malformed : valid, undefined, 'stop')
         return String(options?.modelExecutionLeaseId)
       },
@@ -590,10 +580,10 @@ describe('InferGlobalSettingsCommand', () => {
     expect(generateStream).toHaveBeenCalledTimes(2)
     expect(generateStream.mock.calls[0][3]?.modelExecutionLeaseId)
       .toBe(generateStream.mock.calls[1][3]?.modelExecutionLeaseId)
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:import-global-facts-commit')).toHaveLength(1)
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('project:save')
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:project-core-update')
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:character-roster-commit')
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_import_global_facts_commit')).toHaveLength(1)
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('project_save')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_project_core_update')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_character_roster_commit')
     expect(repairReport).toBeDefined()
     expect(Object.keys(repairReport!)).toEqual([
       'totalUtf8Bytes',
@@ -644,12 +634,12 @@ describe('InferGlobalSettingsCommand', () => {
     })
     expect(failure).not.toHaveProperty('receipt')
     expect(generateStream).toHaveBeenCalledOnce()
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:import-global-facts-commit')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_import_global_facts_commit')
   })
 
   it('does not repair parseable semantic omissions and performs zero writes', async () => {
     const invoke = stubIpcInvoke((channel) => {
-      if (channel === 'kb:search') return []
+      if (channel === 'kb_search') return []
       throw new Error(`unexpected mutation ${channel}`)
     })
     const valid = validInference()
@@ -668,13 +658,13 @@ describe('InferGlobalSettingsCommand', () => {
       .rejects.toThrow('code=missing_field path=architectureFiles.synopsis')
     expect(generateStream).toHaveBeenCalledOnce()
     expect(invoke.mock.calls.map(([channel]) => channel)).toEqual([
-      'kb:search', 'kb:search', 'kb:search', 'kb:search',
+      'kb_search', 'kb_search', 'kb_search', 'kb_search',
     ])
   })
 
   it('fails closed when the replacement is incomplete', async () => {
     const invoke = stubIpcInvoke((channel) => {
-      if (channel === 'kb:search') return []
+      if (channel === 'kb_search') return []
       throw new Error(`unexpected mutation ${channel}`)
     })
     const valid = JSON.stringify(validInference())
@@ -691,7 +681,7 @@ describe('InferGlobalSettingsCommand', () => {
       .rejects.toThrow(/本次请求长度限制/)
     expect(generateStream).toHaveBeenCalledTimes(2)
     expect(invoke.mock.calls.map(([channel]) => channel)).toEqual([
-      'kb:search', 'kb:search', 'kb:search', 'kb:search',
+      'kb_search', 'kb_search', 'kb_search', 'kb_search',
     ])
   })
 
@@ -710,11 +700,11 @@ describe('InferGlobalSettingsCommand', () => {
 
   it('accepts a merged roster receipt when every inferred character is present with existing characters', async () => {
     const inferred = validInference()
-    stubIpcInvoke((channel, request) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-roster-read') return { status: 'ready', revision: 7, entries: [{ name: '旧角色' }] }
-      if (channel === 'db:import-global-facts-commit') {
-        const candidate = request as { operationId: string; core: object; characterEntries: unknown[] }
+    stubIpcInvoke((channel, args) => {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_roster_read') return { status: 'ready', revision: 7, entries: [{ name: '旧角色' }] }
+      if (channel === 'db_import_global_facts_commit') {
+        const candidate = args.request as { operationId: string; core: object; characterEntries: unknown[] }
         return {
           success: true,
           receipt: {
@@ -748,7 +738,7 @@ describe('InferGlobalSettingsCommand', () => {
 
   it('rejects inferred free-text relationships before any roster commit', async () => {
     const invoke = stubIpcInvoke((channel) => {
-      if (channel === 'kb:search') return []
+      if (channel === 'kb_search') return []
       throw new Error(`unexpected IPC ${channel}`)
     })
     const invalid = validInference()
@@ -765,20 +755,20 @@ describe('InferGlobalSettingsCommand', () => {
       .rejects.toThrow('code=invalid_type path=characterCards[0].relationships')
 
     expect(invoke.mock.calls.map(([channel]) => channel)).toEqual([
-      'kb:search',
-      'kb:search',
-      'kb:search',
-      'kb:search',
+      'kb_search',
+      'kb_search',
+      'kb_search',
+      'kb_search',
     ])
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:character-roster-commit')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_character_roster_commit')
   })
 
   it('commits structurally complete inferred relationships through the atomic global-facts seam', async () => {
-    const invoke = stubIpcInvoke((channel, request) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-roster-read') return { status: 'ready', revision: 7, entries: [] }
-      if (channel === 'db:import-global-facts-commit') {
-        const candidate = request as { operationId: string; core: object; characterEntries: unknown[] }
+    const invoke = stubIpcInvoke((channel, args) => {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_roster_read') return { status: 'ready', revision: 7, entries: [] }
+      if (channel === 'db_import_global_facts_commit') {
+        const candidate = args.request as { operationId: string; core: object; characterEntries: unknown[] }
         return {
           success: true,
           receipt: {
@@ -808,27 +798,30 @@ describe('InferGlobalSettingsCommand', () => {
     await new InferGlobalSettingsCommand().execute({ step: {}, context: createContext(), callbacks })
 
     expect(invoke).toHaveBeenLastCalledWith(
-      'db:import-global-facts-commit',
-      expect.objectContaining({
-        expectedRosterRevision: 7,
-        characterEntries: expect.arrayContaining([
-          expect.objectContaining({
-            name: '陆舟',
-            relationships: [{ target: '苏绾', relation: '旧友' }],
-          }),
-          expect.objectContaining({ name: '苏绾' }),
-        ]),
-      }),
-      'C:\\tmp\\vela-import-test',
-      expect.objectContaining({ projectId: 'project-1' }),
+      'db_import_global_facts_commit',
+      {
+        request: expect.objectContaining({
+          expectedRosterRevision: 7,
+          characterEntries: expect.arrayContaining([
+            expect.objectContaining({
+              name: '陆舟',
+              relationships: [{ target: '苏绾', relation: '旧友' }],
+            }),
+            expect.objectContaining({ name: '苏绾' }),
+          ]),
+        }),
+        expectedProjectPath: 'C:\\tmp\\vela-import-test',
+        projectSession: expect.objectContaining({ projectId: 'project-1' }),
+      },
+      undefined,
     )
   })
 
   it('stops and keeps renderer config unchanged when the atomic global-facts commit fails', async () => {
     stubIpcInvoke((channel) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-roster-read') return { status: 'ready', revision: 7, entries: [] }
-      if (channel === 'db:import-global-facts-commit') return { success: false, error: '全局事实事务失败' }
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_roster_read') return { status: 'ready', revision: 7, entries: [] }
+      if (channel === 'db_import_global_facts_commit') return { success: false, error: '全局事实事务失败' }
       throw new Error(`unexpected IPC ${channel}`)
     })
     useLLMStore.setState({
@@ -856,11 +849,11 @@ describe('M02 text-import proposal receipts', () => {
       characterProposal: { proposalBatchId: 'import-proposal', sourceHash: 'a'.repeat(64) }, proposalSource: structuredClone(domainRequest) }
   }
   function arrange(mutate?: (receipt: ReturnType<typeof proposalReceipt>) => void) {
-    const invoke = stubIpcInvoke((channel, request) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-roster-read') return { status: 'ready', revision: 7, entries: [] }
-      if (channel === 'db:import-global-facts-commit') {
-        const receipt = proposalReceipt(request as import('../../../../shared/import-global-facts').ImportGlobalFactsRequest)
+    const invoke = stubIpcInvoke((channel, args) => {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_roster_read') return { status: 'ready', revision: 7, entries: [] }
+      if (channel === 'db_import_global_facts_commit') {
+        const receipt = proposalReceipt(args.request as import('../../../../shared/import-global-facts').ImportGlobalFactsRequest)
         mutate?.(receipt)
         return { success: true, receipt }
       }
@@ -880,7 +873,7 @@ describe('M02 text-import proposal receipts', () => {
     expect(context.data.importGlobalInferenceCandidate).toBe(JSON.stringify(validInference()))
     expect(vi.mocked(callbacks.log)).toHaveBeenCalledWith(expect.stringContaining('3 条角色提议已原子保存'))
     expect(vi.mocked(callbacks.log)).toHaveBeenCalledWith(expect.stringContaining('尚未创建角色'))
-    expect(invoke.mock.calls.some(([channel]) => channel === 'character-proposal:approve' || channel === 'db:character-roster-commit')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'character_proposal_approve' || channel === 'db_character_roster_commit')).toBe(false)
   })
   it.each(['missing-entry', 'same-name-changed-field', 'changed-dynamic', 'changed-relationship', 'reordered', 'changed-operation', 'changed-core', 'mixed-lanes', 'invalid-hash'] as const)(
     'rejects %s instead of accepting name-only coverage', async mutation => {
@@ -912,9 +905,9 @@ describe('M02 text-import proposal receipts', () => {
     }) })
     await expect(new InferGlobalSettingsCommand().execute({ step: {}, context, callbacks })).resolves.toBeUndefined()
     expect(context.data.importGlobalInferenceCandidate).toBe(raw)
-    const commits = invoke.mock.calls.filter(([channel]) => channel === 'db:import-global-facts-commit')
+    const commits = invoke.mock.calls.filter(([channel]) => channel === 'db_import_global_facts_commit')
     expect(commits).toHaveLength(1)
-    const request = commits[0][1] as import('../../../../shared/import-global-facts').ImportGlobalFactsRequest
+    const request = (commits[0][1] as { request: import('../../../../shared/import-global-facts').ImportGlobalFactsRequest }).request
     expect(request.characterEntries).toEqual(ambiguous.characterCards.map(card => ({ ...card, age: String(card.age) })))
     expect(request.characterEntries).toHaveLength(3)
     expect(request.characterEntries.filter(entry => entry.name === ambiguous.characterCards[0].name)).toHaveLength(2)
@@ -924,6 +917,6 @@ describe('M02 text-import proposal receipts', () => {
     expect(context.data.importGlobalFactsReceipt).not.toHaveProperty('roster')
     expect(vi.mocked(callbacks.log)).toHaveBeenCalledWith(expect.stringContaining('3 条角色提议已原子保存'))
     expect(vi.mocked(callbacks.log)).toHaveBeenCalledWith(expect.stringContaining('提议保留待采用，尚未创建角色'))
-    expect(invoke.mock.calls.some(([channel]) => channel === 'character-proposal:approve' || channel === 'db:character-roster-commit')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'character_proposal_approve' || channel === 'db_character_roster_commit')).toBe(false)
   })
 })
