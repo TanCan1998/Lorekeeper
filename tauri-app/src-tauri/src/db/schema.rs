@@ -311,6 +311,74 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_draft_index
   ON reviews(base_draft_id, review_index);
 "#;
 
+/// 批次 G4-3a：审稿周期（m03 三表：`review_cycles` / `review_findings`
+/// + m06 `review_cycle_merges`，Schema 扩展已获整批授权，见
+/// `docs-fork/plans/2026-10-10-post-merge-97-kickoff.md` §3）。
+///
+/// 逐字平移自 `electron/migrations/m03-review-cycle.ts` 的
+/// `M03_REVIEW_CYCLE_SQL` 与 `M06_REVIEW_CYCLE_MERGE_SQL`。
+/// 唯一适应性偏离：每表追加 `IF NOT EXISTS`——本文件硬规则要求
+/// `create_tables` 每次打开项目库复跑必须幂等（上游 M03/M06 由桌面
+/// registry 一次性安装，仓储不执行 DDL；Tauri 侧不建迁移运行时，
+/// 直接 CREATE 基线）。列定义、NOT NULL、UNIQUE、CHECK 约束与外键
+/// 逐字不变；外键依赖 `PRAGMA foreign_keys = ON`。
+pub const CREATE_REVIEW_CYCLE: &str = r#"
+CREATE TABLE IF NOT EXISTS review_cycles (
+ cycle_id TEXT PRIMARY KEY,
+ root_action_id TEXT NOT NULL REFERENCES generation_roots(root_action_id),
+ review_id INTEGER NOT NULL UNIQUE REFERENCES reviews(id) ON DELETE CASCADE,
+ review_content_hash TEXT NOT NULL,
+ confirmation_review_id INTEGER UNIQUE REFERENCES reviews(id),
+ confirmation_content_hash TEXT,
+ revision_id INTEGER UNIQUE REFERENCES revisions(id),
+ source_hash TEXT NOT NULL,
+ finding_set_hash TEXT NOT NULL,
+ comparison_version INTEGER NOT NULL,
+ revision_status TEXT NOT NULL CHECK(revision_status IN ('not-generated','generated','merge-committed')),
+ merged_hash TEXT,
+ recheck_count INTEGER NOT NULL CHECK(recheck_count IN (0,1)),
+ recheck_attempt_id TEXT UNIQUE REFERENCES generation_attempts(attempt_id),
+ CHECK((confirmation_review_id IS NULL) = (confirmation_content_hash IS NULL)),
+ CHECK((revision_status='not-generated' AND revision_id IS NULL AND merged_hash IS NULL AND recheck_count=0 AND recheck_attempt_id IS NULL)
+    OR (revision_status='generated' AND revision_id IS NOT NULL AND merged_hash IS NULL AND recheck_count=0 AND recheck_attempt_id IS NULL)
+    OR (revision_status='merge-committed' AND revision_id IS NOT NULL AND merged_hash IS NOT NULL
+      AND ((recheck_count=0 AND recheck_attempt_id IS NULL) OR (recheck_count=1 AND recheck_attempt_id IS NOT NULL))))
+);
+CREATE TABLE IF NOT EXISTS review_findings (
+ cycle_id TEXT NOT NULL REFERENCES review_cycles(cycle_id) ON DELETE CASCADE,
+ finding_id TEXT NOT NULL,
+ source_project_id TEXT NOT NULL,
+ source_epoch TEXT NOT NULL,
+ source_id TEXT NOT NULL,
+ source_revision INTEGER NOT NULL,
+ source_content_hash TEXT NOT NULL,
+ span_start INTEGER,
+ span_end INTEGER,
+ span_unit TEXT,
+ excerpt_hash TEXT,
+ occurrence INTEGER,
+ category TEXT NOT NULL,
+ target_id TEXT,
+ kind TEXT NOT NULL CHECK(kind IN ('objective','literary')),
+ problem_text TEXT NOT NULL,
+ expected_text TEXT,
+ status TEXT NOT NULL CHECK(status IN ('unverified','unresolved','unknown','resolved','author-waived')),
+ evidence_hash TEXT,
+ confirmation_item_index INTEGER,
+ PRIMARY KEY(cycle_id,finding_id),
+ CHECK((status IN ('unverified','author-waived') AND span_start IS NULL AND span_end IS NULL AND span_unit IS NULL
+    AND excerpt_hash IS NULL AND occurrence IS NULL AND target_id IS NULL)
+   OR (status<>'unverified' AND span_start IS NOT NULL AND span_end IS NOT NULL AND span_unit='utf16-code-unit'
+    AND excerpt_hash IS NOT NULL AND occurrence IS NOT NULL AND target_id IS NOT NULL)),
+ CHECK((status='author-waived' AND confirmation_item_index IS NOT NULL)
+   OR (status<>'author-waived' AND confirmation_item_index IS NULL))
+);
+CREATE TABLE IF NOT EXISTS review_cycle_merges (
+ cycle_id TEXT PRIMARY KEY REFERENCES review_cycles(cycle_id) ON DELETE CASCADE,
+ body TEXT NOT NULL
+);
+"#;
+
 /// post_process_runs / post_process_steps —— 后处理跑批与步骤明细
 ///
 /// 每次后处理产生一个 Run（UUID 主键），下属多个 Step；`all_critical_passed` 是
@@ -852,6 +920,8 @@ pub fn create_tables(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(CREATE_DRAFTS)?;
     conn.execute_batch(CREATE_REVISIONS)?;
     conn.execute_batch(CREATE_REVIEWS)?;
+    // 批次 G4-3a：审稿周期（m03 三表 + m06 合并快照表）
+    conn.execute_batch(CREATE_REVIEW_CYCLE)?;
     conn.execute_batch(CREATE_POST_PROCESS)?;
     conn.execute_batch(CREATE_LLM_CALLS)?;
     conn.execute_batch(CREATE_SUMMARY_SNAPSHOTS)?;

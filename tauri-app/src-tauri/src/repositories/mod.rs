@@ -28,5 +28,7 @@ pub mod post_process_repository;
 pub mod project_clear_repository;
 pub mod project_core_repository;
 pub mod recovery_candidate_repository;
+// 批次 G4-3a：审稿周期（m03 三表；review-revision 面仓储 seam）
+pub mod review_cycle_repository;
 pub mod review_repository;
 pub mod revision_repository;
