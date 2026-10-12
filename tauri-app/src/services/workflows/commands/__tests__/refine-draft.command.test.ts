@@ -271,7 +271,7 @@ function successfulRevisionIpc(options: {
   const reviewContent = options.reviewContent ?? DEFAULT_CONFIRMED_REVIEW_CONTENT
   const reviewId = options.reviewId ?? CONFIRMATION_REVIEW_ID
   const reviewBaseDraftId = options.reviewBaseDraftId ?? 1
-  return vi.fn(async (channel: string) => {
+  return vi.fn<(channel: string, args?: Record<string, unknown>) => Promise<unknown>>(async (channel: string) => {
     if (channel === 'db_draft_get_meta') {
       return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
     }
