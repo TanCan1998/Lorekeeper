@@ -18,34 +18,34 @@
 |---|---|
 | 仓库 / 分支 | **`TanCan1998/Lorekeeper`**（`EthanYoQ/AI-Novel-Writer` 的 PUBLIC fork）/ `master` |
 | 产品身份 | **Lorekeeper（设定司）**；`identifier = com.tancan1998.lorekeeper`；npm `lorekeeper-tauri`；Rust crate `lorekeeper` / lib `lorekeeper_lib` |
-| 已注册命令 | **198** |
-| 覆盖 invoke 频道 | **197**（契约 invoke 总数 **290**，事件频道 **7**） |
-| 未迁移 invoke 频道 | **93**（上游新增频道；`generation=21 agent-generation=8 cloud-backup=8 legacy-roster=7 character-proposal=6 finalization-generation=5 finalized-character=5 graph-generation=5 project=5 character-avatar=4 dialog=4 editor-inline=4 kb=3 startup=3 db=2 import-generation=2 character-identity=1`） |
+| 已注册命令 | **205** |
+| 覆盖 invoke 频道 | **204**（契约 invoke 总数 **290**，事件频道 **7**） |
+| 未迁移 invoke 频道 | **86**（上游新增频道；`generation=14 agent-generation=8 cloud-backup=8 legacy-roster=7 character-proposal=6 finalization-generation=5 finalized-character=5 graph-generation=5 project=5 character-avatar=4 dialog=4 editor-inline=4 kb=3 startup=3 db=2 import-generation=2 character-identity=1`） |
 | orphan | **空** ✅ |
 | `cargo test --lib` | **984/984** ✅（981 + G4-3b review-revision 3） |
 | `cargo fmt --check` | **干净（0 差异）** ✅ |
 | `cargo check --all-targets` | **0 告警** ✅ |
 | `pnpm typecheck` / `lint` | **exit 0（tsc 0 错误，含 refine-draft 既存 4 错误修复）** / **exit 0** ✅ |
 | 定向 `vitest` | **6/6**（`test/channel-migration-coverage.test.ts`，经 `pnpm run check:channels`）✅ |
-| 已完成批次 | A ✅ / B ✅ / C ✅ / D1 ✅ / D2-a ✅ / D2-b ✅ / D2-c ✅ / **E ✅** / **F1 ✅** / **L3 ✅** / **F2 ✅** / **批次 E G1 ✅** / **H1 ✅** / **H2 ✅** / **H3 ✅** / **B12 ✅** / **批次 G 的 G1 ✅** / **批次 G2a ✅** / **批次 G2b ✅（1→2 全部完成）** / **批次 G3a ✅** / **批次 G3b ✅** / **批次 G4 ✅（代码门）** / **B13 ✅** / **H4 ✅** / **上游 master 合并 ✅** / **B26 测试桩现代化批次全收口 ✅**（批 1/2a/2b/2c/3/4/5/6 + 第 4 派 + import-novel-resume + refine-draft 修复） |
-| 当前阶段 | **G4-3b 收口 + B26 批次收口 + CI 修复完成（2026-10-12）**：review-revision:* 4 频道命令注册（已迁移 193→197、未迁移 97→93）；B26 全部旧桩现代化收口；rebase reword 5 个超宽提交修复 CI commit-message 红（force-with-lease 推送 `da46ce0c`）。待办：G4-5/6/7、B26 剩余旧桩（workflow-launch-dialogs / AIOutputPanel×2 等）、import-novel-resume 1/32 既存应用行为单独立项 |
+| 已完成批次 | A ✅ / B ✅ / C ✅ / D1 ✅ / D2-a ✅ / D2-b ✅ / D2-c ✅ / **E ✅** / **F1 ✅** / **L3 ✅** / **F2 ✅** / **批次 E G1 ✅** / **H1 ✅** / **H2 ✅** / **H3 ✅** / **B12 ✅** / **批次 G 的 G1 ✅** / **批次 G2a ✅** / **批次 G2b ✅（1→2 全部完成）** / **批次 G3a ✅** / **批次 G3b ✅** / **批次 G4 ✅（代码门）** / **B13 ✅** / **H4 ✅** / **上游 master 合并 ✅** / **B26 测试桩现代化批次全收口 ✅**（批 1/2a/2b/2c/3/4/5/6 + 第 4 派 + import-novel-resume + refine-draft 修复） / **G4-5 owner 读面 ✅**（generation 读面 7 频道命令注册） |
+| 当前阶段 | **G4-3b + G4-5 收口 + B26 批次收口 + CI 修复完成（2026-10-12）**：review-revision:* 4 频道命令注册（已迁移 193→197）；G4-5 owner 读面 7 频道命令注册（197→204、未迁移 93→86，generation 21→14）；B26 全部旧桩现代化收口；rebase reword 5 个超宽提交修复 CI commit-message 红（force-with-lease 推送 `da46ce0c`）。待办：G4-6/G4-7、B26 剩余旧桩（workflow-launch-dialogs / AIOutputPanel×2 等）、import-novel-resume 1/32 既存应用行为单独立项 |
 | 依赖 | 同上一轮（本轮无新增：G4-3b 无 Cargo.toml 改动；B26 为纯测试文件改写） |
 | GUI 冒烟 | ✅ 十三轮（2026-10-10）⏸ 第十四轮（G4 参考链路）待暂停 |
 | 双栈隔离 | **L0/L1/L2/L3 全部隔离**：安装标识 / `~/.lorekeeper` / `<root>/.lore/`（库 `.lore/lorekeeper.db`、向量 `.lore/kb/`）。基线为 `~/.vela` / `<root>/.vela/`。两栈项目目录刻意不互通（`ee40aaab`） |
 | Rust 工具链 | rustc/cargo **1.99.0 stable-msvc** @ `D:\Environment\rust\`（本机内嵌设置 `RUSTUP_HOME` / `CARGO_HOME`） |
 
-<sub>*命令与频道差额：198 命令中 1 个为门户 0 耦合（`app_health_check`，不对应任何迁移频道），其余 197 个 invoke 频道一一对应。/sub>
+<sub>*命令与频道差额：205 命令中 1 个为门户 0 耦合（`app_health_check`，不对应任何迁移频道），其余 204 个 invoke 频道一一对应。/sub>
 
 ---
 
-## 本次更新（第 25 次：G4-3b + B26 批次收口 + CI 修复）
+## 本次更新（第 25 次：G4-3b + G4-5 + B26 批次收口 + CI 修复）
 
 ### 1. 新增（本轮）
 
 | 项 | 内容 |
 |---|---|
-| 仓储 / 服务 | 服务层 `review_revision_context.rs`（审稿修稿上下文装载）+ `review_revision_generation.rs`（prepare / commitReview / commitRevision / readRecovery 四步生成编排） |
-| 命令 | `commands/review_revision.rs` 新建：`review-revision:prepare` / `commit-review` / `commit-revision` / `read-recovery` 4 频道注册（`lib.rs` invoke_handler + `services/mod.rs` + `commands/mod.rs` 接线） |
+| 仓储 / 服务 | 服务层 `review_revision_context.rs`（审稿修稿上下文装载）+ `review_revision_generation.rs`（prepare / commitReview / commitRevision / readRecovery 四步生成编排）；G4-5 新建 `services/generation_draft_effects.rs`（读面平移：read_batch / read_batch_history / read_batch_snapshot / read_recovery / read_commit + 私有助手） |
+| 命令 | `commands/review_revision.rs` 新建：`review-revision:prepare` / `commit-review` / `commit-revision` / `read-recovery` 4 频道注册（`lib.rs` invoke_handler + `services/mod.rs` + `commands/mod.rs` 接线）；G4-5 新建 `commands/generation.rs`：`generation:read` / `list` / `list-directory-progress` / `read-visible-composition`（委托 main_generation_owner.rs 既有 pub fn）+ `read-context` / `read-batch` / `list-batches`（经 GenerationDraftEffects）7 频道注册 |
 | Schema | 无 Schema 变更（4 频道复用既有表） |
 
 **实现要点**：
@@ -81,6 +81,7 @@
 | `7ec590b` | fix(tauri): 修复 refine-draft 测试桩 invoke mock 签名遗留的 4 个 typecheck 错误 |
 | `da46ce0c` | docs(fork): §10.2 commit-msg 钩子从可选改为推荐（本机已装 2026-10-12） |
 | `0389e9c` / `a5ed9e3` / `ddd68bb` / `e7e4d31` / `6d81c0e` | rebase reword 5 个超宽提交（首行 224/200/176/165/179 列 → 105/105/116/97/99 列），CI commit-message 修复 |
+| `087e6abe` | feat(tauri): G4-5 owner 读面 7 频道命令注册（未迁移 invoke 93→86；首 run `5f68cc53` deadline 截断 → 修复 run `167a7e1c` 完成 20 编译错误修复） |
 
 ---
 
@@ -89,12 +90,12 @@
 ### 1. 当前工作区状态
 
 - `git status --porcelain`：空（干净）
-- HEAD：`da46ce0c` docs(fork): §10.2 commit-msg 钩子从可选改为推荐（本机已装 2026-10-12）
-- ⚠️ 上一份快照（2026-10-10）中已过期的描述：「G4-3 review-cycle 仓储层在飞」已收口（`41940a16` + `afa5181`）；「未迁移 invoke 97」已为 **93**；「测试桩现代化批次约 70 文件」已全收口（B26 批次完成）
+- HEAD：`087e6abe` feat(tauri): G4-5 owner 读面 7 频道命令注册（未迁移 invoke 93→86）
+- ⚠️ 上一份快照（2026-10-10）中已过期的描述：「G4-3 review-cycle 仓储层在飞」已收口（`41940a16` + `afa5181`）；「未迁移 invoke 97」已为 **86**；「测试桩现代化批次约 70 文件」已全收口（B26 批次完成）；G4-5 owner 读面已收口（`087e6abe`）
 
 ### 2. 下一步（1-2-3）
 
-1. **G4-5 owner 读算面**（下波派发应用命名新机制：`subagent({action:"create", ...})` 建批次 agent「G4-5-worker」→ 派发 → 收口后 delete；详见 `.pi/tmp/pipeline-state.md` 命名条）
+1. **G4-6 owner 写面 + commands/db.rs:622-658 三分支接线**（下波派发应用命名新机制：`subagent({action:"create", ...})` 建批次 agent「G4-6-worker」→ 派发 → 收口后 delete；写面频道：commit-draft / begin-batch / begin / execute 等 13 频道 + 2 事件，参照 kickoff B3）
 2. **B26 剩余旧桩现代化**：workflow-launch-dialogs / AIOutputPanel.failed / AIOutputPanel.recovery（后两者含事件插件 transformCallback 范式，参照 `src/components/layout/__tests__/TitleBar-exit.browser.tsx`）
 3. **import-novel-resume 1/32 失败修复单独立项评估**（预览 effect 加 inspectionSessionRef 校验；含是否回馈上游）
 
@@ -106,7 +107,7 @@
 | B22 | 两段式关窗 dirty 分支 | 待 GUI 实测 |
 | B24 | 整屏瞬黑（暂缓） | 暂缓 |
 | N1 | import-novel-resume 1/32 浏览器模式既存应用行为（2026-10-12 新登记） | 单独立项评估中（修复方向：预览 effect 加 inspectionSessionRef 校验） |
-| N2 | 93 个未迁移 invoke 频道迁移批次 | 待 G4-5/6/7 后的下一波编排 |
+| N2 | 86 个未迁移 invoke 频道迁移批次 | 待 G4-6/7 与后续波次编排 |
 
 ### 4. 红线提醒（每次接手都要过一遍）
 
@@ -125,7 +126,7 @@
 
 | 命令 | 工作目录 | 实测输出 |
 |---|---|---|
-| `pnpm run check:channels` | `tauri-app/` | exit 0；契约 invoke 290（事件 7）· 已注册命令 198 → 覆盖 197 · 未迁移 93 `[generation=21 agent-generation=8 cloud-backup=8 legacy-roster=7 character-proposal=6 finalization-generation=5 finalized-character=5 graph-generation=5 project=5 character-avatar=4 dialog=4 editor-inline=4 kb=3 startup=3 db=2 import-generation=2 character-identity=1]`；命令名与契约频道一一对应 ✅ |
+| `pnpm run check:channels` | `tauri-app/` | exit 0；契约 invoke 290（事件 7）· 已注册命令 205 → 覆盖 204 · 未迁移 86 `[generation=14 agent-generation=8 cloud-backup=8 legacy-roster=7 character-proposal=6 finalization-generation=5 finalized-character=5 graph-generation=5 project=5 character-avatar=4 dialog=4 editor-inline=4 kb=3 startup=3 db=2 import-generation=2 character-identity=1]`；命令名与契约频道一一对应 ✅ |
 | `cargo test --lib` | `tauri-app/src-tauri/` | test result: ok. **984 passed; 0 failed**; 0 ignored（56.25s） |
 | `cargo check --all-targets` | `tauri-app/src-tauri/` | exit 0（0 告警，11.67s 增量） |
 | `pnpm typecheck` / `pnpm run lint` | `tauri-app/` | exit 0 / exit 0（eslint 0 告警） |
