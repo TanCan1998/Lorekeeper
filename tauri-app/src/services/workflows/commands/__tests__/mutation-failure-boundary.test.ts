@@ -201,18 +201,37 @@ function stubLlm(command: object, response: string): void {
   }
 }
 
-function stubVelaIpc(invoke: (channel: string, ...args: unknown[]) => Promise<unknown>): void {
-  mainFixture = new ReviewRevisionRuntimeFixture(invoke)
+function stubVelaIpc(invoke: (channel: string, args: Record<string, unknown>, _options?: unknown) => Promise<unknown>): void {
+  // ReviewRevisionRuntimeFixture（非本写面）内部仍以契约频道名 + 位置参数路由
+  // db:draft-get-meta / db:draft-get-full 两个草稿读取（含 optional() 兜底语义）；
+  // 适配器把它的旧式后端调用按 CHANNEL_ARG_NAMES 语义转成 Tauri 命令名 + 命名参数。
+  const fixtureBackend = async (channel: string, ...args: unknown[]): Promise<unknown> => {
+    switch (channel) {
+      case 'db:draft-get-meta':
+      case 'db:draft-get-full':
+        return invoke(channel.replace(/[:-]/g, '_'), { id: args[0], expectedProjectPath: args[1] }, undefined)
+      default:
+        // fixture 透传层收到的已是 (Tauri 命令名, 命名参数) 形态。
+        return invoke(channel, args[0] as Record<string, unknown>, undefined)
+    }
+  }
+  mainFixture = new ReviewRevisionRuntimeFixture(fixtureBackend)
   vi.stubGlobal('window', {
-    aiNovelAPI: {
-      invoke: (channel: string, ...args: unknown[]) => (
-        channel === 'finalized-character:read-context'
-          ? Promise.resolve({ contextId: 'synthetic-context', context: characterContexts.get((args[0] as { draftId: number }).draftId), originProjectId: characterContextOrigin })
-          : channel === 'prompt:load-global'
+    __TAURI_INTERNALS__: {
+      invoke: (channel: string, args: Record<string, unknown> = {}, options?: unknown) => (
+        channel === 'finalized_character_read_context'
+          ? Promise.resolve({ contextId: 'synthetic-context', context: characterContexts.get(args.draftId as number), originProjectId: characterContextOrigin })
+          : channel === 'prompt_load_global'
           ? Promise.resolve({ templates: [], diagnostics: [] })
-          : channel === 'fs:check-exists' && String(args[0]).endsWith('/.lore/prompts')
+          : channel === 'fs_check_exists' && String(args.filePath).endsWith('/.lore/prompts')
             ? Promise.resolve(false)
-            : mainFixture.selected ? mainFixture.invoke(channel, ...args) : invoke(channel, ...args)
+            : mainFixture.selected && (channel === 'db_draft_get_meta' || channel === 'db_draft_get_full')
+              ? mainFixture.invoke(
+                  channel === 'db_draft_get_meta' ? 'db:draft-get-meta' : 'db:draft-get-full',
+                  args.id,
+                  args.expectedProjectPath,
+                )
+              : mainFixture.selected ? mainFixture.invoke(channel, args) : invoke(channel, args, options)
       ),
     },
   })
@@ -248,7 +267,7 @@ describe('workflow mutation failure boundaries', () => {
   it.each(['zh-CN', 'en-US'] as const)('passes notes source-support instructions and complete prose through the renderer fallback: %s', async writingLanguage => {
     const content = 'Asha waited outside the hall. The parcel remained in her bag.\n\nThe reason was still unknown.'
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:blueprint-update-notes' || channel === 'db:continuity-save-finalized') return { success: true }
+      if (channel === 'db_blueprint_update_notes' || channel === 'db_continuity_save_finalized') return { success: true }
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -265,9 +284,9 @@ describe('workflow mutation failure boundaries', () => {
 
   it('sends both finalization post-process requests in the frozen English writing language', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:blueprint-update-notes') return { success: true }
-      if (channel === 'db:continuity-save-finalized') return { success: true }
-      if (channel === 'db:character-roster-read') {
+      if (channel === 'db_blueprint_update_notes') return { success: true }
+      if (channel === 'db_continuity_save_finalized') return { success: true }
+      if (channel === 'db_character_roster_read') {
         return { status: 'empty', revision: 0, entries: [] }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -312,10 +331,10 @@ describe('workflow mutation failure boundaries', () => {
       },
     })
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:import-text') return { success: true, chunkCount: 1, docId: 'synthetic-doc' }
-      if (channel === 'db:finalization-link-knowledge-document' || channel === 'db:continuity-save-finalized') return { success: true }
-      if (channel === 'db:blueprint-update-notes') return { success: true }
-      if (channel === 'db:character-roster-read') return { status: 'empty', revision: 0, entries: [] }
+      if (channel === 'kb_import_text') return { success: true, chunkCount: 1, docId: 'synthetic-doc' }
+      if (channel === 'db_finalization_link_knowledge_document' || channel === 'db_continuity_save_finalized') return { success: true }
+      if (channel === 'db_blueprint_update_notes') return { success: true }
+      if (channel === 'db_character_roster_read') return { status: 'empty', revision: 0, entries: [] }
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -331,11 +350,11 @@ describe('workflow mutation failure boundaries', () => {
     expect(steps.map(step => step.key)).toEqual(['kb_import', 'chapter_notes', 'character_cards'])
     expect(complete).toHaveBeenCalledTimes(2)
     expect(invoke.mock.calls.map(([channel]) => channel)).toEqual(expect.arrayContaining([
-      'kb:import-text',
-      'db:blueprint-update-notes',
-      'db:continuity-save-finalized',
+      'kb_import_text',
+      'db_blueprint_update_notes',
+      'db_continuity_save_finalized',
     ]))
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:project-core-update')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_project_core_update')
     expect(useProjectStore.getState().currentProject?.novelConfig.writingStyle).toBe('作者手工文风')
   })
 
@@ -383,7 +402,7 @@ describe('workflow mutation failure boundaries', () => {
 
   it('rejects an architecture checkpoint write reported as success=false', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'fs:write-json') return { success: false, error: 'checkpoint rejected' }
+      if (channel === 'fs_write_json') return { success: false, error: 'checkpoint rejected' }
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -402,7 +421,7 @@ describe('workflow mutation failure boundaries', () => {
     ['Save architecture-generation checkpoint', 'Failed to save the architecture-generation checkpoint.'],
   ])('uses the explicit architecture checkpoint fallback when IPC omits an error: %s', async (operationLabel, fallbackMessage) => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'fs:write-json') return { success: false }
+      if (channel === 'fs_write_json') return { success: false }
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -457,7 +476,7 @@ describe('workflow mutation failure boundaries', () => {
 
   it('stops the chapter-notes post-process step when blueprint persistence fails', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:blueprint-update-notes') {
+      if (channel === 'db_blueprint_update_notes') {
         return { success: false, error: 'notes rejected' }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -488,7 +507,7 @@ describe('workflow mutation failure boundaries', () => {
   it('reuses generated chapter notes when an executor retry only repairs persistence', async () => {
     let persistenceAttempts = 0
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:blueprint-update-notes') {
+      if (channel === 'db_blueprint_update_notes') {
         persistenceAttempts += 1
         return persistenceAttempts === 1
           ? { success: false, error: 'transient notes failure' }
@@ -506,13 +525,13 @@ describe('workflow mutation failure boundaries', () => {
     await expect(step.executor(callbacks(), context())).resolves.toBeUndefined()
 
     expect(complete).toHaveBeenCalledOnce()
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:blueprint-update-notes')).toHaveLength(2)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_blueprint_update_notes')).toHaveLength(2)
   })
 
   it('persists notes but omits unsupported facts when the author chapter has no blueprint', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:continuity-save-finalized') return { success: true }
-      if (channel === 'db:blueprint-update-notes') return { success: true, updated: false }
+      if (channel === 'db_continuity_save_finalized') return { success: true }
+      if (channel === 'db_blueprint_update_notes') return { success: true, updated: false }
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -539,27 +558,30 @@ describe('workflow mutation failure boundaries', () => {
     const stepCallbacks = callbacks()
     await expect(step!.executor(stepCallbacks, context())).resolves.toBeUndefined()
     expect(invoke).toHaveBeenCalledWith(
-      'db:continuity-save-finalized',
+      'db_continuity_save_finalized',
       {
-        draftId: 41,
-        chapterNumber: 1,
-        chapterNotes: '作者原稿的连续性事实',
-        facts: [],
-        projectionGeneration: 7,
-        source: finalizedSource(41, 1, '作者正文'),
+        request: {
+          draftId: 41,
+          chapterNumber: 1,
+          chapterNotes: '作者原稿的连续性事实',
+          facts: [],
+          projectionGeneration: 7,
+          source: finalizedSource(41, 1, '作者正文'),
+        },
+        expectedProjectPath: PROJECT_PATH,
+        projectSession: expect.objectContaining({ projectId: 'A', leaseId: 'lease-A' }),
       },
-      PROJECT_PATH,
-      expect.objectContaining({ projectId: 'A', leaseId: 'lease-A' }),
+      undefined,
     )
     expect(stepCallbacks.log).toHaveBeenCalledWith('已投影连续性事实：0 条')
   })
 
   it('records the finalized knowledge document identity before marking import complete', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:import-text') {
+      if (channel === 'kb_import_text') {
         return { success: true, docId: 'knowledge-document-41', chunkCount: 1 }
       }
-      if (channel === 'db:finalization-link-knowledge-document') {
+      if (channel === 'db_finalization_link_knowledge_document') {
         return { success: true, finalization: { knowledgeDocumentId: 'knowledge-document-41' } }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -576,11 +598,14 @@ describe('workflow mutation failure boundaries', () => {
 
     await expect(step!.executor(callbacks(), context())).resolves.toBeUndefined()
     expect(invoke).toHaveBeenCalledWith(
-      'db:finalization-link-knowledge-document',
-      41,
-      'knowledge-document-41',
-      PROJECT_PATH,
-      expect.objectContaining({ projectId: 'A', leaseId: 'lease-A' }),
+      'db_finalization_link_knowledge_document',
+      {
+        draftId: 41,
+        documentId: 'knowledge-document-41',
+        expectedProjectPath: PROJECT_PATH,
+        projectSession: expect.objectContaining({ projectId: 'A', leaseId: 'lease-A' }),
+      },
+      undefined,
     )
   })
 
@@ -588,7 +613,7 @@ describe('workflow mutation failure boundaries', () => {
     const chapterTitle = 'Night Café 夜航'
     const draftContent = 'The sign reads “夜航 Café” — déjà vu.'
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:import-text') {
+      if (channel === 'kb_import_text') {
         return { success: true, docId: 'knowledge-document-utf8', chunkCount: 1 }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -608,11 +633,14 @@ describe('workflow mutation failure boundaries', () => {
     })).resolves.toBeUndefined()
 
     expect(invoke).toHaveBeenCalledWith(
-      'kb:import-text',
-      draftContent,
-      `Chapter 1 ${chapterTitle}.txt`,
-      PROJECT_PATH,
-      expect.objectContaining({ projectId: 'A', leaseId: 'lease-A' }),
+      'kb_import_text',
+      {
+        text: draftContent,
+        fileName: `Chapter 1 ${chapterTitle}.txt`,
+        expectedProjectPath: PROJECT_PATH,
+        projectSession: expect.objectContaining({ projectId: 'A', leaseId: 'lease-A' }),
+      },
+      undefined,
     )
   })
 
@@ -621,7 +649,7 @@ describe('workflow mutation failure boundaries', () => {
     let stepState: 'new' | 'failed' | 'ok' = 'new'
     const invoke = vi.fn(async (channel: string) => {
       switch (channel) {
-        case 'db:post-process-get-latest-run':
+        case 'db_post_process_get_latest_run':
           return runCreated
             ? {
                 id: 'run-1',
@@ -631,10 +659,10 @@ describe('workflow mutation failure boundaries', () => {
                 updatedAt: '2026-01-01T00:00:00.000Z',
               }
             : null
-        case 'db:post-process-create-run':
+        case 'db_post_process_create_run':
           runCreated = true
           return { success: true, id: 'run-1' }
-        case 'db:post-process-get-steps':
+        case 'db_post_process_get_steps':
           if (stepState === 'new') return []
           return [{
             id: 1,
@@ -648,13 +676,13 @@ describe('workflow mutation failure boundaries', () => {
             completedAt: stepState === 'ok' ? '2026-01-01T00:00:00.000Z' : '',
             lastAttemptAt: '2026-01-01T00:00:00.000Z',
           }]
-        case 'db:post-process-mark-step-failed':
+        case 'db_post_process_mark_step_failed':
           stepState = 'failed'
           return { success: true }
-        case 'db:post-process-mark-step-ok':
+        case 'db_post_process_mark_step_ok':
           stepState = 'ok'
           return { success: true }
-        case 'db:blueprint-update-notes':
+        case 'db_blueprint_update_notes':
           return { success: true }
         default:
           throw new Error(`unexpected IPC: ${channel}`)
@@ -700,14 +728,17 @@ describe('workflow mutation failure boundaries', () => {
       options,
     )).rejects.toThrow('后处理步骤失败：章节剧情要点')
 
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:blueprint-update-notes')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_blueprint_update_notes')
     expect(invoke).toHaveBeenCalledWith(
-      'db:post-process-mark-step-failed',
-      'run-1',
-      'chapter_notes',
-      expect.stringContaining('输出达到本次请求长度限制'),
-      PROJECT_PATH,
-      workflowContext.projectSession,
+      'db_post_process_mark_step_failed',
+      {
+        runId: 'run-1',
+        stepKey: 'chapter_notes',
+        errorMsg: expect.stringContaining('输出达到本次请求长度限制'),
+        expectedProjectPath: PROJECT_PATH,
+        projectSession: workflowContext.projectSession,
+      },
+      undefined,
     )
 
     await expect(runPostProcessPipeline(
@@ -720,13 +751,16 @@ describe('workflow mutation failure boundaries', () => {
     )).resolves.toMatchObject({ allCriticalPassed: true })
 
     expect(generateStream).toHaveBeenCalledTimes(2)
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:blueprint-update-notes')).toHaveLength(1)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_blueprint_update_notes')).toHaveLength(1)
     expect(invoke).toHaveBeenCalledWith(
-      'db:post-process-mark-step-ok',
-      'run-1',
-      'chapter_notes',
-      PROJECT_PATH,
-      workflowContext.projectSession,
+      'db_post_process_mark_step_ok',
+      {
+        runId: 'run-1',
+        stepKey: 'chapter_notes',
+        expectedProjectPath: PROJECT_PATH,
+        projectSession: workflowContext.projectSession,
+      },
+      undefined,
     )
   })
 
@@ -887,7 +921,7 @@ describe('workflow mutation failure boundaries', () => {
 
   it('does not persist post-process output when the stream omits terminal evidence', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:blueprint-update-notes') return { success: true }
+      if (channel === 'db_blueprint_update_notes') return { success: true }
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -928,13 +962,13 @@ describe('workflow mutation failure boundaries', () => {
     })],
   ])('does not open a diff when %s revision creation fails', async (_label, makeCommand) => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:draft-get-full') {
+      if (channel === 'db_draft_get_full') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', content: '原稿' }
       }
-      if (channel === 'db:review-get-full') {
+      if (channel === 'db_review_get_full') {
         return {
           id: 7,
           baseDraftId: 1,
@@ -948,8 +982,8 @@ describe('workflow mutation failure boundaries', () => {
           },
         }
       }
-      if (channel === 'db:revision-get-pending') return []
-      if (channel === 'db:revision-create' || channel === 'db:revision-replace-pending') {
+      if (channel === 'db_revision_get_pending') return []
+      if (channel === 'db_revision_create' || channel === 'db_revision_replace_pending') {
         return { success: false, error: 'revision rejected' }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -973,14 +1007,14 @@ describe('workflow mutation failure boundaries', () => {
     }
     const draft = '她说，明天再装订相册。两人约定周三搬设备。'
     let saved: Record<string, unknown> = {}
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'db:continuity-list-before' || channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:blueprint-get-all') return [blueprint, { ...blueprint, chapterNumber: 2, keyEvents: '搬运设备' }]
-      if (channel === 'db:blueprint-get') return null
-      if (channel === 'db:draft-get-meta') return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
-      if (channel === 'db:review-create') {
-        saved = JSON.parse((args[0] as { content: string }).content)
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'db_continuity_list_before' || channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_blueprint_get_all') return [blueprint, { ...blueprint, chapterNumber: 2, keyEvents: '搬运设备' }]
+      if (channel === 'db_blueprint_get') return null
+      if (channel === 'db_draft_get_meta') return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_review_create') {
+        saved = JSON.parse((args.params as { content: string }).content)
         return { success: true, id: 9 }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -1019,15 +1053,15 @@ describe('workflow mutation failure boundaries', () => {
 
   it('does not open a review report when review persistence fails', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: false, error: 'review rejected' }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: false, error: 'review rejected' }
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1077,19 +1111,19 @@ describe('workflow mutation failure boundaries', () => {
     }
 
     let persistedContent = ''
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') {
-        persistedContent = (args[0] as { content: string }).content
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') {
+        persistedContent = (args.params as { content: string }).content
         return { success: true, id: 9 }
       }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1142,19 +1176,19 @@ describe('workflow mutation failure boundaries', () => {
       ? `\`\`\`json\n${JSON.stringify(review, null, 2)}\n\`\`\``
       : `PRIVATE_PREFIX ${JSON.stringify(review)} PRIVATE_SUFFIX`
     let persistedContent = ''
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') {
-        persistedContent = (args[0] as { content: string }).content
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') {
+        persistedContent = (args.params as { content: string }).content
         return { success: true, id: 9 }
       }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1248,14 +1282,14 @@ describe('workflow mutation failure boundaries', () => {
     })],
   ])('rejects an English %s review without persistence', async (_case, response) => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1272,7 +1306,7 @@ describe('workflow mutation failure boundaries', () => {
       callbacks: callbacks(),
     })).rejects.toThrow('The AI review response was invalid twice')
 
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:review-create')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_review_create')
     expect(useEditorStore.getState().tabs).toEqual([])
   })
 
@@ -1304,9 +1338,9 @@ describe('workflow mutation failure boundaries', () => {
     expectedPrompt,
   }) => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1328,7 +1362,7 @@ describe('workflow mutation failure boundaries', () => {
 
     expect(stepCallbacks.log).toHaveBeenCalledWith(expectedLog)
     expect(llm.mock.calls[1]?.[0]).toContain(expectedPrompt)
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:review-create')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_review_create')
   })
 
   it('replaces one length-truncated review with complete JSON before persistence', async () => {
@@ -1337,15 +1371,15 @@ describe('workflow mutation failure boundaries', () => {
       summary: '审稿完成',
     })
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: true, id: 9 }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: true, id: 9 }
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1376,7 +1410,7 @@ describe('workflow mutation failure boundaries', () => {
 
     expect(generateStream).toHaveBeenCalledTimes(2)
     expect(generateStream.mock.calls[1]?.[0][1]?.content).toContain('上一轮结构化输出因长度限制而中断')
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:review-create')).toHaveLength(1)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_review_create')).toHaveLength(1)
   })
 
   it('recovers a stop-reported truncated review with one complete replacement before persistence', async () => {
@@ -1390,20 +1424,20 @@ describe('workflow mutation failure boundaries', () => {
     const originalDraft = '她将借书交还管理员。'
     const blueprint = { chapterNumber: 1, keyEvents: '归还借书' }
     let saved: Record<string, unknown> = {}
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:blueprint-get-all') return [blueprint]
-      if (channel === 'db:draft-get-meta') {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_blueprint_get_all') return [blueprint]
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') {
-        saved = JSON.parse((args[0] as { content: string }).content)
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') {
+        saved = JSON.parse((args.params as { content: string }).content)
         return { success: true, id: 10 }
       }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1447,14 +1481,14 @@ describe('workflow mutation failure boundaries', () => {
     expect(rebuildPrompts[0]).not.toContain('生成期间外部改写的目标')
     expect(saved.goalReview).toMatchObject({ coverage: 'complete', items: [{ text: '归还借书', status: 'completed' }] })
     expect(saved.items).toHaveLength(2) // 通用项+目标项，只有最终有效响应被归一化一次。
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:review-create')).toHaveLength(1)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_review_create')).toHaveLength(1)
   })
 
   it('keeps a twice length-truncated review fail-closed', async () => {
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubVelaIpc(invoke)
@@ -1479,6 +1513,6 @@ describe('workflow mutation failure boundaries', () => {
     })).rejects.toThrow('Automatic continuation ran 1 time, but the output is not yet complete')
 
     expect(generateStream).toHaveBeenCalledTimes(2)
-    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db:review-create')
+    expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_review_create')
   })
 })

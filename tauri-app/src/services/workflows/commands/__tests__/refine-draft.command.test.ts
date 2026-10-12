@@ -174,18 +174,37 @@ function callbacks(): StepCallbacks {
 }
 
 function stubIpc(
-  invoke: (channel: string, ...args: unknown[]) => Promise<unknown>,
+  invoke: (channel: string, args: Record<string, unknown>, _options?: unknown) => Promise<unknown>,
   projectPromptDirectoryExists?: () => Promise<boolean>,
 ): void {
-  mainFixture = new ReviewRevisionRuntimeFixture(invoke)
+  // ReviewRevisionRuntimeFixture（非本写面）内部仍以契约频道名 + 位置参数路由
+  // db:draft-get-meta / db:draft-get-full 两个草稿读取（含 optional() 兜底语义）；
+  // 适配器把它的旧式后端调用按 CHANNEL_ARG_NAMES 语义转成 Tauri 命令名 + 命名参数。
+  const fixtureBackend = async (channel: string, ...args: unknown[]): Promise<unknown> => {
+    switch (channel) {
+      case 'db:draft-get-meta':
+      case 'db:draft-get-full':
+        return invoke(channel.replace(/[:-]/g, '_'), { id: args[0], expectedProjectPath: args[1] }, undefined)
+      default:
+        // fixture 透传层收到的已是 (Tauri 命令名, 命名参数) 形态。
+        return invoke(channel, args[0] as Record<string, unknown>, undefined)
+    }
+  }
+  mainFixture = new ReviewRevisionRuntimeFixture(fixtureBackend)
   vi.stubGlobal('window', {
-    aiNovelAPI: {
-      invoke: (channel: string, ...args: unknown[]) => (
-        channel === 'prompt:load-global'
+    __TAURI_INTERNALS__: {
+      invoke: (channel: string, args: Record<string, unknown> = {}) => (
+        channel === 'prompt_load_global'
           ? Promise.resolve({ templates: [], diagnostics: [] })
-          : channel === 'fs:check-exists' && String(args[0]).endsWith('/.lore/prompts')
+          : channel === 'fs_check_exists' && String(args.filePath).endsWith('/.lore/prompts')
             ? projectPromptDirectoryExists?.() ?? Promise.resolve(false)
-            : mainFixture.invoke(channel, ...args)
+            : channel === 'db_draft_get_meta' || channel === 'db_draft_get_full'
+              ? mainFixture.invoke(
+                  channel === 'db_draft_get_meta' ? 'db:draft-get-meta' : 'db:draft-get-full',
+                  args.id,
+                  args.expectedProjectPath,
+                )
+              : mainFixture.invoke(channel, args)
       ),
     },
   })
@@ -252,15 +271,14 @@ function successfulRevisionIpc(options: {
   const reviewContent = options.reviewContent ?? DEFAULT_CONFIRMED_REVIEW_CONTENT
   const reviewId = options.reviewId ?? CONFIRMATION_REVIEW_ID
   const reviewBaseDraftId = options.reviewBaseDraftId ?? 1
-  return vi.fn(async (channel: string, ...args: unknown[]) => {
-    void args
-    if (channel === 'db:draft-get-meta') {
+  return vi.fn(async (channel: string) => {
+    if (channel === 'db_draft_get_meta') {
       return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
     }
-    if (channel === 'db:draft-get-full') {
+    if (channel === 'db_draft_get_full') {
       return { ...CONFIRMED_SOURCE_DRAFT, content: options.currentDraftContent ?? mainFixture.selected?.draftContent ?? CONFIRMED_SOURCE_DRAFT.content }
     }
-    if (channel === 'db:review-get-full') {
+    if (channel === 'db_review_get_full') {
       return {
         id: reviewId,
         baseDraftId: reviewBaseDraftId,
@@ -271,7 +289,7 @@ function successfulRevisionIpc(options: {
         sourceDraft: parseHumanConfirmedReviewSnapshot(reviewContent)?.sourceDraft ?? null,
       }
     }
-    if (channel === 'db:revision-replace-pending') {
+    if (channel === 'db_revision_replace_pending') {
       return options.revisionResult ?? { success: true, id: 9, revisionIndex: 2 }
     }
     throw new Error(`unexpected IPC: ${channel}`)
@@ -391,13 +409,13 @@ describe('RefineDraftCommand bounded visible completion', () => {
       throw new Error('captured request')
     })
     stubIpc(vi.fn(async (channel: string) => {
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:draft-get-full') {
+      if (channel === 'db_draft_get_full') {
         return { ...CONFIRMED_SOURCE_DRAFT, content: confirmedSource }
       }
-      if (channel === 'db:review-get-full') {
+      if (channel === 'db_review_get_full') {
         return {
           id: CONFIRMATION_REVIEW_ID,
           baseDraftId: 1,
@@ -408,8 +426,8 @@ describe('RefineDraftCommand bounded visible completion', () => {
           sourceDraft: { ...CONFIRMED_SOURCE_DRAFT, content: confirmedSource },
         }
       }
-      if (channel === 'kb:search' || channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
+      if (channel === 'kb_search' || channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
       throw new Error(`unexpected IPC: ${channel}`)
     }))
     const context = { ...workflowContext(), writingLanguage: 'en-US' as const }
@@ -453,8 +471,8 @@ describe('RefineDraftCommand bounded visible completion', () => {
     expect(completeWithLease).toHaveBeenCalledTimes(2)
     expect(completeWithLease.mock.calls.map(([request]) => request.leaseId))
       .toEqual(['model-lease-refine', 'model-lease-refine'])
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:revision-replace-pending')).toEqual([
-      ['db:revision-replace-pending', expect.objectContaining({ content: expected })],
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_revision_replace_pending')).toEqual([
+      ['db_revision_replace_pending', expect.objectContaining({ params: expect.objectContaining({ content: expected }) })],
     ])
     expect(useEditorStore.getState().tabs).toEqual([
       expect.objectContaining({ type: 'diff', content: expected }),
@@ -483,10 +501,10 @@ describe('RefineDraftCommand bounded visible completion', () => {
     })
 
     const continuationPrompt = completeWithLease.mock.calls[1]?.[0].messages.at(-1)?.content ?? ''
-    const persisted = invoke.mock.calls.find(([channel]) => channel === 'db:revision-replace-pending')?.[1] as { content: string }
+    const persisted = invoke.mock.calls.find(([channel]) => channel === 'db_revision_replace_pending')?.[1] as { params: { content: string } }
     expect(continuationPrompt).not.toContain('不要泄露的推理')
-    expect(persisted.content).not.toContain('推理')
-    expect(persisted.content.match(new RegExp(overlap, 'gu'))).toHaveLength(1)
+    expect(persisted.params.content).not.toContain('推理')
+    expect(persisted.params.content.match(new RegExp(overlap, 'gu'))).toHaveLength(1)
   })
 
   it('keeps revision storage untouched when a stop continuation contains no visible prose', async () => {
@@ -625,7 +643,7 @@ describe('RefineDraftCommand bounded visible completion', () => {
     const completeWithLease = vi.fn<GenerationRuntimeEnvironment['completeWithLease']>()
       .mockResolvedValue({ content: revision, finishReason: 'stop' })
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:revision-replace-pending') {
+      if (channel === 'db_revision_replace_pending') {
         return { success: false, errorCode: 'SOURCE_DRAFT_CHANGED', error: 'SOURCE_DRAFT_CHANGED' }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -649,17 +667,19 @@ describe('RefineDraftCommand bounded visible completion', () => {
       message: 'The source draft changed during AI refinement. The revision was not saved. Reopen the current draft and run AI refinement again.',
     })
 
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:revision-replace-pending')).toEqual([[
-      'db:revision-replace-pending',
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_revision_replace_pending')).toEqual([[
+      'db_revision_replace_pending',
       expect.objectContaining({
-        baseDraftId: 1,
-        expectedSource: {
-          id: 1,
-          chapterNumber: 1,
-          version: 1,
-          status: 'draft',
-          content: source,
-        },
+        params: expect.objectContaining({
+          baseDraftId: 1,
+          expectedSource: {
+            id: 1,
+            chapterNumber: 1,
+            version: 1,
+            status: 'draft',
+            content: source,
+          },
+        }),
       }),
     ]])
   })
@@ -694,7 +714,7 @@ describe('RefineDraftCommand bounded visible completion', () => {
       callbacks: callbacks(),
     })).resolves.toBe(revision)
 
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:revision-replace-pending')).toHaveLength(1)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_revision_replace_pending')).toHaveLength(1)
   })
 })
 
@@ -848,8 +868,13 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     })).resolves.toBe(revision)
 
     expect(invoke).toHaveBeenCalledWith(
-      'db:review-get-full',
-      CONFIRMATION_REVIEW_ID,
+      'db_review_get_full',
+      {
+        baseDraftId: CONFIRMATION_REVIEW_ID,
+        expectedProjectPath: PROJECT_PATH,
+        projectSession: PROJECT_SESSION,
+      },
+      undefined,
     )
     expect(createRuntime.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ modelId: 'grok-selected-model' }))
     expect(begunModelIds).toEqual(['grok-selected-model'])
@@ -867,17 +892,19 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     expect(prompt).toContain('简单否定翻转')
     expect(prompt).toContain('决定、计划、承诺、保证，均不算完成')
 
-    const pendingRevision = invoke.mock.calls.find(([channel]) => channel === 'db:revision-replace-pending')?.[1]
+    const pendingRevision = invoke.mock.calls.find(([channel]) => channel === 'db_revision_replace_pending')?.[1]
     expect(pendingRevision).toMatchObject({
-      baseDraftId: 1,
-      revisionType: 'review-fix',
-      reviewSourceId: CONFIRMATION_REVIEW_ID,
-      userPrompt: '保留开头的悬念。',
-      content: revision,
-      expectedSource: CONFIRMED_SOURCE_DRAFT,
+      params: {
+        baseDraftId: 1,
+        revisionType: 'review-fix',
+        reviewSourceId: CONFIRMATION_REVIEW_ID,
+        userPrompt: '保留开头的悬念。',
+        content: revision,
+        expectedSource: CONFIRMED_SOURCE_DRAFT,
+      },
     })
     expect(invoke.mock.calls.some(([channel]) => (
-      channel === 'db:draft-create' || channel === 'db:draft-update-content'
+      channel === 'db_draft_create' || channel === 'db_draft_update_content'
     ))).toBe(false)
   })
 
@@ -902,7 +929,7 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     })).rejects.toThrow(/源草稿.*已变化/)
 
     expect(createRuntime).not.toHaveBeenCalled()
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:revision-replace-pending')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_revision_replace_pending')).toBe(false)
   })
 
   it('does not call the model or persist a revision when the draft changes while the prompt template loads', async () => {
@@ -911,15 +938,15 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     const stableIpc = successfulRevisionIpc()
     let currentDraftContent = CONFIRMED_SOURCE_DRAFT.content
     let draftReadCount = 0
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'db:draft-get-full') {
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'db_draft_get_full') {
         draftReadCount += 1
         return {
           ...CONFIRMED_SOURCE_DRAFT,
           content: currentDraftContent,
         }
       }
-      return stableIpc(channel, ...args)
+      return stableIpc(channel, args)
     })
     let releaseTemplateLoad!: () => void
     const templateLoadReleased = new Promise<void>((resolve) => { releaseTemplateLoad = resolve })
@@ -947,7 +974,7 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
 
     expect(draftReadCount).toBeGreaterThan(frozenReadCount)
     expect(completeWithLease).not.toHaveBeenCalled()
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:revision-replace-pending')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_revision_replace_pending')).toBe(false)
   })
 
   it('does not persist or open a review fix when the source changes during generation', async () => {
@@ -1030,10 +1057,10 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     const createRuntime = vi.fn<WorkflowGenerationRuntimeDependencies['createRuntime']>()
     const completeWithLease = vi.fn<GenerationRuntimeEnvironment['completeWithLease']>()
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-get-full') return storedReview()
+      if (channel === 'db_review_get_full') return storedReview()
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubIpc(invoke)
@@ -1053,7 +1080,7 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
 
     expect(createRuntime).not.toHaveBeenCalled()
     expect(completeWithLease).not.toHaveBeenCalled()
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:revision-replace-pending')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_revision_replace_pending')).toBe(false)
   })
 
   it('continues a length-limited public workflow and logs only bounded terminal evidence', async () => {
@@ -1083,7 +1110,7 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     expect(stepCallbacks.log).toHaveBeenCalledWith('  初始响应：finishReason=length')
     expect(stepCallbacks.log).toHaveBeenCalledWith('  自动续写第 1 轮响应：finishReason=stop')
     expect(stepCallbacks.log).not.toHaveBeenCalledWith(expect.stringContaining(first))
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:revision-replace-pending')).toHaveLength(1)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_revision_replace_pending')).toHaveLength(1)
   })
 
   it('keeps revision storage untouched when a stop continuation only repeats the partial revision', async () => {
@@ -1104,7 +1131,7 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     })).rejects.toThrow('续写未增加新的可见正文')
 
     expect(completeWithLease).toHaveBeenCalledTimes(2)
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:revision-replace-pending')).toHaveLength(0)
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_revision_replace_pending')).toHaveLength(0)
     expect(useEditorStore.getState().tabs).toEqual([])
   })
 })
@@ -1115,10 +1142,10 @@ describe('ReviewChapterCommand reasoning stage', () => {
     const completeWithLease = vi.fn<GenerationRuntimeEnvironment['completeWithLease']>()
       .mockResolvedValue({ content: PASSING_REVIEW_JSON, finishReason: 'stop' })
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:continuity-list-before' || channel === 'db:character-get-all' || channel === 'db:blueprint-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:blueprint-get') return null
-      if (channel === 'db:review-create') {
+      if (channel === 'db_continuity_list_before' || channel === 'db_character_get_all' || channel === 'db_blueprint_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_blueprint_get') return null
+      if (channel === 'db_review_create') {
         return { success: false, errorCode: 'SOURCE_DRAFT_CHANGED', error: 'SOURCE_DRAFT_CHANGED' }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -1142,17 +1169,19 @@ describe('ReviewChapterCommand reasoning stage', () => {
       message: '源草稿在 AI 审稿期间已变化。审稿报告未保存，请重新打开当前草稿后再次执行 AI 审稿。',
     })
 
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:review-create')).toEqual([[
-      'db:review-create',
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_review_create')).toEqual([[
+      'db_review_create',
       expect.objectContaining({
-        baseDraftId: 1,
-        expectedSource: {
-          id: 1,
-          chapterNumber: 1,
-          version: 1,
-          status: 'draft',
-          content: source,
-        },
+        params: expect.objectContaining({
+          baseDraftId: 1,
+          expectedSource: {
+            id: 1,
+            chapterNumber: 1,
+            version: 1,
+            status: 'draft',
+            content: source,
+          },
+        }),
       }),
     ]])
   })
@@ -1169,12 +1198,12 @@ describe('ReviewChapterCommand reasoning stage', () => {
       .mockResolvedValueOnce({ content: '{"summary":"', finishReason: 'length' })
       .mockResolvedValueOnce({ content: PASSING_REVIEW_JSON, finishReason: 'stop' })
     stubIpc(vi.fn(async (channel: string) => {
-      if (channel === 'kb:search' || channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: true, id: 77 }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'kb_search' || channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: true, id: 77 }
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     }))
 
@@ -1210,20 +1239,20 @@ describe('ReviewChapterCommand reasoning stage', () => {
       .mockResolvedValueOnce({ content: '{"summary":', finishReason: 'stop' })
       .mockResolvedValueOnce({ content: PASSING_REVIEW_JSON, finishReason: 'stop' })
     stubIpc(vi.fn(async (channel: string) => {
-      if (channel === 'fs:list-dir') return [{ name: promptFile, path: promptPath, isDir: false }]
-      if (channel === 'fs:read-file') return { success: true, content: JSON.stringify({
+      if (channel === 'fs_list_dir') return [{ name: promptFile, path: promptPath, isDir: false }]
+      if (channel === 'fs_read_file') return { success: true, content: JSON.stringify({
         ...getBuiltinPromptTemplate('consistency_check', writingLanguage)!, writingLanguage,
         content: `${customMarker}\n{{chapter_content}}\n{{world_building}}`,
       }) }
-      if (channel === 'db:continuity-list-before' || channel === 'db:character-get-all' || channel === 'db:blueprint-get-all') return []
-      if (channel === 'db:project-core-get') return { worldbuilding: worldFact }
-      if (channel === 'db:blueprint-get') return {
+      if (channel === 'db_continuity_list_before' || channel === 'db_character_get_all' || channel === 'db_blueprint_get_all') return []
+      if (channel === 'db_project_core_get') return { worldbuilding: worldFact }
+      if (channel === 'db_blueprint_get') return {
         chapterNumber: 1, title: 'Current chapter', role: 'opening', purpose: '',
         keyEvents: 'CURRENT_CHAPTER_GOAL_SENTINEL', characters: [], suspenseHook: '', userGuidance: '', notes: '', notesUpdatedAt: '',
       }
-      if (channel === 'db:draft-get-meta') return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: true, id: 77 }
+      if (channel === 'db_draft_get_meta') return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: true, id: 77 }
       throw new Error(`unexpected IPC: ${channel}`)
     }), async () => templateSource === 'custom')
 
@@ -1306,7 +1335,7 @@ describe('ReviewChapterCommand reasoning stage', () => {
     const completeWithLease = vi.fn<GenerationRuntimeEnvironment['completeWithLease']>()
       .mockResolvedValue({ content: PASSING_REVIEW_JSON, finishReason: 'stop' })
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:continuity-list-before') return [{
+      if (channel === 'db_continuity_list_before') return [{
         draftId: 7,
         chapterNumber: 1,
         chapterTitle: '离港',
@@ -1320,12 +1349,12 @@ describe('ReviewChapterCommand reasoning stage', () => {
           evidence: '码头登记仍有顾舟的名字。',
         }],
       }]
-      if (channel === 'kb:search') return [
+      if (channel === 'kb_search') return [
         { text: 'REFERENCE_WORK_POLLUTANT：同名角色早已离港。', score: 1, fileName: '参考作品.md' },
         { text: 'FUTURE_PLAN_POLLUTANT：顾舟将在第十章离港。', score: 1, fileName: '未来计划.md' },
         { text: 'UNKNOWN_SOURCE_POLLUTANT', score: 1, fileName: 'legacy.md' },
       ]
-      if (channel === 'db:blueprint-get-all') return [{
+      if (channel === 'db_blueprint_get_all') return [{
         chapterNumber: 3,
         title: '潮门之后',
         role: '发展',
@@ -1337,12 +1366,12 @@ describe('ReviewChapterCommand reasoning stage', () => {
         notes: '',
         notesUpdatedAt: '',
       }]
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') return { id: 2, chapterNumber: 2, version: 1, status: 'draft', source: 'write' }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: true, id: 77 }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') return { id: 2, chapterNumber: 2, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: true, id: 77 }
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     })
     stubIpc(invoke)
@@ -1370,29 +1399,29 @@ describe('ReviewChapterCommand reasoning stage', () => {
     expect(reviewRequest).not.toContain('REFERENCE_WORK_POLLUTANT')
     expect(reviewRequest).not.toContain('FUTURE_PLAN_POLLUTANT')
     expect(reviewRequest).not.toContain('UNKNOWN_SOURCE_POLLUTANT')
-    expect(invoke.mock.calls.some(([channel]) => channel === 'kb:search')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'kb_search')).toBe(false)
   })
 
   it('maps current deterministic findings into the persisted review for human confirmation', async () => {
     const completeWithLease = vi.fn<GenerationRuntimeEnvironment['completeWithLease']>()
       .mockResolvedValue({ content: PASSING_REVIEW_JSON, finishReason: 'stop' })
     const createParams: Array<{ content: string }> = []
-    stubIpc(vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'kb:search' || channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') return { id: 1, chapterNumber: 2, version: 1, status: 'draft', source: 'write' }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:blueprint-get') return {
+    stubIpc(vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'kb_search' || channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') return { id: 1, chapterNumber: 2, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_blueprint_get') return {
         chapterNumber: 2, title: '重逢', role: '发展', purpose: '顾舟归来', keyEvents: '顾舟敲门',
         characters: ['顾舟'], suspenseHook: '他为何归来', userGuidance: '', notes: '', notesUpdatedAt: '',
       }
-      if (channel === 'db:consistency-exemption-list') return []
-      if (channel === 'db:continuity-list-before') return [{
+      if (channel === 'db_consistency_exemption_list') return []
+      if (channel === 'db_continuity_list_before') return [{
         draftId: 9, chapterNumber: 1, chapterTitle: '终局', chapterNotes: '顾舟死亡', sourceStatus: 'current',
         facts: [{ category: 'character-state', entities: ['顾舟'], statement: '顾舟已经死亡。', sourceChapter: 1, evidence: '顾舟停止了呼吸。' }],
       }]
-      if (channel === 'db:review-create') {
-        createParams.push(args[0] as { content: string })
+      if (channel === 'db_review_create') {
+        createParams.push(args.params as { content: string })
         return { success: true, id: 77 }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -1415,19 +1444,19 @@ describe('ReviewChapterCommand reasoning stage', () => {
         finishReason: 'stop',
       })
     const createParams: Array<{ content: string }> = []
-    stubIpc(vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'kb:search' || channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') return { id: 1, chapterNumber: 2, version: 1, status: 'draft', source: 'write' }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:blueprint-get') return {
+    stubIpc(vi.fn(async (channel: string, args: Record<string, unknown>) => {
+      if (channel === 'kb_search' || channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') return { id: 1, chapterNumber: 2, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_blueprint_get') return {
         chapterNumber: 2, title: '重逢', role: '发展', purpose: '顾舟归来', keyEvents: '顾舟敲门',
         characters: ['顾舟'], suspenseHook: '他为何归来', userGuidance: '', notes: '', notesUpdatedAt: '',
       }
-      if (channel === 'db:consistency-exemption-list') return []
-      if (channel === 'db:continuity-list-before') throw new Error('projection unavailable')
-      if (channel === 'db:review-create') {
-        createParams.push(args[0] as { content: string })
+      if (channel === 'db_consistency_exemption_list') return []
+      if (channel === 'db_continuity_list_before') throw new Error('projection unavailable')
+      if (channel === 'db_review_create') {
+        createParams.push(args.params as { content: string })
         return { success: true, id: 77 }
       }
       throw new Error(`unexpected IPC: ${channel}`)
@@ -1453,14 +1482,14 @@ describe('ReviewChapterCommand reasoning stage', () => {
     const completeWithLease = vi.fn<GenerationRuntimeEnvironment['completeWithLease']>()
       .mockResolvedValue({ content: PASSING_REVIEW_JSON, finishReason: 'stop' })
     stubIpc(vi.fn(async (channel: string) => {
-      if (channel === 'kb:search' || channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'kb_search' || channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: true, id: 77 }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: true, id: 77 }
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     }))
     const stepCallbacks = callbacks()
@@ -1483,15 +1512,15 @@ describe('ReviewChapterCommand reasoning stage', () => {
     const completeWithLease = vi.fn<GenerationRuntimeEnvironment['completeWithLease']>()
       .mockResolvedValue({ content: PASSING_REVIEW_JSON, finishReason: 'stop' })
     stubIpc(vi.fn(async (channel: string) => {
-      if (channel === 'kb:search') return []
-      if (channel === 'db:character-get-all') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:draft-get-meta') {
+      if (channel === 'kb_search') return []
+      if (channel === 'db_character_get_all') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_draft_get_meta') {
         return { id: 1, chapterNumber: 1, version: 1, status: 'draft', source: 'write' }
       }
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: true }
-      if (channel === 'db:blueprint-get') return null
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: true }
+      if (channel === 'db_blueprint_get') return null
       throw new Error(`unexpected IPC: ${channel}`)
     }))
 
@@ -1523,13 +1552,13 @@ describe('审稿/审稿修稿走同一条准入（S10B-2）', () => {
 
   function reviewHistoryIpc(projections: unknown[]) {
     return vi.fn(async (channel: string) => {
-      if (channel === 'db:continuity-list-before') return projections
-      if (channel === 'kb:search' || channel === 'db:character-get-all') return []
-      if (channel === 'db:blueprint-get-all' || channel === 'db:consistency-exemption-list') return []
-      if (channel === 'db:project-core-get') return {}
-      if (channel === 'db:blueprint-get') return null
-      if (channel === 'db:review-next-index') return 1
-      if (channel === 'db:review-create') return { success: true, id: 77 }
+      if (channel === 'db_continuity_list_before') return projections
+      if (channel === 'kb_search' || channel === 'db_character_get_all') return []
+      if (channel === 'db_blueprint_get_all' || channel === 'db_consistency_exemption_list') return []
+      if (channel === 'db_project_core_get') return {}
+      if (channel === 'db_blueprint_get') return null
+      if (channel === 'db_review_next_index') return 1
+      if (channel === 'db_review_create') return { success: true, id: 77 }
       throw new Error(`unexpected IPC: ${channel}`)
     })
   }
@@ -1610,9 +1639,9 @@ describe('修稿路径不再整段拼接（S10B-2）', () => {
 
   function historyIpc(projections: unknown[], chapterNumber: number) {
     return vi.fn(async (channel: string) => {
-      if (channel === 'db:continuity-list-before') return projections
-      if (channel === 'db:draft-get-meta') return { id: 1, chapterNumber, version: 1, status: 'draft', source: 'write' }
-      if (channel === 'db:revision-replace-pending') return { success: true, id: 9, revisionIndex: 2 }
+      if (channel === 'db_continuity_list_before') return projections
+      if (channel === 'db_draft_get_meta') return { id: 1, chapterNumber, version: 1, status: 'draft', source: 'write' }
+      if (channel === 'db_revision_replace_pending') return { success: true, id: 9, revisionIndex: 2 }
       throw new Error(`unexpected IPC: ${channel}`)
     })
   }
