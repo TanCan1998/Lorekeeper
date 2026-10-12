@@ -122,7 +122,7 @@ afterEach(async () => {
   useProjectStore.setState(originalProjectState)
   useEditorStore.setState(originalEditorState, true)
   setActiveProjectSessionContext(null)
-  delete window.aiNovelAPI
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 describe('CharacterEditor relationship field', () => {
@@ -131,17 +131,17 @@ describe('CharacterEditor relationship field', () => {
     let commit!: (value: unknown) => void
     let readB!: (value: unknown) => void
     const avatar = { characterId: 'id:沈砺', assetRevision: 1, mime: 'image/png', base64: btoa('avatar-A') }
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-      if (channel === 'character-avatar:read-batch') {
-        if ((args[0] as string[])[0] === 'id:陆云飞') return new Promise(resolve => { readB = resolve })
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown> = {}) => {
+      if (channel === 'character_avatar_read_batch') {
+        if ((args.characterIds as string[])[0] === 'id:陆云飞') return new Promise(resolve => { readB = resolve })
         return { success: true, avatars: [avatar] }
       }
-      if (channel === 'character-avatar:choose') return { success: true, cancelled: false, image: { ...avatar, base64: btoa('replacement-A') } }
-      if (channel === 'character-avatar:commit') return new Promise(resolve => { commit = resolve })
-      if (channel === 'db:character-roster-commit') return { success: true, receipt: { revision: 2, snapshot: { revision: 2, identityRevision: 2, entries: useCharacterStore.getState().characters.map(characterRosterEntryFromCard) } } }
+      if (channel === 'character_avatar_choose') return { success: true, cancelled: false, image: { ...avatar, base64: btoa('replacement-A') } }
+      if (channel === 'character_avatar_commit') return new Promise(resolve => { commit = resolve })
+      if (channel === 'db_character_roster_commit') return { success: true, receipt: { revision: 2, snapshot: { revision: 2, identityRevision: 2, entries: useCharacterStore.getState().characters.map(characterRosterEntryFromCard) } } }
       throw new Error(`unexpected ${channel}`)
     })
-    window.aiNovelAPI = { invoke } as unknown as typeof window.aiNovelAPI
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
     await act(async () => root!.render(<CharacterEditor key="tab" projectKey={PROJECT_PATH} />))
     await act(async () => page.getByRole('button', { name: '替换头像' }).click())
     expect(JSON.parse(useEditorStore.getState().draftLedgers['character-editor-drafts']).projects).toHaveLength(1)
@@ -155,7 +155,11 @@ describe('CharacterEditor relationship field', () => {
     await act(async () => { saving = saveDirtyEditorChangesForExit(PROJECT_PATH); await Promise.resolve() })
     await vi.waitFor(() => expect(commit).toBeDefined())
     await act(async () => { commit({ success: true, avatar: { ...avatar, assetRevision: 2 } }); await saving })
-    expect(invoke).toHaveBeenCalledWith('character-avatar:commit', 'id:沈砺', btoa('replacement-A'), expect.any(Object))
+    expect(invoke).toHaveBeenCalledWith('character_avatar_commit', {
+      characterId: 'id:沈砺',
+      base64: btoa('replacement-A'),
+      projectSession: expect.any(Object),
+    }, undefined)
     expect(useCharacterStore.getState().avatarDrafts).toEqual({})
     expect(JSON.parse(useEditorStore.getState().draftLedgers['character-editor-drafts']).projects).toEqual([])
     expect(container!.querySelector('img')).toBeNull()
@@ -166,7 +170,7 @@ describe('CharacterEditor relationship field', () => {
     await act(async () => root!.render(<CharacterEditor projectKey={PROJECT_PATH} />))
     await expect.element(page.getByRole('button', { name: 'Choose avatar' })).toBeDisabled()
     await expect.element(page.getByText('Save the character before choosing an avatar.')).toBeVisible()
-    window.aiNovelAPI = { invoke: vi.fn(async () => { throw new Error('unavailable') }) } as unknown as typeof window.aiNovelAPI
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke: vi.fn(async () => { throw new Error('unavailable') }) }
     await act(async () => useCharacterStore.getState().setSelectedId('id:沈砺'))
     await act(async () => page.getByRole('button', { name: 'Choose avatar' }).click())
     await expect.element(page.getByText('The avatar operation could not be completed. Try again later.')).toBeVisible()
@@ -194,16 +198,18 @@ describe('CharacterEditor relationship field', () => {
     }
     const invoke = vi.fn(async (...args: unknown[]) => {
       const channel = args[0]
-      if (channel === 'db:character-roster-read') return roster
-      if (channel === 'db:character-roster-commit') return {
+      if (channel === 'db_character_roster_read') return roster
+      if (channel === 'db_character_roster_commit') return {
         success: true, receipt: { revision: 3, snapshot: { ...roster, revision: 3 } },
       }
       throw new Error(`Unexpected IPC: ${channel}`)
     })
-    Object.assign(window, { aiNovelAPI: { invoke } })
+    Object.assign(window, { __TAURI_INTERNALS__: { invoke } })
     await act(async () => useCharacterStore.getState().load(PROJECT_PATH))
-    expect(invoke).toHaveBeenCalledWith('db:character-roster-read', PROJECT_PATH,
-      expect.objectContaining({ projectId: 'relationship-editor', leaseId: 'relationship-editor-lease' }))
+    expect(invoke).toHaveBeenCalledWith('db_character_roster_read', {
+      expectedProjectPath: PROJECT_PATH,
+      projectSession: expect.objectContaining({ projectId: 'relationship-editor', leaseId: 'relationship-editor-lease' }),
+    }, undefined)
     await act(async () => root?.render(<CharacterEditor projectKey={PROJECT_PATH} />))
     await act(async () => page.getByRole('button', { name: '当前状态' }).click())
 
@@ -225,10 +231,10 @@ describe('CharacterEditor relationship field', () => {
     expect(state.provenance?.location?.kind).toBe('derived')
     expect(field('当前位置').value).toBe('')
     await act(async () => useCharacterStore.getState().saveAll(PROJECT_PATH))
-    const save = invoke.mock.calls.find(([channel]) => channel === 'db:character-roster-commit')?.[1]
-    expect(save).toMatchObject({ entries: [{ currentState: {
+    const save = invoke.mock.calls.find(([channel]) => channel === 'db_character_roster_commit')?.[1]
+    expect(save).toMatchObject({ request: { entries: [{ currentState: {
       location: '旧档案室', provenance: { location: { kind: 'derived' } },
-    } }] })
+    } }] } })
   })
 
   it('shows unsaved feedback for the character auxiliary page without a character tab', async () => {
@@ -384,19 +390,18 @@ describe('CharacterEditor relationship field', () => {
     const oldAvatar = { characterId: 'id:沈砺', assetRevision: 1, mime: 'image/png' as const, base64: btoa('old') }
     const newAvatar = { characterId: 'id:沈砺', assetRevision: 2, mime: 'image/png' as const, base64: btoa('new') }
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:character-roster-commit') return { success: true, receipt: { revision: 2, snapshot: { revision: 2, identityRevision: 2, entries: useCharacterStore.getState().characters.map(characterRosterEntryFromCard) } } }
-      if (channel === 'character-avatar:read-batch') return { success: true, avatars: [oldAvatar] }
-      if (channel === 'character-avatar:choose') return { success: true, cancelled: false, image: { ...newAvatar, assetRevision: undefined } }
-      if (channel === 'character-avatar:commit') { order.push('avatar'); return { success: true, avatar: newAvatar } }
-      if (channel === 'character-avatar:remove') { order.push('remove'); return { success: true } }
+      if (channel === 'db_character_roster_commit') return { success: true, receipt: { revision: 2, snapshot: { revision: 2, identityRevision: 2, entries: useCharacterStore.getState().characters.map(characterRosterEntryFromCard) } } }
+      if (channel === 'character_avatar_read_batch') return { success: true, avatars: [oldAvatar] }
+      if (channel === 'character_avatar_choose') return { success: true, cancelled: false, image: { ...newAvatar, assetRevision: undefined } }
+      if (channel === 'character_avatar_commit') { order.push('avatar'); return { success: true, avatar: newAvatar } }
+      if (channel === 'character_avatar_remove') { order.push('remove'); return { success: true } }
       throw new Error(`unexpected ${channel}`)
     })
-    window.aiNovelAPI = { invoke } as unknown as typeof window.aiNovelAPI
-    await act(async () => { root?.render(<CharacterEditor projectKey={PROJECT_PATH} />); await Promise.resolve() })
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
 
     await expect.element(page.getByRole('button', { name: '替换头像' })).toBeVisible()
     await act(async () => page.getByRole('button', { name: '替换头像' }).click())
-    expect(invoke.mock.calls.some(([channel]) => channel === 'character-avatar:commit')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'character_avatar_commit')).toBe(false)
     await expect.element(page.getByText('头像更改将在保存角色档案时提交。')).toBeVisible()
     await act(async () => page.getByRole('button', { name: '取消头像更改' }).click())
     await act(async () => page.getByRole('button', { name: '移除头像' }).click())
@@ -406,23 +411,23 @@ describe('CharacterEditor relationship field', () => {
     await act(async () => page.getByRole('button', { name: '替换头像' }).click())
     await act(async () => page.getByRole('button', { name: '保存', exact: true }).click())
     expect(order).toEqual(['avatar'])
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:character-roster-commit')).toBe(true)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_character_roster_commit')).toBe(true)
   })
 
   it('shows an avatar failure without claiming that saved profile fields or the old avatar were lost', async () => {
     const oldAvatar = { characterId: 'id:沈砺', assetRevision: 1, mime: 'image/png' as const, base64: btoa('old') }
     const invoke = vi.fn(async (channel: string) => {
-      if (channel === 'db:character-roster-commit') return { success: true, receipt: { revision: 2, snapshot: { revision: 2, identityRevision: 2, entries: useCharacterStore.getState().characters.map(characterRosterEntryFromCard) } } }
-      if (channel === 'character-avatar:read-batch') return { success: true, avatars: [oldAvatar] }
-      if (channel === 'character-avatar:choose') return { success: true, cancelled: false, image: { characterId: 'id:沈砺', mime: 'image/png', base64: btoa('new') } }
-      if (channel === 'character-avatar:commit') return { success: false, error: { code: 'AVATAR_SAVE_FAILED', message: '头像保存失败，原头像保持不变。' } }
+      if (channel === 'db_character_roster_commit') return { success: true, receipt: { revision: 2, snapshot: { revision: 2, identityRevision: 2, entries: useCharacterStore.getState().characters.map(characterRosterEntryFromCard) } } }
+      if (channel === 'character_avatar_read_batch') return { success: true, avatars: [oldAvatar] }
+      if (channel === 'character_avatar_choose') return { success: true, cancelled: false, image: { characterId: 'id:沈砺', mime: 'image/png', base64: btoa('new') } }
+      if (channel === 'character_avatar_commit') return { success: false, error: { code: 'AVATAR_SAVE_FAILED', message: '头像保存失败，原头像保持不变。' } }
       throw new Error(`unexpected ${channel}`)
     })
-    window.aiNovelAPI = { invoke } as unknown as typeof window.aiNovelAPI
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
     await act(async () => { root?.render(<CharacterEditor projectKey={PROJECT_PATH} />); await Promise.resolve() })
     await act(async () => page.getByRole('button', { name: '替换头像' }).click())
     await act(async () => page.getByRole('button', { name: '保存', exact: true }).click())
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db:character-roster-commit')).toBe(true)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db_character_roster_commit')).toBe(true)
     await expect.element(page.getByText('头像保存失败，原头像保持不变。', { exact: true })).toBeVisible()
     expect(container?.textContent).toContain('保存失败')
   })

@@ -66,7 +66,7 @@ afterEach(async () => {
   useLocaleStore.setState(originalLocaleState)
   useProjectStore.setState(originalProjectState)
   setActiveProjectSessionContext(null)
-  delete window.aiNovelAPI
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
 })
 
 describe('character list search', () => {
@@ -86,13 +86,13 @@ describe('character list search', () => {
     setActiveProjectSessionContext({
       projectId: 'character-search', leaseId: 'character-search-lease', projectPath: PROJECT_PATH,
     })
-    const invoke = vi.fn(async (channel: string, ids: string[]) => ({
+    const invoke = vi.fn(async (channel: string, args: Record<string, unknown> = {}) => ({
       success: true,
-      avatars: channel === 'character-avatar:read-batch'
-        ? ids.map((characterId, index) => ({ characterId, assetRevision: 1, mime: 'image/png', base64: btoa(`avatar-${index}`) }))
+      avatars: channel === 'character_avatar_read_batch'
+        ? (args.characterIds as string[]).map((characterId, index) => ({ characterId, assetRevision: 1, mime: 'image/png', base64: btoa(`avatar-${index}`) }))
         : [],
     }))
-    window.aiNovelAPI = { invoke } as unknown as typeof window.aiNovelAPI
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
     useCharacterStore.setState({
       characters: [
         { ...card('同名'), characterId: 'stable-a' },
@@ -107,9 +107,12 @@ describe('character list search', () => {
     expect(before.get('stable-b')).toMatch(/^blob:/)
     expect(before.get('stable-a')).not.toBe(before.get('stable-b'))
     expect(invoke).toHaveBeenCalledWith(
-      'character-avatar:read-batch',
-      ['stable-a', 'stable-b'],
-      expect.objectContaining({ projectId: 'character-search' }),
+      'character_avatar_read_batch',
+      {
+        characterIds: ['stable-a', 'stable-b'],
+        projectSession: expect.objectContaining({ projectId: 'character-search' }),
+      },
+      undefined,
     )
 
     useCharacterStore.setState(state => ({

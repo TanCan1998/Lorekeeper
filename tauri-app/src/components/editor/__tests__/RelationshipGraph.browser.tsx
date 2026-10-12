@@ -81,7 +81,7 @@ afterEach(async () => {
   document.documentElement.classList.remove('paper', 'galaxy', 'dark')
   useLocaleStore.setState(originalLocaleState)
   setActiveProjectSessionContext(null)
-  delete window.aiNovelAPI
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   vi.restoreAllMocks()
 })
 
@@ -289,11 +289,11 @@ describe('RelationshipGraph readable theme text', () => {
   it('keeps a 1000-character graph bounded while every character remains searchable and no facts are written', async () => {
     const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
       void args
-      return channel === 'character-avatar:read-batch'
+      return channel === 'character_avatar_read_batch'
         ? { success: true, avatars: [] }
         : { success: false }
     })
-    window.aiNovelAPI = { invoke } as unknown as typeof window.aiNovelAPI
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
     setActiveProjectSessionContext({ projectId: 'large-graph', leaseId: 'lease', projectPath: 'C:\\large' })
     const onOpenCharacter = vi.fn()
     const characters = Array.from({ length: 1000 }, (_, index) => ({
@@ -316,10 +316,10 @@ describe('RelationshipGraph readable theme text', () => {
     await act(async () => (container.querySelector('[aria-label="以角色999为中心"]') as HTMLButtonElement).click())
     expect(container.textContent).toContain('中心: 角色999')
     await act(async () => page.getByRole('button', { name: '重置图谱布局' }).click())
-    const calls = invoke.mock.calls.filter(([channel]) => channel === 'character-avatar:read-batch')
+    const calls = invoke.mock.calls.filter(([channel]) => channel === 'character_avatar_read_batch')
     expect(calls.length).toBeGreaterThan(0)
     expect(calls.every(call => Array.isArray(call[1]) && call[1].length <= GRAPH_NODE_LIMIT)).toBe(true)
-    expect(new Set(invoke.mock.calls.map(([channel]) => channel))).toEqual(new Set(['character-avatar:read-batch']))
+    expect(new Set(invoke.mock.calls.map(([channel]) => channel))).toEqual(new Set(['character_avatar_read_batch']))
   })
 
   it('moves one character node without moving the other node', async () => {

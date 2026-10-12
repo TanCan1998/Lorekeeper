@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 import { workflowResourceClaimsConflict } from '../../../shared/workflow-resource-claims'
 import type { ImportPurpose, ImportRunSnapshot } from '../../../shared/import-run'
@@ -107,23 +107,21 @@ function createImport(
 beforeEach(() => {
   // 工作流夹具显式提供桌面桥接；未知调用仍拒绝，避免掩盖真实 IPC 缺失。
   vi.stubGlobal('window', {
-    aiNovelAPI: {
+    __TAURI_INTERNALS__: {
       invoke: vi.fn(async (channel: string, request: unknown) => {
-        if (channel === 'legacy-roster:read-source') return {
+        if (channel === 'legacy_roster_read_source') return {
           snapshot: { revision: 7, migrationState: 'legacy_cards_preserved' },
           legacyHash: 'a'.repeat(64), identityRevision: 3, factsHash: 'b'.repeat(64),
         }
-        if (channel === 'legacy-roster:adopt-existing') {
+        if (channel === 'legacy_roster_adopt_existing') {
           expect(request).toMatchObject({ expectedRevision: 7, expectedLegacyHash: 'a'.repeat(64), expectedIdentityRevision: 3, expectedFactsHash: 'b'.repeat(64) })
           expect(useWorkflowStore.getState().activeRuns[0]?.resourceKeys).toContain('character-roster')
           return { success: true, snapshot: { renderedMarkdown: '合成既有角色卡的只读图谱' } }
         }
-        if (channel === 'skills:list-user') return []
-        if (channel === 'fs:check-exists') return false
+        if (channel === 'skills_list_user') return []
+        if (channel === 'fs_check_exists') return false
         throw new Error(`测试未配置桌面调用：${channel}`)
       }),
-      on: vi.fn(() => () => {}),
-      once: vi.fn(),
     },
   })
 })
@@ -232,11 +230,11 @@ describe('workflow factory resource claims', () => {
     const repair = useWorkflowStore.getState().history.find(run => run.type === 'post_process')
     expect(repair).toBeDefined()
     expect(repair?.status).toBe('completed')
-    const channels = vi.mocked(window.aiNovelAPI!.invoke).mock.calls.map(([channel]) => channel)
-    expect(channels.filter(channel => channel === 'legacy-roster:read-source')).toHaveLength(2)
-    expect(channels.filter(channel => channel === 'legacy-roster:adopt-existing')).toHaveLength(1)
-    expect(channels).not.toContain('legacy-roster:begin')
-    expect(channels).not.toContain('db:character-roster-commit')
+    const channels = vi.mocked((window as unknown as { __TAURI_INTERNALS__?: { invoke: Mock } }).__TAURI_INTERNALS__!.invoke).mock.calls.map(([channel]) => channel)
+    expect(channels.filter(channel => channel === 'legacy_roster_read_source')).toHaveLength(2)
+    expect(channels.filter(channel => channel === 'legacy_roster_adopt_existing')).toHaveLength(1)
+    expect(channels).not.toContain('legacy_roster_begin')
+    expect(channels).not.toContain('db_character_roster_commit')
     expect(repair?.resourceKeys ?? []).toContain('character-roster')
     const architecture = createArchitectureWorkflow({
       projectPath: PROJECT_PATH,
