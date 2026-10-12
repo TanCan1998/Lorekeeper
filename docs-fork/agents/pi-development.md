@@ -321,7 +321,7 @@ git commit -F "$messageFile"
 
 | 场景 | 命令 |
 |---|---|
-| 本地 hook（可选，不入库） | `printf '#!/bin/sh\nexec node scripts/check-commit-msg.mjs "$1"\n' > .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg` |
+| 本地 hook（推荐；本机已装 2026-10-12，不入库） | `printf '#!/bin/sh\nexec node scripts/check-commit-msg.mjs "$1"\n' > .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg` |
 | 手动检查一段范围 | `node scripts/check-commit-msg.mjs --range <base>..HEAD` |
 | 检查单条消息 | `node scripts/check-commit-msg.mjs <msgfile>` |
 | CI 手动审计历史 | GitHub → Actions → **Commit message CI** → Run workflow，填 `range`（如 `d973c19..HEAD`）；同步上游时可再填 `ignore_authors`（逗号分隔邮箱） |
