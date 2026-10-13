@@ -1,6 +1,6 @@
 # Tauri 迁移 — IPC 契约盘点（阶段 1 产出）
 
-> **本文为活文档，只维护频道清单、契约缺口与批次规划；迁移进度见 [`docs/handoffs/`](../handoffs/) 最新快照。**
+> **本文为活文档，只维护频道清单、契约缺口与批次规划；迁移进度见 [当前交接入口](../handoffs/CURRENT.md) 指向的验证快照。**
 > 每个批次完成后如频道口径变化才更新本文。
 
 > **用途**：Tauri 迁移的 channel → `#[tauri::command]` 映射骨架。类型细节以 [`src/shared/ipc-channels.ts`](../../src/shared/ipc-channels.ts) 为唯一事实源，本文只做结构盘点、模式标注与批次规划。
