@@ -303,6 +303,15 @@ pub fn run() {
             commands::character_proposal_approve,
             commands::character_proposal_cancel,
             commands::character_identity_read,
+            // 批次 G4-10c：agent 生成（agent-generation:* 8 频道）
+            commands::agent_generation_begin,
+            commands::agent_generation_read,
+            commands::agent_generation_resume,
+            commands::agent_generation_round,
+            commands::agent_generation_claim_tool,
+            commands::agent_generation_finish_tool,
+            commands::agent_generation_register_workflow,
+            commands::agent_generation_commit_domain_tool,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,

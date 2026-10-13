@@ -12,6 +12,7 @@
 
 use serde::Serialize;
 
+pub mod agent_generation; // 批次 G4-10c：agent 生成（agent-generation:* 8 频道）
 pub mod app_data; // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
 pub mod chapter_lifecycle; // 批次 E 第二部分：章节生命周期（4 频道）
 pub mod character_proposal; // 批次 G4-9a：角色提案（character-proposal:* 6 + character-identity:read）
@@ -38,6 +39,7 @@ mod window; // 批次 A：窗口管理
 
 /// 再导出各批次模块的全部公开项（含 Tauri 命令宏 `__cmd__*`），
 /// 供 `lib.rs` 的 `generate_handler![commands::xxx]` 与 `state.rs` 引用。
+pub use agent_generation::*;
 pub use app_data::*;
 pub use chapter_lifecycle::*;
 pub use character_proposal::*;

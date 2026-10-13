@@ -64,7 +64,10 @@ use crate::repositories::generation_run_repository::{
 };
 
 use crate::security::{self, ProjectSessionContext};
-use crate::services::agent_generation::{AdmittedWorkflow, AgentGeneration, AgentHost};
+use crate::services::agent_generation::{
+    AdmittedWorkflow, AgentDomainToolReceipt, AgentGeneration, AgentGenerationRecovery, AgentHost,
+    AgentToolAction, AgentToolClaim, AgentWorkflowRegistration,
+};
 use crate::services::character_proposal::{
     prove_character_proposal, read_legacy_roster_generation_proof, CharacterProposalService,
 };
@@ -1277,6 +1280,188 @@ impl MainGenerationOwner {
             self,
         )?;
         agent.admit_workflow(selection)
+    }
+
+    // ── 批次 G4-10c：agent-generation 域 8 频道 owner 委托 ──
+    // （基线 generation-controller.ts:217-230 的
+    // `owner.agents.*` 调用点。方法级构造
+    // `AgentGeneration`，对齐基线 owner 闭包内
+    // `new AgentGeneration(deps.database, repository,
+    // { projectId, epoch }, assertCurrent, host)` 与
+    // [`Self::admit_workflow`] 先例——构造期恢复扫描
+    // 幂等（仅修复悬空 `running` 认领），行为等价。
+    // 错误码（`GENERATION_AGENT_*`）经命令层折叠为
+    // `mutating_error`（基线 register catch 错误映射）。
+
+    /// 基线 `owner.agents.begin(request)`
+    /// （controller:217）——幂等恢复入口：按 nonce 派生
+    /// session key，命中且 context / modelId 一致则返回
+    /// 既有 recovery，否则开第 0 轮 run。
+    pub fn agent_begin(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<AgentGenerationRecovery, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.begin(request)
+    }
+
+    /// 基线 `owner.agents.read(request.handle)`
+    /// （controller:218）——纯读：session 全轮次重建 +
+    /// nextRound 计算 + sourceStatus。
+    pub fn agent_read(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+    ) -> Result<AgentGenerationRecovery, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.read(handle)
+    }
+
+    /// 基线 `owner.agents.resume(request.handle)`
+    /// （controller:226）——已完成轮次走控制纪元写入，
+    /// 否则 host.resume（LLM 续跑）。
+    ///
+    /// ⚠️ 本波占位：主体依赖分发核心迁移，当前
+    /// fail-closed 于 `GENERATION_AGENT_RESUME_UNMIGRATED`
+    /// （迁移占位码、非基线码，经错误映射透传）。
+    pub fn agent_resume(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+    ) -> Result<AgentGenerationRecovery, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.resume(handle)
+    }
+
+    /// 基线 `owner.agents.executeRound(request)`
+    /// （controller:227）——执行指定轮次（0..7）：构造
+    /// messages 后 host.execute 派发 LLM。
+    ///
+    /// ⚠️ 本波占位：主体依赖 LLM 双阶段执行循环迁移，
+    /// 当前 fail-closed 于 `GENERATION_AGENT_ROUND_UNMIGRATED`
+    /// （迁移占位码、非基线码，经错误映射透传）。
+    pub fn agent_round(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<AgentGenerationRecovery, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.execute_round(request)
+    }
+
+    /// 基线 `owner.agents.claimTool(request)`
+    /// （controller:228）——作者认领工具调用：
+    /// pending→running（confirmed）或 declined；返回
+    /// `{ action, execute }`。
+    pub fn agent_claim_tool(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<AgentToolClaim, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.claim_tool(request)
+    }
+
+    /// 基线 `owner.agents.finishTool(request)`
+    /// （controller:229）——工具结果回执写入
+    /// （幂等重放 / 冲突检测）。
+    pub fn agent_finish_tool(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<AgentToolAction, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.finish_tool(request)
+    }
+
+    /// 基线 `owner.agents.registerWorkflow(request.ref)`
+    /// （controller:230 register-workflow 项）——
+    /// `start_workflow` 工具确认后注册子生成工作流。
+    pub fn agent_register_workflow(
+        &self,
+        conn: &Connection,
+        ref_: &Value,
+    ) -> Result<AgentWorkflowRegistration, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.register_workflow(ref_)
+    }
+
+    /// 基线 `owner.agents.commitDomainTool(request.ref)`
+    /// （controller:230 commit-domain-tool 项）——在捕获
+    /// 的事务内提交 `propose_novel_config` /
+    /// `propose_chapter_blueprint` 域效应。
+    pub fn agent_commit_domain_tool(
+        &self,
+        conn: &Connection,
+        ref_: &Value,
+    ) -> Result<AgentDomainToolReceipt, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.commit_domain_tool(ref_)
     }
 
     /// 基线 `execute`（分发 → 流式回执，main-generation-owner.ts:501-623）。

@@ -45,14 +45,19 @@
 //!
 //! 子波次边界：本波**不注册命令**（commands/agent_generation.rs 属子波次 C）；
 //! 子波次边界：本波**不注册命令**（commands/agent_generation.rs 属子波次 C）；
-//! `resume` / `execute_round` / `commit_domain_tool` 属子波次 B/C，
-//! 本波以 `*_UNMIGRATED` 占位码留空（对齐既有
+//! 子波次边界：命令注册（commands/agent_generation.rs）已随
+//! 子波次 C 落地；`resume` / `execute_round` 属后续波次
+//! （依赖分发核心与 LLM 双阶段执行循环迁移），本波以
+//! `*_UNMIGRATED` 占位码留空（对齐既有
 //! `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED` 先例，非基线码）；
-//! `admit_workflow` 已随子波次 B 逐字移植（owner.begin 子代准入）。
+//! `admit_workflow` 已随子波次 B 逐字移植（owner.begin 子代准入）；
+//! `commit_domain_tool` 已随子波次 C 逐字移植（基线 :377-404，
+//! 域工具效应提交，依赖 `agent_domain_tool_effect`）。
 
 use crate::repositories::generation_run_repository::{
     DurableGenerationRun, GenerationRunRepository, MainGenerationRunHandle, RunBinding,
 };
+use crate::services::agent_domain_tool_effect;
 use crate::services::agent_generation_context::{
     validate_agent_generation_input, AgentGenerationContext, AgentGenerationInput, AgentToolSource,
 };
@@ -124,6 +129,13 @@ pub const GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED: &str =
     "GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED";
 /// `GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED` — 域工具 completed 但无域效应。
 pub const GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED: &str = "GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED";
+/// `GENERATION_AGENT_DOMAIN_TOOL_INVALID` — 域工具提交参数非法
+/// （agent-domain-tool-effect 字段白名单 / 类型 / 枚举校验）。
+pub const GENERATION_AGENT_DOMAIN_TOOL_INVALID: &str = "GENERATION_AGENT_DOMAIN_TOOL_INVALID";
+/// `GENERATION_AGENT_DOMAIN_TOOL_NOT_AUTHORIZED` — 域工具提交未授权
+/// （基线 commitDomainTool:385-390 门禁）。
+pub const GENERATION_AGENT_DOMAIN_TOOL_NOT_AUTHORIZED: &str =
+    "GENERATION_AGENT_DOMAIN_TOOL_NOT_AUTHORIZED";
 /// 基线 finishTool:263 逐字为 `'GENERATION_EPOCH_STALE'`（**无 AGENT 前缀**，
 /// 与同文件其余码不同；逐字保留）。
 pub const GENERATION_EPOCH_STALE: &str = "GENERATION_EPOCH_STALE";
@@ -2150,10 +2162,206 @@ impl<'a> AgentGeneration<'a> {
         }))
     }
 
-    /// 基线 `commitDomainTool(ref)`（:377-404）——子波次 C 实现
-    /// （域工具效应提交，依赖 `agent_domain_tool_effect` 移植）。
-    pub fn commit_domain_tool(&self, _ref: &Value) -> Result<AgentDomainToolReceipt, String> {
-        Err("GENERATION_AGENT_DOMAIN_TOOL_UNMIGRATED".to_string())
+    /// 基线 `commitDomainTool(ref)`（:377-404）——域工具效应
+    /// 提交（`.immediate()` 事务）：`action(ref)` 定位 →
+    /// 幂等（已有 domainEffect 直接返回
+    /// `{...domainEffect, current}` 新鲜读投影）→ 门禁
+    /// （running + root epoch + root active + sourcesCurrent
+    /// + 工具在上下文输入表且 builtin / requiresConfirmation
+    /// / !isReadOnly）→ 会话全轮次投影 capture before →
+    /// `commit_agent_domain_tool` 提交真实域写入 → 全轮次
+    /// 写 `agentSourceTransition` + 本 attempt action 补
+    /// `domainEffect` → 返回 `{...effect, current: true}`。
+    pub fn commit_domain_tool(&self, ref_: &Value) -> Result<AgentDomainToolReceipt, String> {
+        if self.conn.is_autocommit() {
+            // 无环境事务：自开事务（基线 `.immediate()`）。
+            let tx = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
+            let outcome = self.commit_domain_tool_in_transaction(ref_);
+            match outcome {
+                Ok(receipt) => tx
+                    .commit()
+                    .map(|_| receipt)
+                    .map_err(|error| error.to_string()),
+                // 错误时 tx drop 即回滚，与基线 `db.transaction()` 语义一致。
+                Err(error) => Err(error),
+            }
+        } else {
+            // 基线 better-sqlite3 嵌套事务自动降级为 SAVEPOINT；
+            // rusqlite 无嵌套事务——直接复用外层环境事务
+            // （对齐 generation_run_repository 头注约定）。
+            self.commit_domain_tool_in_transaction(ref_)
+        }
+    }
+
+    /// `commitDomainTool` 事务主体（基线 :378-403）。
+    fn commit_domain_tool_in_transaction(
+        &self,
+        ref_: &Value,
+    ) -> Result<AgentDomainToolReceipt, String> {
+        // 基线 :379——`action(ref)` 定位（requireRun +
+        // round().actions 精确定位，否则
+        // `GENERATION_AGENT_TOOL_IDENTITY_MISMATCH`）。
+        let (run, action) = self.action(ref_)?;
+        let tool_call_id = ref_
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // 基线 :380-381——读本 attempt 的 usage_receipt_json。
+        let attempt_id = ref_
+            .get("attemptId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let usage_json: String = self
+            .conn
+            .query_row(
+                "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?",
+                [attempt_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let usage: Value = serde_json::from_str(&usage_json).map_err(|error| error.to_string())?;
+        let state = usage
+            .get("agentActions")
+            .and_then(|agent_actions| agent_actions.get(tool_call_id.as_str()))
+            .cloned();
+        // 基线 :382-384——幂等：已有 domainEffect 直接返回
+        // （`current` 为新鲜读投影比对）。
+        if let Some(mut effect) = state
+            .as_ref()
+            .and_then(|state| state.get("domainEffect"))
+            .cloned()
+        {
+            let receipt: AgentDomainToolReceipt =
+                serde_json::from_value(effect.clone()).map_err(|error| error.to_string())?;
+            let current =
+                agent_domain_tool_effect::is_agent_domain_tool_current(self.conn, &receipt)?;
+            if let Some(object) = effect.as_object_mut() {
+                object.insert("current".to_string(), Value::Bool(current));
+            }
+            return serde_json::from_value(effect).map_err(|error| error.to_string());
+        }
+        // 基线 :385-390——门禁。
+        let root = self.runs.budget(self.conn, &run.root_action_id)?.root;
+        if action.status != "running"
+            || root.epoch != self.epoch
+            || root.status != "active"
+            || !self.sources_current(&run)?
+            || !self.context(&run)?.input.tools.iter().any(|tool| {
+                tool.name == action.name
+                    && matches!(tool.source, AgentToolSource::Builtin)
+                    && tool.requires_confirmation
+                    && !tool.is_read_only
+            })
+        {
+            return Err(GENERATION_AGENT_DOMAIN_TOOL_NOT_AUTHORIZED.to_string());
+        }
+        // 基线 :391-397——会话全轮次投影 capture before
+        // （同 withChildEffect；缺 attempt →
+        // `GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED`）。
+        let navigation_key = self.navigation(&run)?.key;
+        let projections: Vec<(DurableGenerationRun, String, RunBinding)> = self
+            .session_runs(&navigation_key)?
+            .iter()
+            .map(|target| {
+                if !self.sources_current(target)? {
+                    return Err(GENERATION_AGENT_SOURCE_CHANGED.to_string());
+                }
+                let target_attempt_id: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT attempt_id FROM generation_attempts WHERE run_id=?",
+                        [&target.run_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                let Some(target_attempt_id) = target_attempt_id else {
+                    return Err(GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED.to_string());
+                };
+                Ok((
+                    target.clone(),
+                    target_attempt_id,
+                    self.host.capture(self.conn, target)?,
+                ))
+            })
+            .collect::<Result<_, _>>()?;
+        // 基线 :398——提交域效应（事务内真实写入
+        // project_core / blueprints）。
+        let effect = agent_domain_tool_effect::commit_agent_domain_tool(
+            self.conn,
+            &tool_call_id,
+            &action.name,
+            &action.arguments,
+        )?;
+        // 基线 :399-403——全轮次写 agentSourceTransition；
+        // 本 attempt 的 action 状态补 domainEffect。
+        for (target, target_attempt_id, before) in projections {
+            let binding = self.host.capture(self.conn, &target)?;
+            let mut target_usage: Value = if target_attempt_id == attempt_id {
+                usage.clone()
+            } else {
+                let target_json: String = self
+                    .conn
+                    .query_row(
+                        "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?",
+                        [&target_attempt_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                serde_json::from_str(&target_json).map_err(|error| error.to_string())?
+            };
+            let before_string =
+                serde_json::to_string(&before).map_err(|error| error.to_string())?;
+            let binding_string =
+                serde_json::to_string(&binding).map_err(|error| error.to_string())?;
+            let transition = json!({
+                "actionId": tool_call_id,
+                "beforeHash": text_hash(&before_string),
+                "afterHash": text_hash(&binding_string),
+                "binding": serde_json::to_value(&binding).map_err(|error| error.to_string())?,
+            });
+            if let Some(object) = target_usage.as_object_mut() {
+                object.insert("agentSourceTransition".to_string(), transition);
+            }
+            if target_attempt_id == attempt_id {
+                // 基线 :402——`{ ...state!, domainEffect: effect }`
+                // （state 缺失时基线 spread undefined 等价于
+                // 仅含 domainEffect 的新对象）。
+                let mut merged_state = state.clone().unwrap_or_else(|| json!({}));
+                if let Some(object) = merged_state.as_object_mut() {
+                    object.insert(
+                        "domainEffect".to_string(),
+                        serde_json::to_value(&effect).map_err(|error| error.to_string())?,
+                    );
+                }
+                let mut agent_actions: Map<String, Value> = target_usage
+                    .get("agentActions")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                agent_actions.insert(tool_call_id.clone(), merged_state);
+                if let Some(object) = target_usage.as_object_mut() {
+                    object.insert("agentActions".to_string(), Value::Object(agent_actions));
+                }
+            }
+            let usage_string =
+                serde_json::to_string(&target_usage).map_err(|error| error.to_string())?;
+            self.conn
+                .execute(
+                    "UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?",
+                    [usage_string, target_attempt_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        // 基线 :404——`{ ...effect, current: true }`。
+        Ok(AgentDomainToolReceipt {
+            current: Some(true),
+            ..effect
+        })
     }
 }
 
@@ -4413,10 +4621,13 @@ mod tests {
             agent.execute_round(&json!({})).unwrap_err(),
             "GENERATION_AGENT_ROUND_UNMIGRATED"
         );
-        // admit_workflow 已随子波次 B 实现（见下方 admit_workflow 用例）。
+        // admit_workflow 已随子波次 B 实现（见下方 admit_workflow 用例）；
+        // commit_domain_tool 已随子波次 C 实现——ref 定位先行
+        // （基线 :379 `action(ref)`），畸形 ref 按基线身份门禁
+        // 拒绝（`GENERATION_AGENT_IDENTITY_MISMATCH`）。
         assert_eq!(
             agent.commit_domain_tool(&json!({})).unwrap_err(),
-            "GENERATION_AGENT_DOMAIN_TOOL_UNMIGRATED"
+            GENERATION_AGENT_IDENTITY_MISMATCH
         );
     }
 }
