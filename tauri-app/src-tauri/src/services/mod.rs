@@ -68,3 +68,4 @@ pub mod task_budget_planner;
 // 纯逻辑面：为 B3-1c 计划构造器供给成本包络数学，
 // 本波不接 owner 调用点。
 pub mod blueprint_batch_policy;
+pub mod main_generation_plan;
