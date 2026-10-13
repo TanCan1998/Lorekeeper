@@ -34,6 +34,9 @@ pub mod portable_transfer_authority;
 pub mod source_ref;
 
 // ── 批次 G4-2：提示词渲染与三采集器（agent / editor-inline / finalization）──
+// ── 批次 G4-10a：agent-generation 域（AgentGeneration 状态机服务层，
+// 平移自 electron/services/agent-generation.ts；命令注册属子波次 C）──
+pub mod agent_generation;
 pub mod agent_generation_context;
 pub mod editor_inline_generation;
 pub mod finalization_generation_source;
