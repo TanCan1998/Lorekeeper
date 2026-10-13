@@ -109,6 +109,7 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'db:recovery-candidate-resolve',
   'db:recovery-candidate-update',
   'db:review-create',
+  'db:review-cycle-get',
   'db:review-get-full',
   'db:review-get-latest',
   'db:review-list',

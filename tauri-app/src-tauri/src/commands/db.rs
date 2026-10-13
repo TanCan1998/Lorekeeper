@@ -32,6 +32,7 @@ use crate::repositories::post_process_repository as post_process;
 use crate::repositories::project_clear_repository as project_clear;
 use crate::repositories::project_core_repository as project_core;
 use crate::repositories::recovery_candidate_repository as recovery;
+use crate::repositories::review_cycle_repository as review_cycle;
 use crate::repositories::review_repository as reviews;
 use crate::repositories::revision_repository as revisions;
 use crate::security::{
@@ -1885,6 +1886,16 @@ pub(crate) fn review_next_index_inner(
     state.with_project_db(|conn| reviews::get_next_index(conn, base_draft_id))
 }
 
+pub(crate) fn review_cycle_get_inner(
+    state: &AppState,
+    review_id: i64,
+    expected_project_path: &str,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Option<review_cycle::ReviewCycleProjection>, String> {
+    guard_read(state, expected_project_path, session)?;
+    state.with_project_db(|conn| review_cycle::get_by_review_id(review_id, conn))
+}
+
 /// `db:review-create` —— 创建审稿（MUTATING）
 #[tauri::command]
 pub fn db_review_create(
@@ -1960,6 +1971,22 @@ pub fn db_review_next_index(
     review_next_index_inner(
         state.inner(),
         base_draft_id,
+        &expected_project_path,
+        project_session.as_ref(),
+    )
+}
+
+/// `db:review-cycle-get` —— 读取审稿周期投影
+#[tauri::command]
+pub fn db_review_cycle_get(
+    state: State<'_, AppState>,
+    review_id: i64,
+    expected_project_path: String,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Option<review_cycle::ReviewCycleProjection>, String> {
+    review_cycle_get_inner(
+        state.inner(),
+        review_id,
         &expected_project_path,
         project_session.as_ref(),
     )
@@ -5242,6 +5269,65 @@ mod tests {
         assert!(review_get_full_inner(&state, 9999, &root, Some(&session))
             .unwrap()
             .is_none());
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn review_cycle_get_channels_test() {
+        use crate::draft_source_guard::ExpectedDraftSource;
+
+        let (state, root, session) = activated_state("review");
+
+        // 读频道门禁
+        assert_eq!(
+            review_cycle_get_inner(&state, 1, &root, None).unwrap_err(),
+            "缺少项目会话上下文，已拒绝操作"
+        );
+
+        let draft = draft_create_inner(
+            &state,
+            &drafts::DraftCreateParams {
+                chapter_number: 1,
+                version: None,
+                source: "write".to_string(),
+                content: "基础正文".to_string(),
+                word_count: 4,
+                source_dependencies: None,
+            },
+            &root,
+            Some(&session),
+        );
+        let draft_id = draft.id.expect("应返回草稿 ID");
+        let source = ExpectedDraftSource {
+            id: draft_id,
+            chapter_number: 1,
+            version: 1,
+            status: "draft".to_string(),
+            content: "基础正文".to_string(),
+        };
+        let params = reviews::ReviewCreateParams {
+            base_draft_id: draft_id,
+            review_index: Some(99),
+            content: "审稿报告".to_string(),
+            expected_source: Some(source),
+        };
+        let created = review_create_inner(&state, &params, &root, Some(&session));
+        assert!(created.success, "创建审稿应成功：{:?}", created.error);
+        let review_id = created.id.expect("应返回审稿 ID");
+
+        // 无周期行 → None
+        assert!(
+            review_cycle_get_inner(&state, review_id, &root, Some(&session))
+                .unwrap()
+                .is_none()
+        );
+
+        // 无效 reviewId → 错误码
+        assert_eq!(
+            review_cycle_get_inner(&state, 0, &root, Some(&session)).unwrap_err(),
+            "REVIEW_CYCLE_INPUT_INVALID"
+        );
 
         cleanup(&root);
     }

@@ -118,6 +118,7 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'db:review-get-latest': ['baseDraftId', 'expectedProjectPath'],
   'db:review-get-full': ['id', 'expectedProjectPath'],
   'db:review-next-index': ['baseDraftId', 'expectedProjectPath'],
+  'db:review-cycle-get': ['reviewId', 'expectedProjectPath'],
   // 批次 C：后处理（post-process 子域 S3-d）
   'db:post-process-create-run': ['params', 'expectedProjectPath'],
   'db:post-process-get-latest-run': ['sourceType', 'sourceId', 'expectedProjectPath'],

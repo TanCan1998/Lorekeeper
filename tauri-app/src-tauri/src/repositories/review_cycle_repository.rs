@@ -1,6 +1,7 @@
 //! 审稿周期仓储（批次 G4-3a）——行为等价平移自
-//! `electron/repositories/review-cycle-repository.ts`（789 行）的 4 个公共方法
+//! `electron/repositories/review-cycle-repository.ts`（789 行）的 5 个公共方法
 //! `create` / `attachGeneratedRevision` / `planRecheck` / `commitRecheck`
+//! / `getByReviewId`
 //! 及其调用图内的全部私有辅助；共享纯函数（`canonicalM03FindingSetHash`、
 //! `parseSavedReport`、`parseHumanConfirmedReviewSnapshot`、
 //! `parseChapterGoalReview`、`classifyFindingEvidenceChange`、
@@ -15,6 +16,7 @@
 //! | `attachGeneratedRevision` | `attach_generated_revision` |
 //! | `planRecheck` | `plan_recheck` |
 //! | `commitRecheck` | `commit_recheck` |
+//! | `getByReviewId` | `get_by_review_id` |
 //!
 //! # 刻意偏离（均有上游语义理由）
 //!
@@ -39,6 +41,8 @@
 //!
 //! 错误码（`REVIEW_CYCLE_TRANSACTION_REQUIRED` / `REVIEW_CYCLE_INPUT_INVALID`
 //! / `REVIEW_CYCLE_CONFLICT`）逐字对齐基线；「Error: 」前缀由命令层添加。
+
+use std::collections::HashMap;
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -228,6 +232,57 @@ pub struct CommittedReviewCycleRecheck {
     pub attempt_id: String,
     pub recheck_count: i64,
     pub idempotent: bool,
+}
+
+/// `ReviewCycleFindingProjection`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewCycleFindingProjection {
+    pub finding_id: String,
+    pub review_item_index: Option<i64>,
+    pub category: String,
+    pub kind: FindingKind,
+    pub status: FindingStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+}
+
+/// `ReviewCycleProjection`（`mergedHash` / `recheckDisposition` 按基线
+/// 条件展开：缺席时键不出现在序列化结果中）
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewCycleProjection {
+    pub cycle_id: String,
+    pub review_id: i64,
+    pub revision_status: RevisionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_hash: Option<String>,
+    pub recheck_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recheck_disposition: Option<RecheckDisposition>,
+    pub findings: Vec<ReviewCycleFindingProjection>,
+}
+
+/// 周期修订状态（`'not-generated' | 'generated' | 'merge-committed'`）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RevisionStatus {
+    NotGenerated,
+    Generated,
+    MergeCommitted,
+}
+
+impl RevisionStatus {
+    /// 基线 `cycle.revision_status as ReviewCycleProjection['revisionStatus']`
+    /// 的未检查转换；`review_cycles.revision_status` 的 CHECK 约束保证取值域，
+    /// 解析不会失败。
+    fn parse(value: &str) -> Self {
+        match value {
+            "generated" => Self::Generated,
+            "merge-committed" => Self::MergeCommitted,
+            _ => Self::NotGenerated,
+        }
+    }
 }
 
 // ===== M03 finding 描述符（对齐 `electron/migrations/m03-review-cycle.ts`）=====
@@ -3303,6 +3358,216 @@ pub fn commit_recheck(
         recheck_count: 1,
         idempotent: false,
     })
+}
+
+/// 基线 `ReviewCycleRepository.getByReviewId`：按审稿 ID 读取周期投影。
+/// 审稿尚无周期行时返回 `Ok(None)`；周期存在但数据不完整（校验失败、
+/// 审稿正文缺失、报告非法、仅有持久化 findings 而无源行）时按基线抛
+/// `REVIEW_CYCLE_CONFLICT` / `REVIEW_CYCLE_INPUT_INVALID`。
+pub fn get_by_review_id(
+    review_id: i64,
+    conn: &Connection,
+) -> Result<Option<ReviewCycleProjection>, String> {
+    if review_id < 1 {
+        return invalid();
+    }
+    let cycle: Option<(String, i64, String, Option<String>, i64)> = conn
+        .query_row(
+            "SELECT cycle_id,review_id,revision_status,merged_hash,recheck_count
+             FROM review_cycles WHERE review_id=?1",
+            [review_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("读取审稿周期失败：{error}"))?;
+    let Some((cycle_id, review_id, revision_status, merged_hash, recheck_count)) = cycle else {
+        return Ok(None);
+    };
+    if !verify_m03_review_cycle(conn) {
+        return conflict();
+    }
+    let review: Option<(Option<String>, String)> = conn
+        .query_row(
+            "SELECT r.source_content,c.body FROM reviews r
+             JOIN contents c ON c.id=r.content_id WHERE r.id=?1",
+            [review_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取审稿失败：{error}"))?;
+    let Some((source_content, body)) = review else {
+        return conflict();
+    };
+    let Some(source_content) = source_content else {
+        return conflict();
+    };
+    let report = parse_saved_report(&body).ok_or_else(|| INPUT_INVALID.to_string())?;
+    let source_row: Option<(String, String, String, i64, String)> = conn
+        .query_row(
+            "SELECT source_project_id,source_epoch,source_id,source_revision,source_content_hash
+             FROM review_findings WHERE cycle_id=?1 LIMIT 1",
+            [cycle_id.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()
+        .map_err(|error| format!("读取周期 findings 失败：{error}"))?;
+    let persisted: Vec<(String, String, Option<String>, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT finding_id,category,target_id,kind,status FROM review_findings
+                 WHERE cycle_id=?1 ORDER BY finding_id",
+            )
+            .map_err(|error| format!("读取周期 findings 失败：{error}"))?;
+        let rows = stmt
+            .query_map([cycle_id.clone()], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .map_err(|error| format!("读取周期 findings 失败：{error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取周期 findings 失败：{error}"))?;
+        rows
+    };
+    if source_row.is_none() && !persisted.is_empty() {
+        return conflict();
+    }
+    // 基线 `itemIndex`：报告项 → findingId 的首现下标映射（仅当周期
+    // 存在源行时构建；逻辑与 `buildFindings` 的目标/自由项分支同构）
+    let mut item_index: HashMap<String, i64> = HashMap::new();
+    if let Some((project_id, epoch, source_id, revision, content_hash)) = source_row {
+        let source = ReviewCycleSource {
+            project_id,
+            epoch,
+            source_id,
+            revision,
+            content_hash,
+        };
+        for item in &report.items {
+            if item.severity == "pass" {
+                continue;
+            }
+            let goal = item
+                .goal_id
+                .as_deref()
+                .and_then(|goal_id| report.goals.iter().find(|goal| goal.id == goal_id));
+            if goal.is_some_and(|goal| goal.status == "completed") {
+                continue;
+            }
+            let objective = item.stable_fact_key.is_some() || goal.is_some();
+            let (
+                target_id,
+                quote,
+                expected_text,
+                anchored_status,
+                logical_identity,
+            ) = if let Some(goal) = goal {
+                (
+                    Some(goal.id.clone()),
+                    if goal.evidence.len() == 1 {
+                        Some(goal.evidence[0].quote.clone())
+                    } else {
+                        None
+                    },
+                    Some(format!("{}\n{}", goal.text, goal.description)),
+                    if goal.status == "unknown" {
+                        FindingStatus::Unknown
+                    } else {
+                        FindingStatus::Unresolved
+                    },
+                    format!("goal:{}", goal.id),
+                )
+            } else {
+                (
+                    item.stable_fact_key.clone(),
+                    item.quote.clone(),
+                    None,
+                    FindingStatus::Unresolved,
+                    if objective {
+                        format!(
+                            "preflight:{}",
+                            item.stable_fact_key
+                                .as_deref()
+                                .expect("objective 自由项必有稳定事实键")
+                        )
+                    } else {
+                        format!("free:{}", item.index)
+                    },
+                )
+            };
+            let descriptor = finding(
+                &source,
+                &source_content,
+                FindingInput {
+                    category: item.category.clone(),
+                    target_id,
+                    kind: if objective {
+                        FindingKind::Objective
+                    } else {
+                        FindingKind::Literary
+                    },
+                    problem_text: item.description.clone(),
+                    expected_text,
+                    quote,
+                    anchored_status,
+                    logical_identity,
+                },
+            );
+            item_index
+                .entry(descriptor.finding_id)
+                .or_insert(item.index);
+        }
+    }
+    let findings = persisted
+        .into_iter()
+        .map(|(finding_id, category, target_id, kind, status)| {
+            let review_item_index = item_index.get(&finding_id).copied();
+            ReviewCycleFindingProjection {
+                finding_id,
+                review_item_index,
+                category,
+                kind: FindingKind::parse(&kind),
+                status: FindingStatus::parse(&status),
+                target_id,
+            }
+        })
+        .collect();
+    // 基线尾部条件展开：merge-committed 且合并哈希仍是当前合并快照时，
+    // 追加 `recheckDisposition`（`planRecheck` 可按基线抛 CONFLICT）
+    let recheck_disposition = if revision_status == "merge-committed" {
+        if let Some(merged_hash) = merged_hash.as_deref() {
+            if is_current_merged_cycle(&cycle_id, merged_hash, conn)? {
+                Some(plan_recheck(&cycle_id, conn)?.disposition)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok(Some(ReviewCycleProjection {
+        cycle_id,
+        review_id,
+        revision_status: RevisionStatus::parse(&revision_status),
+        merged_hash,
+        recheck_count,
+        recheck_disposition,
+        findings,
+    }))
 }
 
 impl M03FindingDescriptor {
