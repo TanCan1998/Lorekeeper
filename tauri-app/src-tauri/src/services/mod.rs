@@ -54,3 +54,11 @@ pub mod render_prompt;
 // review_revision_generation 依赖前者与生成账本仓储，由 commands 层按需调用。
 pub mod review_revision_context;
 pub mod review_revision_generation;
+
+// ── 批次 G4-B3-1a：预算规划器与预算失败诊断（移植自
+// src/services/generation/task-budget-planner.ts 与
+// prompt-budget-failure.ts）──
+// 依赖关系：prompt_budget_failure 依赖 task_budget_planner
+// 的决策类型；GenerationReasoningStage 复用 llm::reasoning。
+pub mod prompt_budget_failure;
+pub mod task_budget_planner;
