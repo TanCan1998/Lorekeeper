@@ -30,13 +30,15 @@ use sha2::{Digest, Sha256};
 use crate::repositories::character_identity_repository;
 use crate::repositories::character_repository::{self as characters, CharacterData};
 use crate::repositories::character_roster_repository::{
-    self as character_roster, CharacterRosterEntry, CharacterRosterRelationship,
-    CharacterRosterStatus,
+    self as character_roster, validate_legacy_roster_candidate, CharacterRosterEntry,
+    CharacterRosterRelationship, CharacterRosterStatus,
 };
 use crate::repositories::generation_run_repository::{
     DurableGenerationRun, GenerationRunRepository,
 };
 use crate::repositories::project_core_repository::DEFAULT_WRITING_LANGUAGE;
+use crate::services::legacy_roster_generation_context::read_legacy_roster_generation_context;
+use crate::services::legacy_roster_generation_pure::parse_legacy_roster_json;
 
 /// 静态字段白名单（对齐基线 `fields` / `CharacterStaticFields`）。
 const CHARACTER_PROPOSAL_FIELDS: [&str; 11] = [
@@ -1964,23 +1966,185 @@ fn read_finalized_character_context(
     Err(PENDING_MIGRATION_CODE.to_string())
 }
 
-/// `readLegacyRosterGenerationProof` —— 待移植桩（依赖
-/// `parseLegacyRosterJson` / `validateLegacyRosterCandidate` /
-/// `readLegacyRosterGenerationContext`，尚未迁移）。键集约束先行校验，
-/// 保持上游失败语义。
-fn read_legacy_roster_generation_proof(
-    _conn: &Connection,
-    _runs: &GenerationRunRepository,
-    _project_id: &str,
+/// `readLegacyRosterGenerationProof`（平移
+/// `legacy-roster-generation-proof.ts`）：旧名册生成产物
+/// 的提案证据校验——run 身份 / 产物 settled 且
+/// finishReason=stop / 候选 JSON 校验 / 提案条目构造 /
+/// sourceHash 计算。返回上游 proof 结构（`run` /
+/// `context` / `attemptId` / `artifact` / `currentHandle` /
+/// `sourceHandle` / `source` / `proof`）的 JSON 形态。
+pub(crate) fn read_legacy_roster_generation_proof(
+    conn: &Connection,
+    runs: &GenerationRunRepository,
+    project_id: &str,
     source: &Value,
 ) -> Result<Value, String> {
-    // TODO(B1 后续批次)：平移 legacy-roster-generation-proof.ts。
     if source["kind"].as_str() != Some("legacy-roster-generation")
         || !keys_subset(source, &["kind", "handle", "artifact"])
     {
         return Err("GENERATION_LEGACY_PROOF_INVALID".to_string());
     }
-    Err(PENDING_MIGRATION_CODE.to_string())
+    let handle = &source["handle"];
+    if !keys_subset(handle, &["projectId", "epoch", "rootActionId", "runId"]) {
+        return Err("GENERATION_RUN_IDENTITY_MISMATCH".to_string());
+    }
+    let run = runs.get(conn, handle["runId"].as_str().unwrap_or_default())?;
+    let context = read_legacy_roster_generation_context(&run)?;
+    if handle["projectId"].as_str() != Some(project_id)
+        || run.binding.project_id != *project_id
+        || handle["rootActionId"].as_str() != Some(run.root_action_id.as_str())
+        || (handle["epoch"].as_str() != Some(context.origin_epoch.as_str())
+            && handle["epoch"].as_str() != Some(run.binding.epoch.as_str()))
+    {
+        return Err("GENERATION_RUN_IDENTITY_MISMATCH".to_string());
+    }
+    let reference = &source["artifact"];
+    if !keys_subset(reference, &["artifactId", "revision", "textHash"]) {
+        return Err("GENERATION_LEGACY_ARTIFACT_INVALID".to_string());
+    }
+    let artifact_row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT run_id, attempt_id, status FROM generation_artifacts WHERE artifact_id = ?1",
+            [reference["artifactId"].as_str().unwrap_or_default()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let (_artifact_run_id, attempt_id, _artifact_status) = artifact_row
+        .filter(|(artifact_run_id, _, status)| {
+            artifact_run_id == &run.run_id && status != "discarded"
+        })
+        .ok_or_else(|| "GENERATION_LEGACY_ARTIFACT_INVALID".to_string())?;
+    let receipt = runs.receipt(conn, &attempt_id, None)?;
+    let artifact = receipt
+        .artifact
+        .ok_or_else(|| "GENERATION_LEGACY_ARTIFACT_INVALID".to_string())?;
+    let reference_revision = reference["revision"].as_i64();
+    let reference_text_hash = reference["textHash"].as_str().unwrap_or_default();
+    if Some(artifact.revision) != reference_revision
+        || artifact.text_hash != reference_text_hash
+        || text_hash(&artifact.text) != reference_text_hash
+        || receipt.failure_code.is_some()
+        || !["settled", "unknown"].contains(&receipt.attempt.status.as_str())
+        || receipt
+            .result
+            .as_ref()
+            .and_then(|result| result.finish_reason.as_deref())
+            != Some("stop")
+    {
+        return Err("GENERATION_LEGACY_ARTIFACT_INVALID".to_string());
+    }
+    let candidate = parse_legacy_roster_json(&artifact.text)
+        .map_err(|_| "GENERATION_LEGACY_CANDIDATE_INVALID".to_string())?;
+    let entries = validate_legacy_roster_candidate(&candidate)
+        .map_err(|_| "GENERATION_LEGACY_CANDIDATE_INVALID".to_string())?;
+    let candidate_entries = candidate["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let selection_key = |index: usize| format!("{}:entry:{}", artifact.artifact_id, index);
+    let items: Vec<Value> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            // fields = 条目剔除 currentState / relationships /
+            // legacyRelationshipNotes（对齐上游解构剔除）
+            let mut fields = serde_json::to_value(entry).unwrap_or(Value::Null);
+            if let Some(map) = fields.as_object_mut() {
+                map.remove("currentState");
+                map.remove("relationships");
+                map.remove("legacyRelationshipNotes");
+            }
+            let relationships: Vec<Value> = entry
+                .relationships
+                .iter()
+                .map(|relation| {
+                    let target_index = entries.iter().position(|target| {
+                        character_roster::identity_key(&target.name)
+                            == character_roster::identity_key(&relation.target)
+                    });
+                    json!({
+                        "targetSelectionKey": target_index.map(|target_index| selection_key(target_index)),
+                        "targetName": relation.target,
+                        "relation": relation.relation,
+                        "raw": serde_json::to_value(relation).unwrap_or(Value::Null),
+                    })
+                })
+                .collect();
+            json!({
+                "selectionKey": selection_key(index),
+                "sourceId": format!("legacy:{}:{}", context.source.legacy_hash, index),
+                "fields": fields,
+                "relationships": relationships,
+                "rawValue": candidate_entries.get(index).cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    let current_handle = json!({
+        "projectId": project_id,
+        "epoch": run.binding.epoch,
+        "rootActionId": run.root_action_id,
+        "runId": run.run_id,
+    });
+    let source_handle = json!({
+        "projectId": project_id,
+        "epoch": context.origin_epoch,
+        "rootActionId": run.root_action_id,
+        "runId": run.run_id,
+    });
+    let canonical_source = json!({
+        "kind": source["kind"],
+        "handle": source_handle,
+        "artifact": reference,
+    });
+    let legacy_roster_context_hash = run
+        .binding
+        .source_manifest
+        .get("legacyRosterContextHash")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let source_payload = serde_json::to_string(&json!([
+        canonical_source,
+        legacy_roster_context_hash,
+        items,
+    ]))
+    .map_err(|error| error.to_string())?;
+    let source_hash = text_hash(&source_payload);
+    let model_receipt = run
+        .binding
+        .source_manifest
+        .get("modelReceipt")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let model_revision = model_receipt
+        .get("modelRevision")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "GENERATION_LEGACY_PROOF_INVALID".to_string())?;
+    let proof = json!({
+        "items": items,
+        "sourceHash": source_hash,
+        "provenance": {
+            "kind": "generated",
+            "modelRevision": model_revision,
+            "source": {
+                "projectId": project_id,
+                "epoch": context.origin_epoch,
+                "sourceId": run.run_id,
+                "revision": 0,
+                "contentHash": source_hash,
+            },
+        },
+    });
+    Ok(json!({
+        "run": serde_json::to_value(&run).unwrap_or(Value::Null),
+        "context": serde_json::to_value(&context).unwrap_or(Value::Null),
+        "attemptId": attempt_id,
+        "artifact": serde_json::to_value(&artifact).unwrap_or(Value::Null),
+        "currentHandle": current_handle,
+        "sourceHandle": source_handle,
+        "source": canonical_source,
+        "proof": proof,
+    }))
 }
 
 /// `normalizeFinalizedCharacterProposalSource` —— 待移植桩（依赖

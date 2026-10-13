@@ -771,6 +771,28 @@ pub fn normalize_request(value: &serde_json::Value) -> Result<NormalizedRosterRe
     })
 }
 
+/// 校验迁移候选（对齐上游 `validateLegacyRosterCandidate`，
+/// 不重启用已退役的按名写路径）。
+pub fn validate_legacy_roster_candidate(
+    value: &serde_json::Value,
+) -> Result<Vec<CharacterRosterEntry>, String> {
+    if !value.is_object() {
+        return Err("角色名单提交请求格式无效".to_string());
+    }
+    let request = serde_json::json!({
+        "operationId": "legacy-roster-candidate-validation",
+        "expectedRevision": 0,
+        "schemaVersion": value
+            .get("schemaVersion")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        "entries": value.get("entries").cloned().unwrap_or(serde_json::Value::Null),
+        "intent": "legacy_repair",
+        "expectedLegacyMarkdown": "",
+    });
+    Ok(normalize_request(&request)?.entries)
+}
+
 // ============================================================================
 // 规范 JSON 与哈希
 // ============================================================================
