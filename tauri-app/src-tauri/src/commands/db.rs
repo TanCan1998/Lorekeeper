@@ -22,6 +22,7 @@ use crate::repositories::draft_repository as drafts;
 use crate::repositories::finalization_repository as finalization;
 use crate::repositories::finalized_continuity_repository as continuity;
 use crate::repositories::finalized_draft_import_repository as draft_import;
+use crate::repositories::generation_run_repository::ChapterRange;
 use crate::repositories::import_global_facts_repository as import_global_facts;
 use crate::repositories::import_run_repository as import_runs;
 use crate::repositories::llm_repository as llm;
@@ -37,6 +38,7 @@ use crate::security::{
     assert_current_project_context, assert_required_expected_project_path, guard_message,
     ProjectSessionContext,
 };
+use crate::services::main_generation_owner::MainGenerationOwnerCache;
 use crate::state::AppState;
 
 /// 项目会话门禁：会话必须与活跃项目租约完全一致
@@ -72,6 +74,13 @@ pub(crate) fn guard_read(
 /// 展示文案与 Electron 版出现差异。
 pub(crate) fn mutating_error(error: String) -> String {
     format!("Error: {error}")
+}
+
+/// `Number.isSafeInteger` 等价物（JS 安全整数为 ±2^53-1；Rust i64 可能超出）。
+/// 与 `repositories::generation_run_repository::is_safe_integer_value` 同义
+/// （该函数为模块私有，此处就地实现）。
+fn is_safe_integer(value: i64) -> bool {
+    (-9007199254740991..=9007199254740991).contains(&value)
 }
 
 /// 把 `Result<(), String>` 收敛为 MUTATING 信封（失败加 `"Error: "` 前缀）
@@ -265,46 +274,92 @@ pub(crate) fn character_roster_commit_inner(
     expected_project_path: &str,
     session: Option<&ProjectSessionContext>,
 ) -> CharacterRosterCommitResult {
-    let outcome = guard_read(state, expected_project_path, session).and_then(|()| {
-        state.with_project_db(|conn| {
-            if request["intent"].as_str() == Some("manual_edit")
-                && characters::has_character_identity_schema(conn)
+    if let Err(error) = guard_read(state, expected_project_path, session) {
+        return CharacterRosterCommitResult {
+            success: false,
+            receipt: None,
+            error: Some(mutating_error(error)),
+        };
+    }
+    // 基线 `db:character-roster-commit` 的 generationRunHandle 分支
+    // （db-controller.ts:666-686）：`request.generationRunHandle
+    //   ? () => assertGenerationSourcesCurrent(request.generationRunHandle!) : undefined`
+    // —— 句柄存在时接线源断言闭包（无蓝图范围参数）。owner 门禁在进入
+    // 项目库锁**之前**取缓存锁（锁序：owner 缓存锁 → 项目库锁，与
+    // generation 命令同序；在 with_project_db 内反向取锁会与 generation
+    // 命令构成 ABBA 死锁）。authorized_owner 在 guard_read 已认证的会话
+    // 与活跃项目上为必过路径（未命中时自动创建缓存条目，等价基线
+    // `owners.get(database)` 守卫的 Tauri 形态）；其错误已是 MUTATING
+    // 信封形态（带 `"Error: "` 前缀），直接返回不再二次包装。
+    // OwnerGuard 借用缓存锁，故缓存声明于函数作用域（与守卫同寿命）。
+    let owner_cache = MainGenerationOwnerCache::new();
+    let generation_guard = match request
+        .get("generationRunHandle")
+        .filter(|value| !value.is_null())
+    {
+        Some(handle) => {
+            let session_context = session.expect("guard_read 已校验会话存在");
+            match owner_cache
+                .authorized_owner(session_context, state.active_project_snapshot().as_ref())
             {
-                // 身份 schema 项目上的 manual_edit：作者会话提交（对齐基线
-                // captureCurrentSession + commitAuthorCharacterRoster）。
-                // guard_read 已先行校验会话，此处 None 为防御性拒绝。
-                let author_session =
-                    session.ok_or_else(|| "CHARACTER_AUTHOR_SCOPE_REQUIRED".to_string())?;
-                let assert_current = || {
-                    // 基线在作者提交内重校验 assertCurrentSession +
-                    // assertRequiredExpectedProjectPath；M8 约定断言失败
-                    // 以 panic 中断提交（闭包签名无返回通道）。
-                    let session_current = state.active_project_snapshot().is_some_and(|project| {
-                        project.project_id == author_session.project_id
-                            && project.lease_id == author_session.lease_id
-                    });
-                    let path_current =
-                        state.current_project_path().as_deref() == Some(expected_project_path);
-                    if !session_current || !path_current {
-                        panic!("项目会话已失效，已拒绝操作");
-                    }
-                };
-                let receipt = roster::commit_author_character_roster(
-                    conn,
-                    request,
-                    author_session.project_id.as_str(),
-                    author_session.lease_id.as_str(),
-                    assert_current,
-                )?;
-                serde_json::from_value(receipt)
-                    .map_err(|error| format!("作者名单提交回执解析失败：{error}"))
-            } else {
-                // 仓储层 `assert_generation_sources` 形参已就位；真实闭包
-                // 待 generation-owner 移植批次接线（上游 db:character-roster-commit
-                // 的 generationRunHandle 分支）。
-                roster::commit(conn, request, None)
+                Ok(guard) => Some((handle, guard)),
+                Err(error) => {
+                    return CharacterRosterCommitResult {
+                        success: false,
+                        receipt: None,
+                        error: Some(error),
+                    };
+                }
             }
-        })
+        }
+        None => None,
+    };
+    let outcome = state.with_project_db(|conn| {
+        if request["intent"].as_str() == Some("manual_edit")
+            && characters::has_character_identity_schema(conn)
+        {
+            // 身份 schema 项目上的 manual_edit：作者会话提交（对齐基线
+            // captureCurrentSession + commitAuthorCharacterRoster）。
+            // guard_read 已先行校验会话，此处 None 为防御性拒绝。
+            let author_session =
+                session.ok_or_else(|| "CHARACTER_AUTHOR_SCOPE_REQUIRED".to_string())?;
+            let assert_current = || {
+                // 基线在作者提交内重校验 assertCurrentSession +
+                // assertRequiredExpectedProjectPath；M8 约定断言失败
+                // 以 panic 中断提交（闭包签名无返回通道）。
+                let session_current = state.active_project_snapshot().is_some_and(|project| {
+                    project.project_id == author_session.project_id
+                        && project.lease_id == author_session.lease_id
+                });
+                let path_current =
+                    state.current_project_path().as_deref() == Some(expected_project_path);
+                if !session_current || !path_current {
+                    panic!("项目会话已失效，已拒绝操作");
+                }
+            };
+            let receipt = roster::commit_author_character_roster(
+                conn,
+                request,
+                author_session.project_id.as_str(),
+                author_session.lease_id.as_str(),
+                assert_current,
+            )?;
+            serde_json::from_value(receipt)
+                .map_err(|error| format!("作者名单提交回执解析失败：{error}"))
+        } else {
+            let Some((handle, mut guard)) = generation_guard else {
+                return roster::commit(conn, request, None);
+            };
+            let owner = &*guard.owner();
+            // 源断言闭包（基线 :686）：事务内生效前调用，失败以 panic
+            // 中断提交（M8 约定：仓储钩子闭包无返回通道）。
+            let assert_sources = || {
+                owner
+                    .assert_sources_current(conn, handle, None)
+                    .unwrap_or_else(|error| panic!("生成源当前性断言失败：{error}"));
+            };
+            roster::commit(conn, request, Some(&assert_sources))
+        }
     });
     match outcome {
         Ok(receipt) => CharacterRosterCommitResult {
@@ -620,14 +675,11 @@ pub struct BlueprintCommitRangeResult {
     pub error: Option<String>,
 }
 
-pub(crate) fn blueprint_commit_range_inner(
-    state: &AppState,
-    request: &blueprints::BlueprintCommitRangeRequest,
-    expected_project_path: &str,
-    session: Option<&ProjectSessionContext>,
+/// 基线 `db:blueprint-commit-range` 的失败信封（`{ success, receipt?, error? }`，
+/// 错误统一 `String(err)` 即 `"Error: "` 前缀）。
+fn blueprint_commit_range_result(
+    outcome: Result<blueprints::BlueprintCommitRangeReceipt, String>,
 ) -> BlueprintCommitRangeResult {
-    let outcome = guard_read(state, expected_project_path, session)
-        .and_then(|()| state.with_project_db(|conn| blueprints::commit_range(conn, request, None)));
     match outcome {
         Ok(receipt) => BlueprintCommitRangeResult {
             success: true,
@@ -640,6 +692,122 @@ pub(crate) fn blueprint_commit_range_inner(
             error: Some(mutating_error(error)),
         },
     }
+}
+
+pub(crate) fn blueprint_commit_range_inner(
+    state: &AppState,
+    request: &blueprints::BlueprintCommitRangeRequest,
+    expected_project_path: &str,
+    session: Option<&ProjectSessionContext>,
+) -> BlueprintCommitRangeResult {
+    // 基线 db-controller.ts:554-578 三分支：
+    // ① `authorRecovery` → `commitGenerationBlueprintAuthorEdit` —— 作者编辑
+    //    提交未迁移（Rust 侧无对应仓储路径），本分支维持现状：请求按普通
+    //    范围提交处理（基线 `authorRecovery` 字段经 serde 默认忽略），
+    //    待作者编辑域迁移后补齐分支判定；
+    // ② 无 `generationRunHandle` → 直提（保持现状）；
+    // ③ 有 `generationRunHandle` → 范围归约 + GENERATION_DIRECTORY_RANGE_INVALID
+    //    校验 + 幂等分支 + 源断言闭包（见 `blueprint_commit_range_with_generation`）。
+    if request.generation_run_handle.is_none() {
+        // 分支②（基线 :559）：无 generationRunHandle → 直提
+        let outcome = guard_read(state, expected_project_path, session).and_then(|()| {
+            state.with_project_db(|conn| blueprints::commit_range(conn, request, None))
+        });
+        return blueprint_commit_range_result(outcome);
+    }
+    blueprint_commit_range_with_generation(state, request, expected_project_path, session)
+}
+
+/// 基线分支③（db-controller.ts:560-576）：有 `generationRunHandle` 的
+/// 目录生成范围提交。
+///
+/// 基线事务结构 `getCommittedRangeOperation(operationId) ? commit()
+/// : withGenerationAgentChildEffect(handle, commit)`：
+/// - **幂等重放**（操作已存在）→ `commit()`：仓储层在断言钩子前早退
+///   （"An acknowledged operation is read-only on replay"），源断言闭包
+///   接线但重放时不触发，与基线一致；基线 `commit()` 末步的
+///   `recordGenerationDirectoryCommit`（generation-run-service 域）未迁移
+///   → 回执 `generationProgress` 字段占位省略（Rust 回执无对应字段）；
+/// - **新提交** → 基线经 `withGenerationAgentChildEffect(handle, commit)`
+///   包装（agent-generation 服务域，G4-7）未迁移 → 按 G4-6c-1 既定
+///   **fail-closed**：显式拒绝，禁止静默走直提路径（静默直提会跳过
+///   子代效应前后快照与 `agentSourceTransition` 记录，与基线语义不一致）。
+fn blueprint_commit_range_with_generation(
+    state: &AppState,
+    request: &blueprints::BlueprintCommitRangeRequest,
+    expected_project_path: &str,
+    session: Option<&ProjectSessionContext>,
+) -> BlueprintCommitRangeResult {
+    if let Err(error) = guard_read(state, expected_project_path, session) {
+        return blueprint_commit_range_result(Err(error));
+    }
+    let handle = request
+        .generation_run_handle
+        .as_ref()
+        .expect("generation_run_handle 已校验存在");
+    // 基线 :562 `requested = generationRequestedRange ?? {startChapter, endChapter}`
+    let requested = request
+        .generation_requested_range
+        .clone()
+        .unwrap_or(ChapterRange {
+            start_chapter: request.start_chapter,
+            end_chapter: request.end_chapter,
+        });
+    // 基线 :566-569 GENERATION_DIRECTORY_RANGE_INVALID 校验
+    //（基线 :563 的 GENERATION_DATABASE_NOT_READY 检查由上方 guard_read 的
+    // 会话门禁等价覆盖——Tauri 侧门禁已认证会话与活跃项目一致，结构上不可达）
+    if !is_safe_integer(requested.start_chapter)
+        || !is_safe_integer(requested.end_chapter)
+        || requested.start_chapter != request.start_chapter
+        || requested.end_chapter < request.end_chapter
+        || requested.end_chapter - requested.start_chapter >= 10000
+    {
+        return blueprint_commit_range_result(
+            Err("GENERATION_DIRECTORY_RANGE_INVALID".to_string()),
+        );
+    }
+    // owner 门禁：基线 :563 `getProjectDb()` 为空 → GENERATION_DATABASE_NOT_READY
+    // 的 Tauri 等价物（authorized_owner 无活跃项目 → 同码）；同时为源断言闭包
+    // 持有 owner 守卫（门禁 → 提交临界区，等价基线单线程事件循环）。
+    // 锁序：owner 缓存锁 → 项目库锁，与 generation 命令同序。
+    let cache = MainGenerationOwnerCache::new();
+    let session_context = session.expect("guard_read 已校验会话存在");
+    let mut guard =
+        match cache.authorized_owner(session_context, state.active_project_snapshot().as_ref()) {
+            Ok(guard) => guard,
+            // authorized_owner 的错误已是 MUTATING 信封形态（带 `"Error: "` 前缀），
+            // 不再二次包装。
+            Err(error) => {
+                return BlueprintCommitRangeResult {
+                    success: false,
+                    receipt: None,
+                    error: Some(error),
+                };
+            }
+        };
+    let owner = &*guard.owner();
+    let handle_value = match serde_json::to_value(handle) {
+        Ok(value) => value,
+        Err(error) => {
+            return blueprint_commit_range_result(Err(format!("生成运行句柄序列化失败：{error}")));
+        }
+    };
+    let outcome = state.with_project_db(|conn| {
+        // 源断言闭包（基线 :571
+        // `() => assertGenerationSourcesCurrent(request.generationRunHandle!, requested)`）：
+        // 事务内生效前调用，失败以 panic 中断提交（M8 约定：仓储钩子闭包无返回通道）。
+        let assert_sources = || {
+            owner
+                .assert_sources_current(conn, &handle_value, Some(&requested))
+                .unwrap_or_else(|error| panic!("生成源当前性断言失败：{error}"));
+        };
+        // 基线 :572-573 事务结构（见方法头注）
+        match blueprints::get_committed_range_operation(conn, &request.operation_id)? {
+            Some(_) => blueprints::commit_range(conn, request, Some(&assert_sources)),
+            None => Err("GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED".to_string()),
+        }
+    });
+    blueprint_commit_range_result(outcome)
 }
 
 /// `db:blueprint-commit-range` —— 逻辑范围只提交一次（MUTATING）
@@ -4251,6 +4419,8 @@ mod tests {
         chapters: &[i64],
     ) -> blueprints::BlueprintCommitRangeRequest {
         blueprints::BlueprintCommitRangeRequest {
+            generation_run_handle: None,
+            generation_requested_range: None,
             mode: mode.to_string(),
             operation_id: operation_id.to_string(),
             start_chapter,
@@ -4363,6 +4533,73 @@ mod tests {
                 .len(),
             1
         );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn blueprint_commit_range_generation_handle_branches_test() {
+        let (state, root, session) = activated_state("commit-range-handle");
+        let handle = crate::repositories::generation_run_repository::MainGenerationRunHandle {
+            project_id: session.project_id.clone(),
+            epoch: session.lease_id.clone(),
+            root_action_id: "root-1".to_string(),
+            run_id: "run-1".to_string(),
+        };
+        let with_handle = |request: blueprints::BlueprintCommitRangeRequest| {
+            blueprints::BlueprintCommitRangeRequest {
+                generation_run_handle: Some(handle.clone()),
+                ..request
+            }
+        };
+
+        // 分支③前置校验：requested 范围与请求范围不一致
+        // → GENERATION_DIRECTORY_RANGE_INVALID（基线 db-controller.ts:566-569）
+        let mut request = commit_request("full", "op-invalid", 1, 2, &[1, 2]);
+        request.generation_requested_range = Some(ChapterRange {
+            start_chapter: 2,
+            end_chapter: 3,
+        });
+        let invalid =
+            blueprint_commit_range_inner(&state, &with_handle(request), &root, Some(&session));
+        assert!(!invalid.success);
+        assert_eq!(
+            invalid.error.as_deref(),
+            Some("Error: GENERATION_DIRECTORY_RANGE_INVALID")
+        );
+
+        // 分支③新提交：基线经 withGenerationAgentChildEffect(handle, commit)
+        // 包装（G4-7 未迁移）→ fail-closed 显式拒绝，禁止静默走直提路径
+        let fresh = blueprint_commit_range_inner(
+            &state,
+            &with_handle(commit_request("full", "op-fresh", 1, 2, &[1, 2])),
+            &root,
+            Some(&session),
+        );
+        assert!(!fresh.success);
+        assert_eq!(
+            fresh.error.as_deref(),
+            Some("Error: GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED")
+        );
+
+        // 分支③幂等重放：操作已存在 → 直提（基线
+        // getCommittedRangeOperation(operationId) ? commit()；仓储层在
+        // 断言钩子前早退，源断言闭包接线但重放时不触发）
+        let first = blueprint_commit_range_inner(
+            &state,
+            &commit_request("full", "op-replay", 1, 2, &[1, 2]),
+            &root,
+            Some(&session),
+        );
+        assert!(first.success, "首次提交应成功：{:?}", first.error);
+        let replay = blueprint_commit_range_inner(
+            &state,
+            &with_handle(commit_request("full", "op-replay", 1, 2, &[1, 2])),
+            &root,
+            Some(&session),
+        );
+        assert!(replay.success, "重放应成功：{:?}", replay.error);
+        assert!(replay.receipt.expect("重放应返回回执").idempotent);
 
         cleanup(&root);
     }

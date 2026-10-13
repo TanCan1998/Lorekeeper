@@ -18,7 +18,9 @@ use crate::repositories::character_repository as characters;
 use crate::repositories::character_roster_repository::{
     self as roster, CharacterRosterEntry, CharacterRosterStatus,
 };
-use crate::repositories::generation_run_repository::GenerationRunRepository;
+use crate::repositories::generation_run_repository::{
+    ChapterRange, GenerationRunRepository, MainGenerationRunHandle,
+};
 use crate::services::character_proposal::{
     find_character_proposal_evidence, prove_character_proposal,
 };
@@ -251,6 +253,15 @@ fn is_valid_commit_mode(mode: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlueprintCommitRangeRequest {
+    /// 基线 `generationRunHandle?`（生成运行句柄；存在时提交前在事务内
+    /// 断言生成源当前性，接线见 `commands::db::blueprint_commit_range_inner`
+    /// 的分支③）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_run_handle: Option<MainGenerationRunHandle>,
+    /// 基线 `generationRequestedRange?`（目录生成显式指定的请求范围；
+    /// 缺省归约为 `{startChapter, endChapter}`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_requested_range: Option<ChapterRange>,
     pub mode: String,
     pub operation_id: String,
     pub start_chapter: i64,
@@ -461,6 +472,8 @@ fn read_exact_range(
         snapshot.push(row.map_err(|error| format!("读取蓝图范围失败：{error}"))?);
     }
     assert_exact_range(&BlueprintCommitRangeRequest {
+        generation_run_handle: None,
+        generation_requested_range: None,
         mode: mode.to_string(),
         operation_id: operation_id.to_string(),
         start_chapter,
@@ -1395,6 +1408,8 @@ mod tests {
         chapters: &[i64],
     ) -> BlueprintCommitRangeRequest {
         BlueprintCommitRangeRequest {
+            generation_run_handle: None,
+            generation_requested_range: None,
             mode: mode.to_string(),
             operation_id: "op-1".to_string(),
             start_chapter,

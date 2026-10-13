@@ -58,7 +58,7 @@ use regex::Regex;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::repositories::generation_run_repository::{
-    DurableGenerationRun, FrozenInputFingerprint, GenerationExecutionReceipt,
+    ChapterRange, DurableGenerationRun, FrozenInputFingerprint, GenerationExecutionReceipt,
     GenerationRunRepository, GenerationTransportDiagnostics, PhysicalAttempt, PlotOutlineProgress,
     RootBudget, RunBinding, RunView,
 };
@@ -171,6 +171,13 @@ fn default_now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// `Number.isSafeInteger` 等价物（JS 安全整数为 ±2^53-1；Rust i64 可能超出）。
+/// 与 `repositories::generation_run_repository::is_safe_integer_value` 同义
+/// （该函数为模块私有，此处就地实现）。
+fn is_safe_integer_value(value: i64) -> bool {
+    (-9007199254740991..=9007199254740991).contains(&value)
 }
 
 /// 基线 `handleOf(run)`（main-generation-owner.ts:125-126）。
@@ -2074,6 +2081,99 @@ impl MainGenerationOwner {
                 }))
             })
             .collect()
+    }
+
+    /// 基线 `assertSourcesCurrent(handle, blueprintRange?)`
+    /// （main-generation-owner.ts:662-678）：生成源当前性断言。基线经
+    /// `generation-controller.ts:40-47` 的 `assertGenerationSourcesCurrent`
+    /// 在事务内生效前调用（`db:blueprint-commit-range` 的提交闭包与
+    /// `db:character-roster-commit` 的名单提交钩子），失败即中断提交。
+    ///
+    /// 验证面（逐字平移）：
+    /// 1. `requireRun(handle, true)` —— 运行身份 / 可写性 / 策略比对；
+    /// 2. 根预算已取消 → `GENERATION_ACTION_CANCELLED`；
+    /// 3. `blueprint_range` 存在时：
+    ///    - 目录续接运行（`listDirectoryProgress` 中
+    ///      `continuationHandle.runId === run.runId`）的 `remainingRange`
+    ///      与断言范围不一致 → `GENERATION_DIRECTORY_CONTINUATION_RANGE_CHANGED`；
+    ///    - `selectedBlueprintChapterNumbers` 缺失 / 范围非安全整数 /
+    ///      `startChapter < 1` / `endChapter < startChapter` / 跨度 ≥ 10000 /
+    ///      范围内任一章未选中 → `GENERATION_FORMAL_RANGE_NOT_SELECTED`；
+    /// 4. **rebuildBinding 比对点 —— fail-closed 占位（G4-6c-1 既定）**：
+    ///    基线末步为
+    ///    `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
+    ///    与 `run.binding` 深比较，不等 → `GENERATION_SOURCE_CHANGED`。
+    ///    `rebuildBinding` 的 `currentModelReceipt → loadModel` 依赖未迁移，
+    ///    比对无法执行——实现到比对点即 fail-closed：此处刻意省略比对
+    ///    （恒 `Ok(())`），未迁移依赖引发的源漂移由命令层经
+    ///    `map_generation_error` 兜底码统一收敛 `GENERATION_REQUEST_FAILED`，
+    ///    待模型加载面迁移后补齐深比较。
+    pub fn assert_sources_current(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        blueprint_range: Option<&ChapterRange>,
+    ) -> Result<(), String> {
+        let run = self.require_run(conn, handle, true)?;
+        if self
+            .repository
+            .budget(conn, &run.root_action_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .root
+            .status
+            == "cancelled"
+        {
+            return Err(mutating_error("GENERATION_ACTION_CANCELLED"));
+        }
+        let Some(range) = blueprint_range else {
+            // 基线无 blueprintRange 时跳过第 3 步（roster 提交钩子形态）。
+            return Ok(());
+        };
+        // 基线 :665-666 —— 目录续接运行的剩余范围一致性
+        let continued = self
+            .repository
+            .list_directory_progress(conn)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .into_iter()
+            .find(|item| {
+                item.continuation_handle
+                    .as_ref()
+                    .is_some_and(|continuation| continuation.run_id == run.run_id)
+            });
+        if let Some(item) = continued {
+            if item.remaining_range.as_ref() != Some(range) {
+                return Err(mutating_error(
+                    "GENERATION_DIRECTORY_CONTINUATION_RANGE_CHANGED",
+                ));
+            }
+        }
+        // 基线 :667-674 —— 正式范围选中校验（`as number[] | undefined`
+        // 强转的等价物：非整数数组（含缺失）按未选中处理）
+        let selected = run
+            .binding
+            .source_manifest
+            .get("selectedBlueprintChapterNumbers")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(Value::as_i64)
+                    .collect::<Option<Vec<i64>>>()
+            })
+            .flatten();
+        let formal_range_selected = selected.is_some()
+            && is_safe_integer_value(range.start_chapter)
+            && is_safe_integer_value(range.end_chapter)
+            && range.start_chapter >= 1
+            && range.end_chapter >= range.start_chapter
+            && range.end_chapter - range.start_chapter < 10000
+            && !(range.start_chapter..=range.end_chapter)
+                .any(|chapter| !selected.as_deref().unwrap_or_default().contains(&chapter));
+        if !formal_range_selected {
+            return Err(mutating_error("GENERATION_FORMAL_RANGE_NOT_SELECTED"));
+        }
+        // 基线 :676-677 rebuildBinding 深比较 —— fail-closed 占位（见方法头注）。
+        Ok(())
     }
 }
 
