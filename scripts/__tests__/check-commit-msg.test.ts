@@ -75,15 +75,15 @@ function commitWith(repo: { root: string; git: (...args: string[]) => void }, me
 }
 
 describe('提交消息检查（本地 hook 模式）', () => {
-  it('接受本仓库规范的 type(scope): 中文描述', () => {
-    const file = writeMessageFile('feat(tauri): 接入 tauri-plugin-dialog\n\n- 说明\n')
+  it('接受本仓库规范的 <gitmoji> type(scope): 中文描述', () => {
+    const file = writeMessageFile('✨ feat(tauri): 接入 tauri-plugin-dialog\n\n- 说明\n')
     const result = runChecker([file])
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('全部合规')
   })
 
   it('拒绝以 UTF-8 BOM 开头的消息（2026-10-08 事故的根因）', () => {
-    const file = writeMessageFile(withBom('feat(tauri): 批次 D2-c\n\n- 说明\n'))
+    const file = writeMessageFile(withBom('✨ feat(tauri): 批次 D2-c\n\n- 说明\n'))
     const result = runChecker([file])
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('[BOM]')
@@ -91,11 +91,45 @@ describe('提交消息检查（本地 hook 模式）', () => {
     expect(result.stdout).not.toContain('[SUBJECT_PATTERN]')
   })
 
-  it('拒绝不符合 type(scope) 前缀的首行', () => {
+  it('拒绝不符合 <gitmoji> type(scope) 前缀的首行', () => {
     const file = writeMessageFile('Update README_en.md\n')
     const result = runChecker([file])
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('[SUBJECT_PATTERN]')
+    expect(result.stdout).toContain('Gitmoji')
+  })
+
+  it('拒绝缺少 Gitmoji 前缀的首行', () => {
+    const file = writeMessageFile('feat(tauri): 缺 emoji\n')
+    const result = runChecker([file])
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('[SUBJECT_PATTERN]')
+  })
+
+  it('拒绝 Gitmoji 与类型不配对的提交', () => {
+    const file = writeMessageFile('🐛 feat(tauri): emoji 与类型不配对\n')
+    const result = runChecker([file])
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('[GITMOJI_MISMATCH]')
+  })
+
+  it('接受全部类型的 Gitmoji 配对（变体选择器可省略）', () => {
+    const messages = [
+      '✨ feat: 新功能',
+      '🐛 fix: Bug 修复',
+      '📚 docs: 文档更新',
+      '💎 style: 代码格式',
+      '♻ refactor: 重构',
+      '🧪 test: 测试',
+      '🔧 chore: 构建/工具',
+      '⚡ perf: 性能优化',
+      '📦 build: 构建产物',
+      '👷 ci: CI 配置',
+      '⏪ revert: 回退',
+    ]
+    for (const message of messages) {
+      expect(runChecker([writeMessageFile(`${message}\n`)]).status).toBe(0)
+    }
   })
 
   it('豁免 Merge / Revert / fixup! 首行，但编码问题仍然拦截', () => {
@@ -110,26 +144,26 @@ describe('提交消息检查（本地 hook 模式）', () => {
   })
 
   it('拒绝 CRLF、行尾空白与缺失的正文空行', () => {
-    expect(runChecker([writeMessageFile('feat(tauri): 甲\r\n\r\n- 乙\r\n')]).stdout).toContain('[CRLF]')
-    expect(runChecker([writeMessageFile('feat(tauri): 甲 \n')]).stdout).toContain('[TRAILING_WHITESPACE]')
-    expect(runChecker([writeMessageFile('feat(tauri): 甲\n- 直接跟正文\n')]).stdout).toContain(
+    expect(runChecker([writeMessageFile('✨ feat(tauri): 甲\r\n\r\n- 乙\r\n')]).stdout).toContain('[CRLF]')
+    expect(runChecker([writeMessageFile('✨ feat(tauri): 甲 \n')]).stdout).toContain('[TRAILING_WHITESPACE]')
+    expect(runChecker([writeMessageFile('✨ feat(tauri): 甲\n- 直接跟正文\n')]).stdout).toContain(
       '[BODY_SEPARATOR]',
     )
   })
 
   it('拒绝空消息，并检出正文行行首的 BOM', () => {
     expect(runChecker([writeMessageFile('\n\n')]).stdout).toContain('[EMPTY_MESSAGE]')
-    expect(runChecker([writeMessageFile('\uFEFFfeat(tauri): 甲\n\n\uFEFF- 乙\n')]).stdout).toContain('[BOM]')
+    expect(runChecker([writeMessageFile('\uFEFF✨ feat(tauri): 甲\n\n\uFEFF- 乙\n')]).stdout).toContain('[BOM]')
   })
 
   it('按显示宽度限制首行长度（CJK 计 2 列）', () => {
-    const long = `feat(tauri): ${'字'.repeat(70)}`
+    const long = `✨ feat(tauri): ${'字'.repeat(70)}`
     expect(runChecker([writeMessageFile(`${long}\n`)]).stdout).toContain('[SUBJECT_WIDTH]')
   })
 
   it('剥离 hook 写入的注释行，避免模板文字被误判', () => {
     const file = writeMessageFile(
-      ['feat(tauri): 合法首行', '', '# Please enter the commit message for your changes.', '# 注释行', ''].join(
+      ['✨ feat(tauri): 合法首行', '', '# Please enter the commit message for your changes.', '# 注释行', ''].join(
         '\n',
       ),
     )
@@ -159,8 +193,8 @@ describe('提交消息检查（本地 hook 模式）', () => {
 describe('提交消息检查（CI --range 模式）', () => {
   it('逐提交读取原始字节，检出已入库的 BOM 提交', () => {
     const repo = initRepo()
-    commitWith(repo, Buffer.from('feat(tauri): 干净提交\n', 'utf8'))
-    commitWith(repo, withBom('feat(tauri): 带 BOM 的提交\n'))
+    commitWith(repo, Buffer.from('✨ feat(tauri): 干净提交\n', 'utf8'))
+    commitWith(repo, withBom('✨ feat(tauri): 带 BOM 的提交\n'))
 
     const result = runChecker(['--range', 'HEAD'], { cwd: repo.root })
     expect(result.status).toBe(1)
@@ -169,8 +203,8 @@ describe('提交消息检查（CI --range 模式）', () => {
 
   it('通过范围内全部合规的提交', () => {
     const repo = initRepo()
-    commitWith(repo, Buffer.from('feat(tauri): 甲\n', 'utf8'))
-    commitWith(repo, Buffer.from('docs(tauri): 乙\n', 'utf8'))
+    commitWith(repo, Buffer.from('✨ feat(tauri): 甲\n', 'utf8'))
+    commitWith(repo, Buffer.from('📚 docs(tauri): 乙\n', 'utf8'))
 
     // `--range HEAD` 列出仓库全部可达提交（此处正好是这 2 个）
     const result = runChecker(['--range', 'HEAD'], { cwd: repo.root })
@@ -183,7 +217,7 @@ describe('提交消息检查（CI --range 模式）', () => {
     // base 分支上模拟一条上游式、不符合本仓库规范的历史提交
     commitWith(repo, Buffer.from('Update README.md\n', 'utf8'))
     repo.git('checkout', '-q', '-b', 'feature')
-    commitWith(repo, Buffer.from('feat(tauri): 新增功能\n', 'utf8'))
+    commitWith(repo, Buffer.from('✨ feat(tauri): 新增功能\n', 'utf8'))
 
     const result = runChecker(['--range', 'main..HEAD'], { cwd: repo.root })
     expect(result.status).toBe(0)
@@ -192,7 +226,7 @@ describe('提交消息检查（CI --range 模式）', () => {
 
   it('--ignore-author 跳过上游带入的历史提交，避免误报', () => {
     const repo = initRepo()
-    commitWith(repo, Buffer.from('feat(tauri): 合规\n', 'utf8'))
+    commitWith(repo, Buffer.from('✨ feat(tauri): 合规\n', 'utf8'))
     spawnSync('git', ['-c', 'user.email=upstream@example.com', 'commit', '-q', '--allow-empty', '-m', 'Update README_en.md'], {
       cwd: repo.root,
       encoding: 'utf8',
@@ -207,7 +241,7 @@ describe('提交消息检查（CI --range 模式）', () => {
 
   it('范围为空时通过（base 与 head 相同）', () => {
     const repo = initRepo()
-    commitWith(repo, Buffer.from('feat(tauri): 甲\n', 'utf8'))
+    commitWith(repo, Buffer.from('✨ feat(tauri): 甲\n', 'utf8'))
     const result = runChecker(['--range', 'HEAD..HEAD'], { cwd: repo.root })
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('没有需要检查的提交')

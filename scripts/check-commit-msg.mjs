@@ -22,7 +22,8 @@
  * ## 检查项
  *
  * 编码卫生（对所有提交，含 `Merge`）：BOM、CR 字符、行尾空白、空消息。
- * 结构（对非豁免提交）：`type(scope): 描述` 前缀、首行显示宽度、首行与正文之间的空行。
+ * 结构（对非豁免提交）：`<gitmoji> type(scope): 描述` 前缀（Gitmoji 与类型配对）、
+ * 首行显示宽度、首行与正文之间的空行。
  * 豁免：`Merge `、`Revert `、`fixup! `、`squash! ` 开头的首行只做编码卫生检查
  * （上游历史与合并提交不受本仓库提交规范约束）。
  *
@@ -66,9 +67,46 @@ export const COMMIT_TYPES = Object.freeze([
   'revert',
 ])
 
-/** 语义化首行：`type(scope): 描述`，scope 为小写字母/数字/连字符。 */
+/**
+ * 类型 → Gitmoji 首行前缀（2026-10-14 起强制，与 COMMIT_TYPES 一一配对）。
+ *
+ * 与 `COMMIT_TYPES`、`docs-fork/agents/pi-development.md` §10、`AGENTS.md`
+ * 「Git 工作流」同源：改一处必须同步其余三处。
+ */
+export const GITMOJI = Object.freeze({
+  feat: '✨',
+  fix: '🐛',
+  chore: '🔧',
+  docs: '📚',
+  refactor: '♻️',
+  test: '🧪',
+  perf: '⚡',
+  build: '📦',
+  ci: '👷',
+  style: '💎',
+  revert: '⏪',
+})
+
+/** 变体选择器 U+FE0F（如 ♻️ = U+267B + U+FE0F）；书写时可省略。 */
+const VARIATION_SELECTOR = '\uFE0F'
+
+/** 把 Gitmoji 转成正则片段：变体选择器变为可选，使 `♻` 与 `♻️` 等价。 */
+function emojiRegexSource(emoji) {
+  return [...emoji]
+    .map((char) => (char === VARIATION_SELECTOR ? `${VARIATION_SELECTOR}?` : char))
+    .join('')
+}
+
+/** 比较 Gitmoji 时忽略变体选择器（`♻` 与 `♻️` 视为同一个）。 */
+function stripVariationSelector(text) {
+  return text.replaceAll(VARIATION_SELECTOR, '')
+}
+
+const GITMOJI_ALTERNATION = Object.values(GITMOJI).map(emojiRegexSource).join('|')
+
+/** 语义化首行：`<gitmoji> type(scope): 描述`，Gitmoji 与类型配对，scope 为小写字母/数字/连字符。 */
 export const SUBJECT_PATTERN = new RegExp(
-  `^(?:${COMMIT_TYPES.join('|')})(?:\\([a-z0-9][a-z0-9-]*\\))?: \\S`,
+  `^(?:${GITMOJI_ALTERNATION}) (?:${COMMIT_TYPES.join('|')})(?:\\([a-z0-9][a-z0-9-]*\\))?: \\S`,
 )
 
 /** 合并/回滚/自动压缩类提交，只做编码卫生检查。 */
@@ -84,6 +122,8 @@ const MAX_BUFFER = 64 * 1024 * 1024
 /** 全角/宽字符区间，用于把中文首行换算成终端显示宽度。 */
 const FULL_WIDTH_RANGES = Object.freeze([
   [0x1100, 0x115f],
+  [0x2300, 0x23ff],
+  [0x25a0, 0x27ff],
   [0x2e80, 0x303e],
   [0x3041, 0x33ff],
   [0x3400, 0x4dbf],
@@ -99,7 +139,7 @@ const FULL_WIDTH_RANGES = Object.freeze([
   [0x20000, 0x3fffd],
 ])
 
-const USAGE = `提交消息卫生检查（BOM / CRLF / 行尾空白 / 语义化前缀）
+const USAGE = `提交消息卫生检查（BOM / CRLF / 行尾空白 / Gitmoji 语义化前缀）
 
 用法：
   node scripts/check-commit-msg.mjs <msgfile>              git commit-msg hook
@@ -115,10 +155,11 @@ const USAGE = `提交消息卫生检查（BOM / CRLF / 行尾空白 / 语义化�
 
 退出码：0 通过；1 不合规；2 用法错误。`
 
-/** 终端显示宽度：CJK 等宽字符按 2 列计。 */
+/** 终端显示宽度：CJK 等宽字符按 2 列计；变体选择器（U+FE0F）不占宽度。 */
 export function displayWidth(text) {
   let width = 0
   for (const char of String(text)) {
+    if (char === VARIATION_SELECTOR) continue
     const code = char.codePointAt(0)
     const wide = FULL_WIDTH_RANGES.some(([low, high]) => code >= low && code <= high)
     width += wide ? 2 : 1
@@ -178,13 +219,31 @@ export function analyzeCommitMessage(input) {
   const exempt = EXEMPT_SUBJECT_PATTERN.test(subject)
 
   if (subject === '') {
-    add('EMPTY_MESSAGE', '首行为空，应为 `type(scope): 描述`')
+    add('EMPTY_MESSAGE', '首行为空，应为 `<gitmoji> type(scope): 描述`')
+    return { subject: '', exempt: false, ok: false, problems }
   } else if (!exempt) {
     if (!SUBJECT_PATTERN.test(subject)) {
+      const hasGitmoji = new RegExp(`^(?:${GITMOJI_ALTERNATION}) `).test(subject)
+      const hint = hasGitmoji
+        ? `允许类型：${COMMIT_TYPES.join(' / ')}`
+        : `Gitmoji 与类型配对：${Object.entries(GITMOJI)
+            .map(([type, emoji]) => `${emoji} ${type}`)
+            .join(' / ')}`
       add(
         'SUBJECT_PATTERN',
-        `首行不符合 \`type(scope): 描述\` —— ${JSON.stringify(subject)}（允许类型：${COMMIT_TYPES.join(' / ')}）`,
+        `首行不符合 \`<gitmoji> type(scope): 描述\` —— ${JSON.stringify(subject)}（${hint}）`,
       )
+    } else {
+      // 结构合规时再校验 Gitmoji 与类型是否配对（✨ 对 feat、🐛 对 fix ……）
+      const [emojiToken = '', head = ''] = subject.split(' ')
+      const type = head.split('(')[0]
+      const expected = GITMOJI[type]
+      if (expected && stripVariationSelector(emojiToken) !== stripVariationSelector(expected)) {
+        add(
+          'GITMOJI_MISMATCH',
+          `Gitmoji 与类型不配对：${JSON.stringify(emojiToken)} 应为 ${expected}（${type}）—— ${JSON.stringify(subject)}`,
+        )
+      }
     }
     const width = displayWidth(subject)
     if (width > MAX_SUBJECT_WIDTH) {
@@ -382,7 +441,7 @@ function main() {
   }
 
   console.log(`提交消息检查失败：${failed.length} / ${results.length} 个提交不合规。`)
-  console.log('规范：`type(scope): 中文描述`（类型见 scripts/check-commit-msg.mjs 顶部注释）；')
+  console.log('规范：`<gitmoji> type(scope): 中文描述`（Gitmoji 与类型配对，见 scripts/check-commit-msg.mjs 顶部注释）；')
   console.log('消息必须无 BOM、无 CRLF、无行尾空白。详见 docs-fork/agents/pi-development.md §10。')
   return 1
 }

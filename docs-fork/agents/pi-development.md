@@ -269,13 +269,27 @@ pub async fn chapter_finalize(
 
 ## 10. Git 提交消息规范与提交前自检
 
-**格式**：`type(scope): 描述`。
+**格式**：`<gitmoji> type(scope): 描述`（Gitmoji 与 `type` 一一配对，2026-10-14 起强制）。
+
+| Gitmoji | `type` | 用途 |
+|---|---|---|
+| ✨ | `feat` | 新功能 |
+| 🐛 | `fix` | Bug 修复 |
+| 📚 | `docs` | 文档更新 |
+| 💎 | `style` | 代码格式 |
+| ♻️ | `refactor` | 重构 |
+| 🧪 | `test` | 测试 |
+| 🔧 | `chore` | 构建/工具 |
+| ⚡ | `perf` | 性能优化 |
+| 📦 | `build` | 构建产物 |
+| 👷 | `ci` | CI 配置 |
+| ⏪ | `revert` | 回退 |
 
 - `type` ∈ `feat` / `fix` / `chore` / `docs` / `refactor` / `test` / `perf` / `build` / `ci` /
-  `style` / `revert`（白名单与 `scripts/check-commit-msg.mjs` 的 `COMMIT_TYPES`、`AGENTS.md`
+  `style` / `revert`（白名单与 `scripts/check-commit-msg.mjs` 的 `COMMIT_TYPES` / `GITMOJI`、`AGENTS.md`
   「Git 工作流」**同源**：改一处必须同步其余两处）；
-- `scope` 小写字母/数字/连字符，Tauri 迁移统一用 `tauri`（如 `feat(tauri): migrate config controller`）；
-- **CI / 工作流类改动统一写 `chore(ci): 描述`**：`ci` 只作 scope，不写裸 `ci:` 类型前缀；
+- `scope` 小写字母/数字/连字符，Tauri 迁移统一用 `tauri`（如 `✨ feat(tauri): migrate config controller`）；
+- **CI / 工作流类改动统一写 `🔧 chore(ci): 描述`**：`ci` 只作 scope，不写裸 `ci:` 类型前缀；
   与仓库 Gitleaks 系列提交（`chore(ci): 新增 Gitleaks 秘密扫描工作流` 等）保持一致。
   上游既存的裸 `ci:` 提交不追溯改写（2026-10-09 已将本 fork 最后一条 `53c54c7` 重写为
   `5ef8d64 chore(ci): 修复 Gitleaks 配置位置并添加排除规则`）；
@@ -301,7 +315,7 @@ pub async fn chapter_finalize(
 **正确写法**（任选）：
 
 ```bash
-git commit -m "feat(tauri): 描述"        # 首选，最简单
+git commit -m "✨ feat(tauri): 描述"   # 首选，最简单
 ```
 
 ```js
