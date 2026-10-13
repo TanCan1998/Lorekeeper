@@ -73,6 +73,8 @@ use crate::repositories::generation_run_repository::{
 };
 use crate::repositories::project_core_repository as project_core;
 use crate::security::ProjectSessionContext;
+use crate::services::agent_generation::GENERATION_PLANNING_RANGE_INVALID;
+
 use crate::services::generation_draft_effects::GenerationDraftEffects;
 use crate::services::legacy_roster_source::AdoptLegacyCardsRequest;
 use crate::services::main_generation_owner::{
@@ -99,6 +101,18 @@ const GENERATION_PLOT_OUTLINE_PREFIX_INVALID: &str = "GENERATION_PLOT_OUTLINE_PR
 /// electron/services/main-generation-plan.ts:112）。
 const GENERATION_PLANNING_TARGET_INVALID: &str = "GENERATION_PLANNING_TARGET_INVALID";
 
+/// 基线 `PLANNING_ACTION_CHAPTER_LIMIT`
+/// （src/shared/plot-outline-contract.ts:10）。
+///
+/// 与 `services::agent_generation` 的同名私有常量
+/// （:152，同源同值）平行定义——后者不可跨模块导入，
+/// 且本波写面不含 agent_generation.rs；
+/// `DEFAULT_PLANNING_ACTION_CHAPTERS`（同文件 :149）
+/// 是默认值而非上限，语义不同，不得混用。
+///
+/// ⚠️ 调用点随 B3-1c 计划构造器迁移波次接入。
+#[allow(dead_code)]
+const PLANNING_ACTION_CHAPTER_LIMIT: i64 = 10;
 /// 基线 `readBatch` 请求包装（频道契约
 /// `args: [{ batchId: string }]`）。
 #[derive(Debug, Deserialize)]
@@ -1409,6 +1423,65 @@ fn parse_planning_target_units(value: Option<&str>) -> Result<i64, String> {
     Ok(integer)
 }
 
+/// 基线 `assertPlanningActionRange`
+/// （src/shared/plot-outline-contract.ts:57）。
+///
+/// 基线对 from/to 先做 `Number.isSafeInteger` 检查——
+/// Rust 侧字段为原生 `i64`，恒为安全整数（章节号域
+/// 远小于 `i64` 上界），故仅保留域检查。基线抛错
+/// `Error('GENERATION_PLANNING_RANGE_INVALID')`，Rust
+/// 侧按 crate 惯例以 `Result` 建模。
+///
+/// ⚠️ 调用点随 B3-1c 计划构造器迁移波次接入。
+#[allow(dead_code)]
+pub fn assert_planning_action_range(range: PlotOutlineRange) -> Result<(), String> {
+    if range.from < 1
+        || range.to < range.from
+        || range.to - range.from + 1 > PLANNING_ACTION_CHAPTER_LIMIT
+    {
+        return Err(GENERATION_PLANNING_RANGE_INVALID.to_string());
+    }
+    Ok(())
+}
+
+/// 基线 `planningTargetInstruction`
+/// （src/shared/plot-outline-contract.ts:69）。
+///
+/// `kind` 与 `language` 按 crate 惯例以 `&str` 传递
+/// （`"outline" | "blueprint"` / `"zh-CN" | "en-US"`，
+/// 同 B3-1a 裁决）。
+///
+/// ⚠️ 调用点随 B3-1c 计划构造器迁移波次接入。
+#[allow(dead_code)]
+pub fn planning_target_instruction(kind: &str, target_units: i64, language: &str) -> String {
+    let english = language == "en-US";
+    let field = if kind == "outline" {
+        if english {
+            "outline body"
+        } else {
+            "大纲正文"
+        }
+    } else if english {
+        "keyEvents narrative"
+    } else {
+        "keyEvents 叙述"
+    };
+    if english {
+        format!(
+            "Aim for about {target_units} words per chapter in the {field}. \
+             This is a soft target, excluding JSON, field names, identities \
+             and relationship metadata. Complete content above or below the \
+             target is accepted; do not truncate content to meet it. Keep \
+             supporting fields concise."
+        )
+    } else {
+        format!(
+            "每章{field}目标约 {target_units} 字。此值是软目标，不包括 JSON、\
+             字段名、身份及关系元数据。完整内容可以高于或低于目标，不得为凑字数截断内容。辅助字段可简写。"
+        )
+    }
+}
+
 /// 基线 `handleOf(run)`（main-generation-owner.ts:125-126）。
 fn handle_of(run: &crate::repositories::generation_run_repository::DurableGenerationRun) -> Value {
     json!({
@@ -2469,4 +2542,54 @@ pub async fn legacy_roster_cancel(
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.cancel_legacy_roster_generation(conn, &request))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assert_planning_action_range_accepts_baseline_domain_test() {
+        // 跨度恰为上限（10）与最小跨度（1）均合法。
+        assert!(assert_planning_action_range(PlotOutlineRange { from: 1, to: 10 }).is_ok());
+        assert!(assert_planning_action_range(PlotOutlineRange { from: 5, to: 5 }).is_ok());
+        assert!(assert_planning_action_range(PlotOutlineRange { from: 3, to: 10 }).is_ok());
+    }
+
+    #[test]
+    fn assert_planning_action_range_rejects_invalid_domains_test() {
+        for (from, to) in [
+            (0, 10), // from < 1
+            (1, 0),  // to < from
+            (5, 4),  // to < from
+            (1, 12), // 跨度 12 > 上限 10
+            (3, 13), // 跨度 11 > 上限 10
+        ] {
+            assert_eq!(
+                assert_planning_action_range(PlotOutlineRange { from, to }),
+                Err(GENERATION_PLANNING_RANGE_INVALID.to_string()),
+                "({from}, {to}) 必须判为区间非法"
+            );
+        }
+    }
+
+    #[test]
+    fn planning_target_instruction_renders_all_four_locale_kinds_test() {
+        assert_eq!(
+            planning_target_instruction("outline", 600, "zh-CN"),
+            "每章大纲正文目标约 600 字。此值是软目标，不包括 JSON、字段名、身份及关系元数据。完整内容可以高于或低于目标，不得为凑字数截断内容。辅助字段可简写。"
+        );
+        assert_eq!(
+            planning_target_instruction("blueprint", 600, "zh-CN"),
+            "每章keyEvents 叙述目标约 600 字。此值是软目标，不包括 JSON、字段名、身份及关系元数据。完整内容可以高于或低于目标，不得为凑字数截断内容。辅助字段可简写。"
+        );
+        assert_eq!(
+            planning_target_instruction("outline", 600, "en-US"),
+            "Aim for about 600 words per chapter in the outline body. This is a soft target, excluding JSON, field names, identities and relationship metadata. Complete content above or below the target is accepted; do not truncate content to meet it. Keep supporting fields concise."
+        );
+        assert_eq!(
+            planning_target_instruction("blueprint", 600, "en-US"),
+            "Aim for about 600 words per chapter in the keyEvents narrative. This is a soft target, excluding JSON, field names, identities and relationship metadata. Complete content above or below the target is accepted; do not truncate content to meet it. Keep supporting fields concise."
+        );
+    }
 }

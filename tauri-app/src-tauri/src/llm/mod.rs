@@ -11,8 +11,10 @@
 //! | [`chat`] | `electron/llm/provider.interface.ts` + `llm-controller.ts` | 生成链共享类型 / `<think>` 剥离 / HTTP 客户端装配 |
 //! | [`openai`] | `electron/llm/openai-provider.ts` + `openai-compatible-endpoint.ts` | OpenAI 兼容协议 + 手写 SSE 行解析 |
 //! | [`gemini`] | `electron/llm/gemini-provider.ts` | Gemini 协议（宽松 SSE，不剥离推理块） |
+//! | [`generation_parameter_policy`] | `electron/llm/generation-parameter-policy.ts` | 基线原版生成参数策略（能力约束钳制；计划构造路径消费，与 [`params`] 的 D2 IPC 调整版共存） |
 //! | [`discovery`] | `electron/services/model-discovery-service.ts` | 供应商模型列表发现（凭据回显守卫 + 严格载荷解析） |
 //! | [`embedding`] | `electron/embedding.ts`（调用面） | 远程 Embedding 调用与响应校验 |
+//! | [`provider_presets`] | `src/shared/provider-presets.ts`（预算能力子集） | 预算规划用容量证据（`budgetCapabilities` / `capabilities` 数值字段） |
 //!
 //! 领域不变量（`docs/product-domain.md`）：
 //! - **作者事实优先**：能力证据只认内置预设（`verified-provider-preset`），用户填写的
@@ -24,8 +26,10 @@ pub mod chat;
 pub mod discovery;
 pub mod embedding;
 pub mod gemini;
+pub mod generation_parameter_policy;
 pub mod lease;
 pub mod openai;
 pub mod params;
 pub mod presets;
+pub mod provider_presets;
 pub mod reasoning;

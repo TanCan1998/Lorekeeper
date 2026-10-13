@@ -62,3 +62,9 @@ pub mod review_revision_generation;
 // 的决策类型；GenerationReasoningStage 复用 llm::reasoning。
 pub mod prompt_budget_failure;
 pub mod task_budget_planner;
+
+// ── 批次 G4-B3-1b：蓝图批次成本规划（1:1 移植自
+// src/services/workflows/blueprint-batch-policy.ts）──
+// 纯逻辑面：为 B3-1c 计划构造器供给成本包络数学，
+// 本波不接 owner 调用点。
+pub mod blueprint_batch_policy;
