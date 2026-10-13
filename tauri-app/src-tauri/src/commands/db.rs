@@ -233,20 +233,18 @@ pub(crate) fn project_core_commit_generated_inner(
     // 与 blueprint_commit_range_with_generation 同序）
     let cache = MainGenerationOwnerCache::new();
     let session_context = session.expect("guard_read 已校验会话存在");
-    let mut guard = match cache.authorized_owner(
-        session_context,
-        state.active_project_snapshot().as_ref(),
-    ) {
-        Ok(guard) => guard,
-        // authorized_owner 的错误已是 MUTATING 信封形态（带 "Error: " 前缀），
-        // 不再二次包装。
-        Err(error) => {
-            return SimpleResult {
-                success: false,
-                error: Some(error),
-            };
-        }
-    };
+    let mut guard =
+        match cache.authorized_owner(session_context, state.active_project_snapshot().as_ref()) {
+            Ok(guard) => guard,
+            // authorized_owner 的错误已是 MUTATING 信封形态（带 "Error: " 前缀），
+            // 不再二次包装。
+            Err(error) => {
+                return SimpleResult {
+                    success: false,
+                    error: Some(error),
+                };
+            }
+        };
     let owner = &*guard.owner();
     let outcome = state.with_project_db(|conn| {
         // 基线 :184-188 事务结构
@@ -260,18 +258,13 @@ pub(crate) fn project_core_commit_generated_inner(
         let tx = conn
             .unchecked_transaction()
             .map_err(|error| mutating_error(error.to_string()))?;
-        match owner.with_agent_child_effect(
-            &tx,
-            handle,
-            || {
-                owner
-                    .assert_sources_current(&tx, handle, None)
-                    .and_then(|()| {
-                        project_core::update(&tx, &request.data)
-                            .map_err(|error| mutating_error(error))
-                    })
-            },
-        ) {
+        match owner.with_agent_child_effect(&tx, handle, || {
+            owner
+                .assert_sources_current(&tx, handle, None)
+                .and_then(|()| {
+                    project_core::update(&tx, &request.data).map_err(|error| mutating_error(error))
+                })
+        }) {
             // 活化后（agent-generation 状态机迁移完成）：effect 执行
             // 结果与事务提交原子化；当前占位主体 fail-closed，
             // 本分支不可达。
@@ -4736,7 +4729,9 @@ mod tests {
         );
 
         // 分支③新提交：基线经 withGenerationAgentChildEffect(handle, commit)
-        // 包装（G4-7 未迁移）→ fail-closed 显式拒绝，禁止静默走直提路径
+        // 包装（G4-10d 活化）——handle 指向的 run-1 在本夹具中不存在
+        // （夹具仅初始化 project_core 台账），门禁链首环 require_run
+        // 的运行读取失败 → GENERATION_RUN_MISSING，禁止静默走直提路径
         let fresh = blueprint_commit_range_inner(
             &state,
             &with_handle(commit_request("full", "op-fresh", 1, 2, &[1, 2])),
@@ -4746,7 +4741,7 @@ mod tests {
         assert!(!fresh.success);
         assert_eq!(
             fresh.error.as_deref(),
-            Some("Error: GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED")
+            Some("Error: GENERATION_RUN_MISSING")
         );
 
         // 分支③幂等重放：操作已存在 → 直提（基线
@@ -4783,10 +4778,15 @@ mod tests {
         let no_handle =
             project_core_commit_generated_inner(&state, &request, &root, Some(&session));
         assert!(!no_handle.success);
-        assert_eq!(no_handle.error.as_deref(), Some("Error: GENERATION_OWNER_REQUIRED"));
+        assert_eq!(
+            no_handle.error.as_deref(),
+            Some("Error: GENERATION_OWNER_REQUIRED")
+        );
 
         // 基线 :184-188 有 handle → 事务内 with_agent_child_effect
-        // （G4-7 主体 fail-closed 占位——agent-generation 状态机未迁移）
+        // （G4-10d 活化）——handle 指向的 run-1 在本夹具中不存在
+        // （夹具仅初始化 project_core 台账），门禁链首环 require_run
+        // 的运行读取失败 → GENERATION_RUN_MISSING
         let handle = serde_json::json!({
             "projectId": session.project_id,
             "epoch": session.lease_id,
@@ -4802,7 +4802,7 @@ mod tests {
         assert!(!closed.success);
         assert_eq!(
             closed.error.as_deref(),
-            Some("Error: GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED")
+            Some("Error: GENERATION_RUN_MISSING")
         );
 
         cleanup(&root);

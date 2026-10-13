@@ -1916,12 +1916,16 @@ impl MainGenerationOwner {
     /// `rebuildBinding`）、可见合成 / 目标单位 / 批次进度校验
     /// （:140-160）、`DraftRepository.create` 草稿行写入与
     /// `generation_attempts` usage 回执写回（:161-171），以及
-    /// `agents.withChildEffect` 子生成器效应登记
-    /// （agent-generation.ts:344-371）与外层
-    /// `deps.database.transaction(...).immediate()` 事务包装
+    /// 外层 `deps.database.transaction(...).immediate()` 事务包装
     /// （generation-draft-effects.ts 头注：`commit` 写面刻意不平移，
-    /// 随 G4-6/G4-7 迁移）——新提交入口 fail-closed（命令层收敛为
-    /// `GENERATION_REQUEST_FAILED`）。
+    /// 随 G4-6/G4-7 迁移）。G4-10d 接线：基线 :1297 新提交路径
+    /// 经 `agents.withChildEffect(request.handle, …)` 包装活化
+    /// （见 [`MainGenerationOwner::with_agent_child_effect`]）——
+    /// 门禁链（运行身份 / 服务层 registration / 源一致性）先行
+    /// 校验，效应写入路径保持 fail-closed 占位（写入面与
+    /// `assertSourcesCurrent` 写入时源断言回调属未迁移写入路径
+    /// 的一部分，本波不实现）——新提交入口 fail-closed（命令层
+    /// 收敛为 `GENERATION_REQUEST_FAILED`）。
     pub fn commit_draft(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
         let run = self.require_run(conn, &handle, false)?;
@@ -1963,12 +1967,36 @@ impl MainGenerationOwner {
                 "content": previous.get("content").cloned().unwrap_or(Value::Null),
             }));
         }
-        // ⚠️ B3 占位：新提交写入路径（见方法头注）未迁移——
-        // 新提交入口 fail-closed（命令层收敛为
-        // GENERATION_REQUEST_FAILED）。
-        Err(mutating_error(
-            "主生成草稿提交尚未迁移：草稿写入路径（generation-draft-effects.commit 的 DraftRepository.create 与 generation_attempts usage 回执写回）与子生成器效应登记（agents.withChildEffect）待后续批次移植",
-        ))
+        // 基线 :1297 新提交路径 `agents.withChildEffect(request.handle,
+        // () => draftEffects.commit(request, () => assertSourcesCurrent(
+        // request.handle)))`——G4-10d 接线：门禁链（require_run 运行
+        // 身份 / 服务层 registration / 源一致性）先行校验，效应
+        // 写入路径保持 B3 fail-closed 占位（基线 draftEffects.commit
+        // 写入面与 assertSourcesCurrent 写入时源断言回调未迁移——
+        // 见方法头注）。
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )
+        .map_err(|error| mutating_error(&error))?;
+        agent
+            .with_child_effect(&handle, |_conn| {
+                Err(mutating_error(
+                    "主生成草稿提交尚未迁移：草稿写入路径（generation-draft-effects.commit 的 DraftRepository.create 与 generation_attempts usage 回执写回）与 assertSourcesCurrent 写入时源断言回调待后续批次移植",
+                ))
+            })
+            .map_err(|error| {
+                if error.starts_with("Error: ") {
+                    error
+                } else {
+                    mutating_error(&error)
+                }
+            })
     }
 
     /// 基线 `retryDraftShortOutline`（main-generation-owner.ts:619-624）：
@@ -2837,32 +2865,81 @@ impl MainGenerationOwner {
     }
 
     /// 基线 `withGenerationAgentChildEffect`（generation-controller.ts:66-71
-    /// → main-generation-owner.ts:1301 → agents.withChildEffect）的结构接线。
+    /// → main-generation-owner.ts:1301 → agents.withChildEffect）的接线。
     ///
-    /// 基线 `agents.withChildEffect`（agent-generation.ts:344-376）完整实现
-    /// 依赖 agent-generation 状态机（runs registry / workflowRegistration /
-    /// sessionRuns navigation / host.capture / generation_attempts
-    /// usage_receipt_json 回执写入），属 agent-generation 域迁移波次——
-    /// 本方法为结构接线，主体 **fail-closed 占位**：
-    /// - 基线首行事务门禁（`if (!this.db.inTransaction) throw
-    ///   GENERATION_AGENT_TRANSACTION_REQUIRED`，agent-generation.ts:345）
-    ///   的 Tauri 等价物为**调用方结构保证**：`db:project-core-commit-generated`
-    ///   路径在本波实现中于外层事务内调用；`db:blueprint-commit-range`
-    ///   路径的效应（`blueprints::commit_range`）自开事务、提交原子性
-    ///   自足。rusqlite 0.40.2 无 `is_in_transaction()` API
-    ///   （`is_autocommit()` 对「效应自开事务」路径为误报），故方法内
-    ///   不重复检查。
-    /// - 基线 `requireRun(handle)` 身份校验（main-generation-owner.ts:1301）
-    ///   与 `withChildEffect` 效应执行随主体一并待活化；当前在方法入口
-    ///   直接 fail-closed 拒绝（`GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED`
-    ///   为迁移占位码、非基线码），禁止静默执行 `effect`。
+    /// 本波次活化（G4-10d，占位翻转 fail-closed → 真实执行）：
+    /// 基线 :1301 首行 `requireRun(handle)`（非执行语义——
+    /// 默认 `execution = false`，main-generation-owner.ts:138）
+    /// → 方法级构造 `AgentGeneration`（对齐 [`Self::admit_workflow`]
+    /// 先例）→ 委托服务层 `with_child_effect`（agent_generation.rs:1795，
+    /// 已逐字移植基线 agent-generation.ts:343-367：运行定位 +
+    /// 句柄 deep-equal 身份校验 / 无 agentWorkflowRegistrationId
+    /// 透传 / registration childHandles·rootActionId·sourcesCurrent
+    /// 三重校验 / 会话轮次 capture-before → 效应 → capture-after
+    /// 的 agentSourceTransition 回写）。服务层错误码与效应闭包
+    /// 错误经前缀感知折叠为 MUTATING 信封（对齐 `commands::db`
+    /// `blueprint_commit_range_result` :818 先例：已带 "Error: "
+    /// 前缀的错误——如 `require_run` 透传与效应闭包内已包装的
+    /// 仓储错误——原样透传，避免双重前缀）。
+    ///
+    /// 基线首行事务门禁（`if (!this.db.inTransaction) throw
+    /// GENERATION_AGENT_TRANSACTION_REQUIRED`，agent-generation.ts:345）
+    /// 的 Tauri 等价物为**调用方结构保证**：`db:project-core-commit-generated`
+    /// 路径在本波实现中于外层事务内调用；`db:blueprint-commit-range`
+    /// 路径的效应（`blueprints::commit_range`）自开事务、提交原子性
+    /// 自足。rusqlite 0.40.2 无 `is_in_transaction()` API
+    /// （`is_autocommit()` 对「效应自开事务」路径为误报），故方法内
+    /// 不重复检查。
+    ///
+    /// ⚠️ 诚实化项（host 依赖未迁移面）：`AgentHost::current` /
+    /// `capture` 保持保守占位（见 [`impl AgentHost for
+    /// MainGenerationOwner`]）——基线 capture 经
+    /// `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
+    /// 重建；`rebuild_generation_source_binding` 已迁移
+    /// （generation_source_binding.rs:3636），但 `currentModelReceipt`
+    /// （基线 :251-256：模型注册表 loadModel + 只读租据收据构造）
+    /// 未迁移——with_child_effect 写入的 agentSourceTransition 为
+    /// 退化形态（before/after 均取自占位 capture，hash 相等；
+    /// binding 为效应前快照）。源变迁真实检测随 currentModelReceipt
+    /// 迁移波次补齐。激活后 sourcesCurrent 对「expected 与
+    /// run.binding 一致」场景与基线等价；源已变场景的检测缺口
+    /// 按 G4-10b 已记录偏差延续。
     pub fn with_agent_child_effect<T>(
         &self,
-        _conn: &Connection,
-        _handle: &Value,
-        _effect: impl FnOnce() -> T,
+        conn: &Connection,
+        handle: &Value,
+        effect: impl FnOnce() -> T,
     ) -> Result<T, String> {
-        Err(mutating_error("GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED"))
+        // 基线 :1301 首行 `requireRun(handle)`（非执行语义——
+        // 默认 `execution = false`，main-generation-owner.ts:138；
+        // 错误已是 MUTATING 信封形态，经 `?` 原样透传）。
+        self.require_run(conn, handle, false)?;
+        // 基线 :1301 `agents.withChildEffect(handle, effect)`——
+        // 方法级构造 `AgentGeneration`（对齐 [`Self::admit_workflow`]
+        // 先例；构造期恢复扫描幂等，见该方法头注的已知偏差）。
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )
+        .map_err(|error| mutating_error(&error))?;
+        // 效应委托服务层。错误经前缀感知折叠为 MUTATING 信封
+        // （对齐 `commands::db::blueprint_commit_range_result`
+        // :818 先例：已带 "Error: " 前缀的错误——如效应闭包内
+        // 已包装的仓储错误——原样透传，避免双重前缀）。
+        agent
+            .with_child_effect(handle, |_conn| Ok(effect()))
+            .map_err(|error| {
+                if error.starts_with("Error: ") {
+                    error
+                } else {
+                    mutating_error(&error)
+                }
+            })
     }
 
     // =====================================================================
@@ -2976,8 +3053,10 @@ impl MainGenerationOwner {
     ///   移植后活化 handle 解析。
     /// - **withChildEffect**：基线事务门禁（agent-generation.ts:345）
     ///   由调用方结构保证（见 [`MainGenerationOwner::with_agent_child_effect`]
-    ///   头注）；主体 fail-closed 占位
-    ///   （`GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED`）。
+    ///   头注）；G4-10d 活化——运行身份（`require_run`）/ 服务层
+    ///   registration / 源一致性门禁链先行校验，效应经服务层
+    ///   `with_child_effect` 执行（host `current` / `capture` 保守
+    ///   占位的诚实化项见该方法头注）。
     pub fn approve_character_proposal(
         &self,
         conn: &Connection,

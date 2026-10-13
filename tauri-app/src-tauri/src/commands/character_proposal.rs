@@ -150,9 +150,10 @@ pub async fn character_proposal_read_pending_finalized(
 /// main-generation-owner.ts:1255-1266）。
 ///
 /// 幂等重放（已批准 → 直接重放决策校验）→ handle 四分支解析 →
-/// `agents.withChildEffect` 效应（主体 fail-closed 占位
-/// `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED`，agent-generation 域
-/// 迁移波次活化）；import 来源（无 handle）直接执行。
+/// `agents.withChildEffect` 效应（G4-10d 活化——运行身份 /
+/// registration / 源一致性门禁链先行校验，见 owner 方法
+/// `approve_character_proposal` 头注）；import 来源（无 handle）
+/// 直接执行。
 /// finalized-generation 来源的证明函数（`proveFinalizedCharacterGeneration`）
 /// 未迁移，fail-closed 于 `CHARACTER_PROPOSAL_PROOF_PORT_PENDING`
 /// （迁移占位码）。详见 owner 方法头注的刻意偏离说明。
