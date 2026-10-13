@@ -7,10 +7,10 @@
 ## 迁移总进度（收口时更新）
 
 ```text
-迁移总进度  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨⬜⬜⬜⬜  218/290 ≈75%
+迁移总进度  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨⬜⬜  234/290 ≈81%
 ```
 
-> 🟩 已迁移 218 · 🟨 进度零头（G4 波次进行中：G4-6a 逻辑层 + G4-6b owner 写面 9 命令 + 2 事件 + G4-6c 阶段 1 已收口，**generation 域频道清零**；阶段 2 db.rs 三分支接线待补派）· ⬜ 未迁移 72（上游新增 18 域）；事件频道 7 待迁。
+> 🟩 已迁移 234 · 🟨 进度零头（G4-9b db:review-cycle-get 收口，**db 域频道清零**；agent-generation 域研究就绪待实现——4 子波次 A→B→C→D）· ⬜ 未迁移 56（agent-generation=8 cloud-backup=8 finalization-generation=5 finalized-character=5 graph-generation=5 project=5 character-avatar=4 dialog=4 editor-inline=4 kb=3 startup=3 import-generation=2）；事件频道 7 待迁。
 > 口径：当前已合并上游（@ `21d67211`，2026-10-10）为全集，**上游新提交不计入**；权威实测值见 [最新快照](handoffs/) 指标表，频道明细见 [频道盘点](plans/tauri-migration-channel-inventory.md)。
 
 
