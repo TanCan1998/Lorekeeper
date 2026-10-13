@@ -62,7 +62,9 @@ use crate::repositories::generation_run_repository::{
     RootBudget, RunView,
 };
 use crate::security::{self, ProjectSessionContext};
-use crate::services::generation_draft_effects::GenerationDraftEffects;
+use crate::services::generation_draft_effects::{
+    assert_generation_batch_intent, GenerationDraftEffects,
+};
 use crate::state::ActiveProject;
 
 // ============================================================================
@@ -1006,11 +1008,16 @@ impl MainGenerationOwner {
     ///   正则 `^[a-z0-9][a-z0-9:_-]{0,127}$`、`promptKeys` 非空数组、
     ///   `parentRootActionId` 字符串非空、`uiActionNonce` 字符串非空且
     ///   ≤256、键集白名单 [`BEGIN_ALLOWED_KEYS`]——IPC 边界六个初始化
-    ///   标志恒为 false，对齐 generation-controller.ts:173-178 注册形态）；
+    ///   标志恒为 false，对齐 generation-controller.ts:173-178 注册形态；
+    ///   `batch_initialization` 标志仅主进程内部 `beginBatch` 初始化
+    ///   调用置 true（IPC 边界恒 false，见
+    ///   [`MainGenerationOwner::begin_batch`]）；
     /// - 子生成器准入（:364-369、:376）→ 五个 `*_ADMISSION_REQUIRED`；
     /// - 根行动子代禁令（:379-383，经 `repository.budget`）→ 三个
     ///   `*_CHILD_FORBIDDEN`；
-    /// - 批量意图主进程独占（:387）→ `GENERATION_BATCH_INTENT_MAIN_ONLY`。
+    /// - 批量意图主进程独占（:387）→ `GENERATION_BATCH_INTENT_MAIN_ONLY`
+    ///   （`batch_initialization = false` 的 IPC 边界语义；主进程
+    ///   内部批量初始化调用传 `true` 豁免该检查）。
     ///
     /// ⚠️ 诚实化占位（B3 波次说明）：基线 :395-443 的 run 创建核心——
     /// `newMainGenerationPolicy` 策略构造器（electron/services/
@@ -1025,7 +1032,12 @@ impl MainGenerationOwner {
     /// fail-closed（方法末段；命令层收敛为 `GENERATION_REQUEST_FAILED`）。
     /// 影响面：合法选择当前收到「尚未迁移」拒绝而非运行视图；非法
     /// 选择的错误码与基线逐字一致。
-    pub fn begin(&self, conn: &Connection, selection: &Value) -> Result<Value, String> {
+    pub fn begin(
+        &self,
+        conn: &Connection,
+        selection: &Value,
+        batch_initialization: bool,
+    ) -> Result<Value, String> {
         self.assert_current()?;
         // 基线 :357-363 `GENERATION_BEGIN_INVALID` 选择形状校验。
         let Some(operation) = selection.get("operation").and_then(Value::as_str) else {
@@ -1100,10 +1112,11 @@ impl MainGenerationOwner {
             }
         }
         // 基线 :387-389 批量意图主进程独占（IPC 边界 batchInitialization
-        // 恒 false）。
+        // 恒 false；主进程内部 beginBatch 初始化调用传 true 豁免）。
         if selection
             .get("batchIntent")
             .is_some_and(|intent| !intent.is_null())
+            && !batch_initialization
         {
             return Err(mutating_error("GENERATION_BATCH_INTENT_MAIN_ONLY"));
         }
@@ -1589,6 +1602,116 @@ impl MainGenerationOwner {
         Err(mutating_error(
             "主生成短细纲重试尚未迁移：失败任务重建（readFailedShortOutlineTask）与生成运行服务（generation-run-service）的 LLM 分发循环待后续批次移植",
         ))
+    }
+
+    /// 基线 `beginBatch`（main-generation-owner.ts:1279-1285）：
+    /// 批量创作初始化——批量意图准入（`assertGenerationBatchIntent`，
+    /// generation-draft-effects.ts:18-27，Rust 侧
+    /// [`assert_generation_batch_intent`] 已迁移）后，以
+    /// `batch-chapters` 操作 + 空选择集 + `batchIntent` 构造
+    /// begin 选择（基线 :1281-1283），经 `begin`（主进程内部
+    /// 初始化调用，`batchInitialization = true`，豁免
+    /// `GENERATION_BATCH_INTENT_MAIN_ONLY`）创建批量根运行，
+    /// 再经 `readBatch(run.handle.runId)` 返回批次进度快照。
+    ///
+    /// ⚠️ 执行依赖型：基线 :1282 的 `begin` 创建核心（策略构造器
+    /// / 模型租约 / buildBinding / service.open）随 G4-6b-1 在
+    /// 策略构造点 fail-closed——合法请求当前收到「尚未迁移」
+    /// 拒绝而非批次进度（命令层收敛为 `GENERATION_REQUEST_FAILED`）；
+    /// 意图准入（`GENERATION_BATCH_INTENT_INVALID`）与 begin
+    /// 选择形状校验的错误码与基线逐字一致。
+    pub fn begin_batch(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
+        // 基线 :1280 `assertGenerationBatchIntent(request)`。
+        assert_generation_batch_intent(request)?;
+        // 基线 :1281 `{ ...intent, operation: 'batch-chapters',
+        // selectedDraftIds: [], selectedFinalizedDraftIds: [],
+        // output: 'visible-text', batchIntent: { mode, range, targetUnits } }`
+        // ——`intent` 为 request 剔除 mode / range / targetUnits 的
+        // 剩余键（未知键随展开携带，由 begin 的 BEGIN_ALLOWED_KEYS
+        // 白名单拦截，与基线 `...intent` 展开语义一致）。
+        let mut selection = Map::new();
+        if let Some(object) = request.as_object() {
+            for (key, value) in object {
+                if matches!(key.as_str(), "mode" | "range" | "targetUnits") {
+                    continue;
+                }
+                selection.insert(key.clone(), value.clone());
+            }
+        }
+        selection.insert(
+            "operation".to_string(),
+            Value::String("batch-chapters".to_string()),
+        );
+        selection.insert("selectedDraftIds".to_string(), Value::Array(Vec::new()));
+        selection.insert(
+            "selectedFinalizedDraftIds".to_string(),
+            Value::Array(Vec::new()),
+        );
+        selection.insert(
+            "output".to_string(),
+            Value::String("visible-text".to_string()),
+        );
+        selection.insert(
+            "batchIntent".to_string(),
+            json!({
+                "mode": request.get("mode").cloned().unwrap_or(Value::Null),
+                "range": request.get("range").cloned().unwrap_or(Value::Null),
+                "targetUnits": request.get("targetUnits").cloned().unwrap_or(Value::Null),
+            }),
+        );
+        // 基线 :1282 `begin(..., true)`：主进程内部初始化调用。
+        let run = self.begin(conn, &Value::Object(selection), true)?;
+        // 基线 :1284 `readBatch(run.handle.runId)`（owner 闭包
+        // :880：`assertCurrent()` 后 `draftEffects.readBatch`）。
+        let run_id = run
+            .get("handle")
+            .and_then(|handle| handle.get("runId"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("主生成运行创建尚未迁移：批量根运行视图缺少句柄身份"))?;
+        GenerationDraftEffects.read_batch(conn, &self.repository, run_id, &self.session.project_id)
+    }
+
+    /// 基线 `confirmBatchFinalization`（main-generation-owner.ts:1287-1293）：
+    /// 批次定稿确认——`readBatch(batchId)` 读取批次进度快照后，
+    /// 校验目标章节存在 `finalizationId` 匹配且后处理完成
+    /// （`postProcessComplete`）的已提交章，否则
+    /// `GENERATION_BATCH_FINALIZATION_REQUIRED`；校验通过原样
+    /// 返回批次进度（纯验证面，基线无写入）。
+    pub fn confirm_batch_finalization(
+        &self,
+        conn: &Connection,
+        batch_id: &str,
+        chapter_number: i64,
+        finalization_id: &str,
+    ) -> Result<Value, String> {
+        // 基线 :1288 `readBatch(request.batchId)`（owner 闭包
+        // :880：`assertCurrent()` 后 `draftEffects.readBatch(batchId,
+        // deps.projectId)`）。
+        self.assert_current()?;
+        let batch = GenerationDraftEffects.read_batch(
+            conn,
+            &self.repository,
+            batch_id,
+            &self.session.project_id,
+        )?;
+        // 基线 :1289-1291：completedChapters 中存在章节号 / 定稿
+        // id 匹配且后处理完成的已提交章（基线 `undefined` 缺席
+        // 语义与 Rust `None` 等价，不匹配）。
+        let confirmed = batch
+            .get("completedChapters")
+            .and_then(Value::as_array)
+            .is_some_and(|chapters| {
+                chapters.iter().any(|chapter| {
+                    chapter.get("chapterNumber").and_then(Value::as_i64) == Some(chapter_number)
+                        && chapter.get("finalizationId").and_then(Value::as_str)
+                            == Some(finalization_id)
+                        && chapter.get("postProcessComplete").and_then(Value::as_bool) == Some(true)
+                })
+            });
+        if !confirmed {
+            return Err(mutating_error("GENERATION_BATCH_FINALIZATION_REQUIRED"));
+        }
+        Ok(batch)
     }
 }
 

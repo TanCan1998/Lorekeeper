@@ -1972,7 +1972,7 @@ pub async fn generation_begin(
     let cache = MainGenerationOwnerCache::new();
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
-    state.with_project_db(|conn| owner.begin(conn, &selection))
+    state.with_project_db(|conn| owner.begin(conn, &selection, false))
 }
 
 /// `generation:bind-material-decision` 请求包装
@@ -2182,4 +2182,105 @@ pub async fn generation_retry_draft_short_outline(
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.retry_draft_short_outline(conn, &request))
+}
+
+/// `generation:begin-batch` —— 批量创作初始化
+/// （基线 `beginBatch(request)`，main-generation-owner.ts:1279；
+/// 单一对象入参 `BeginGenerationBatchRequest`，契约
+/// generation-owner-contract.ts:212，对齐 generation-controller.ts:249
+/// 的单参数注册形态）。
+///
+/// 执行依赖型：owner 方法内 `begin` 创建核心随 G4-6b-1
+/// fail-closed（见 `services/main_generation_owner.rs`
+/// `begin_batch` 头注），命令层仅委托。
+#[tauri::command]
+pub async fn generation_begin_batch(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.begin_batch(conn, &request))
+}
+
+/// `generation:confirm-batch-finalization` 请求包装
+/// （频道契约
+/// `args: [{ batchId; chapterNumber; finalizationId }]`）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GenerationConfirmBatchFinalizationRequest {
+    pub batch_id: String,
+    pub chapter_number: i64,
+    pub finalization_id: String,
+}
+
+/// `generation:confirm-batch-finalization` —— 批次定稿确认
+/// （基线 `confirmBatchFinalization(request)`，
+/// main-generation-owner.ts:1287；单一对象入参
+/// `{ batchId, chapterNumber, finalizationId }`，契约
+/// generation-owner-contract.ts:284，对齐 generation-controller.ts:252
+/// 的单参数注册形态）。
+///
+/// 完整实现（验证面）：`readBatch` 快照 + 目标章定稿
+/// 匹配校验（`GENERATION_BATCH_FINALIZATION_REQUIRED`），
+/// 基线无写入。
+#[tauri::command]
+pub async fn generation_confirm_batch_finalization(
+    state: State<'_, AppState>,
+    request: GenerationConfirmBatchFinalizationRequest,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| {
+        owner.confirm_batch_finalization(
+            conn,
+            &request.batch_id,
+            request.chapter_number,
+            &request.finalization_id,
+        )
+    })
+}
+
+/// `generation:compose-visible` —— 可见正文合成
+/// （基线 `composeVisible(handle, artifactIds, expectedTextHash,
+/// algorithm?)`，main-generation-owner.ts:1320；4 位置参数，
+/// 契约 generation-owner-contract.ts:286，对齐
+/// generation-controller.ts:243 的 4 参数注册形态）。
+///
+/// owner 方法已就位（B1-W3 读面波次随 `readVisibleComposition`
+/// 一并迁移，`services/main_generation_owner.rs` `compose_visible`）；
+/// 5 个子生成器可变性守卫（reviewRevisions / imports /
+/// finalizations / graphs / legacyRosters 的 `assertMutable`，
+/// 基线 :1322-1326）除 graphs 外对应服务尚未迁移，按 B2 范围
+/// 刻意省略（同方法头注）。
+#[tauri::command]
+pub async fn generation_compose_visible(
+    state: State<'_, AppState>,
+    handle: MainGenerationRunHandle,
+    artifact_ids: Vec<String>,
+    expected_text_hash: Option<String>,
+    algorithm: Option<String>,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let handle = serde_json::to_value(&handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| {
+        owner.compose_visible(
+            conn,
+            &handle,
+            &artifact_ids,
+            expected_text_hash.as_deref(),
+            algorithm.as_deref(),
+        )
+    })
 }

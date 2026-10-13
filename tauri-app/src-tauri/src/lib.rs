@@ -278,6 +278,10 @@ pub fn run() {
             // 批次 G4-6b-3：主生成 owner 草稿写面（generation:* 2 频道）
             commands::generation_commit_draft,
             commands::generation_retry_draft_short_outline,
+            // 批次 G4-6b-4：主生成 owner 批次写面（generation:* 3 频道）
+            commands::generation_begin_batch,
+            commands::generation_confirm_batch_finalization,
+            commands::generation_compose_visible,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,
