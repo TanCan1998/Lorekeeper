@@ -11,7 +11,7 @@
 
 ---
 
-## 快照（最后更新：2026-10-14 · 第 37 次）
+## 快照（最后更新：2026-10-14 · 第 38 次）
 
 > **本表只填最新一次自检的实测值。**
 
@@ -19,22 +19,57 @@
 |---|---|
 | 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`（与 origin/master 同步） |
 | 产品身份 | Lorekeeper（设定司）/ `com.tancan1998.lorekeeper` |
-| 已注册命令 | 243（+8：agent-generation:* 8 频道命令注册——G4-10c） |
-| 覆盖 invoke 频道 | 242（+8） |
-| 未迁移 invoke 频道 | 48 [cloud-backup=8 finalization-generation=5 finalized-character=5 graph-generation=5 project=5 character-avatar=4 dialog=4 editor-inline=4 kb=3 startup=3 import-generation=2]（agent-generation 域移出——8 频道命令层注册） |
+| 已注册命令 | 243（不变——本波无命令注册） |
+| 覆盖 invoke 频道 | 242（不变） |
+| 未迁移 invoke 频道 | 48（不变——本波无命令注册） |
 | orphan | 无 |
-| `cargo test --lib` | 1033 passed / 0 failed（计数不变：commit_domain_tool 占位断言改语义断言，无新增测试——见本次更新诚实化项） |
+| `cargo test --lib` | 1033 passed / 0 failed（计数不变：db.rs 两处占位断言改语义断言，无新增测试） |
 | `cargo check --all-targets` | 0 错误 0 告警（exit 0） |
 | `pnpm typecheck` / `lint` | 未跑（本波纯 Rust 改动，无 TS 改动面） |
 | 定向 `vitest` | 未跑（本波无前端逻辑改动） |
-| 已完成批次 | G4-1 / G4-2 / G4-3a / G4-3b / G4-5 / G4-6a / G4-6b-1~4 / G4-6c-1~2 / G4-7 / G4-8a / G4-8b / G4-9a / G4-9b / G4-10a / G4-10b / **G4-10c**（2026-10-14 新增） |
-| 当前阶段 | G4-10c agent-generation 子波次 C 收口（域工具效应移植 + 8 频道命令注册 + commit_domain_tool 活化）；下一波 = **子波次 D**（`with_agent_child_effect` 主体活化 + `commands/db.rs` 两处调用点 + `character_proposal.rs` approve 接线） |
+| 已完成批次 | G4-1 / G4-2 / G4-3a / G4-3b / G4-5 / G4-6a / G4-6b-1~4 / G4-6c-1~2 / G4-7 / G4-8a / G4-8b / G4-9a / G4-9b / G4-10a / G4-10b / G4-10c / **G4-10d**（2026-10-14 新增） |
+| 当前阶段 | G4-10d agent-generation 子波次 D 收口（占位活化：with_agent_child_effect 主体 + commit_draft 接线 + 调用点测试断言）；agent-generation 域命令层全量就位（8 频道注册 + 6 频道功能 + 2 频道 fail-closed 占位）；下一波 = **B3 创建核心与 LLM 双阶段执行循环迁移**（begin 主体 / execute 分发核心 / resume / execute_round 主体活化）或 **currentModelReceipt 迁移**（host capture 真实化） |
 | 依赖 | 无新增（rusqlite 0.40.2 [bundled] / reqwest 0.13 / hnsw_rs / jieba 等不变） |
 | GUI 冒烟 | 未做 |
 | 双栈隔离 | 维持（Tauri 用 `AI_NOVEL_LOREKEEPER_HOME` / `~/.lorekeeper`；项目库 `<root>/.lore/lorekeeper.db`） |
 | Rust 工具链 | rustc/cargo 1.99.0 stable-msvc（`D:\Environment\rust`） |
 
 ---
+
+## 本次更新（第 38 次：G4-10d —— agent-generation 子波次 D，占位活化翻转 fail-closed）
+
+### 1. 新增（本轮，3 写面 +149/−69）
+
+| 项 | 内容 |
+|---|---|
+| `services/main_generation_owner.rs` | ① `with_agent_child_effect` 活化（基线 main-generation-owner.ts:1301 逐字）：`require_run(conn, handle, false)`（非执行语义，错误已是 MUTATING 信封经 `?` 透传）→ 方法级构造 `AgentGeneration`（对齐 `admit_workflow` 先例）→ 委托服务层 `with_child_effect`（agent_generation.rs:1795，本波未改），错误经前缀感知折叠为 MUTATING 信封（对齐 `commands::db::blueprint_commit_range_result` :818 先例，避免 `Error: Error: ` 双重前缀）；方法签名不变（占位参数恢复为实参）。② `commit_draft` 接线（基线 :1292-1297）：重放分支保持现状不动（基线重放不走 withChildEffect）；新提交写入路径包进 `agent.with_child_effect(&handle, \|_conn| <B3 占位 Err>)`——门禁链（运行身份 / 服务层 registration / 源一致性）先行校验，效应写入路径保持 B3 fail-closed（基线 draftEffects.commit 写入面与 assertSourcesCurrent 写入时源断言回调属未迁移写入路径，本波不实现）；B3 占位文案更新（去掉已不成立的「agents.withChildEffect 待移植」表述）。③ `approve_character_proposal` 头注更新（活化事实 + 诚实化项） |
+| `commands/db.rs` | 两处测试断言由 `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED` 改为 `GENERATION_RUN_MISSING`（活化后实测行为：夹具 `activated_state` 仅初始化 project_core 台账、无 generation_runs 行，handle 指向的 run-1 不存在 → 门禁链首环 `require_run` 的运行读取失败 → `GENERATION_RUN_MISSING` 经 `map_generation_error` 透传）；注释记录实际命中路径与依据。调用点代码（:263、:945）已是 G4-7 结构接线，未改动 |
+| `commands/character_proposal.rs` | approve 已经 `owner.approve_character_proposal` → `with_agent_child_effect`（:3046）接线，本波随 owner 方法活化生效；无占位码断言（grep `CHILD_EFFECT_UNMIGRATED` commands/ 清零），仅命令头注更新活化事实表述 |
+| 测试 | 无新增（1033 计数不变）：db.rs 两处断言改语义断言；目标测试单独复跑 2 passed |
+| Schema / 依赖 | 无变更 / 无新增 |
+
+**行为对照（Electron ↔ Tauri）**：
+- `with_agent_child_effect` 与基线 :1301 逐行对照：`requireRun(handle)`（非执行语义）→ `agents.withChildEffect(handle, effect)`——Rust 侧 require_run(false) → 方法级 AgentGeneration 构造 → 服务层 with_child_effect 委托，顺序与语义逐字一致
+- `commit_draft` 与基线 :1292-1297 对照：`requireRun(request.handle)` → 事务内重放分支（readCommit 命中 → 不走 withChildEffect）→ 新提交路径 `agents.withChildEffect(request.handle, () => draftEffects.commit(...))`——Rust 侧结构一致（重放分支已内联实现，新写入路径 B3 占位）
+- 错误信封：服务层裸码（`GENERATION_AGENT_CHILD_NOT_AUTHORIZED` 等）经前缀感知折叠为 `Error: <CODE>` MUTATING 信封，与基线 controller catch 映射（透传正则 `^GENERATION_[A-Z_]+$`）最终形态一致
+
+**⚠️ 诚实化占位 / 降级项**（均已记 doc 注释）：
+- host `current`/`capture` 保持保守占位：基线 capture 经 `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))` 重建；`rebuild_generation_source_binding` 已迁移（generation_source_binding.rs:3636），但 `currentModelReceipt`（基线 :251-256：模型注册表 loadModel + 只读租据收据构造）未迁移——with_child_effect 写入的 agentSourceTransition 为退化形态（before/after 均取自占位 capture，hash 相等；binding 为效应前快照）。源变迁真实检测随 currentModelReceipt 迁移波次补齐；激活后 sourcesCurrent 对「expected 与 run.binding 一致」场景与基线等价，源已变场景检测缺口按 G4-10b 已记录偏差延续
+- commit_draft 新写入路径仍 B3 fail-closed（门禁链先行校验后效应报「主生成草稿提交尚未迁移」）——完整草稿写入（DraftRepository.create + usage 回执写回 + assertSourcesCurrent 写入时源断言回调）属 B3 创建核心波次
+- begin 主体 / execute 分发核心 / resume / execute_round 主体仍 fail-closed（依赖 B3 创建核心与 LLM 双阶段执行循环迁移）
+- 编排者复验修正：worker 交付中 `approve_character_proposal` 头注有一行重复文档行（`- **withChildEffect**：基线事务门禁` 相邻重复）——编排者独立复验时去重（纯注释，无语义变化）
+
+### 2. 前端登记
+
+- 无（本波无命令注册、无 TS 改动面）
+
+### 3. 提交清单
+
+| Commit | 说明 |
+|---|---|
+| `b3d9eb78` | ✨ feat(tauri): G4-10d agent-generation 子波次 D——占位活化（with_agent_child_effect 与调用点接线）（3 files +149/−69） |
+| `28daa346` | ✨ feat(tauri): G4-10c agent-generation 子波次 C——域工具效应移植与 8 频道命令注册（前置依赖） |
+
 ---
 
 ## 本次更新（第 37 次：G4-10c —— agent-generation 子波次 C，域工具效应移植与 8 频道命令注册）
@@ -120,14 +155,14 @@
 ### 1. 当前工作区状态
 
 - `git status --porcelain`：空（快照提交前）
-- HEAD：`28daa346 ✨ feat(tauri): G4-10c agent-generation 子波次 C——域工具效应移植与 8 频道命令注册`
-- ⚠️ 上一份快照（第 35 次）中「下一波 = agent-generation 域（4 子波次 A→B→C→D）」：A（G4-10a）、B（G4-10b）与 C（G4-10c）**已收口**；「安全项优先：Rust begin 的 agentWorkflowRegistrationId 键无 admitWorkflow 等价校验」**已闭合**（G4-10b）
+- HEAD：`b3d9eb78 ✨ feat(tauri): G4-10d agent-generation 子波次 D——占位活化（with_agent_child_effect 与调用点接线）`
+- ⚠️ 上一份快照（第 35 次）中「下一波 = agent-generation 域（4 子波次 A→B→C→D）」：A（G4-10a）、B（G4-10b）、C（G4-10c）与 D（G4-10d）**已收口**；「安全项优先：Rust begin 的 agentWorkflowRegistrationId 键无 admitWorkflow 等价校验」**已闭合**（G4-10b）
 
 ### 2. 下一步（1-2-3）
 
-1. **子波次 D**：`with_agent_child_effect` 主体活化（main_generation_owner.rs 占位）+ `commands/db.rs` 两处调用点 + `character_proposal.rs` approve 接线——研究 `.pi/tmp/research/agent-generation-domain.md` §3.1/§3.4；活化后 db.rs 两处 UNMIGRATED 测试断言（:4718-4729、:4761-4780）改语义断言
-2. **前置依赖提醒**：begin 主体 / execute 分发核心 / resume / execute_round 主体仍 fail-closed——完整 agent-round LLM 循环依赖 B3 创建核心（newMainGenerationPolicy / generation-run-service）与 LLM 双阶段执行循环迁移；agent-generation 域效应端到端测试覆盖（本波诚实化项）随该波次补齐
-3. **后续候选**：legacy-roster begin/execute 活化、上游合并独立波次、import-novel-resume 单项修复评估（不作为已授权新增依赖/schema/CI 工作）
+1. **B3 创建核心与 LLM 双阶段执行循环迁移**：begin 主体（策略构造器 newMainGenerationPolicy / generation-run-service）/ execute 分发核心 / resume 主体 / execute_round 主体活化——agent-generation 域剩余 fail-closed 面（begin/execute/resume/round）与 commit_draft 新写入路径、agent-round 完整 LLM 循环均依赖此波次；研究入口 `.pi/tmp/research/agent-generation-domain.md` §4 依赖矩阵
+2. **currentModelReceipt 迁移**（host capture 真实化）：基线 main-generation-owner.ts:251-256（模型注册表 loadModel + 只读租据收据构造）——迁移后 `impl AgentHost for MainGenerationOwner` 的 `current`/`capture` 保守占位可替换为 `rebuild_generation_source_binding`（已迁移，generation_source_binding.rs:3636）真实重建，agentSourceTransition 退化形态与源已变场景检测缺口随之补齐
+3. **后续候选**：legacy-roster begin/execute 活化、上游合并独立波次、import-novel-resume 单项修复评估、agent-generation 域效应端到端测试覆盖（随 B3 波次补齐）（不作为已授权新增依赖/schema/CI 工作）
 
 ### 3. 阻塞项与待授权项（**不得删除，须逐条确认后更新**）
 
@@ -157,8 +192,8 @@
 
 | 命令 | 工作目录 | 实测输出 |
 |---|---|---|
-| `pnpm run check:channels` | `tauri-app/` | 契约 invoke 频道 290（事件频道 7）；已注册命令 243 → 覆盖 invoke 频道 242；未迁移 invoke 频道 48；命令名与契约频道一一对应 ✅（exit 0；编排者独立复验，HEAD 28daa346 工作区） |
-| `cargo test --lib` | `tauri-app/src-tauri/` | test result: ok. 1033 passed; 0 failed; 0 ignored; finished in 52.90s（exit 0；编排者独立复验，HEAD 28daa346 工作区） |
-| `cargo check --all-targets` | `tauri-app/src-tauri/` | Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.83s（exit 0；编排者独立复验） |
+| `pnpm run check:channels` | `tauri-app/` | 契约 invoke 频道 290（事件频道 7）；已注册命令 243 → 覆盖 invoke 频道 242；未迁移 invoke 频道 48；命令名与契约频道一一对应 ✅（exit 0；编排者独立复验，HEAD b3d9eb78 工作区——本波无命令注册，计数较第 37 次不变） |
+| `cargo test --lib` | `tauri-app/src-tauri/` | test result: ok. 1033 passed; 0 failed; 0 ignored; finished in 52.80s（exit 0；编排者独立复验，HEAD b3d9eb78 工作区） |
+| `cargo check --all-targets` | `tauri-app/src-tauri/` | Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.91s（exit 0；编排者独立复验） |
 | `git status --porcelain` | 仓库根 | 空 |
-| `git log -1` | 仓库根 | `28daa346 ✨ feat(tauri): G4-10c agent-generation 子波次 C——域工具效应移植与 8 频道命令注册` |
+| `git log -1` | 仓库根 | `b3d9eb78 ✨ feat(tauri): G4-10d agent-generation 子波次 D——占位活化（with_agent_child_effect 与调用点接线）` |
