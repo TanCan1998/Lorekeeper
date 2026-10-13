@@ -265,6 +265,11 @@ pub fn run() {
             commands::generation_read_context,
             commands::generation_read_batch,
             commands::generation_list_batches,
+            // 批次 G4-6b：主生成 owner 写面（generation:* 4 频道）
+            commands::generation_begin,
+            commands::generation_bind_material_decision,
+            commands::generation_execute,
+            commands::generation_resume,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,

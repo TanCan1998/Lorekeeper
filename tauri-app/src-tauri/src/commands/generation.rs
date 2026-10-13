@@ -60,7 +60,7 @@ use std::collections::HashSet;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::repositories::generation_run_repository::{
     MainGenerationRunHandle, PhysicalAttempt, PlotOutlineCursor, PlotOutlineProgress,
@@ -1882,4 +1882,157 @@ fn plot_outline_recovery_draft(
         },
         &progress.source_expected,
     )
+}
+
+// ============================================================================
+// 批次 G4-6b：主生成 owner 写面命令 —— `generation:*` 4 频道
+// （begin / bind-material-decision / execute / resume）
+// ============================================================================
+
+/// 广播 `generation:snapshot` 事件。
+///
+/// D-2 既定决策：**广播 + 客户端过滤**——经 `AppHandle::emit`
+/// 全窗口广播（等价基线 `subscriber.send('generation:snapshot',
+/// snapshot)` 的每窗口定向，但省去 `OwnerCacheEntry::subscribers`
+/// 订阅登记），客户端按载荷 `projectId` / `epoch` 过滤。
+/// 频道名单一事实源：`services::main_generation_owner`。
+///
+/// ⚠️ 调用点随生成运行服务（`generation-run-service.ts`）迁移波次
+/// 接入——基线唯一发射点为 `execute` 的 LLM 调用循环
+/// （main-generation-owner.ts:613-615，`snapshotOf(receipt)` 之后）。
+#[allow(dead_code)]
+pub fn emit_generation_snapshot(app: &AppHandle, payload: &Value) {
+    let _ = app.emit(
+        crate::services::main_generation_owner::GENERATION_SNAPSHOT_EVENT,
+        payload,
+    );
+}
+
+/// 广播 `generation:reasoning` 事件（D-2 既定决策：同上，广播 +
+/// 客户端过滤）；载荷 `MainGenerationReasoningEvent`
+/// （`{ projectId, epoch, rootActionId, runId, attemptId, text }`，
+/// 绝不进入运行视图或回执）。
+///
+/// ⚠️ 调用点随生成运行服务迁移波次接入（基线发射点：LLM 分发流的
+/// 可见文本增量，generation-controller.ts:121-124 的 `onReasoning`）。
+#[allow(dead_code)]
+pub fn emit_generation_reasoning(app: &AppHandle, payload: &Value) {
+    let _ = app.emit(
+        crate::services::main_generation_owner::GENERATION_REASONING_EVENT,
+        payload,
+    );
+}
+
+/// `generation:begin` —— 选择 → 建运行 → 运行视图
+/// （基线 `begin(selection)`，main-generation-owner.ts:351）。
+///
+/// IPC 边界前置校验（基线 generation-controller.ts:174-177，先于
+/// owner 门禁）：chapter-draft 必须携带 `preparationId`
+/// （`GENERATION_DRAFT_PREPARATION_REQUIRED`）与 `materialDecision`
+/// （`GENERATION_MATERIAL_DECISION_REQUIRED`）；非 chapter-draft
+/// 不得携带 `materialDecision`（`GENERATION_MATERIAL_DECISION_INVALID`）。
+#[tauri::command]
+pub async fn generation_begin(
+    state: State<'_, AppState>,
+    selection: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let operation = selection
+        .get("operation")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if operation == "chapter-draft"
+        && selection
+            .get("preparationId")
+            .is_none_or(|value| value.is_null())
+    {
+        return Err(mutating_error(map_generation_error(
+            "GENERATION_DRAFT_PREPARATION_REQUIRED",
+        )));
+    }
+    if operation == "chapter-draft"
+        && selection
+            .get("materialDecision")
+            .is_none_or(|value| value.is_null())
+    {
+        return Err(mutating_error(map_generation_error(
+            "GENERATION_MATERIAL_DECISION_REQUIRED",
+        )));
+    }
+    if operation != "chapter-draft"
+        && selection
+            .get("materialDecision")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(mutating_error(map_generation_error(
+            "GENERATION_MATERIAL_DECISION_INVALID",
+        )));
+    }
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.begin(conn, &selection))
+}
+
+/// `generation:bind-material-decision` 请求包装
+/// （频道契约 `args: [{ handle; materialDecision }]`）。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GenerationBindMaterialDecisionRequest {
+    pub handle: MainGenerationRunHandle,
+    pub material_decision: Value,
+}
+
+/// `generation:bind-material-decision` —— 材料决策收据绑定
+/// （基线 `bindMaterialDecision(handle, materialDecision)`，
+/// main-generation-owner.ts:646）。
+#[tauri::command]
+pub async fn generation_bind_material_decision(
+    state: State<'_, AppState>,
+    request: GenerationBindMaterialDecisionRequest,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let handle = serde_json::to_value(&request.handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let material_decision = request.material_decision;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.bind_material_decision(conn, &handle, &material_decision))
+}
+
+/// `generation:execute` —— 分发 → 执行回执
+/// （基线 `execute(request)`，main-generation-owner.ts:501；
+/// IPC 边界执行标志恒为 false，对齐 generation-controller.ts:231-236
+/// 注册形态）。
+#[tauri::command]
+pub async fn generation_execute(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.execute(conn, &request))
+}
+
+/// `generation:resume` —— 运行恢复重分发
+/// （基线 `resume(handle)`，main-generation-owner.ts:625）。
+#[tauri::command]
+pub async fn generation_resume(
+    state: State<'_, AppState>,
+    handle: MainGenerationRunHandle,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let handle = serde_json::to_value(&handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.resume(conn, &handle))
 }

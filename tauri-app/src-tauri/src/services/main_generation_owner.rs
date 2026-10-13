@@ -23,7 +23,8 @@
 //! 4. [`MainGenerationOwner::suspend_for_project_close`] 钩子
 //!    （签名 + 缓存清理）；
 //! 5. 事件发射接线点 [`emit_generation_snapshot`] /
-//!    [`emit_generation_reasoning`]（**TODO(B3)** 才真实发射）。
+//!    [`emit_generation_reasoning`]（D-2 既定决策：广播 +
+//!    客户端过滤；真实发射器在命令层——见「事件发射接线点」节）。
 //!
 //! # 刻意偏离（均有上游语义理由）
 //! - **缓存键**：基线以 `better-sqlite3` 的 `Database` 对象身份为键；
@@ -378,6 +379,45 @@ pub struct MainGenerationOwner {
     /// 基线 `closed` 标志（main-generation-owner.ts:116）。
     closed: bool,
 }
+
+/// 基线 `graphOperations`（main-generation-owner.ts:55）：图生成操作集
+/// （`plot` / `plan` / `event` 三类图生成操作的准入与子代禁令判定）。
+const GRAPH_OPERATIONS: [&str; 3] = [
+    "plot-tree-snapshot",
+    "narrative-thread-plan-candidate",
+    "narrative-thread-event-candidate",
+];
+
+/// 基线 `begin` 选择键集白名单（main-generation-owner.ts:358-363，
+/// IPC 边界六个初始化标志恒为 false——对齐 generation-controller.ts:173-178
+/// 的注册形态，故不含 `agentInput` / `agentSession` / `editorInlineInput` /
+/// `finalizationGenerationSlot` / `graphGenerationInput` / `graphGenerationKey` /
+/// `legacyRosterKey` 七个仅主进程内部初始化调用可携带的键）。
+const BEGIN_ALLOWED_KEYS: [&str; 23] = [
+    "operation",
+    "uiActionNonce",
+    "modelId",
+    "chapterNumber",
+    "selectedDraftIds",
+    "selectedFinalizedDraftIds",
+    "selectedBlueprintChapterNumbers",
+    "promptKeys",
+    "skillStages",
+    "authorInputs",
+    "output",
+    "outputOverrides",
+    "parentRootActionId",
+    "continueDirectoryOperationId",
+    "batchId",
+    "batchIntent",
+    "preparationId",
+    "finalizedCharacterContextId",
+    "reviewRevisionContextId",
+    "agentWorkflowRegistrationId",
+    "materialDecision",
+    "importSlot",
+    "importExecution",
+];
 
 impl MainGenerationOwner {
     /// 基线 owner 构造的骨架等价物（generation-controller.ts:106-125 的
@@ -958,16 +998,319 @@ impl MainGenerationOwner {
     // 迁移落地后补齐签名）。
     // -----------------------------------------------------------------
 
-    /// 基线 `begin`（选择 → 建运行 → 返回运行视图）。
-    pub fn begin(&self, _conn: &Connection) -> Result<serde_json::Value, String> {
+    /// 基线 `begin`（选择 → 建运行 → 返回运行视图，main-generation-owner.ts:351-444）。
+    ///
+    /// 本波次就位**准入校验面**（错误码 / 边界条件逐字对齐基线）：
+    /// - 选择形状校验（:357-363）→ `GENERATION_BEGIN_INVALID`（操作名
+    ///   正则 `^[a-z0-9][a-z0-9:_-]{0,127}$`、`promptKeys` 非空数组、
+    ///   `parentRootActionId` 字符串非空、`uiActionNonce` 字符串非空且
+    ///   ≤256、键集白名单 [`BEGIN_ALLOWED_KEYS`]——IPC 边界六个初始化
+    ///   标志恒为 false，对齐 generation-controller.ts:173-178 注册形态）；
+    /// - 子生成器准入（:364-369、:376）→ 五个 `*_ADMISSION_REQUIRED`；
+    /// - 根行动子代禁令（:379-383，经 `repository.budget`）→ 三个
+    ///   `*_CHILD_FORBIDDEN`；
+    /// - 批量意图主进程独占（:387）→ `GENERATION_BATCH_INTENT_MAIN_ONLY`。
+    ///
+    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :395-443 的 run 创建核心——
+    /// `newMainGenerationPolicy` 策略构造器（electron/services/
+    /// main-generation-plan.ts 写面，含 `planningGenerationScope` /
+    /// `resolveGenerationCapabilityConstraints` / `scaledRootBudget` 等
+    /// 容量规划数学）、`deps.leases.begin` 模型执行租约、`buildBinding`
+    /// 源绑定（逻辑层 G4-6a 已就位：`generation_source_binding`）、
+    /// `service.open` 运行持久化编排与子生成器登记册（imports / agents /
+    /// finalizations / graphs / legacyRosters）的 admit 联动，以及
+    /// `generationOutputContract` 输出合同校验——依赖的策略规划器与
+    /// 生成运行服务尚未迁移。校验面之后按基线顺序在策略构造点
+    /// fail-closed（方法末段；命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+    /// 影响面：合法选择当前收到「尚未迁移」拒绝而非运行视图；非法
+    /// 选择的错误码与基线逐字一致。
+    pub fn begin(&self, conn: &Connection, selection: &Value) -> Result<Value, String> {
         self.assert_current()?;
-        todo!("B3: 迁移自 electron/services/main-generation-owner.ts 的 begin")
+        // 基线 :357-363 `GENERATION_BEGIN_INVALID` 选择形状校验。
+        let Some(operation) = selection.get("operation").and_then(Value::as_str) else {
+            return Err(mutating_error("GENERATION_BEGIN_INVALID"));
+        };
+        let operation_valid = operation
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+            && operation.len() <= 128
+            && operation.chars().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == ':' || c == '_' || c == '-'
+            });
+        let prompt_keys_valid = selection
+            .get("promptKeys")
+            .and_then(Value::as_array)
+            .is_some_and(|keys| !keys.is_empty());
+        let parent_invalid = match selection.get("parentRootActionId") {
+            Some(value) => value.as_str().map_or(true, |text| text.trim().is_empty()),
+            None => false,
+        };
+        let nonce_valid = selection
+            .get("uiActionNonce")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 256);
+        let keys_valid = selection.as_object().is_some_and(|map| {
+            map.keys()
+                .all(|key| BEGIN_ALLOWED_KEYS.contains(&key.as_str()))
+        });
+        if !operation_valid || !prompt_keys_valid || parent_invalid || !nonce_valid || !keys_valid {
+            return Err(mutating_error("GENERATION_BEGIN_INVALID"));
+        }
+        // 基线 :364-369 与 :376 子生成器准入（IPC 边界初始化标志恒为
+        // false，故 editor-inline / 定稿 / 图 / 旧 roster / agent-round
+        // 操作由渲染层直调一律拒绝——与基线 IPC 行为逐字一致）。
+        if operation == "editor-inline" {
+            return Err(mutating_error("GENERATION_EDITOR_ADMISSION_REQUIRED"));
+        }
+        if matches!(
+            operation,
+            "finalized-chapter-notes" | "finalized-character-state"
+        ) {
+            return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
+        }
+        if GRAPH_OPERATIONS.contains(&operation) {
+            return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
+        }
+        if operation == "legacy-character-roster-repair" {
+            return Err(mutating_error("GENERATION_LEGACY_ADMISSION_REQUIRED"));
+        }
+        if operation == "agent-round" {
+            return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+        }
+        // 基线 :379-383 根行动子代禁令（editor / graph / legacy 子代）。
+        if let Some(parent_root_action_id) =
+            selection.get("parentRootActionId").and_then(Value::as_str)
+        {
+            let parent_operation = self
+                .repository
+                .budget(conn, parent_root_action_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .root
+                .operation;
+            if parent_operation == "editor-inline" {
+                return Err(mutating_error("GENERATION_EDITOR_CHILD_FORBIDDEN"));
+            }
+            if GRAPH_OPERATIONS.contains(&parent_operation.as_str()) {
+                return Err(mutating_error("GENERATION_GRAPH_CHILD_FORBIDDEN"));
+            }
+            if parent_operation == "legacy-character-roster-repair" {
+                return Err(mutating_error("GENERATION_LEGACY_CHILD_FORBIDDEN"));
+            }
+        }
+        // 基线 :387-389 批量意图主进程独占（IPC 边界 batchInitialization
+        // 恒 false）。
+        if selection
+            .get("batchIntent")
+            .is_some_and(|intent| !intent.is_null())
+        {
+            return Err(mutating_error("GENERATION_BATCH_INTENT_MAIN_ONLY"));
+        }
+        // ⚠️ B3 占位：基线 :395-443 创建核心（策略构造器 / 模型租约 /
+        // buildBinding / service.open / 子生成器登记册 admit）未迁移——
+        // 策略构造点 fail-closed（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+        Err(mutating_error(
+            "主生成运行创建尚未迁移：主生成策略规划器（newMainGenerationPolicy）与生成运行服务（generation-run-service）待后续批次移植",
+        ))
     }
 
-    /// 基线 `execute`（分发 → 流式回执）。
-    pub fn execute(&self, _conn: &Connection) -> Result<serde_json::Value, String> {
-        self.assert_current()?;
-        todo!("B3: 迁移自 electron/services/main-generation-owner.ts 的 execute")
+    /// 基线 `execute`（分发 → 流式回执，main-generation-owner.ts:501-623）。
+    ///
+    /// 本波次就位**准入校验面**（错误码逐字对齐基线）：
+    /// - 运行身份与可写性（`require_run`，execution 语义）；
+    /// - 子生成器执行准入（:512-521）→ 六个 `*_ADMISSION_REQUIRED`
+    ///   （IPC 边界执行标志恒为 false，对齐 generation-controller.ts:231-236
+    ///   注册形态）；
+    /// - 材料决策必需性（:532-537）→ `GENERATION_MATERIAL_DECISION_REQUIRED`；
+    /// - 输出合同一致性（:585-590）→ `GENERATION_OUTPUT_CONTRACT_CHANGED`；
+    /// - 大纲请求断言（`repository.assert_plot_outline_request`，:568）。
+    ///
+    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :522-531 的任务形状断言
+    /// （`assertSemanticGenerationTask`）与规划目标单位指令注入、
+    /// :538-590 的材料决策提示哈希逐字校验（`GENERATION_MATERIAL_PROMPT_MISMATCH`
+    /// 系，依赖 `runAttempts` / `shortOutlineContext` / 短细纲块编解码
+    /// 等共享模块）、:591-623 的调用重放（pending 映射 / `findInvocation`
+    /// 幂等）与短细纲重试校验、:577-581 的子生成器登记册可变性断言，
+    /// 以及分发核心（`rebuildBinding` 已就位、模型执行租约经
+    /// `AppState::llm_leases` 可接线、`buildMainGenerationPlan` 计划构造
+    /// 与 `service.execute` 的 LLM 分发循环未迁移——含
+    /// `generation:snapshot` / `generation:reasoning` 事件发射点，
+    /// 发射器已就位于命令层，见
+    /// [`crate::commands::generation::emit_generation_snapshot`]）
+    /// 尚未迁移。fail-closed 于分发入口（命令层收敛为
+    /// `GENERATION_REQUEST_FAILED`）。
+    pub fn execute(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        let run = self.require_run(conn, &handle, true)?;
+        // 基线 :512-521 子生成器执行准入（IPC 边界执行标志恒为 false）。
+        let manifest = &run.binding.source_manifest;
+        let run_operation = manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if run_operation == "agent-round" {
+            return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+        }
+        if manifest
+            .get("importSlot")
+            .is_some_and(|slot| !slot.is_null())
+        {
+            return Err(mutating_error("GENERATION_IMPORT_ADMISSION_REQUIRED"));
+        }
+        if run_operation == "editor-inline" {
+            return Err(mutating_error("GENERATION_EDITOR_ADMISSION_REQUIRED"));
+        }
+        if matches!(
+            run_operation.as_str(),
+            "finalized-chapter-notes" | "finalized-character-state"
+        ) {
+            return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
+        }
+        if GRAPH_OPERATIONS.contains(&run_operation.as_str()) {
+            return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
+        }
+        if run_operation == "legacy-character-roster-repair" {
+            return Err(mutating_error("GENERATION_LEGACY_ADMISSION_REQUIRED"));
+        }
+        let task = request.get("task").cloned().unwrap_or(Value::Null);
+        // 基线 :532-537 材料决策必需性（审稿 / 精修类操作与带准备的
+        // chapter-draft 必须已绑定材料决策收据）。
+        let material_decision = manifest.get("materialDecision");
+        if (material_decision.is_none()
+            && matches!(
+                run_operation.as_str(),
+                "review-chapter" | "refine-draft" | "refine-from-review"
+            ))
+            || (material_decision.is_none()
+                && run_operation == "chapter-draft"
+                && manifest.get("preparationId").is_some())
+        {
+            return Err(mutating_error("GENERATION_MATERIAL_DECISION_REQUIRED"));
+        }
+        // 基线 :585-590 输出合同一致性（task.output 必须与绑定输出
+        // 合同——字符串主合同或 purpose 覆盖合同——逐字一致）。
+        let task_purpose = task
+            .get("purpose")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let expected_output = match manifest.get("outputContract") {
+            Some(Value::String(primary)) => primary.clone(),
+            Some(composite) => composite
+                .get("overrides")
+                .and_then(Value::as_array)
+                .and_then(|overrides| {
+                    overrides.iter().find(|item| {
+                        item.get("purpose").and_then(Value::as_str) == Some(task_purpose)
+                    })
+                })
+                .and_then(|item| {
+                    item.get("output")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    composite
+                        .get("primary")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        if task
+            .get("output")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            != expected_output
+        {
+            return Err(mutating_error("GENERATION_OUTPUT_CONTRACT_CHANGED"));
+        }
+        // 基线 :568 大纲请求断言（目的 / 任务与持久化大纲请求一致）。
+        self.repository
+            .assert_plot_outline_request(conn, &run.run_id, Some(task_purpose), Some(&task), None)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // ⚠️ B3 占位：基线 :522-590 的任务形状 / 材料决策提示哈希校验
+        // 与 :591-623 的调用重放 / 短细纲重试 / 可变性断言，及分发
+        // 核心（LLM 分发循环 + 事件发射）未迁移——分发入口 fail-closed
+        // （命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+        Err(mutating_error(
+            "主生成执行尚未迁移：生成运行服务（generation-run-service）的 LLM 分发循环待后续批次移植",
+        ))
+    }
+
+    /// 基线 `bindMaterialDecision`（main-generation-owner.ts:646-665）：
+    /// 材料决策收据绑定到未启动运行的源清单。
+    ///
+    /// 本波次就位**准入与冲突校验面**（逐字对齐基线）：运行身份
+    /// （`require_run`，execution 语义）、操作准入（:649-651，仅
+    /// 审稿 / 精修类操作可绑定）→ `GENERATION_MATERIAL_DECISION_INVALID`、
+    /// 幂等重放与冲突检测（:652-656，已绑定且逐字段一致 → 返回运行
+    /// 视图；已绑定但不一致 → `GENERATION_MATERIAL_DECISION_CONFLICT`）。
+    ///
+    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :657-664 的候选绑定重建
+    /// （`deps.rebuildBinding`——`rebuild_generation_source_binding`
+    /// 逻辑层 G4-6a 已就位，但其 `GenerationSourceBindingDependencies`
+    /// 的 `readBuiltinPrompt` 依赖 electron/src/services/
+    /// builtin-prompt-templates.ts 的 1506 行内置提示词模板库，尚未
+    /// 移植到 Rust 侧）与投影比对 / `replaceUnstartedBinding` 持久化
+    /// 随该模板库迁移波次补齐。影响面：首次绑定收到「尚未迁移」
+    /// 拒绝；重复绑定（幂等）与冲突分支的行为与基线逐字一致。
+    pub fn bind_material_decision(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        material_decision: &Value,
+    ) -> Result<Value, String> {
+        let run = self.require_run(conn, handle, true)?;
+        // 基线 :649-651：仅审稿 / 精修类操作可绑定材料决策。
+        let operation = run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !["review-chapter", "refine-draft", "refine-from-review"].contains(&operation.as_str()) {
+            return Err(mutating_error("GENERATION_MATERIAL_DECISION_INVALID"));
+        }
+        // 基线 :652-656：已绑定 → 逐字段一致幂等返回视图，否则冲突。
+        if let Some(existing) = run.binding.source_manifest.get("materialDecision") {
+            if existing != material_decision {
+                return Err(mutating_error("GENERATION_MATERIAL_DECISION_CONFLICT"));
+            }
+            return self.view_of(conn, &run);
+        }
+        // ⚠️ B3 占位：基线 :657-664 的候选绑定重建（依赖内置提示词
+        // 模板库）/ 投影比对 / replaceUnstartedBinding 持久化未迁移——
+        // 重建点 fail-closed（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+        Err(mutating_error(
+            "材料决策绑定尚未迁移：内置提示词模板库（builtin-prompt-templates）待后续批次移植",
+        ))
+    }
+
+    /// 基线 `resume`（运行恢复重分发，main-generation-owner.ts:625-646）。
+    ///
+    /// 本波次就位：运行身份校验（`require_run`，非执行语义）与大纲
+    /// 可写性断言（`repository.assert_plot_outline_writable`，:626-627）。
+    ///
+    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :628-630 的
+    /// `plotOutlineAlreadyCurrent` 早退优化（依赖 `renderPlotOutlineRange`
+    /// / `plotOutlineTargetCurrent` 的源重建比对）、:631-634 的子生成器
+    /// 登记册可变性断言（imports / finalizations / graphs / legacyRosters
+    /// 未迁移）、:635-644 的模型收据重建（`currentModelReceipt` 的模型
+    /// 配置加载）与 `service.resume` 重分发（生成运行服务未迁移）尚未
+    /// 迁移。fail-closed 于恢复入口（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+    pub fn resume(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
+        let run = self.require_run(conn, handle, false)?;
+        self.repository
+            .assert_plot_outline_writable(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // ⚠️ B3 占位：基线 :628-644 的早退优化 / 可变性断言 / 模型源
+        // 重建 / service.resume 重分发未迁移——恢复入口 fail-closed。
+        Err(mutating_error(
+            "主生成恢复尚未迁移：生成运行服务（generation-run-service）的 resume 重分发待后续批次移植",
+        ))
     }
 }
 
@@ -980,8 +1323,11 @@ impl MainGenerationOwner {
 struct OwnerCacheEntry {
     owner: MainGenerationOwner,
     /// 基线 `subscribers: Set<WebContents>`。Tauri 侧事件经
-    /// `tauri::Emitter` 按窗口标签寻址，骨架以窗口标签集合占位
-    /// （**TODO(B3)**：真实订阅登记 + `emit_to` 发射）。
+    /// 基线 `subscribers: Set<WebContents>`。D-2 既定决策（**广播 +
+    /// 客户端过滤**）下事件经 `AppHandle::emit` 全窗口广播、客户端按
+    /// 载荷 `projectId` / `epoch` 过滤，per-window 订阅登记不再需要；
+    /// 本字段保留为缓存条目形状锚点（基线 `{ owner, session, subscribers }`），
+    /// 随执行波次清理移除。
     #[allow(dead_code)]
     subscribers: HashSet<String>,
 }
@@ -1137,10 +1483,14 @@ impl MainGenerationOwnerCache {
 /// 向全部订阅窗口广播 `MainGenerationSnapshot`（契约见
 /// `src/shared/generation-owner-contract.ts` 的 `GenerationOwnerChannels`）。
 ///
-/// Tauri 等价物（**TODO(B3)**）：`AppHandle` + `tauri::Emitter::emit_to`
-/// 按 [`OwnerCacheEntry::subscribers`] 的窗口标签发射。services 层保持
-/// 无 Tauri 依赖（`services/mod.rs` 约定），故此处仅留接线点，
-/// 骨架阶段不发射。
+/// Tauri 等价物（D-2 既定决策：**广播 + 客户端过滤**）：命令层
+/// [`crate::commands::generation::emit_generation_snapshot`] 经
+/// `AppHandle::emit` 全窗口广播（客户端按载荷 `projectId` / `epoch`
+/// 过滤——等价基线 `subscriber.send` 的每窗口定向，但省去订阅登记）。
+/// services 层保持无 Tauri 依赖（`services/mod.rs` 约定），故此处仅留
+/// 接线点；调用点随生成运行服务（`generation-run-service.ts`）迁移波次
+/// 接入——基线唯一发射点为 `execute` 的 LLM 调用循环
+/// （main-generation-owner.ts:613-615，`snapshotOf(receipt)` 之后）。
 #[allow(dead_code)]
 fn emit_generation_snapshot(_subscribers: &HashSet<String>, _snapshot: &serde_json::Value) {
     // TODO(B3)：`for label in subscribers { app_handle.emit_to(label, "generation:snapshot", snapshot) }`
@@ -1150,11 +1500,40 @@ fn emit_generation_snapshot(_subscribers: &HashSet<String>, _snapshot: &serde_js
 /// 载荷 `{ projectId, epoch, rootActionId, runId, attemptId, text }`，
 /// 见 `MainGenerationOwnerDependencies::onReasoning`）。
 ///
-/// Tauri 等价物（**TODO(B3)**）：同上，经 `emit_to` 发射
-/// `generation:reasoning`。
+/// Tauri 等价物（D-2 既定决策：同上，广播 + 客户端过滤）：命令层
+/// [`crate::commands::generation::emit_generation_reasoning`] 经
+/// `AppHandle::emit` 全窗口广播；调用点随生成运行服务迁移波次接入
+/// （基线发射点：LLM 分发流的可见文本增量）。
 #[allow(dead_code)]
 fn emit_generation_reasoning(_subscribers: &HashSet<String>, _event: &serde_json::Value) {
     // TODO(B3)：`for label in subscribers { app_handle.emit_to(label, "generation:reasoning", event) }`
+}
+
+// ============================================================================
+// 事件频道与载荷（契约 `GenerationOwnerEvents`，
+// src/shared/generation-owner-contract.ts）
+// ============================================================================
+
+/// `generation:snapshot` 事件频道名。
+pub const GENERATION_SNAPSHOT_EVENT: &str = "generation:snapshot";
+
+/// `generation:reasoning` 事件频道名。
+pub const GENERATION_REASONING_EVENT: &str = "generation:reasoning";
+
+/// `MainGenerationReasoningEvent`（基线 `MainGenerationOwnerDependencies`
+/// 的 `onReasoning` 载荷，generation-controller.ts:121-124 /
+/// main-generation-owner.ts:110-116）：流式推理的易失文本增量
+/// `{ projectId, epoch, rootActionId, runId, attemptId, text }`——
+/// 绝不进入运行视图或回执（契约 `GenerationOwnerEvents` 注释）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MainGenerationReasoningEventProjection {
+    pub project_id: String,
+    pub epoch: String,
+    pub root_action_id: String,
+    pub run_id: String,
+    pub attempt_id: String,
+    pub text: String,
 }
 
 #[cfg(test)]

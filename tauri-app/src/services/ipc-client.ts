@@ -260,6 +260,11 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'generation:read-visible-composition': ['handle'],
   'generation:read-context': ['handle'],
   'generation:read-batch': ['batchId'],
+  // 批次 G4-6b：主生成 owner 写面（generation:* 4 频道）
+  'generation:begin': ['selection'],
+  'generation:bind-material-decision': ['request'],
+  'generation:execute': ['request'],
+  'generation:resume': ['handle'],
 }
 
 /** 频道 → Tauri 命令名（`channel:seg-name` → `channel_seg_name`）。 */
