@@ -67,11 +67,12 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'project:recent-remove': ['projectPath'],
   'project:delete': ['projectPath', 'projectId', 'sessionLease'],
   'project:smoke-open-confirm': ['projectPath'],
-  // 批次 C：项目数据库（project_core 子域 4 频道）
+  // 批次 C：项目数据库（project_core 子域 5 频道）
   'db:close': ['expectedProjectPath'],
   'db:project-core-get': ['expectedProjectPath'],
   'db:project-core-update': ['data', 'expectedProjectPath'],
   'db:project-core-synopsis-commit': ['request', 'expectedProjectPath'],
+  'db:project-core-commit-generated': ['request', 'expectedProjectPath'],
   'db:character-get-all': ['expectedProjectPath'],
   'db:character-roster-read': ['expectedProjectPath'],
   'db:character-roster-commit': ['request', 'expectedProjectPath'],

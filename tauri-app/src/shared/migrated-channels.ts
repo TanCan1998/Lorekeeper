@@ -93,6 +93,7 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'db:post-process-mark-step-failed',
   'db:post-process-mark-step-ok',
   'db:project-clear-generated-data',
+  'db:project-core-commit-generated',
   'db:project-core-get',
   'db:project-core-synopsis-commit',
   'db:project-core-update',

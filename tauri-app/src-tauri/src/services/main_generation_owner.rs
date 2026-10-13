@@ -2175,6 +2175,35 @@ impl MainGenerationOwner {
         // 基线 :676-677 rebuildBinding 深比较 —— fail-closed 占位（见方法头注）。
         Ok(())
     }
+
+    /// 基线 `withGenerationAgentChildEffect`（generation-controller.ts:66-71
+    /// → main-generation-owner.ts:1301 → agents.withChildEffect）的结构接线。
+    ///
+    /// 基线 `agents.withChildEffect`（agent-generation.ts:344-376）完整实现
+    /// 依赖 agent-generation 状态机（runs registry / workflowRegistration /
+    /// sessionRuns navigation / host.capture / generation_attempts
+    /// usage_receipt_json 回执写入），属 agent-generation 域迁移波次——
+    /// 本方法为结构接线，主体 **fail-closed 占位**：
+    /// - 基线首行事务门禁（`if (!this.db.inTransaction) throw
+    ///   GENERATION_AGENT_TRANSACTION_REQUIRED`，agent-generation.ts:345）
+    ///   的 Tauri 等价物为**调用方结构保证**：`db:project-core-commit-generated`
+    ///   路径在本波实现中于外层事务内调用；`db:blueprint-commit-range`
+    ///   路径的效应（`blueprints::commit_range`）自开事务、提交原子性
+    ///   自足。rusqlite 0.40.2 无 `is_in_transaction()` API
+    ///   （`is_autocommit()` 对「效应自开事务」路径为误报），故方法内
+    ///   不重复检查。
+    /// - 基线 `requireRun(handle)` 身份校验（main-generation-owner.ts:1301）
+    ///   与 `withChildEffect` 效应执行随主体一并待活化；当前在方法入口
+    ///   直接 fail-closed 拒绝（`GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED`
+    ///   为迁移占位码、非基线码），禁止静默执行 `effect`。
+    pub fn with_agent_child_effect<T>(
+        &self,
+        _conn: &Connection,
+        _handle: &Value,
+        _effect: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        Err(mutating_error("GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED"))
+    }
 }
 
 // ============================================================================

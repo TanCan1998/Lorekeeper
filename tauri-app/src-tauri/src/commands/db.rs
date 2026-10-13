@@ -175,6 +175,129 @@ pub(crate) fn project_core_synopsis_commit_inner(
     }
 }
 
+/// `db:project-core-commit-generated` 请求（基线 db-controller.ts:179
+/// `{ data: Partial<ProjectCoreData>; generationRunHandle: MainGenerationRunHandle }`）。
+///
+/// 基线 TS 类型 `generationRunHandle` 非可选，但 handler 运时有
+/// `!request.generationRunHandle` 检查（:183 → `GENERATION_OWNER_REQUIRED`）
+/// —— Rust 侧以 `Option` 承载该运行时路径。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCoreCommitGeneratedRequest {
+    pub data: serde_json::Map<String, serde_json::Value>,
+    pub generation_run_handle: Option<serde_json::Value>,
+}
+
+/// `db:project-core-commit-generated` —— 生成运行中的项目主台账提交
+/// （MUTATING，基线 db-controller.ts:178-193）
+#[tauri::command]
+pub fn db_project_core_commit_generated(
+    state: State<'_, AppState>,
+    request: ProjectCoreCommitGeneratedRequest,
+    expected_project_path: String,
+    project_session: Option<ProjectSessionContext>,
+) -> SimpleResult {
+    project_core_commit_generated_inner(
+        state.inner(),
+        &request,
+        &expected_project_path,
+        project_session.as_ref(),
+    )
+}
+
+pub(crate) fn project_core_commit_generated_inner(
+    state: &AppState,
+    request: &ProjectCoreCommitGeneratedRequest,
+    expected_project_path: &str,
+    session: Option<&ProjectSessionContext>,
+) -> SimpleResult {
+    // 基线 :181 assertRequiredExpectedProjectPath（读门禁等价物）
+    if let Err(error) = guard_read(state, expected_project_path, session) {
+        return SimpleResult {
+            success: false,
+            error: Some(mutating_error(error)),
+        };
+    }
+    // 基线 :182-183：getProjectDb() 与 generationRunHandle 缺失 →
+    // GENERATION_OWNER_REQUIRED（「项目数据库未打开」由 with_project_db
+    // 结构保证——Tauri 侧活跃会话即库已打开）
+    let Some(handle) = request.generation_run_handle.as_ref() else {
+        return SimpleResult {
+            success: false,
+            error: Some(mutating_error("GENERATION_OWNER_REQUIRED".to_string())),
+        };
+    };
+    // owner 门禁（基线 withGenerationAgentChildEffect 的 owner 缓存查找，
+    // generation-controller.ts:67-69；锁序：owner 缓存锁 → 项目库锁，
+    // 与 blueprint_commit_range_with_generation 同序）
+    let cache = MainGenerationOwnerCache::new();
+    let session_context = session.expect("guard_read 已校验会话存在");
+    let mut guard = match cache.authorized_owner(
+        session_context,
+        state.active_project_snapshot().as_ref(),
+    ) {
+        Ok(guard) => guard,
+        // authorized_owner 的错误已是 MUTATING 信封形态（带 "Error: " 前缀），
+        // 不再二次包装。
+        Err(error) => {
+            return SimpleResult {
+                success: false,
+                error: Some(error),
+            };
+        }
+    };
+    let owner = &*guard.owner();
+    let outcome = state.with_project_db(|conn| {
+        // 基线 :184-188 事务结构
+        // database.transaction(() => withGenerationAgentChildEffect(handle,
+        // () => { assertGenerationSourcesCurrent(handle);
+        //         ProjectCoreRepository.update(data) })).immediate()
+        // —— effect 闭包在外层事务内执行（更新与提交原子化）；
+        // rusqlite 0.40.2 事务不可嵌套，effect 内的仓储调用直接于
+        // 外层事务执行（project_core::update 为单条 UPDATE 写入，
+        // 无自开事务需求）。
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|error| mutating_error(error.to_string()))?;
+        match owner.with_agent_child_effect(
+            &tx,
+            handle,
+            || {
+                owner
+                    .assert_sources_current(&tx, handle, None)
+                    .and_then(|()| {
+                        project_core::update(&tx, &request.data)
+                            .map_err(|error| mutating_error(error))
+                    })
+            },
+        ) {
+            // 活化后（agent-generation 状态机迁移完成）：effect 执行
+            // 结果与事务提交原子化；当前占位主体 fail-closed，
+            // 本分支不可达。
+            Ok(outcome) => outcome.and_then(|()| {
+                tx.commit()
+                    .map_err(|error| mutating_error(error.to_string()))
+            }),
+            // 事务 Drop 即回滚（基线 transaction() 失败语义）；
+            // 错误已是 MUTATING 信封形态，直接透传不二次加前缀。
+            Err(error) => Err(error),
+        }
+    });
+    match outcome {
+        Ok(()) => SimpleResult {
+            success: true,
+            error: None,
+        },
+        Err(error) => {
+            eprintln!("[db:project-core-commit-generated] 失败: {error}");
+            SimpleResult {
+                success: false,
+                error: Some(error),
+            }
+        }
+    }
+}
+
 /// `db:close` —— 关闭项目数据库并使会话失效
 #[tauri::command]
 pub fn db_close(
@@ -676,7 +799,9 @@ pub struct BlueprintCommitRangeResult {
 }
 
 /// 基线 `db:blueprint-commit-range` 的失败信封（`{ success, receipt?, error? }`，
-/// 错误统一 `String(err)` 即 `"Error: "` 前缀）。
+/// 错误统一 `String(err)` 即 `"Error: "` 前缀；已带前缀的
+/// 错误（`with_agent_child_effect` 透传的 MUTATING 信封）
+/// 原样透传，避免双重前缀。
 fn blueprint_commit_range_result(
     outcome: Result<blueprints::BlueprintCommitRangeReceipt, String>,
 ) -> BlueprintCommitRangeResult {
@@ -689,7 +814,14 @@ fn blueprint_commit_range_result(
         Err(error) => BlueprintCommitRangeResult {
             success: false,
             receipt: None,
-            error: Some(mutating_error(error)),
+            // 错误可能已是 MUTATING 信封形态（with_agent_child_effect
+            // 透传，自带 "Error: " 前缀）——已带前缀的错误
+            // 不再重复包装，避免 "Error: Error: " 双重前缀。
+            error: Some(if error.starts_with("Error: ") {
+                error
+            } else {
+                mutating_error(error)
+            }),
         },
     }
 }
@@ -804,7 +936,15 @@ fn blueprint_commit_range_with_generation(
         // 基线 :572-573 事务结构（见方法头注）
         match blueprints::get_committed_range_operation(conn, &request.operation_id)? {
             Some(_) => blueprints::commit_range(conn, request, Some(&assert_sources)),
-            None => Err("GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED".to_string()),
+            // 基线 :572-573 新提交路径 withGenerationAgentChildEffect(handle,
+            // commit) → G4-7 结构接线：经 owner.with_agent_child_effect 包装
+            // （主体 fail-closed 占位——agent-generation 状态机未迁移，
+            // 错误码不变，禁止静默走直提路径）；随 agent-generation 域波次活化。
+            None => owner
+                .with_agent_child_effect(conn, &handle_value, || {
+                    blueprints::commit_range(conn, request, Some(&assert_sources))
+                })
+                .and_then(|outcome| outcome),
         }
     });
     blueprint_commit_range_result(outcome)
@@ -4600,6 +4740,43 @@ mod tests {
         );
         assert!(replay.success, "重放应成功：{:?}", replay.error);
         assert!(replay.receipt.expect("重放应返回回执").idempotent);
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn project_core_commit_generated_validation_test() {
+        let (state, root, session) = activated_state("project-core-generated");
+
+        // 基线 :183 无 generationRunHandle → GENERATION_OWNER_REQUIRED
+        let request = ProjectCoreCommitGeneratedRequest {
+            data: serde_json::Map::new(),
+            generation_run_handle: None,
+        };
+        let no_handle =
+            project_core_commit_generated_inner(&state, &request, &root, Some(&session));
+        assert!(!no_handle.success);
+        assert_eq!(no_handle.error.as_deref(), Some("Error: GENERATION_OWNER_REQUIRED"));
+
+        // 基线 :184-188 有 handle → 事务内 with_agent_child_effect
+        // （G4-7 主体 fail-closed 占位——agent-generation 状态机未迁移）
+        let handle = serde_json::json!({
+            "projectId": session.project_id,
+            "epoch": session.lease_id,
+            "rootActionId": "root-1",
+            "runId": "run-1",
+        });
+        let with_handle = ProjectCoreCommitGeneratedRequest {
+            data: serde_json::Map::new(),
+            generation_run_handle: Some(handle),
+        };
+        let closed =
+            project_core_commit_generated_inner(&state, &with_handle, &root, Some(&session));
+        assert!(!closed.success);
+        assert_eq!(
+            closed.error.as_deref(),
+            Some("Error: GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED")
+        );
 
         cleanup(&root);
     }

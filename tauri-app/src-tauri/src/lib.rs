@@ -152,6 +152,7 @@ pub fn run() {
             commands::db_project_core_get,
             commands::db_project_core_update,
             commands::db_project_core_synopsis_commit,
+            commands::db_project_core_commit_generated,
             // 批次 C：角色与角色名单（characters 子域）
             commands::db_character_get_all,
             commands::db_character_roster_read,
