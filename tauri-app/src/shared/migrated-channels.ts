@@ -145,6 +145,7 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'generation:list-batches',
   'generation:list-directory-progress',
   'generation:pause',
+  'generation:prepare-draft-context',
   'generation:read',
   'generation:read-batch',
   'generation:read-context',

@@ -282,6 +282,8 @@ pub fn run() {
             commands::generation_begin_batch,
             commands::generation_confirm_batch_finalization,
             commands::generation_compose_visible,
+            // 批次 G4-6c：主生成 owner 草稿上下文准备（generation:* 1 频道）
+            commands::generation_prepare_draft_context,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,

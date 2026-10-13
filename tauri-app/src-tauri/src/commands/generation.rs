@@ -19,6 +19,11 @@
 //! - `generation:read-context` → `readContext(handle)`
 //!   （owner :834——`GenerationRecoveryContext` 构造，
 //!   依赖 `draftEffects.readRecovery` 与运行视图）
+//! - `generation:prepare-draft-context` →
+//!   `owner.prepareDraftContext(request, knowledge,
+//!   baseline)`（controller :166-171；执行依赖型
+//!   fail-closed——KB 知识快照捕获待 F2 收口、
+//!   策略规划器待 G4-6b-1 依赖批次，见命令头注）
 //!
 //! 命令名对齐前端 `ipc-client.ts` 的 `toCommandName`
 //! （`channel.replace(/[:-]/g, '_')`），入参按频道契约
@@ -2282,5 +2287,60 @@ pub async fn generation_compose_visible(
             expected_text_hash.as_deref(),
             algorithm.as_deref(),
         )
+    })
+}
+
+/// `generation:prepare-draft-context` —— 草稿上下文准备
+/// （基线 `register('generation:prepare-draft-context', 1, ...)`，
+/// generation-controller.ts:166-171；单一对象入参
+/// `PrepareDraftContextRequest`，契约
+/// generation-owner-contract.ts:189，对齐基线的
+/// 单参数注册形态）。
+///
+/// 执行依赖型 fail-closed（双重依赖未迁移，本波次
+/// 既定决策）：
+/// 1. 基线 :169-170 `knowledgeBaseLoader.load()` +
+///    `kb.captureWritingKnowledgeSnapshot(request.query,
+///    session.projectPath, getEmbeddingConfig())`——KB
+///    命令层待 F2 收口（`db/vector.rs`
+///    `LocalVectorIndex` 已落地但未接命令层），命令层
+///    fail-closed；错误码对齐基线 register catch
+///    （generation-controller.ts:159-160）：
+///    `KnowledgeBaseUnavailableError` /
+///    `LegacyVectorMigrationBlockedError` → 抛出其
+///    code（`KNOWLEDGE_BASE_NATIVE_UNAVAILABLE` /
+///    `LEGACY_VECTOR_MIGRATION_BLOCKED`，用
+///    `mutating_error` 包装）。
+/// 2. 基线 :167 `owner.draftPreparationBinding(request)`
+///    ——策略构造点（`newMainGenerationPolicy` /
+///    `rootPolicy`）依赖 main-generation-plan.ts 写面
+///    未迁移（G4-6b-1 既定 fail-closed 依赖），owner
+///    方法内 fail-closed（见 `services/
+///    main_generation_owner.rs` `draft_preparation_binding`
+///    头注）。
+///
+/// 执行路径上基线先算 `baseline`（:167），故策略
+/// 规划器的 fail-closed 先于 KB 捕获触发；
+/// `prepareDraftContext` 主体（`GENERATION_DRAFT_
+/// PREPARATION_CHANGED` 校验、selectedDrafts 读取、
+/// `preparationId` LRU）与 `preparedKnowledge` 已在
+/// owner 方法内完整就位，待依赖迁移后自动生效。
+#[tauri::command]
+pub async fn generation_prepare_draft_context(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| {
+        // 基线 :167 `owner.draftPreparationBinding(request)`
+        // ——策略构造点 fail-closed（依赖未迁移）。
+        let _baseline = owner.draft_preparation_binding(conn, &request, None)?;
+        // 基线 :169-170 KB 知识快照捕获——命令层
+        // fail-closed（KB 命令层待 F2 收口）。
+        Err(mutating_error("KNOWLEDGE_BASE_NATIVE_UNAVAILABLE"))
     })
 }

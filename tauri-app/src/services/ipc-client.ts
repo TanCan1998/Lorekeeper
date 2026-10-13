@@ -277,6 +277,8 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'generation:begin-batch': ['request'],
   'generation:confirm-batch-finalization': ['request'],
   'generation:compose-visible': ['handle', 'artifactIds', 'expectedTextHash', 'algorithm'],
+  // 批次 G4-6c：主生成 owner 草稿上下文准备（generation:* 1 频道）
+  'generation:prepare-draft-context': ['request'],
 }
 
 /** 频道 → Tauri 命令名（`channel:seg-name` → `channel_seg_name`）。 */

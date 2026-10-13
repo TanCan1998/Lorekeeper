@@ -51,6 +51,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
@@ -59,8 +60,9 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::repositories::generation_run_repository::{
     DurableGenerationRun, FrozenInputFingerprint, GenerationExecutionReceipt,
     GenerationRunRepository, GenerationTransportDiagnostics, PhysicalAttempt, PlotOutlineProgress,
-    RootBudget, RunView,
+    RootBudget, RunBinding, RunView,
 };
+
 use crate::security::{self, ProjectSessionContext};
 use crate::services::generation_draft_effects::{
     assert_generation_batch_intent, GenerationDraftEffects,
@@ -95,6 +97,41 @@ const GENERATION_OWNER_REQUIRED: &str = "GENERATION_OWNER_REQUIRED";
 const GENERATION_REQUEST_FAILED: &str = "GENERATION_REQUEST_FAILED";
 /// 基线透传字面量（generation-controller.ts:160）。
 const SOURCE_DRAFT_CHANGED: &str = "SOURCE_DRAFT_CHANGED";
+
+/// 基线 `draftPreparationBinding` 请求键集白名单
+/// （main-generation-owner.ts:324）。
+const PREPARATION_ALLOWED_KEYS: [&str; 8] = [
+    "chapterNumber",
+    "modelId",
+    "promptKeys",
+    "skillStages",
+    "authorInputs",
+    "query",
+    "selectedDraftIds",
+    "batchId",
+];
+/// 基线 `preparations` LRU 容量上限
+/// （main-generation-owner.ts:350：超限逐出最旧条目）。
+const PREPARATION_CAPACITY: usize = 64;
+/// 基线 `preparationProjection` 的 manifest 剔除键集
+/// （main-generation-owner.ts:296；`excludeKnowledge`
+/// 为真时追加 `knowledgeSnapshot`）。
+const PREPARATION_MANIFEST_EXCLUDED: [&str; 4] = [
+    "selectedDraftIds",
+    "selectedFinalizedDraftIds",
+    "materialDecision",
+    "materialDecisionHash",
+];
+const PREPARATION_MANIFEST_EXCLUDED_WITH_KNOWLEDGE: [&str; 5] = [
+    "selectedDraftIds",
+    "selectedFinalizedDraftIds",
+    "materialDecision",
+    "materialDecisionHash",
+    "knowledgeSnapshot",
+];
+/// 基线 `preparationProjection` 的 fingerprint 剔除键集
+/// （main-generation-owner.ts:297）。
+const PREPARATION_FINGERPRINT_EXCLUDED: [&str; 2] = ["contextSnapshotHash", "dependencyHash"];
 
 /// 基线 `readMainGenerationPolicy` 的版本允许集（main-generation-plan.ts:139）。
 const POLICY_VERSIONS: [&str; 3] = [
@@ -362,6 +399,24 @@ pub fn mutating_error(code: &str) -> String {
 // 主生成 owner
 // ============================================================================
 
+/// 基线 `preparations` 缓存条目
+/// （`{ binding: RunBinding; knowledgeSnapshot:
+/// GenerationKnowledgeSnapshot }`，main-generation-
+/// owner.ts:115；`knowledgeSnapshot` 以全保真 `Value`
+/// 存储，语义见 [`MainGenerationOwner::preparations`]）。
+struct PreparationEntry {
+    /// 基线 binding 随 `deps.buildBinding` 持久化
+    /// （main-generation-owner.ts:334）——源绑定构造
+    /// 依赖未迁移（见 [`MainGenerationOwner::
+    /// draft_preparation_binding`] 头注）；基线同样
+    /// 只写不读（`preparedKnowledge` 仅返回
+    /// `knowledgeSnapshot`），字段保留为缓存条目
+    /// 形状锚点，待依赖迁移后接入读取面。
+    #[allow(dead_code)]
+    binding: RunBinding,
+    knowledge_snapshot: Value,
+}
+
 /// 主生成 owner（对齐基线 `createMainGenerationOwner` 的闭包状态，
 /// main-generation-owner.ts:108-1399）。
 ///
@@ -379,6 +434,21 @@ pub struct MainGenerationOwner {
     /// 基线 `runLeases: Map<string, string>`（attemptId → leaseId，
     /// main-generation-owner.ts:112）。挂起时逐 lease 关闭并清空。
     run_leases: HashMap<String, String>,
+    /// 基线 `preparations: Map<string, { binding: RunBinding;
+    /// knowledgeSnapshot: GenerationKnowledgeSnapshot }>`
+    /// （main-generation-owner.ts:115）——草稿上下文准备
+    /// 缓存（`prepareDraftContext` 签发，`preparedKnowledge`
+    /// 读取，容量 64 的 LRU：超限逐出最旧条目，:350；
+    /// 项目关闭挂起时清空，:1391）。
+    ///
+    /// 以 `Vec` 保序等价基线 `Map` 插入序——基线
+    /// 「超限删最旧」依赖插入序（Rust `HashMap` 无序，
+    /// 无法实现逐出最旧语义）；容量上限 64，线性
+    /// 查找无性能顾虑。`knowledgeSnapshot` 以全保真
+    /// `Value` 存储（基线为 `GenerationKnowledgeSnapshot`
+    /// 强类型；IPC 边界为 `Value`，基线 `structuredClone`
+    /// 的等价物为 `Value::clone` 深拷贝）。
+    preparations: Vec<(String, PreparationEntry)>,
     /// 基线 `closed` 标志（main-generation-owner.ts:116）。
     closed: bool,
 }
@@ -432,6 +502,7 @@ impl MainGenerationOwner {
             session,
             repository: GenerationRunRepository::default(),
             run_leases: HashMap::new(),
+            preparations: Vec::new(),
             closed: false,
         }
     }
@@ -977,11 +1048,14 @@ impl MainGenerationOwner {
     /// 关闭全部在途模型执行租约、置 `closed`。
     ///
     /// 幂等：基线 `if (closed) return` 之后的清理只在首次执行
-    /// （:1394-1398）；`preparations` / 子生成器的清理（:1391-1393）
-    /// 在对应服务迁移后接入。
+    /// 幂等：基线 `if (closed) return` 之后的清理只在首次执行
+    /// （:1394-1398）；`preparations` 清理（:1391）随
+    /// `prepareDraftContext` 迁移（G4-6c）接入；子生成器的
+    /// 清理（:1392-1393）在对应服务迁移后接入。
     pub fn suspend_for_project_close(&mut self) {
-        // TODO(B3+)：`preparations.clear()`——草稿上下文准备缓存
-        //   （main-generation-owner.ts:1391；`prepareDraftContext` 迁移后接入）。
+        // 基线 :1391 `preparations.clear()`——草稿上下文
+        // 准备缓存清空（G4-6c：`prepareDraftContext` 已迁移）。
+        self.preparations.clear();
         // TODO(B3+)：`finalizedCharacters.close()` / `reviewRevisions.close()`
         //   （main-generation-owner.ts:1392-1393；子生成器迁移后接入）。
         if self.closed {
@@ -1713,9 +1787,397 @@ impl MainGenerationOwner {
         }
         Ok(batch)
     }
+
+    /// 基线 `preparedKnowledge(preparationId)`
+    /// （main-generation-owner.ts:309-314）：按
+    /// `preparationId` 读取准备缓存的知识快照（基线
+    /// `structuredClone` 深拷贝等价物为 `Value::clone`）；
+    /// 未命中 → `GENERATION_DRAFT_PREPARATION_REQUIRED`
+    /// （`generation:begin` 的 chapter-draft 准入依赖，
+    /// generation-controller.ts:177）。
+    pub fn prepared_knowledge(&self, preparation_id: &str) -> Result<Value, String> {
+        self.assert_current()?;
+        self.preparations
+            .iter()
+            .find(|(id, _)| id == preparation_id)
+            .map(|(_, entry)| entry.knowledge_snapshot.clone())
+            .ok_or_else(|| mutating_error("GENERATION_DRAFT_PREPARATION_REQUIRED"))
+    }
+
+    /// 基线 `draftPreparationBinding(request, knowledgeSnapshot?)`
+    /// （main-generation-owner.ts:321-335）：草稿上下文
+    /// 准备的绑定构造（`generation:prepare-draft-context`
+    /// 命令的第一步，controller :167 的 `baseline`）。
+    ///
+    /// 本波次就位**准入校验面**（错误码逐字对齐基线）：
+    /// - `GENERATION_DRAFT_PREPARATION_INVALID`（:322-324）：
+    ///   request 非对象 / `query` 非字符串 /
+    ///   `knowledgeSnapshot` 存在时 `request.query !==`
+    ///   `knowledgeSnapshot.query` / 键集超白名单
+    ///   [`PREPARATION_ALLOWED_KEYS`]；
+    /// - 基线 :325-326 `GENERATION_MODEL_MISSING`——依赖
+    ///   `deps.loadModel`（模型加载命令面）未迁移，见下。
+    ///
+    /// ⚠️ 诚实化占位（G4-6c 波次说明）：基线 :325-335 的
+    /// 绑定构造核心——`deps.loadModel(request.modelId)` 模型
+    /// 加载（`load_model` 未迁移）、`safeGenerationModelReceipt(
+    /// createModelExecutionLeaseReceipt(model, { leaseId:
+    /// 'read-only-evidence', createdAt: 0, expiresAt: 0 }))`
+    /// 模型执行租约回执（`safe_generation_model_receipt`
+    /// 未迁移）、策略构造（`request.batchId ? rootPolicy(
+    /// draftEffects.readBatch(batchId, projectId).rootHandle
+    /// .rootActionId) : newMainGenerationPolicy(selection, model)`
+    /// ——`newMainGenerationPolicy` 依赖 main-generation-plan.ts
+    /// 写面未迁移（G4-6b-1 既定 fail-closed 依赖；`rootPolicy`
+    /// 读面已就位，但其输入 run 由策略规划器落库面创建）、
+    /// 以及 `deps.buildBinding(selection, receipt, policy)`
+    /// 源绑定构造（`generation_source_binding` 已就位但需
+    /// receipt / policy 输入）——依赖未迁移。校验面与
+    /// `selection` 构造（基线 :328-331，仅依赖 request /
+    /// knowledgeSnapshot，与模型加载解耦、无副作用）之后
+    /// 按基线顺序在模型加载构造点 fail-closed（方法末段；
+    /// 命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+    ///
+    /// 影响面：合法请求当前收到「尚未迁移」拒绝而非
+    /// `RunBinding`；非法请求的错误码与基线逐字一致。
+    pub fn draft_preparation_binding(
+        &self,
+        _conn: &Connection,
+        request: &Value,
+        knowledge_snapshot: Option<&Value>,
+    ) -> Result<RunBinding, String> {
+        self.assert_current()?;
+        // 基线 :322-324 `GENERATION_DRAFT_PREPARATION_INVALID`
+        // 校验面（`!request || typeof request.query !== 'string'
+        // || knowledgeSnapshot && request.query !== knowledgeSnapshot.query
+        // || 键集超白名单`）。
+        let invalid = request.as_object().is_none()
+            || request.get("query").and_then(Value::as_str).is_none()
+            || knowledge_snapshot
+                .is_some_and(|snapshot| snapshot.get("query") != request.get("query"))
+            || request.as_object().is_some_and(|map| {
+                map.keys()
+                    .any(|key| !PREPARATION_ALLOWED_KEYS.contains(&key.as_str()))
+            });
+        if invalid {
+            return Err(mutating_error("GENERATION_DRAFT_PREPARATION_INVALID"));
+        }
+        // 基线 :328-331 `selection` 构造（逐字平移；仅依赖
+        // request / knowledgeSnapshot，与模型加载解耦——
+        // 模型租约回执未迁移，构造结果随策略构造点
+        // fail-closed 一并丢弃，见方法头注）。
+        {
+            let mut selection = Map::new();
+            selection.insert(
+                "operation".to_string(),
+                Value::String("chapter-draft".to_string()),
+            );
+            selection.insert(
+                "uiActionNonce".to_string(),
+                Value::String("prepare-only".to_string()),
+            );
+            selection.insert(
+                "modelId".to_string(),
+                request.get("modelId").cloned().unwrap_or(Value::Null),
+            );
+            selection.insert(
+                "chapterNumber".to_string(),
+                request.get("chapterNumber").cloned().unwrap_or(Value::Null),
+            );
+            selection.insert(
+                "selectedDraftIds".to_string(),
+                request
+                    .get("selectedDraftIds")
+                    .cloned()
+                    .unwrap_or(Value::Array(Vec::new())),
+            );
+            selection.insert(
+                "selectedFinalizedDraftIds".to_string(),
+                Value::Array(Vec::new()),
+            );
+            // 基线 `Array.from({ length: 6 }, (_, index) =>
+            // request.chapterNumber + index)`——6 章蓝图窗口
+            // （chapterNumber..chapterNumber+5）。
+            let blueprint_window: Vec<Value> = (0..6)
+                .map(|index| {
+                    request
+                        .get("chapterNumber")
+                        .and_then(Value::as_i64)
+                        .map_or(Value::Null, |base| Value::Number((base + index).into()))
+                })
+                .collect();
+            selection.insert(
+                "selectedBlueprintChapterNumbers".to_string(),
+                Value::Array(blueprint_window),
+            );
+            selection.insert(
+                "promptKeys".to_string(),
+                request
+                    .get("promptKeys")
+                    .cloned()
+                    .unwrap_or(Value::Array(Vec::new())),
+            );
+            selection.insert(
+                "skillStages".to_string(),
+                request
+                    .get("skillStages")
+                    .cloned()
+                    .unwrap_or(Value::Array(Vec::new())),
+            );
+            selection.insert(
+                "authorInputs".to_string(),
+                request
+                    .get("authorInputs")
+                    .cloned()
+                    .unwrap_or(Value::Array(Vec::new())),
+            );
+            selection.insert(
+                "output".to_string(),
+                Value::String("visible-text".to_string()),
+            );
+            if let Some(batch_id) = request.get("batchId") {
+                selection.insert("batchId".to_string(), batch_id.clone());
+            }
+            if let Some(snapshot) = knowledge_snapshot {
+                selection.insert("knowledgeSnapshot".to_string(), snapshot.clone());
+            }
+            let _ = Value::Object(selection);
+        }
+        // ⚠️ 基线 :325-335 绑定构造核心 fail-closed（依赖
+        // 未迁移，见方法头注）：`deps.loadModel` /
+        // `safeGenerationModelReceipt(createModelExecutionLeaseReceipt(
+        // ...))` / 策略构造（`newMainGenerationPolicy` /
+        // `rootPolicy`）/ `deps.buildBinding`。
+        Err(mutating_error(
+            "草稿上下文准备尚未迁移：模型加载（loadModel）与模型执行租约回执（safeGenerationModelReceipt）以及主生成策略规划器（newMainGenerationPolicy）待后续批次移植",
+        ))
+    }
+
+    /// 基线 `prepareDraftContext(request, knowledgeSnapshot,
+    /// beforeKnowledgeRead?)`（main-generation-owner.ts:336-354）：
+    /// 草稿上下文准备——事务内构造绑定并与准备前快照比对、
+    /// 读取选中草稿正文、签发 `preparationId` 并冻结进
+    /// LRU 准备缓存（容量 64）。
+    ///
+    /// 本波次就位**验证面**（基线 :339-353 逐字平移）：
+    /// - `beforeKnowledgeRead` 校验（:339-340）：
+    ///   `preparationMatches(before, binding, true)` 不匹配
+    ///   → `GENERATION_DRAFT_PREPARATION_CHANGED`（辅助
+    ///   [`preparation_matches`]）；
+    /// - selectedDrafts 读取（:342-346）：`drafts` JOIN
+    ///   `contents`，`contentHash` 为正文 SHA-256 hex
+    ///   （[`text_hash`]，形态对齐 generation_source_binding
+    ///   G4-6a 的 `hash`）；
+    /// - `preparationId` 签发（基线 `randomUUID` 等价物
+    ///   [`crate::project_access::random_uuid_v4`]）与 LRU
+    ///   缓存（:348-351，容量 [`PREPARATION_CAPACITY`]，
+    ///   超限逐出最旧条目）。
+    ///
+    /// ⚠️ 执行依赖（本波次既定 fail-closed）：事务内首步
+    /// `draftPreparationBinding`（基线 :338）在模型加载 /
+    /// 策略规划器构造点 fail-closed（见
+    /// [`Self::draft_preparation_binding`] 头注），故绑定
+    /// 构造核心未迁移前的合法请求在事务入口即被拒绝；
+    /// KB 知识快照捕获在命令层 fail-closed（见
+    /// `commands::generation_prepare_draft_context` 头注），
+    /// `beforeKnowledgeRead` 恒为 `None`（IPC 边界）。
+    pub fn prepare_draft_context(
+        &mut self,
+        conn: &Connection,
+        request: &Value,
+        knowledge_snapshot: &Value,
+        before_knowledge_read: Option<&RunBinding>,
+    ) -> Result<Value, String> {
+        // 基线 :337 `deps.database.transaction(() => {...})()`：
+        // Tauri 侧命令层在 `project_access` 门禁内传入单一
+        // 项目库连接，事务原子性由调用点保证（与既有 owner
+        // 事务方法同范式）。
+        let binding = self.draft_preparation_binding(conn, request, Some(knowledge_snapshot))?;
+        // 基线 :339-340 `beforeKnowledgeRead` 校验。
+        if before_knowledge_read.is_some_and(|before| !preparation_matches(before, &binding, true))
+        {
+            return Err(mutating_error("GENERATION_DRAFT_PREPARATION_CHANGED"));
+        }
+        // 基线 :342-346 selectedDrafts 读取。
+        let selected_drafts = self.read_preparation_drafts(conn, request)?;
+        // 基线 :348-351 `preparationId` 签发与 LRU 缓存
+        // （容量 64，超限逐出最旧条目）。
+        let preparation_id = crate::project_access::random_uuid_v4();
+        if self.preparations.len() >= PREPARATION_CAPACITY {
+            if let Some(oldest) = self.preparations.first().map(|(id, _)| id.clone()) {
+                self.preparations.retain(|(id, _)| *id != oldest);
+            }
+        }
+        self.preparations.push((
+            preparation_id.clone(),
+            PreparationEntry {
+                binding,
+                knowledge_snapshot: knowledge_snapshot.clone(),
+            },
+        ));
+        // 基线 :353 `structuredClone(knowledgeSnapshot)`
+        // 等价物：`Value::clone` 深拷贝。
+        Ok(json!({
+            "preparationId": preparation_id,
+            "knowledgeSnapshot": knowledge_snapshot.clone(),
+            "selectedDrafts": selected_drafts,
+        }))
+    }
+
+    /// 基线 :342-346 selectedDrafts 读取（`prepareDraftContext`
+    /// 事务内）：`drafts` JOIN `contents` 取章节号 / 版本 /
+    /// 正文，`contentHash` 为正文 SHA-256 hex。缺失草稿
+    /// 的基线行为：`row.chapter_number` 抛 `TypeError`，
+    /// 经基线 register catch 收敛为 `GENERATION_REQUEST_FAILED`。
+    fn read_preparation_drafts(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Vec<Value>, String> {
+        let draft_ids = request
+            .get("selectedDraftIds")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        draft_ids
+            .iter()
+            .map(|draft_id| {
+                // 基线 `deps.database.prepare(...).get(draftId)`
+                // ——非数字 draftId 抛 `TypeError`，经基线
+                // register catch 收敛为 `GENERATION_REQUEST_FAILED`。
+                let draft_id = draft_id
+                    .as_i64()
+                    .ok_or_else(|| mutating_error(GENERATION_REQUEST_FAILED))?;
+                let row = conn
+                    .query_row(
+                        "SELECT d.chapter_number, d.version, c.body FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id=?1",
+                        [draft_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, i64>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+                let Some((chapter_number, version, body)) = row else {
+                    return Err(mutating_error(GENERATION_REQUEST_FAILED));
+                };
+                Ok(json!({
+                    "draftId": draft_id,
+                    "chapterNumber": chapter_number,
+                    "version": version,
+                    "contentHash": text_hash(&body),
+                    "content": body,
+                }))
+            })
+            .collect()
+    }
 }
 
 // ============================================================================
+// 草稿上下文准备辅助（基线 main-generation-owner.ts:295-308）
+// ============================================================================
+
+/// 基线 `without(row, excluded)` 的等价物
+/// （`generation_source_binding::without` 为模块私有，
+/// 本模块就地实现）。
+fn without_keys(row: &Map<String, Value>, excluded: &[&str]) -> Map<String, Value> {
+    row.iter()
+        .filter(|(key, _)| !excluded.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+/// 基线 `textHash`（`createHash('sha256').update(text)
+/// .digest('hex')`；形态对齐 `generation_source_binding::hash`，
+/// G4-6a——未修改 UTF-8 字节的 SHA-256 hex）。
+fn text_hash(text: &str) -> String {
+    let digest = Sha256::digest(text.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// 基线 `preparationProjection(binding, excludeKnowledge = false)`
+/// （main-generation-owner.ts:295-299）：准备期投影——
+/// `manifest` 剔除 `selectedDraftIds` /
+/// `selectedFinalizedDraftIds` / `materialDecision` /
+/// `materialDecisionHash`（+ `excludeKnowledge` 时
+/// `knowledgeSnapshot`；S10B 注释：材料决策键只在
+/// 取得准入之后才可能出现在真正运行的 manifest 上，
+/// 因此与 `selectedFinalizedDraftIds` 同类，不参与
+/// 「准备期冻结源未变」的比对）、`fingerprint` 剔除
+/// `contextSnapshotHash` / `dependencyHash`（指纹侧
+/// `contextSnapshotHash` 本就被排除）、`sources` 剔除
+/// `draft:` / `finalized:` 前缀（+ `excludeKnowledge`
+/// 时 `kb:` 前缀与 `knowledge-selection`）。
+fn preparation_projection(binding: &RunBinding, exclude_knowledge: bool) -> Value {
+    let manifest_excluded: &[&str] = if exclude_knowledge {
+        &PREPARATION_MANIFEST_EXCLUDED_WITH_KNOWLEDGE
+    } else {
+        &PREPARATION_MANIFEST_EXCLUDED
+    };
+    let manifest = without_keys(&binding.source_manifest, manifest_excluded);
+    let fingerprint = serde_json::to_value(&binding.fingerprint)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_object()
+                .map(|record| without_keys(record, &PREPARATION_FINGERPRINT_EXCLUDED))
+        })
+        .unwrap_or_default();
+    let sources: Vec<Value> = binding
+        .source_refs
+        .iter()
+        .filter(|reference| {
+            !reference.source_id.starts_with("draft:")
+                && !reference.source_id.starts_with("finalized:")
+                && (!exclude_knowledge
+                    || (!reference.source_id.starts_with("kb:")
+                        && reference.source_id != "knowledge-selection"))
+        })
+        .map(|reference| serde_json::to_value(reference).unwrap_or(Value::Null))
+        .collect();
+    json!({
+        "manifest": Value::Object(manifest),
+        "fingerprint": Value::Object(fingerprint),
+        "sources": Value::Array(sources),
+    })
+}
+
+/// 基线 `preparationMatches(previous, current,
+/// excludeKnowledge = false)`（main-generation-owner.ts:301-308）：
+/// 准备期投影深度相等（基线 `isDeepStrictEqual` 的
+/// `Value` 相等等价物）+ `draft:` / `finalized:`
+/// sourceRefs 逐引用深度相等（按 `sourceId` 匹配后
+/// 全保真比较）。
+fn preparation_matches(
+    previous: &RunBinding,
+    current: &RunBinding,
+    exclude_knowledge: bool,
+) -> bool {
+    preparation_projection(previous, exclude_knowledge)
+        == preparation_projection(current, exclude_knowledge)
+        && previous
+            .source_refs
+            .iter()
+            .filter(|reference| {
+                reference.source_id.starts_with("draft:")
+                    || reference.source_id.starts_with("finalized:")
+            })
+            .all(|reference| {
+                current
+                    .source_refs
+                    .iter()
+                    .find(|candidate| candidate.source_id == reference.source_id)
+                    .is_some_and(|candidate| {
+                        serde_json::to_value(reference).unwrap_or(Value::Null)
+                            == serde_json::to_value(candidate).unwrap_or(Value::Null)
+                    })
+            })
+}
+
 // per-database owner 缓存
 // ============================================================================
 
