@@ -275,6 +275,9 @@ pub fn run() {
             commands::generation_cancel,
             commands::generation_restart,
             commands::generation_discard_candidate,
+            // 批次 G4-6b-3：主生成 owner 草稿写面（generation:* 2 频道）
+            commands::generation_commit_draft,
+            commands::generation_retry_draft_short_outline,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,

@@ -62,6 +62,7 @@ use crate::repositories::generation_run_repository::{
     RootBudget, RunView,
 };
 use crate::security::{self, ProjectSessionContext};
+use crate::services::generation_draft_effects::GenerationDraftEffects;
 use crate::state::ActiveProject;
 
 // ============================================================================
@@ -1478,6 +1479,116 @@ impl MainGenerationOwner {
             .discard_candidate(conn, artifact_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
         self.view_of(conn, &run)
+    }
+
+    /// 基线 `commitDraft`（main-generation-owner.ts:1292-1300）：
+    /// 草稿提交——把运行当前可见合成正文落库为草稿行
+    /// （`GenerationDraftEffects.commit`），返回提交回执
+    /// （`GenerationDraftCommitReceipt`，契约
+    /// `generation:commit-draft`，generation-owner-contract.ts:278）。
+    ///
+    /// 本波次就位**幂等重放面**（逐字对齐基线）：运行身份校验
+    /// （`require_run`，非执行语义——基线 :1293 `requireRun`
+    /// 单参调用，默认 `execution = false`，:138）→ 已存提交回执
+    /// 读取（外层 `draftEffects.readCommit`，:1295；正文被改写时
+    /// `GENERATION_DRAFT_RECEIPT_INVALID`）→ 目标校验（基线
+    /// `GenerationDraftEffects.commit` :129-133：`source` 恒
+    /// `'write'`、章节号 / 操作 / 批次身份与源清单一致，否则
+    /// `GENERATION_DRAFT_TARGET_INVALID`）→ 已提交重放（:134-138：
+    /// `expectedCompositionHash` 与已存回执一致 → 返回原回执子集
+    /// `{ success, id, version, content, contentHash }`；不一致 →
+    /// `GENERATION_DRAFT_COMMIT_CONFLICT`）。
+    ///
+    /// ⚠️ B3 占位：基线 :139-174 的新提交写入路径未迁移——
+    /// `assertSourcesCurrent` 源一致性重建（:700-717，依赖
+    /// `rebuildBinding`）、可见合成 / 目标单位 / 批次进度校验
+    /// （:140-160）、`DraftRepository.create` 草稿行写入与
+    /// `generation_attempts` usage 回执写回（:161-171），以及
+    /// `agents.withChildEffect` 子生成器效应登记
+    /// （agent-generation.ts:344-371）与外层
+    /// `deps.database.transaction(...).immediate()` 事务包装
+    /// （generation-draft-effects.ts 头注：`commit` 写面刻意不平移，
+    /// 随 G4-6/G4-7 迁移）——新提交入口 fail-closed（命令层收敛为
+    /// `GENERATION_REQUEST_FAILED`）。
+    pub fn commit_draft(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        let run = self.require_run(conn, &handle, false)?;
+        // 基线 :1295 外层重放分支判定：已存提交回执（正文被改写
+        // 时 readCommit 抛 GENERATION_DRAFT_RECEIPT_INVALID）。
+        let previous = GenerationDraftEffects.read_commit(conn, &self.repository, &run.run_id)?;
+        let manifest = &run.binding.source_manifest;
+        // 基线 commit :129-133 目标校验（`source` 恒 'write'、
+        // 章节号 / 操作 / 批次身份与源清单一致；基线 `undefined`
+        // 缺席语义与 Rust `None` 等价）。
+        if request.get("source").and_then(Value::as_str) != Some("write")
+            || request.get("chapterNumber").and_then(Value::as_i64)
+                != manifest.get("chapterNumber").and_then(Value::as_i64)
+            || manifest.get("operation").and_then(Value::as_str) != Some("chapter-draft")
+            || request.get("batchId").and_then(Value::as_str)
+                != manifest.get("batchId").and_then(Value::as_str)
+        {
+            return Err(mutating_error("GENERATION_DRAFT_TARGET_INVALID"));
+        }
+        if let Some(previous) = previous {
+            // 基线 commit :134-138：幂等重放——期望哈希与已存
+            // 回执一致时返回原回执子集（GenerationDraftCommitReceipt
+            // 形状，契约 generation-owner-contract.ts:111-117），
+            // 不一致 → GENERATION_DRAFT_COMMIT_CONFLICT。
+            // 注：`read_commit` 回执序列化为 snake_case 键
+            // （StoredDraftCommit 无 rename_all）。
+            if previous.get("content_hash").and_then(Value::as_str)
+                != request
+                    .get("expectedCompositionHash")
+                    .and_then(Value::as_str)
+            {
+                return Err(mutating_error("GENERATION_DRAFT_COMMIT_CONFLICT"));
+            }
+            return Ok(json!({
+                "success": true,
+                "id": previous.get("id").cloned().unwrap_or(Value::Null),
+                "version": previous.get("version").cloned().unwrap_or(Value::Null),
+                "contentHash": previous.get("content_hash").cloned().unwrap_or(Value::Null),
+                "content": previous.get("content").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        // ⚠️ B3 占位：新提交写入路径（见方法头注）未迁移——
+        // 新提交入口 fail-closed（命令层收敛为
+        // GENERATION_REQUEST_FAILED）。
+        Err(mutating_error(
+            "主生成草稿提交尚未迁移：草稿写入路径（generation-draft-effects.commit 的 DraftRepository.create 与 generation_attempts usage 回执写回）与子生成器效应登记（agents.withChildEffect）待后续批次移植",
+        ))
+    }
+
+    /// 基线 `retryDraftShortOutline`（main-generation-owner.ts:619-624）：
+    /// 短细纲失败重试——以 `draft-short-outline-retry:{failedAttemptId}`
+    /// 调用 nonce 重放失败的短细纲 attempt（`execute` 的重试调用形态，
+    /// 携带 `shortOutlineRetryAttemptId` 标志，契约
+    /// `generation:retry-draft-short-outline`，
+    /// generation-owner-contract.ts:279）。
+    ///
+    /// 本波次就位**运行身份前缀**（逐字对齐基线）：`require_run`
+    /// （执行语义——基线 :620 `requireRun(request.handle, true)`）。
+    ///
+    /// ⚠️ B3 占位：基线 :621 的 `readFailedShortOutlineTask`
+    /// （:157-178——失败 attempt 的任务形状 / 提示哈希 / 源一致性
+    /// 重建校验，依赖未迁移的 `volatileReceipts` 易失回执缓存、
+    /// `repository.receipt` 尝试回执投影与 `compareGenerationSourceBindings`
+    /// 绑定比对）与 :622 的 `execute` 重试分发（LLM 分发循环未迁移，
+    /// 见 [`Self::execute`]）未迁移——重试入口 fail-closed（命令层收敛为
+    /// `GENERATION_REQUEST_FAILED`）。
+    pub fn retry_draft_short_outline(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        self.require_run(conn, &handle, true)?;
+        // ⚠️ B3 占位：readFailedShortOutlineTask 与 execute 重试分发
+        // （见方法头注）未迁移——重试入口 fail-closed（命令层收敛为
+        // GENERATION_REQUEST_FAILED）。
+        Err(mutating_error(
+            "主生成短细纲重试尚未迁移：失败任务重建（readFailedShortOutlineTask）与生成运行服务（generation-run-service）的 LLM 分发循环待后续批次移植",
+        ))
     }
 }
 

@@ -2144,3 +2144,42 @@ pub async fn generation_discard_candidate(
     let owner = guard.owner();
     state.with_project_db(|conn| owner.discard_candidate(conn, &handle, &artifact_id))
 }
+
+/// `generation:commit-draft` —— 草稿提交（幂等重放面就位，
+/// 新提交写入路径 fail-closed）
+/// （基线 `commitDraft(request)`，main-generation-owner.ts:1292；
+/// 单一对象入参 `GenerationDraftCommitRequest`，契约
+/// generation-owner-contract.ts:278，对齐 generation-controller.ts:244
+/// 的单参数注册形态）。
+#[tauri::command]
+pub async fn generation_commit_draft(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.commit_draft(conn, &request))
+}
+
+/// `generation:retry-draft-short-outline` —— 短细纲失败重试
+/// （运行身份前缀就位，重试分发 fail-closed）
+/// （基线 `retryDraftShortOutline(request)`，
+/// main-generation-owner.ts:619；单一对象入参
+/// `{ handle, failedAttemptId }`，契约
+/// generation-owner-contract.ts:279，对齐 generation-controller.ts:237
+/// 的单参数注册形态）。
+#[tauri::command]
+pub async fn generation_retry_draft_short_outline(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.retry_draft_short_outline(conn, &request))
+}
