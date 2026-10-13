@@ -1312,6 +1312,173 @@ impl MainGenerationOwner {
             "主生成恢复尚未迁移：生成运行服务（generation-run-service）的 resume 重分发待后续批次移植",
         ))
     }
+
+    /// 基线 `pause`（运行暂停，main-generation-owner.ts:1336）：
+    /// budget root 状态迁移为 `paused`（`generation_roots` +
+    /// `generation_runs` 双写，`reserved` 尝试标记
+    /// `cancelled-before-dispatch`），返回最新运行视图。
+    ///
+    /// 本波次就位**完整状态迁移面**（逐字对齐基线）：运行身份
+    /// 与执行准入（`require_run`，execution 语义，:1336）与
+    /// `repository.pause(rootActionId)` 状态迁移（仓储层已逐字
+    /// 移植，generation-run-repository.ts:641-657）。
+    ///
+    /// ⚠️ B3 波次说明：基线 `service.pause` 的进行中分发中止
+    /// （generation-run-service.ts:342-344，遍历进行中
+    /// `AbortController` 注册表并 `abort()`）依赖生成运行服务的
+    /// LLM 分发循环，尚未迁移——当前 `execute` fail-closed、
+    /// 不存在进行中分发，该副作用恒为空操作；分发循环迁移后
+    /// 需在此接线中止逻辑。
+    pub fn pause(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
+        let run = self.require_run(conn, handle, true)?;
+        self.repository
+            .pause(conn, &run.root_action_id, false)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let run = self
+            .repository
+            .get(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.view_of(conn, &run)
+    }
+
+    /// 基线 `cancel`（运行取消，main-generation-owner.ts:1337）：
+    /// budget root 状态迁移为 `cancelled`（`repository.pause` 的
+    /// `cancel=true` 形态），返回最新运行视图。
+    ///
+    /// 本波次就位**完整状态迁移面**（逐字对齐基线）：运行身份
+    /// 校验（`require_run`，非执行语义，:1337）与
+    /// `repository.pause(rootActionId, true)` 状态迁移。
+    ///
+    /// ⚠️ B3 波次说明：基线 `service.cancel` 的进行中分发中止
+    /// （generation-run-service.ts:345-347）同 `pause`——依赖
+    /// 生成运行服务的 LLM 分发循环，尚未迁移、当前恒为空操作。
+    pub fn cancel(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
+        let run = self.require_run(conn, handle, false)?;
+        self.repository
+            .pause(conn, &run.root_action_id, true)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let run = self
+            .repository
+            .get(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.view_of(conn, &run)
+    }
+
+    /// 基线 `restart`（运行重启，main-generation-owner.ts:1338-1375）：
+    /// 以新选择重新 `begin` 并处置旧 run（`service.cancel`）。
+    ///
+    /// 本波次就位**准入校验面**（逐字对齐基线）：运行身份校验
+    /// （`require_run`，非执行语义，:1339）、旧 roster / 图生成
+    /// 上下文拒绝（:1346-1349）→ `GENERATION_LEGACY_ADMISSION_REQUIRED`
+    /// / `GENERATION_GRAPH_ADMISSION_REQUIRED`、重启 nonce 新鲜性
+    /// （:1350）→ `GENERATION_RESTART_NEW_NONCE_REQUIRED`。
+    ///
+    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :1344-1345 的子生成器
+    /// 登记册可变性断言（imports / finalizations / graphs /
+    /// legacyRosters，未迁移）、:1351-1364 的规划续作面
+    /// （`planningContinuation` 推导 / `readPlanningContinuation`
+    /// 幂等重放 / `recordPlanningContinuation` 持久化）、
+    /// `begin(selection)`（主生成策略规划器，fail-closed）与
+    /// `service.cancel` 的进行中分发中止尚未迁移——重启入口
+    /// fail-closed（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+    pub fn restart(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        selection: &Value,
+    ) -> Result<Value, String> {
+        let old = self.require_run(conn, handle, false)?;
+        // 基线 :1346-1349：旧 roster / 图生成上下文的运行不可重启。
+        let manifest = &old.binding.source_manifest;
+        if manifest.get("legacyRosterContext").is_some() {
+            return Err(mutating_error("GENERATION_LEGACY_ADMISSION_REQUIRED"));
+        }
+        if manifest.get("graphGenerationContext").is_some() {
+            return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
+        }
+        // 基线 :1350：重启选择必须携带新 nonce 且不得指定父根。
+        let parent_root_action_id = selection
+            .get("parentRootActionId")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let ui_action_nonce = selection
+            .get("uiActionNonce")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let root_nonce = self
+            .repository
+            .budget(conn, &old.root_action_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .root
+            .ui_action_nonce;
+        if !parent_root_action_id.is_null() || ui_action_nonce == Value::String(root_nonce) {
+            return Err(mutating_error("GENERATION_RESTART_NEW_NONCE_REQUIRED"));
+        }
+        // ⚠️ B3 占位：基线 :1344-1345 的子生成器登记册可变性断言、
+        // :1351-1364 的规划续作面、`begin(selection)` 重开与
+        // `service.cancel` 旧 run 处置未迁移——重启入口 fail-closed
+        // （命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+        Err(mutating_error(
+            "主生成重启尚未迁移：主生成策略规划器（newMainGenerationPolicy）与生成运行服务（generation-run-service）待后续批次移植",
+        ))
+    }
+
+    /// 基线 `discardCandidate`（候选丢弃，main-generation-owner.ts:1376-1389）：
+    /// 候选制品标记 `discarded`（`generation_artifacts.status`），
+    /// 返回最新运行视图。
+    ///
+    /// 本波次就位**完整状态迁移面**（逐字对齐基线）：运行身份
+    /// 校验（`require_run`，非执行语义，:1377）、agent-round 操作
+    /// 拒绝（:1378）→ `GENERATION_AGENT_CONTROL_IMMUTABLE`、候选
+    /// 可丢弃性校验（:1385-1386，候选存在且非 `running`）→
+    /// `GENERATION_CANDIDATE_NOT_DISCARDABLE`、`repository.
+    /// discardCandidate(artifactId)` 状态迁移（仓储层已逐字移植，
+    /// generation-run-repository.ts:701-705）。
+    ///
+    /// ⚠️ B3 波次说明：基线 :1379-1384 的子生成器登记册可变性
+    /// 断言（reviewRevisions / imports / finalizations / graphs /
+    /// legacyRosters，未迁移）、`service.discardCandidate` 的
+    /// `unsavedTails` 清理（generation-run-service.ts:338-341，
+    /// 恒空——`readUnsavedTails` 依赖未迁移）与
+    /// `volatileReceipts.delete`（:1387，易失回执缓存未迁移）
+    /// 尚未迁移，均为空操作。
+    pub fn discard_candidate(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        artifact_id: &str,
+    ) -> Result<Value, String> {
+        let run = self.require_run(conn, handle, false)?;
+        // 基线 :1378：agent-round 操作的候选不可控制。
+        if run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            == Some("agent-round")
+        {
+            return Err(mutating_error("GENERATION_AGENT_CONTROL_IMMUTABLE"));
+        }
+        // 基线 :1385-1386：候选必须存在且非进行中。
+        let view = self.view_of(conn, &run)?;
+        let discardable = view
+            .get("candidates")
+            .and_then(Value::as_array)
+            .map(|candidates| {
+                candidates.iter().any(|item| {
+                    item.get("artifactId").and_then(Value::as_str) == Some(artifact_id)
+                        && item.get("status").and_then(Value::as_str) != Some("running")
+                })
+            })
+            .unwrap_or(false);
+        if !discardable {
+            return Err(mutating_error("GENERATION_CANDIDATE_NOT_DISCARDABLE"));
+        }
+        self.repository
+            .discard_candidate(conn, artifact_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.view_of(conn, &run)
+    }
 }
 
 // ============================================================================

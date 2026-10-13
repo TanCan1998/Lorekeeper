@@ -2036,3 +2036,111 @@ pub async fn generation_resume(
     let owner = guard.owner();
     state.with_project_db(|conn| owner.resume(conn, &handle))
 }
+
+/// `generation:pause` —— 运行暂停
+/// （基线 `pause(handle)`，main-generation-owner.ts:1336）。
+#[tauri::command]
+pub async fn generation_pause(
+    state: State<'_, AppState>,
+    handle: MainGenerationRunHandle,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let handle = serde_json::to_value(&handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.pause(conn, &handle))
+}
+
+/// `generation:cancel` —— 运行取消
+/// （基线 `cancel(handle)`，main-generation-owner.ts:1337）。
+#[tauri::command]
+pub async fn generation_cancel(
+    state: State<'_, AppState>,
+    handle: MainGenerationRunHandle,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let handle = serde_json::to_value(&handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.cancel(conn, &handle))
+}
+
+/// `generation:restart` —— 运行重启（新选择重开 + 旧 run 处置）
+/// （基线 `restart(handle, selection)`，main-generation-owner.ts:1338）。
+///
+/// IPC 边界前置校验（基线 generation-controller.ts:259-262，先于
+/// owner 门禁）：chapter-draft 必须携带 `preparationId`
+/// （`GENERATION_DRAFT_PREPARATION_REQUIRED`）与 `materialDecision`
+/// （`GENERATION_MATERIAL_DECISION_REQUIRED`）；非 chapter-draft
+/// 不得携带 `materialDecision`（`GENERATION_MATERIAL_DECISION_INVALID`）。
+#[tauri::command]
+pub async fn generation_restart(
+    state: State<'_, AppState>,
+    handle: MainGenerationRunHandle,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let operation = request
+        .get("operation")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if operation == "chapter-draft"
+        && request
+            .get("preparationId")
+            .is_none_or(|value| value.is_null())
+    {
+        return Err(mutating_error(map_generation_error(
+            "GENERATION_DRAFT_PREPARATION_REQUIRED",
+        )));
+    }
+    if operation == "chapter-draft"
+        && request
+            .get("materialDecision")
+            .is_none_or(|value| value.is_null())
+    {
+        return Err(mutating_error(map_generation_error(
+            "GENERATION_MATERIAL_DECISION_REQUIRED",
+        )));
+    }
+    if operation != "chapter-draft"
+        && request
+            .get("materialDecision")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(mutating_error(map_generation_error(
+            "GENERATION_MATERIAL_DECISION_INVALID",
+        )));
+    }
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let handle = serde_json::to_value(&handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.restart(conn, &handle, &request))
+}
+
+/// `generation:discard-candidate` —— 候选制品丢弃
+/// （基线 `discardCandidate(handle, artifactId)`，
+/// main-generation-owner.ts:1376）。
+#[tauri::command]
+pub async fn generation_discard_candidate(
+    state: State<'_, AppState>,
+    handle: MainGenerationRunHandle,
+    artifact_id: String,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let handle = serde_json::to_value(&handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.discard_candidate(conn, &handle, &artifact_id))
+}

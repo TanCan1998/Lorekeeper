@@ -265,6 +265,11 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'generation:bind-material-decision': ['request'],
   'generation:execute': ['request'],
   'generation:resume': ['handle'],
+  // 批次 G4-6b-2：主生成 owner 控制面（generation:* 4 频道）
+  'generation:pause': ['handle'],
+  'generation:cancel': ['handle'],
+  'generation:restart': ['handle', 'request'],
+  'generation:discard-candidate': ['handle', 'artifactId'],
 }
 
 /** 频道 → Tauri 命令名（`channel:seg-name` → `channel_seg_name`）。 */
