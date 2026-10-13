@@ -1978,7 +1978,7 @@ pub async fn generation_begin(
     let cache = MainGenerationOwnerCache::new();
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
-    state.with_project_db(|conn| owner.begin(conn, &selection, false))
+    state.with_project_db(|conn| owner.begin(conn, &selection, false, false))
 }
 
 /// `generation:bind-material-decision` 请求包装

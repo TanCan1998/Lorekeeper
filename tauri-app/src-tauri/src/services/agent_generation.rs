@@ -44,16 +44,17 @@
 //!   `roundIndex` 恒为整数写出，不可达）。
 //!
 //! 子波次边界：本波**不注册命令**（commands/agent_generation.rs 属子波次 C）；
-//! `resume` / `execute_round` / `admit_workflow` / `commit_domain_tool`
-//! 属子波次 B/C，本波以 `*_UNMIGRATED` 占位码留空（对齐既有
-//! `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED` 先例，非基线码）。
+//! 子波次边界：本波**不注册命令**（commands/agent_generation.rs 属子波次 C）；
+//! `resume` / `execute_round` / `commit_domain_tool` 属子波次 B/C，
+//! 本波以 `*_UNMIGRATED` 占位码留空（对齐既有
+//! `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED` 先例，非基线码）；
+//! `admit_workflow` 已随子波次 B 逐字移植（owner.begin 子代准入）。
 
 use crate::repositories::generation_run_repository::{
     DurableGenerationRun, GenerationRunRepository, MainGenerationRunHandle, RunBinding,
 };
 use crate::services::agent_generation_context::{
-    validate_agent_generation_input, AgentGenerationContext, AgentGenerationInput,
-    AgentToolSource,
+    validate_agent_generation_input, AgentGenerationContext, AgentGenerationInput, AgentToolSource,
 };
 use crate::services::prompt_system_role::WritingLanguage;
 use rusqlite::{Connection, OptionalExtension};
@@ -88,9 +89,11 @@ pub const GENERATION_AGENT_TOOL_IDENTITY_MISMATCH: &str = "GENERATION_AGENT_TOOL
 /// `GENERATION_AGENT_CONFIRMATION_REQUIRED` — confirmed 非 boolean。
 pub const GENERATION_AGENT_CONFIRMATION_REQUIRED: &str = "GENERATION_AGENT_CONFIRMATION_REQUIRED";
 /// `GENERATION_AGENT_AUTHOR_SELECTION_INVALID` — 作者蓝图提案形态非法。
-pub const GENERATION_AGENT_AUTHOR_SELECTION_INVALID: &str = "GENERATION_AGENT_AUTHOR_SELECTION_INVALID";
+pub const GENERATION_AGENT_AUTHOR_SELECTION_INVALID: &str =
+    "GENERATION_AGENT_AUTHOR_SELECTION_INVALID";
 /// `GENERATION_AGENT_AUTHOR_SELECTION_CONFLICT` — 既有 selections 与请求冲突。
-pub const GENERATION_AGENT_AUTHOR_SELECTION_CONFLICT: &str = "GENERATION_AGENT_AUTHOR_SELECTION_CONFLICT";
+pub const GENERATION_AGENT_AUTHOR_SELECTION_CONFLICT: &str =
+    "GENERATION_AGENT_AUTHOR_SELECTION_CONFLICT";
 /// `GENERATION_AGENT_TOOL_STALE` — root epoch / 状态 / 源指纹过期。
 pub const GENERATION_AGENT_TOOL_STALE: &str = "GENERATION_AGENT_TOOL_STALE";
 /// `GENERATION_AGENT_TOOL_RESULT_INVALID` — finish-tool 请求形态非法。
@@ -98,19 +101,27 @@ pub const GENERATION_AGENT_TOOL_RESULT_INVALID: &str = "GENERATION_AGENT_TOOL_RE
 /// `GENERATION_AGENT_TOOL_RESULT_CONFLICT` — 工具结果幂等重放冲突。
 pub const GENERATION_AGENT_TOOL_RESULT_CONFLICT: &str = "GENERATION_AGENT_TOOL_RESULT_CONFLICT";
 /// `GENERATION_AGENT_WORKFLOW_NOT_AUTHORIZED` — start_workflow 注册未授权。
-pub const GENERATION_AGENT_WORKFLOW_NOT_AUTHORIZED: &str = "GENERATION_AGENT_WORKFLOW_NOT_AUTHORIZED";
+pub const GENERATION_AGENT_WORKFLOW_NOT_AUTHORIZED: &str =
+    "GENERATION_AGENT_WORKFLOW_NOT_AUTHORIZED";
 /// `GENERATION_AGENT_WORKFLOW_INVALID` — 工作流参数形态非法。
 pub const GENERATION_AGENT_WORKFLOW_INVALID: &str = "GENERATION_AGENT_WORKFLOW_INVALID";
 /// `GENERATION_AGENT_REGISTRATION_INVALID` — registrationId 格式非法。
 pub const GENERATION_AGENT_REGISTRATION_INVALID: &str = "GENERATION_AGENT_REGISTRATION_INVALID";
 /// `GENERATION_AGENT_REGISTRATION_MISSING` — registrationId 定位不唯一。
 pub const GENERATION_AGENT_REGISTRATION_MISSING: &str = "GENERATION_AGENT_REGISTRATION_MISSING";
+/// `GENERATION_AGENT_REGISTRATION_REQUIRED` — agent-round 子代缺少
+/// registrationId（基线 admitWorkflow :310）。
+pub const GENERATION_AGENT_REGISTRATION_REQUIRED: &str = "GENERATION_AGENT_REGISTRATION_REQUIRED";
+/// `GENERATION_AGENT_CHILD_AMBIGUOUS` — 幂等定位命中多个已登记子代
+/// （基线 admitWorkflow :323）。
+pub const GENERATION_AGENT_CHILD_AMBIGUOUS: &str = "GENERATION_AGENT_CHILD_AMBIGUOUS";
 /// `GENERATION_AGENT_CHILD_NOT_AUTHORIZED` — 子代 handle 未授权。
 pub const GENERATION_AGENT_CHILD_NOT_AUTHORIZED: &str = "GENERATION_AGENT_CHILD_NOT_AUTHORIZED";
 /// `GENERATION_AGENT_SOURCE_CHANGED` — 源指纹在效应前后发生变化。
 pub const GENERATION_AGENT_SOURCE_CHANGED: &str = "GENERATION_AGENT_SOURCE_CHANGED";
 /// `GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED` — 会话轮次缺少 attempt。
-pub const GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED: &str = "GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED";
+pub const GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED: &str =
+    "GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED";
 /// `GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED` — 域工具 completed 但无域效应。
 pub const GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED: &str = "GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED";
 /// 基线 finishTool:263 逐字为 `'GENERATION_EPOCH_STALE'`（**无 AGENT 前缀**，
@@ -154,7 +165,10 @@ pub fn normalize_agent_planning_arguments(
     args: &Map<String, Value>,
     total_chapters: i64,
 ) -> Result<Map<String, Value>, String> {
-    let workflow = args.get("workflow").and_then(Value::as_str).unwrap_or_default();
+    let workflow = args
+        .get("workflow")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if workflow != "generate_architecture" && workflow != "generate_blueprint" {
         return Ok(args.clone());
     }
@@ -285,6 +299,19 @@ pub struct AgentWorkflowRegistration {
     pub child_handles: Vec<MainGenerationRunHandle>,
 }
 
+/// 基线 `admitWorkflow(selection)` 的返回值
+/// （`{ existing?: MainGenerationRunHandle; parentRootActionId: string }`，
+/// agent-generation.ts:305）——`existing` 命中已登记子代时
+/// owner.begin 幂等早退（返回其运行视图），否则携带
+/// `parentRootActionId` 供调用方继续准入链。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdmittedWorkflow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing: Option<MainGenerationRunHandle>,
+    pub parent_root_action_id: String,
+}
+
 /// `AgentGenerationRound`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -382,7 +409,12 @@ pub trait AgentHost {
         task: &Value,
     ) -> Result<Value, String>;
     /// 基线 `current(run, expected?): boolean`。
-    fn current(&self, conn: &Connection, run: &DurableGenerationRun, expected: Option<&RunBinding>) -> bool;
+    fn current(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        expected: Option<&RunBinding>,
+    ) -> bool;
     /// 基线 `capture(run): RunBinding`。
     fn capture(&self, conn: &Connection, run: &DurableGenerationRun) -> Result<RunBinding, String>;
 }
@@ -445,7 +477,10 @@ impl<'a> AgentGeneration<'a> {
     fn recover_dangling_claims(&self) -> Result<(), String> {
         if self.conn.is_autocommit() {
             // 无环境事务：自开事务（基线 `.immediate()`）。
-            let tx = self.conn.unchecked_transaction().map_err(|error| error.to_string())?;
+            let tx = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
             let outcome = self.recover_dangling_claims_in_transaction();
             match outcome {
                 Ok(()) => tx.commit().map(|_| ()).map_err(|error| error.to_string()),
@@ -474,9 +509,8 @@ impl<'a> AgentGeneration<'a> {
             .map_err(|error| error.to_string())?;
         for (attempt_id, usage_json) in rows {
             // 基线 `JSON.parse(row.usage_receipt_json ?? '{}')`。
-            let mut usage: Value =
-                serde_json::from_str(usage_json.as_deref().unwrap_or("{}"))
-                    .map_err(|error| error.to_string())?;
+            let mut usage: Value = serde_json::from_str(usage_json.as_deref().unwrap_or("{}"))
+                .map_err(|error| error.to_string())?;
             let Some(agent_actions) = usage.get_mut("agentActions") else {
                 continue;
             };
@@ -506,7 +540,8 @@ impl<'a> AgentGeneration<'a> {
                 }
             }
             if changed {
-                let usage_string = serde_json::to_string(&usage).map_err(|error| error.to_string())?;
+                let usage_string =
+                    serde_json::to_string(&usage).map_err(|error| error.to_string())?;
                 self.conn
                     .execute(
                         "UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?",
@@ -557,7 +592,11 @@ impl<'a> AgentGeneration<'a> {
         let run = self.runs.get(self.conn, &handle_value.run_id)?;
         if !is_deep_strict_equal(&self.handle(&run), &handle_value)
             || run.binding.project_id != self.project_id
-            || run.binding.source_manifest.get("operation").and_then(Value::as_str)
+            || run
+                .binding
+                .source_manifest
+                .get("operation")
+                .and_then(Value::as_str)
                 != Some("agent-round")
         {
             return Err(GENERATION_AGENT_IDENTITY_MISMATCH.to_string());
@@ -647,7 +686,10 @@ impl<'a> AgentGeneration<'a> {
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .filter(|run| run.binding.project_id == self.project_id)
-            .map(|run| self.navigation(&run).map(|navigation| (navigation.round_index, run)))
+            .map(|run| {
+                self.navigation(&run)
+                    .map(|navigation| (navigation.round_index, run))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         records.sort_by_key(|(round_index, _)| *round_index);
         Ok(records.into_iter().map(|(_, run)| run).collect())
@@ -701,10 +743,9 @@ impl<'a> AgentGeneration<'a> {
         }
         let expected = match &transition {
             Some(transition) => {
-                let binding_string = serde_json::to_string(
-                    transition.get("binding").unwrap_or(&Value::Null),
-                )
-                .map_err(|error| error.to_string())?;
+                let binding_string =
+                    serde_json::to_string(transition.get("binding").unwrap_or(&Value::Null))
+                        .map_err(|error| error.to_string())?;
                 if text_hash(&binding_string)
                     != transition
                         .get("afterHash")
@@ -713,13 +754,8 @@ impl<'a> AgentGeneration<'a> {
                 {
                     return Err(GENERATION_AGENT_EFFECT_BINDING_INVALID.to_string());
                 }
-                serde_json::from_value(
-                    transition
-                        .get("binding")
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                )
-                .map_err(|_| GENERATION_AGENT_EFFECT_BINDING_INVALID.to_string())?
+                serde_json::from_value(transition.get("binding").cloned().unwrap_or(Value::Null))
+                    .map_err(|_| GENERATION_AGENT_EFFECT_BINDING_INVALID.to_string())?
             }
             None => None,
         };
@@ -803,7 +839,10 @@ impl<'a> AgentGeneration<'a> {
                 } else {
                     "incomplete".to_string()
                 },
-                visible_text: receipt.artifact.map(|artifact| artifact.text).unwrap_or_default(),
+                visible_text: receipt
+                    .artifact
+                    .map(|artifact| artifact.text)
+                    .unwrap_or_default(),
                 protocol_text: String::new(),
                 actions: Vec::new(),
             });
@@ -828,7 +867,10 @@ impl<'a> AgentGeneration<'a> {
                     .as_ref()
                     .and_then(|state| state.get("planningArguments"))
                     .is_none()
-                && state.as_ref().and_then(|state| state.get("workflow")).is_none()
+                && state
+                    .as_ref()
+                    .and_then(|state| state.get("workflow"))
+                    .is_none()
                 && (state.is_none()
                     || state
                         .as_ref()
@@ -904,10 +946,7 @@ impl<'a> AgentGeneration<'a> {
                     tool_call_id: tool_call_id.clone(),
                 },
                 name: call.name.clone(),
-                arguments: arguments
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
+                arguments: arguments.as_object().cloned().unwrap_or_default(),
                 status: state
                     .as_ref()
                     .and_then(|state| state.get("status"))
@@ -978,7 +1017,10 @@ impl<'a> AgentGeneration<'a> {
                             attempt_id: parent.ref_.attempt_id.clone(),
                             tool_call_id,
                         },
-                        name: proposal.get("name").and_then(Value::as_str).map(str::to_string)?,
+                        name: proposal
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)?,
                         arguments: proposal
                             .get("arguments")
                             .and_then(Value::as_object)
@@ -1065,10 +1107,9 @@ impl<'a> AgentGeneration<'a> {
         // 基线 :136-137——nextRound：末轮 not-started → 其 index；末轮
         // completed 且全部动作终态且 index<7 → index+1；否则 null。
         let all_done = !last.actions.is_empty()
-            && last
-                .actions
-                .iter()
-                .all(|action| matches!(action.status.as_str(), "completed" | "failed" | "declined"));
+            && last.actions.iter().all(|action| {
+                matches!(action.status.as_str(), "completed" | "failed" | "declined")
+            });
         let next_round = if last.status == "not-started" {
             Some(last.index)
         } else if last.status == "completed" && all_done && last.index < 7 {
@@ -1146,14 +1187,14 @@ impl<'a> AgentGeneration<'a> {
             {
                 return Err(GENERATION_AGENT_NONCE_CONFLICT.to_string());
             }
-            return self.read(&serde_json::to_value(self.handle(first))
-                .map_err(|error| error.to_string())?);
+            return self.read(
+                &serde_json::to_value(self.handle(first)).map_err(|error| error.to_string())?,
+            );
         }
         // 基线 :154-155——否则经 host.begin 开第 0 轮 run 并 read。
-        let view = self.host.begin(
-            self.conn,
-            &self.selection(&input, &key, 0, model_id, None),
-        )?;
+        let view = self
+            .host
+            .begin(self.conn, &self.selection(&input, &key, 0, model_id, None))?;
         let view_handle = view.get("handle").cloned().unwrap_or(Value::Null);
         self.read(&view_handle)
     }
@@ -1221,14 +1262,24 @@ impl<'a> AgentGeneration<'a> {
     /// deep-equal 短路 → 写回 → 重新定位返回。
     fn update_action<F>(&self, ref_: &Value, update: F) -> Result<AgentToolAction, String>
     where
-        F: FnOnce(&AgentToolAction, &DurableGenerationRun, &Connection) -> Result<ActionState, String>,
+        F: FnOnce(
+            &AgentToolAction,
+            &DurableGenerationRun,
+            &Connection,
+        ) -> Result<ActionState, String>,
     {
         if self.conn.is_autocommit() {
             // 无环境事务：自开事务（基线 `.immediate()`）。
-            let tx = self.conn.unchecked_transaction().map_err(|error| error.to_string())?;
+            let tx = self
+                .conn
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
             let outcome = self.update_action_in_transaction(ref_, update);
             match outcome {
-                Ok(action) => tx.commit().map(|_| action).map_err(|error| error.to_string()),
+                Ok(action) => tx
+                    .commit()
+                    .map(|_| action)
+                    .map_err(|error| error.to_string()),
                 // 错误时 tx drop 即回滚，与基线 `db.transaction()` 语义一致。
                 Err(error) => Err(error),
             }
@@ -1246,7 +1297,11 @@ impl<'a> AgentGeneration<'a> {
         update: F,
     ) -> Result<AgentToolAction, String>
     where
-        F: FnOnce(&AgentToolAction, &DurableGenerationRun, &Connection) -> Result<ActionState, String>,
+        F: FnOnce(
+            &AgentToolAction,
+            &DurableGenerationRun,
+            &Connection,
+        ) -> Result<ActionState, String>,
     {
         let (run, action) = self.action(ref_)?;
         let state = update(&action, &run, self.conn)?;
@@ -1264,8 +1319,8 @@ impl<'a> AgentGeneration<'a> {
         let Some(usage_json) = usage_json else {
             return Err("agent tool action attempt missing".to_string());
         };
-        let mut usage: Value = serde_json::from_str(&usage_json)
-            .map_err(|error| error.to_string())?;
+        let mut usage: Value =
+            serde_json::from_str(&usage_json).map_err(|error| error.to_string())?;
         let usage_object = usage
             .as_object_mut()
             .ok_or_else(|| "agent usage receipt is not an object".to_string())?;
@@ -1286,7 +1341,10 @@ impl<'a> AgentGeneration<'a> {
             .unwrap_or_default();
         next.insert("status".to_string(), Value::String(state.status.clone()));
         if let Some(observation) = &state.observation {
-            next.insert("observation".to_string(), Value::String(observation.clone()));
+            next.insert(
+                "observation".to_string(),
+                Value::String(observation.clone()),
+            );
         }
         if let Some(workflow) = &state.workflow {
             next.insert(
@@ -1304,16 +1362,17 @@ impl<'a> AgentGeneration<'a> {
                 .unwrap_or_default();
             agent_actions.insert(tool_call_id.clone(), next_value);
             usage_object.insert("agentActions".to_string(), Value::Object(agent_actions));
-            let usage_string =
-                serde_json::to_string(&usage).map_err(|error| error.to_string())?;
+            let usage_string = serde_json::to_string(&usage).map_err(|error| error.to_string())?;
             self.conn
                 .execute(
                     "UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?",
-                    [usage_string, ref_
-                        .get("attemptId")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string()],
+                    [
+                        usage_string,
+                        ref_.get("attemptId")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    ],
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -1355,9 +1414,9 @@ impl<'a> AgentGeneration<'a> {
                                 && item
                                     .as_object()
                                     .map(|record| {
-                                        record.keys().all(|key| {
-                                            matches!(key.as_str(), "name" | "arguments")
-                                        })
+                                        record
+                                            .keys()
+                                            .all(|key| matches!(key.as_str(), "name" | "arguments"))
                                     })
                                     .unwrap_or(false)
                                 && item
@@ -1367,17 +1426,12 @@ impl<'a> AgentGeneration<'a> {
                         && serde_json::to_string(selections)
                             .map(|serialized| serialized.len() <= 256 * 1024)
                             .unwrap_or(false)
-                        && self
-                            .context(run)?
-                            .input
-                            .tools
-                            .iter()
-                            .any(|tool| {
-                                tool.name == "propose_chapter_blueprint"
-                                    && matches!(tool.source, AgentToolSource::Builtin)
-                                    && tool.requires_confirmation
-                                    && !tool.is_read_only
-                            });
+                        && self.context(run)?.input.tools.iter().any(|tool| {
+                            tool.name == "propose_chapter_blueprint"
+                                && matches!(tool.source, AgentToolSource::Builtin)
+                                && tool.requires_confirmation
+                                && !tool.is_read_only
+                        });
                     if !selections_valid {
                         return Err(GENERATION_AGENT_AUTHOR_SELECTION_INVALID.to_string());
                     }
@@ -1400,8 +1454,7 @@ impl<'a> AgentGeneration<'a> {
                     // 基线 :247-248——既有 selections 必须 deep-equal；
                     // 无既有时 action 必须为 pending。
                     let prior_present = prior.as_ref().is_some_and(|prior| !prior.is_null());
-                    if (prior_present
-                        && !is_deep_strict_equal(&prior.unwrap(), selections))
+                    if (prior_present && !is_deep_strict_equal(&prior.unwrap(), selections))
                         || (!prior_present && action.status != "pending")
                     {
                         return Err(GENERATION_AGENT_AUTHOR_SELECTION_CONFLICT.to_string());
@@ -1413,8 +1466,10 @@ impl<'a> AgentGeneration<'a> {
                         .unwrap_or_default();
                     author_selections.insert(tool_call_id, Value::Array(selections.clone()));
                     if let Some(usage_object) = usage.as_object_mut() {
-                        usage_object
-                            .insert("agentAuthorSelections".to_string(), Value::Object(author_selections));
+                        usage_object.insert(
+                            "agentAuthorSelections".to_string(),
+                            Value::Object(author_selections),
+                        );
                     }
                     let usage_string =
                         serde_json::to_string(&usage).map_err(|error| error.to_string())?;
@@ -1514,14 +1569,15 @@ impl<'a> AgentGeneration<'a> {
                     serde_json::from_str(&usage_json).map_err(|error| error.to_string())?;
                 let effect = stored
                     .get("agentActions")
-                    .and_then(|agent_actions| {
-                        agent_actions.get(tool_call_id(request).as_str())
-                    })
+                    .and_then(|agent_actions| agent_actions.get(tool_call_id(request).as_str()))
                     .and_then(|state| state.get("domainEffect"))
                     .cloned();
                 // 基线 :268-270——域工具 completed 必须有域效应。
                 if status == "completed"
-                    && matches!(action.name.as_str(), "propose_novel_config" | "propose_chapter_blueprint")
+                    && matches!(
+                        action.name.as_str(),
+                        "propose_novel_config" | "propose_chapter_blueprint"
+                    )
                     && effect.is_none()
                 {
                     return Err(GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED.to_string());
@@ -1533,7 +1589,8 @@ impl<'a> AgentGeneration<'a> {
                     if effect.is_some() && action.status == "completed" && status == "completed" {
                         return Ok(ActionState::of_action(action));
                     }
-                    if action.status == status && action.observation.as_deref() == Some(observation) {
+                    if action.status == status && action.observation.as_deref() == Some(observation)
+                    {
                         return Ok(ActionState::of_action(action));
                     }
                     return Err(GENERATION_AGENT_TOOL_RESULT_CONFLICT.to_string());
@@ -1575,17 +1632,23 @@ impl<'a> AgentGeneration<'a> {
             // {workflow, chapter_number, start_chapter, chapter_count, target_units}；
             // generate_draft 另要求 chapter_number 为 ≥1 安全整数。
             let args = &action.arguments;
-            let workflow = args.get("workflow").and_then(Value::as_str).unwrap_or_default();
-            if !matches!(workflow, "generate_draft" | "generate_blueprint" | "generate_architecture")
-                || args
-                    .keys()
-                    .any(|key| {
-                        !matches!(
-                            key.as_str(),
-                            "workflow" | "chapter_number" | "start_chapter" | "chapter_count" | "target_units"
-                        )
-                    })
-            {
+            let workflow = args
+                .get("workflow")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !matches!(
+                workflow,
+                "generate_draft" | "generate_blueprint" | "generate_architecture"
+            ) || args.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "workflow"
+                        | "chapter_number"
+                        | "start_chapter"
+                        | "chapter_count"
+                        | "target_units"
+                )
+            }) {
                 return Err(GENERATION_AGENT_WORKFLOW_INVALID.to_string());
             }
             let chapter_number = args.get("chapter_number");
@@ -1623,7 +1686,7 @@ impl<'a> AgentGeneration<'a> {
                                 .get("chapter_count")
                                 .and_then(Value::as_i64)
                                 .unwrap_or_default()
-                                - 1,
+                            - 1,
                         target_units: args
                             .get("target_units")
                             .and_then(Value::as_i64)
@@ -1644,9 +1707,9 @@ impl<'a> AgentGeneration<'a> {
             })
         })?;
         // 基线 :302——`updated.workflow!`（updateAction 重建后必含 workflow）。
-        updated.workflow.ok_or_else(|| {
-            "agent workflow registration missing after update".to_string()
-        })
+        updated
+            .workflow
+            .ok_or_else(|| "agent workflow registration missing after update".to_string())
     }
 
     /// 基线 `workflowRegistration(id)`（:305-342 区段）：全表扫 agent-round
@@ -1655,7 +1718,14 @@ impl<'a> AgentGeneration<'a> {
     fn workflow_registration(
         &self,
         id: &str,
-    ) -> Result<(AgentToolAction, DurableGenerationRun, AgentWorkflowRegistration), String> {
+    ) -> Result<
+        (
+            AgentToolAction,
+            DurableGenerationRun,
+            AgentWorkflowRegistration,
+        ),
+        String,
+    > {
         // 基线 :306——`/^agent-workflow:[a-f0-9]{64}$/u`。
         let Some(hex) = id.strip_prefix("agent-workflow:") else {
             return Err(GENERATION_AGENT_REGISTRATION_INVALID.to_string());
@@ -1673,8 +1743,11 @@ impl<'a> AgentGeneration<'a> {
             .map_err(|error| error.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|error| error.to_string())?;
-        let mut found: Vec<(AgentToolAction, DurableGenerationRun, AgentWorkflowRegistration)> =
-            Vec::new();
+        let mut found: Vec<(
+            AgentToolAction,
+            DurableGenerationRun,
+            AgentWorkflowRegistration,
+        )> = Vec::new();
         for run_id in rows {
             let run = self.runs.get(self.conn, &run_id)?;
             if run.binding.project_id != self.project_id {
@@ -1719,8 +1792,10 @@ impl<'a> AgentGeneration<'a> {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let child = self.runs.get(self.conn, run_id)?;
-        if !is_deep_strict_equal(&serde_json::to_value(self.handle(&child)).map_err(|e| e.to_string())?, handle)
-        {
+        if !is_deep_strict_equal(
+            &serde_json::to_value(self.handle(&child)).map_err(|e| e.to_string())?,
+            handle,
+        ) {
             return Err(GENERATION_AGENT_CHILD_NOT_AUTHORIZED.to_string());
         }
         // 基线 :349-351——无 agentWorkflowRegistrationId：非 agent 子代，
@@ -1766,7 +1841,11 @@ impl<'a> AgentGeneration<'a> {
                 let Some(attempt_id) = attempt_id else {
                     return Err(GENERATION_AGENT_CHILD_EFFECT_ROUND_REQUIRED.to_string());
                 };
-                Ok((target.clone(), attempt_id, self.host.capture(self.conn, target)?))
+                Ok((
+                    target.clone(),
+                    attempt_id,
+                    self.host.capture(self.conn, target)?,
+                ))
             })
             .collect::<Result<_, _>>()?;
         let result = effect(self.conn)?;
@@ -1797,8 +1876,7 @@ impl<'a> AgentGeneration<'a> {
             if let Some(usage_object) = usage.as_object_mut() {
                 usage_object.insert("agentSourceTransition".to_string(), transition);
             }
-            let usage_string =
-                serde_json::to_string(&usage).map_err(|error| error.to_string())?;
+            let usage_string = serde_json::to_string(&usage).map_err(|error| error.to_string())?;
             self.conn
                 .execute(
                     "UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?",
@@ -1826,8 +1904,8 @@ impl<'a> AgentGeneration<'a> {
             return Err(GENERATION_AGENT_CHILD_NOT_AUTHORIZED.to_string());
         }
         // 基线 :374-378——updateAction 内推进 workflow 态。
-        let child_handle_value = serde_json::to_value(child_handle.clone())
-            .map_err(|error| error.to_string())?;
+        let child_handle_value =
+            serde_json::to_value(child_handle.clone()).map_err(|error| error.to_string())?;
         self.update_action(
             &serde_json::to_value(&action.ref_).map_err(|error| error.to_string())?,
             |current, _run, _conn| {
@@ -1866,24 +1944,210 @@ impl<'a> AgentGeneration<'a> {
 
     // ── 子波次 B/C 占位（方法签名预留，主体待对应波次实现）──────────────
 
-    /// 基线 `resume(handle)`（:156-170）——子波次 B 实现
-    /// （已完成轮次走控制纪元写入；否则 host.resume LLM 续跑）。
+    /// 基线 `resume(handle)`（:156-170）——随分发核心
+    /// （generation-run-service）波次实现
+
     /// 占位码 `GENERATION_AGENT_RESUME_UNMIGRATED` 为迁移占位、非基线码
     /// （对齐 `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED` 先例）。
     pub fn resume(&self, _handle: &Value) -> Result<AgentGenerationRecovery, String> {
         Err("GENERATION_AGENT_RESUME_UNMIGRATED".to_string())
     }
 
-    /// 基线 `executeRound(request)`（:180-219）——子波次 B 实现
-    /// （轮次序校验 / 消息组装 / host.execute 派发）。
+    /// 基线 `executeRound(request)`（:180-219）——随分发核心
+    /// （generation-run-service）波次实现
+
     pub fn execute_round(&self, _request: &Value) -> Result<AgentGenerationRecovery, String> {
         Err("GENERATION_AGENT_ROUND_UNMIGRATED".to_string())
     }
 
-    /// 基线 `admitWorkflow(selection)`（:305-342）——子波次 B 实现
-    /// （owner.begin 子代准入校验）。
-    pub fn admit_workflow(&self, _selection: &Value) -> Result<Value, String> {
-        Err("GENERATION_AGENT_ADMIT_UNMIGRATED".to_string())
+    /// 基线 `admitWorkflow(selection)`（:305-342）——owner.begin
+    /// 的子代准入校验（逐字平移）：
+    /// ① 无 registrationId 时 parentRootActionId 指向 agent-round
+    ///   根 → `GENERATION_AGENT_REGISTRATION_REQUIRED`，否则 `Ok(None)`；
+    /// ② `workflowRegistration(id)` 定位（找不到 / 重复 →
+    ///   `GENERATION_AGENT_REGISTRATION_MISSING`）；
+    /// ③ expectedOperations 表（generate_draft → chapter-draft；
+    ///   generate_blueprint → chapter-blueprint-directory；其余五个
+    ///   全局操作）；
+    /// ④ 五重门禁（action.status / modelId / parentRootActionId /
+    ///   operation / generate_draft 章节号 / 批量键）→
+    ///   `GENERATION_AGENT_CHILD_NOT_AUTHORIZED`；
+    /// ⑤ existing 幂等定位（childHandles 中 operation + chapterNumber
+    ///   与选择一致的已登记子代；>1 → `GENERATION_AGENT_CHILD_AMBIGUOUS`）；
+    /// ⑥ planning 区间校验（!existing 且 registration.planning 存在时，
+    ///   authorInputs 的 directory:requested-range /
+    ///   architecture:planning-intent / planning:target-units 与
+    ///   registration.planning 逐字段一致，否则未授权）；
+    /// ⑦ 根纪元 / 状态校验（!existing 时 budget root 的 epoch 与
+    ///   作用域一致且非 cancelled，否则 `GENERATION_AGENT_TOOL_STALE`）；
+    /// ⑧ 源一致性（!existing 且 `sourcesCurrent` 失败 →
+    ///   `GENERATION_AGENT_SOURCE_CHANGED`）；
+    /// ⑨ 返回 `{ existing, parentRootActionId }`。
+    pub fn admit_workflow(&self, selection: &Value) -> Result<Option<AdmittedWorkflow>, String> {
+        // ① 基线 :306-312——无 registrationId：parentRootActionId
+        // 指向 agent-round 根 → 缺少注册；否则非 agent 子代，透传。
+        let Some(registration_id) = selection
+            .get("agentWorkflowRegistrationId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            if let Some(parent_root_action_id) =
+                selection.get("parentRootActionId").and_then(Value::as_str)
+            {
+                let root = self.runs.budget(self.conn, parent_root_action_id)?.root;
+                if root.operation == "agent-round" {
+                    return Err(GENERATION_AGENT_REGISTRATION_REQUIRED.to_string());
+                }
+            }
+            return Ok(None);
+        };
+        // ② 基线 :313——registrationId 唯一定位。
+        let (action, run, registration) = self.workflow_registration(registration_id)?;
+        // ③ 基线 :314-318——expectedOperations 表。
+        let expected_operations: Vec<&str> = if registration.workflow == "generate_draft" {
+            vec!["chapter-draft"]
+        } else if registration.workflow == "generate_blueprint" {
+            vec!["chapter-blueprint-directory"]
+        } else {
+            vec![
+                "generate-global-config",
+                "generate-core-seed",
+                "character-architecture",
+                "generate-world-building",
+                "generate-plot-outline",
+            ]
+        };
+        // ④ 基线 :319-322——五重门禁（任一不满足 → 未授权）。
+        let selection_operation = selection
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let selection_chapter_number = selection.get("chapterNumber").and_then(Value::as_i64);
+        let not_authorized = !["running", "completed"].contains(&action.status.as_str())
+            || selection.get("modelId").and_then(Value::as_str)
+                != Some(registration.model_id.as_str())
+            || selection.get("parentRootActionId").and_then(Value::as_str)
+                != Some(run.root_action_id.as_str())
+            || !expected_operations.contains(&selection_operation)
+            || (registration.workflow == "generate_draft"
+                && selection_chapter_number != registration.chapter_number)
+            || selection
+                .get("batchId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+            || selection
+                .get("batchIntent")
+                .is_some_and(|intent| !intent.is_null())
+            || selection
+                .get("continueDirectoryOperationId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty());
+        if not_authorized {
+            return Err(GENERATION_AGENT_CHILD_NOT_AUTHORIZED.to_string());
+        }
+        // ⑤ 基线 :323-327——existing 幂等定位：childHandles 中
+        // operation + chapterNumber 与选择一致的已登记子代。
+        let matches: Vec<DurableGenerationRun> = registration
+            .child_handles
+            .iter()
+            .map(|handle| self.runs.get(self.conn, &handle.run_id))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|child| {
+                child
+                    .binding
+                    .source_manifest
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    == Some(selection_operation)
+                    && child
+                        .binding
+                        .source_manifest
+                        .get("chapterNumber")
+                        .and_then(Value::as_i64)
+                        == selection_chapter_number
+            })
+            .collect();
+        if matches.len() > 1 {
+            return Err(GENERATION_AGENT_CHILD_AMBIGUOUS.to_string());
+        }
+        let existing = matches.into_iter().next();
+        // ⑥ 基线 :328-337——planning 区间校验（!existing 且
+        // registration.planning 存在时）。
+        if existing.is_none() && registration.planning.is_some() {
+            let planning = registration.planning.as_ref().expect("planning 存在");
+            // 基线 :329 `const input = (id) => selection.authorInputs?.find(item => item.id === id)?.text`。
+            let input = |id: &str| -> Option<&Value> {
+                selection
+                    .get("authorInputs")
+                    .and_then(Value::as_array)
+                    .and_then(|inputs| {
+                        inputs
+                            .iter()
+                            .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
+                    })
+                    .and_then(|item| item.get("text"))
+            };
+            // 基线 :330-334——JSON 解析失败 → 未授权（catch 分支）。
+            let range: Option<Value> = if registration.workflow == "generate_blueprint" {
+                let text = input("directory:requested-range")
+                    .and_then(Value::as_str)
+                    .unwrap_or("null");
+                let value: Value = serde_json::from_str(text)
+                    .map_err(|_| GENERATION_AGENT_CHILD_NOT_AUTHORIZED.to_string())?;
+                // 基线 `value && { from: value.startChapter, to: value.endChapter }`——
+                // value 为 null 时区间为 undefined（Rust `None`）。
+                if value.is_null() {
+                    None
+                } else {
+                    Some(json!({
+                        "from": value.get("startChapter").cloned().unwrap_or(Value::Null),
+                        "to": value.get("endChapter").cloned().unwrap_or(Value::Null),
+                    }))
+                }
+            } else {
+                let text = input("architecture:planning-intent")
+                    .and_then(Value::as_str)
+                    .unwrap_or("null");
+                let value: Value = serde_json::from_str(text)
+                    .map_err(|_| GENERATION_AGENT_CHILD_NOT_AUTHORIZED.to_string())?;
+                // 基线 `JSON.parse(...)?.synopsisRange`——解析结果为
+                // null 时为 undefined（Rust `None`）。
+                value.get("synopsisRange").cloned()
+            };
+            // 基线 :335——`!isDeepStrictEqual(range, { from, to }) ||
+            // Number(input('planning:target-units')) !== targetUnits`。
+            let expected_range = json!({ "from": planning.from, "to": planning.to });
+            let target_units_match = match input("planning:target-units") {
+                Some(Value::Number(number)) => number.as_i64() == Some(planning.target_units),
+                Some(Value::String(text)) => {
+                    text.parse::<i64>().ok() == Some(planning.target_units)
+                }
+                _ => false,
+            };
+            if !is_deep_strict_equal(range.as_ref().unwrap_or(&Value::Null), &expected_range)
+                || !target_units_match
+            {
+                return Err(GENERATION_AGENT_CHILD_NOT_AUTHORIZED.to_string());
+            }
+        }
+        // ⑦ 基线 :338-339——根纪元 / 取消状态校验（!existing 时；
+        // 基线两次 budget 调用合并为一次，语义等价——无副作用）。
+        if existing.is_none() {
+            let root = self.runs.budget(self.conn, &run.root_action_id)?.root;
+            if root.epoch != self.epoch || root.status == "cancelled" {
+                return Err(GENERATION_AGENT_TOOL_STALE.to_string());
+            }
+        }
+        // ⑧ 基线 :340——源一致性（!existing 时）。
+        if existing.is_none() && !self.sources_current(&run)? {
+            return Err(GENERATION_AGENT_SOURCE_CHANGED.to_string());
+        }
+        // ⑨ 基线 :341-342——返回准入结果。
+        Ok(Some(AdmittedWorkflow {
+            existing: existing.map(|child| self.handle(&child)),
+            parent_root_action_id: run.root_action_id.clone(),
+        }))
     }
 
     /// 基线 `commitDomainTool(ref)`（:377-404）——子波次 C 实现
@@ -1943,9 +2207,7 @@ fn tool_call_id(request: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::agent_generation_context::{
-        AgentFrozenTool, AgentGenerationMode,
-    };
+    use crate::services::agent_generation_context::{AgentFrozenTool, AgentGenerationMode};
     use serde_json::json;
 
     /// In-memory DB + 全量 schema（对齐 graph_generation.rs 测试先例）。
@@ -1971,7 +2233,10 @@ mod tests {
             // generation_source_binding 一致）。
             let context = test_context();
             let session = selection.get("agentSession").cloned().unwrap_or(json!({}));
-            let key = session.get("key").and_then(Value::as_str).unwrap_or_default();
+            let key = session
+                .get("key")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let round_index = session
                 .get("roundIndex")
                 .and_then(Value::as_i64)
@@ -1995,14 +2260,22 @@ mod tests {
             }))
         }
 
-        fn read(&self, _conn: &Connection, handle: &MainGenerationRunHandle) -> Result<Value, String> {
+        fn read(
+            &self,
+            _conn: &Connection,
+            handle: &MainGenerationRunHandle,
+        ) -> Result<Value, String> {
             Ok(json!({
                 "handle": serde_json::to_value(handle).unwrap_or_default(),
                 "status": "active",
             }))
         }
 
-        fn resume(&self, _conn: &Connection, _handle: &MainGenerationRunHandle) -> Result<Value, String> {
+        fn resume(
+            &self,
+            _conn: &Connection,
+            _handle: &MainGenerationRunHandle,
+        ) -> Result<Value, String> {
             Err("test host resume not implemented".to_string())
         }
 
@@ -2016,11 +2289,20 @@ mod tests {
             Err("test host execute not implemented".to_string())
         }
 
-        fn current(&self, _conn: &Connection, _run: &DurableGenerationRun, _expected: Option<&RunBinding>) -> bool {
+        fn current(
+            &self,
+            _conn: &Connection,
+            _run: &DurableGenerationRun,
+            _expected: Option<&RunBinding>,
+        ) -> bool {
             true
         }
 
-        fn capture(&self, _conn: &Connection, run: &DurableGenerationRun) -> Result<RunBinding, String> {
+        fn capture(
+            &self,
+            _conn: &Connection,
+            run: &DurableGenerationRun,
+        ) -> Result<RunBinding, String> {
             Ok(run.binding.clone())
         }
     }
@@ -2152,7 +2434,7 @@ mod tests {
         conn.execute(
             "INSERT INTO generation_attempts (attempt_id,reservation_id,run_id,root_action_id,attempt_json,usage_receipt_json,invocation_nonce) VALUES (?,?,?,?,?,?,?)",
             [
-                attempt.attempt_id,
+                &attempt.attempt_id,
                 &format!("reservation-{}", attempt.attempt_id),
                 run_id,
                 root_action_id,
@@ -2225,7 +2507,7 @@ mod tests {
     }
 
     struct AttemptFixture {
-        attempt_id: &'static str,
+        attempt_id: String,
         attempt_status: &'static str,
         usage_receipt_json: Value,
         /// `(text, revision)`——存在时同步插入 generation_artifacts 行
@@ -2266,10 +2548,7 @@ mod tests {
                 if let Some(result_object) = result.as_object_mut() {
                     if let Some(inner) = result_object.get_mut("usage") {
                         if let Some(inner_object) = inner.as_object_mut() {
-                            inner_object.insert(
-                                "inputTokens".to_string(),
-                                Value::from(1),
-                            );
+                            inner_object.insert("inputTokens".to_string(), Value::from(1));
                         }
                     }
                 }
@@ -2322,7 +2601,7 @@ mod tests {
             "run-a",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-a",
+                attempt_id: "attempt-a".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage_a,
                 artifact: None,
@@ -2343,7 +2622,7 @@ mod tests {
             "run-b",
             &binding_non_agent,
             Some(AttemptFixture {
-                attempt_id: "attempt-b",
+                attempt_id: "attempt-b".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: json!({
                     "agentActions": { "agent-tool:attempt-b:0": { "status": "running" } },
@@ -2431,7 +2710,9 @@ mod tests {
         let agent = agent_generation(&conn);
 
         // 合法 handle 通过。
-        agent.require_run(&handle_of("run-1")).expect("valid handle");
+        agent
+            .require_run(&handle_of("run-1"))
+            .expect("valid handle");
         // epoch 不匹配。
         let mismatched_epoch = json!({
             "projectId": "project-1",
@@ -2525,24 +2806,27 @@ mod tests {
     /// 构造一个会话：round 0 completed（含一个终态动作）+ round 1 not-started。
     fn seed_completed_session(conn: &Connection, session_key: &str) {
         let tool_call_id = "agent-tool:attempt-0:0";
-        let usage = completed_usage("visible-0", json!([{ "name": "propose_novel_config", "arguments": {} }]))
-            .as_object()
-            .cloned()
-            .map(|mut object| {
-                object.insert(
-                    "agentActions".to_string(),
-                    json!({ tool_call_id: { "status": "completed" } }),
-                );
-                Value::Object(object)
-            })
-            .unwrap();
+        let usage = completed_usage(
+            "visible-0",
+            json!([{ "name": "propose_novel_config", "arguments": {} }]),
+        )
+        .as_object()
+        .cloned()
+        .map(|mut object| {
+            object.insert(
+                "agentActions".to_string(),
+                json!({ tool_call_id: { "status": "completed" } }),
+            );
+            Value::Object(object)
+        })
+        .unwrap();
         seed_agent_run(
             conn,
             "root-1",
             "run-0",
             &agent_binding(&test_context(), session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-0".to_string(), 0)),
@@ -2594,24 +2878,27 @@ mod tests {
         let session_key = text_hash("pending-session");
         // round 0 completed 但动作仍 running → allDone=false → nextRound=null。
         let tool_call_id = "agent-tool:attempt-0:0";
-        let usage = completed_usage("visible-0", json!([{ "name": "propose_novel_config", "arguments": {} }]))
-            .as_object()
-            .cloned()
-            .map(|mut object| {
-                object.insert(
-                    "agentActions".to_string(),
-                    json!({ tool_call_id: { "status": "pending" } }),
-                );
-                Value::Object(object)
-            })
-            .unwrap();
+        let usage = completed_usage(
+            "visible-0",
+            json!([{ "name": "propose_novel_config", "arguments": {} }]),
+        )
+        .as_object()
+        .cloned()
+        .map(|mut object| {
+            object.insert(
+                "agentActions".to_string(),
+                json!({ tool_call_id: { "status": "pending" } }),
+            );
+            Value::Object(object)
+        })
+        .unwrap();
         seed_agent_run(
             &conn,
             "root-1",
             "run-0",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-0".to_string(), 0)),
@@ -2629,24 +2916,27 @@ mod tests {
         let session_key = text_hash("increment-session");
         // 单轮会话：round 0 completed 且全部动作终态、index<7 → nextRound=1。
         let tool_call_id = "agent-tool:attempt-0:0";
-        let usage = completed_usage("visible-0", json!([{ "name": "propose_novel_config", "arguments": {} }]))
-            .as_object()
-            .cloned()
-            .map(|mut object| {
-                object.insert(
-                    "agentActions".to_string(),
-                    json!({ tool_call_id: { "status": "completed" } }),
-                );
-                Value::Object(object)
-            })
-            .unwrap();
+        let usage = completed_usage(
+            "visible-0",
+            json!([{ "name": "propose_novel_config", "arguments": {} }]),
+        )
+        .as_object()
+        .cloned()
+        .map(|mut object| {
+            object.insert(
+                "agentActions".to_string(),
+                json!({ tool_call_id: { "status": "completed" } }),
+            );
+            Value::Object(object)
+        })
+        .unwrap();
         seed_agent_run(
             &conn,
             "root-1",
             "run-0",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-0".to_string(), 0)),
@@ -2678,13 +2968,14 @@ mod tests {
         );
         let agent = agent_generation(&conn);
         assert_eq!(
-            agent.read(&json!({
-                "projectId": "project-1",
-                "epoch": "epoch-1",
-                "rootActionId": "root-2",
-                "runId": "run-1",
-            }))
-            .unwrap_err(),
+            agent
+                .read(&json!({
+                    "projectId": "project-1",
+                    "epoch": "epoch-1",
+                    "rootActionId": "root-2",
+                    "runId": "run-1",
+                }))
+                .unwrap_err(),
             GENERATION_AGENT_ROOT_MISMATCH
         );
 
@@ -2748,7 +3039,7 @@ mod tests {
             "run-1",
             &agent_binding(&test_context(), &session_key, 1, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-1",
+                attempt_id: "attempt-1".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-1".to_string(), 0)),
@@ -2807,7 +3098,7 @@ mod tests {
             "run-0",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("partial".to_string(), 0)),
@@ -2829,7 +3120,7 @@ mod tests {
             "run-0",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "reserved",
                 usage_receipt_json: json!({}),
                 artifact: None,
@@ -2852,7 +3143,7 @@ mod tests {
             "run-0",
             &binding,
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: completed_usage("visible-0", json!([])),
                 artifact: None,
@@ -2902,7 +3193,7 @@ mod tests {
             "run-0",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-0".to_string(), 0)),
@@ -2957,10 +3248,7 @@ mod tests {
             .as_object()
             .cloned()
             .unwrap();
-        assert_eq!(
-            normalize_agent_planning_arguments(&args, 10).unwrap(),
-            args
-        );
+        assert_eq!(normalize_agent_planning_arguments(&args, 10).unwrap(), args);
         // 显式区间 + target_units。
         let args = json!({
             "workflow": "generate_blueprint",
@@ -2972,18 +3260,36 @@ mod tests {
         .cloned()
         .unwrap();
         let normalized = normalize_agent_planning_arguments(&args, 10).unwrap();
-        assert_eq!(normalized.get("start_chapter").and_then(Value::as_i64), Some(2));
-        assert_eq!(normalized.get("chapter_count").and_then(Value::as_i64), Some(3));
-        assert_eq!(normalized.get("target_units").and_then(Value::as_i64), Some(700));
+        assert_eq!(
+            normalized.get("start_chapter").and_then(Value::as_i64),
+            Some(2)
+        );
+        assert_eq!(
+            normalized.get("chapter_count").and_then(Value::as_i64),
+            Some(3)
+        );
+        assert_eq!(
+            normalized.get("target_units").and_then(Value::as_i64),
+            Some(700)
+        );
         // 缺省：start_chapter=1、chapter_count=min(5, total-from+1)、target_units=600。
         let args = json!({ "workflow": "generate_architecture" })
             .as_object()
             .cloned()
             .unwrap();
         let normalized = normalize_agent_planning_arguments(&args, 10).unwrap();
-        assert_eq!(normalized.get("start_chapter").and_then(Value::as_i64), Some(1));
-        assert_eq!(normalized.get("chapter_count").and_then(Value::as_i64), Some(5));
-        assert_eq!(normalized.get("target_units").and_then(Value::as_i64), Some(600));
+        assert_eq!(
+            normalized.get("start_chapter").and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            normalized.get("chapter_count").and_then(Value::as_i64),
+            Some(5)
+        );
+        assert_eq!(
+            normalized.get("target_units").and_then(Value::as_i64),
+            Some(600)
+        );
         // 跨度超限（>10 章）→ RANGE_INVALID。
         let args = json!({
             "workflow": "generate_blueprint",
@@ -3043,22 +3349,36 @@ mod tests {
         let conn = test_connection();
         let agent = agent_generation(&conn);
         // 键集不精确 → BEGIN_INVALID。
-        let request = json!({ "uiActionNonce": "n1", "modelId": "model-1", "input": {}, "extra": 1 });
-        assert_eq!(agent.begin(&request).unwrap_err(), GENERATION_AGENT_BEGIN_INVALID);
+        let request =
+            json!({ "uiActionNonce": "n1", "modelId": "model-1", "input": {}, "extra": 1 });
+        assert_eq!(
+            agent.begin(&request).unwrap_err(),
+            GENERATION_AGENT_BEGIN_INVALID
+        );
         // nonce 空 / 超长 → BEGIN_INVALID。
         let request = json!({ "uiActionNonce": "  ", "modelId": "model-1", "input": {} });
-        assert_eq!(agent.begin(&request).unwrap_err(), GENERATION_AGENT_BEGIN_INVALID);
+        assert_eq!(
+            agent.begin(&request).unwrap_err(),
+            GENERATION_AGENT_BEGIN_INVALID
+        );
         let request = json!({
             "uiActionNonce": "n".repeat(257),
             "modelId": "model-1",
             "input": {},
         });
-        assert_eq!(agent.begin(&request).unwrap_err(), GENERATION_AGENT_BEGIN_INVALID);
+        assert_eq!(
+            agent.begin(&request).unwrap_err(),
+            GENERATION_AGENT_BEGIN_INVALID
+        );
         // modelId 空 → BEGIN_INVALID。
         let request = json!({ "uiActionNonce": "n1", "modelId": "", "input": {} });
-        assert_eq!(agent.begin(&request).unwrap_err(), GENERATION_AGENT_BEGIN_INVALID);
+        assert_eq!(
+            agent.begin(&request).unwrap_err(),
+            GENERATION_AGENT_BEGIN_INVALID
+        );
         // input 校验失败 → INPUT_INVALID（agent_generation_context 移植面）。
-        let request = json!({ "uiActionNonce": "n1", "modelId": "model-1", "input": { "mode": "fast" } });
+        let request =
+            json!({ "uiActionNonce": "n1", "modelId": "model-1", "input": { "mode": "fast" } });
         assert_eq!(
             agent.begin(&request).unwrap_err(),
             "GENERATION_AGENT_INPUT_INVALID"
@@ -3083,10 +3403,12 @@ mod tests {
         assert_eq!(recovery.next_round, Some(0));
         assert_eq!(recovery.model_id, "model-1");
         // 派生 session key = textHash(JSON.stringify([projectId, nonce]))。
-        let session_key = text_hash(
-            &serde_json::to_string(&json!(["project-1", "begin-nonce-1"])).unwrap(),
+        let session_key =
+            text_hash(&serde_json::to_string(&json!(["project-1", "begin-nonce-1"])).unwrap());
+        assert_eq!(
+            recovery.rounds[0].handle.run_id,
+            format!("host-begin-run-{session_key}-0")
         );
-        assert_eq!(recovery.rounds[0].handle.run_id, format!("host-begin-run-{session_key}-0"));
         // 二次 begin：同一 nonce + 同一 input + 同一 modelId → 幂等命中既有 session。
         let recovery_again = agent.begin(&request).expect("second begin");
         assert_eq!(recovery_again.rounds.len(), 1);
@@ -3110,7 +3432,8 @@ mod tests {
 
     /// 构造一个 pending 工具动作的 completed 轮次（含 propose_novel_config 调用）。
     fn seed_pending_tool_session(conn: &Connection, session_key: &str) -> Value {
-        let tool_calls = json!([{ "name": "propose_novel_config", "arguments": { "changes": {} } }]);
+        let tool_calls =
+            json!([{ "name": "propose_novel_config", "arguments": { "changes": {} } }]);
         let usage = completed_usage("visible-0", tool_calls);
         seed_agent_run(
             conn,
@@ -3118,7 +3441,7 @@ mod tests {
             "run-0",
             &agent_binding(&test_context(), session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-0".to_string(), 0)),
@@ -3196,13 +3519,15 @@ mod tests {
         );
         // 合法完成：propose_novel_config completed 但无 domainEffect →
         // DOMAIN_EFFECT_REQUIRED。
-        let request = json!({ "ref": tool_ref(&handle), "status": "completed", "observation": "o" });
+        let request =
+            json!({ "ref": tool_ref(&handle), "status": "completed", "observation": "o" });
         assert_eq!(
             agent.finish_tool(&request).unwrap_err(),
             GENERATION_AGENT_DOMAIN_EFFECT_REQUIRED
         );
         // failed 无域效应要求 → 写回成功。
-        let request = json!({ "ref": tool_ref(&handle), "status": "failed", "observation": "失败原因" });
+        let request =
+            json!({ "ref": tool_ref(&handle), "status": "failed", "observation": "失败原因" });
         let action = agent.finish_tool(&request).expect("finish failed");
         assert_eq!(action.status, "failed");
         assert_eq!(action.observation.as_deref(), Some("失败原因"));
@@ -3210,7 +3535,8 @@ mod tests {
         let action_again = agent.finish_tool(&request).expect("finish replay");
         assert_eq!(action_again.status, "failed");
         // 冲突：同 status 不同 observation → TOOL_RESULT_CONFLICT。
-        let request = json!({ "ref": tool_ref(&handle), "status": "failed", "observation": "其他" });
+        let request =
+            json!({ "ref": tool_ref(&handle), "status": "failed", "observation": "其他" });
         assert_eq!(
             agent.finish_tool(&request).unwrap_err(),
             GENERATION_AGENT_TOOL_RESULT_CONFLICT
@@ -3225,12 +3551,11 @@ mod tests {
         // 基线恢复扫描只修复构造时已存在的 running 认领，fixture
         // 随后插入的 running 态保留（门禁要求 action.status='running'）。
         let agent = agent_generation(&conn);
-        conn
-            .execute(
-                "INSERT INTO project_core (id,total_chapters) VALUES ('main',10)",
-                [],
-            )
-            .expect("insert project_core");
+        conn.execute(
+            "INSERT INTO project_core (id,total_chapters) VALUES ('main',10)",
+            [],
+        )
+        .expect("insert project_core");
         let tool_calls = json!([
             {
                 "name": "start_workflow",
@@ -3261,7 +3586,7 @@ mod tests {
             "run-0",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-0".to_string(), 0)),
@@ -3273,9 +3598,15 @@ mod tests {
         assert_eq!(registration.workflow, "generate_blueprint");
         assert_eq!(registration.state, "registered");
         assert!(registration.registration_id.starts_with("agent-workflow:"));
-        assert_eq!(registration.registration_id.len(), "agent-workflow:".len() + 64);
         assert_eq!(
-            registration.planning.as_ref().map(|p| (p.from, p.to, p.target_units)),
+            registration.registration_id.len(),
+            "agent-workflow:".len() + 64
+        );
+        assert_eq!(
+            registration
+                .planning
+                .as_ref()
+                .map(|p| (p.from, p.to, p.target_units)),
             Some((2, 4, 700))
         );
         assert_eq!(registration.model_id, "model-1");
@@ -3294,7 +3625,9 @@ mod tests {
         assert_eq!(found.registration_id, registration.registration_id);
         // 非法 registrationId 格式。
         assert_eq!(
-            agent.workflow_registration("agent-workflow:short").unwrap_err(),
+            agent
+                .workflow_registration("agent-workflow:short")
+                .unwrap_err(),
             GENERATION_AGENT_REGISTRATION_INVALID
         );
         // 找不到 → REGISTRATION_MISSING。
@@ -3313,7 +3646,11 @@ mod tests {
         let session_key = text_hash("child-effect-session");
         let registration_id = format!("agent-workflow:{}", text_hash("agent-tool:attempt-0:0"));
         let registration = AgentWorkflowRegistration {
-            planning: Some(AgentWorkflowPlanning { from: 2, to: 4, target_units: 700 }),
+            planning: Some(AgentWorkflowPlanning {
+                from: 2,
+                to: 4,
+                target_units: 700,
+            }),
             registration_id: registration_id.clone(),
             workflow: "generate_blueprint".to_string(),
             chapter_number: None,
@@ -3365,7 +3702,7 @@ mod tests {
             "run-0",
             &agent_binding(&test_context(), &session_key, 0, None),
             Some(AttemptFixture {
-                attempt_id: "attempt-0",
+                attempt_id: "attempt-0".to_string(),
                 attempt_status: "settled",
                 usage_receipt_json: usage,
                 artifact: Some(("visible-0".to_string(), 0)),
@@ -3386,7 +3723,11 @@ mod tests {
             ),
         );
         seed_agent_run(conn, "root-1", "child-0", &child_binding, None);
-        (handle_of("run-0"), registration_id, registration.child_handles[0].clone())
+        (
+            handle_of("run-0"),
+            registration_id,
+            registration.child_handles[0].clone(),
+        )
     }
 
     #[test]
@@ -3418,12 +3759,17 @@ mod tests {
             )
             .map(|json: String| serde_json::from_str(&json).unwrap())
             .unwrap();
-        let transition = stored.get("agentSourceTransition").expect("transition written");
+        let transition = stored
+            .get("agentSourceTransition")
+            .expect("transition written");
         assert_eq!(
             transition.get("actionId").and_then(Value::as_str),
             Some("agent-tool:attempt-0:0:child-0")
         );
-        let before_hash = transition.get("beforeHash").and_then(Value::as_str).unwrap();
+        let before_hash = transition
+            .get("beforeHash")
+            .and_then(Value::as_str)
+            .unwrap();
         let after_hash = transition.get("afterHash").and_then(Value::as_str).unwrap();
         assert_eq!(before_hash.len(), 64);
         assert_eq!(after_hash.len(), 64);
@@ -3494,8 +3840,14 @@ mod tests {
             .and_then(|a| a.get("agent-tool:attempt-0:0"))
             .and_then(|s| s.get("workflow"))
             .unwrap();
-        assert_eq!(workflow.get("state").and_then(Value::as_str), Some("started"));
-        let child_handles = workflow.get("childHandles").and_then(Value::as_array).unwrap();
+        assert_eq!(
+            workflow.get("state").and_then(Value::as_str),
+            Some("started")
+        );
+        let child_handles = workflow
+            .get("childHandles")
+            .and_then(Value::as_array)
+            .unwrap();
         assert_eq!(child_handles.len(), 1);
         assert_eq!(
             child_handles[0].get("runId").and_then(Value::as_str),
@@ -3524,7 +3876,530 @@ mod tests {
         let _ = handle;
     }
 
-    // ── 子波次占位 ───────────────────────────────────────────────────────
+    // ── admit_workflow（子波次 B：owner.begin 子代准入）──────────
+
+    /// admit_workflow fixture：registration_id 采用基线
+    /// `action_id` 口径（`agent-tool:attempt-0:0`）；`seed`
+    /// 参数使各用例的 registrationId 互不冲突（全表扫描
+    /// 定位要求唯一）。
+    fn admit_registration(
+        seed: &str,
+        child_run_ids: &[&str],
+    ) -> (String, AgentWorkflowRegistration) {
+        let registration_id = format!("agent-workflow:{}", text_hash(seed));
+        let registration = AgentWorkflowRegistration {
+            planning: Some(AgentWorkflowPlanning {
+                from: 2,
+                to: 4,
+                target_units: 700,
+            }),
+            registration_id: registration_id.clone(),
+            workflow: "generate_blueprint".to_string(),
+            chapter_number: None,
+            parent_handle: MainGenerationRunHandle {
+                project_id: "project-1".to_string(),
+                epoch: "epoch-1".to_string(),
+                root_action_id: "root-1".to_string(),
+                run_id: "run-0".to_string(),
+            },
+            model_id: "model-1".to_string(),
+            state: "registered".to_string(),
+            child_handles: child_run_ids
+                .iter()
+                .map(|run_id| MainGenerationRunHandle {
+                    project_id: "project-1".to_string(),
+                    epoch: "epoch-1".to_string(),
+                    root_action_id: "root-1".to_string(),
+                    run_id: run_id.to_string(),
+                })
+                .collect(),
+        };
+        (registration_id, registration)
+    }
+
+    /// 构造 run-0：attempt 的 agentActions 携带 registration
+    /// （action status 可控——门禁①的 fixture；`attempt_id`
+    /// 参数使同库多 run 播种的 reservation_id 不冲突）。
+    fn seed_workflow_run(
+        conn: &Connection,
+        registration: &AgentWorkflowRegistration,
+        action_status: &str,
+        attempt_id: &str,
+    ) {
+        let session_key = text_hash("admit-session");
+        let tool_calls = json!([
+            {
+                "name": "start_workflow",
+                "arguments": {
+                    "workflow": registration.workflow,
+                    "start_chapter": 2,
+                    "chapter_count": 3,
+                    "target_units": 700,
+                },
+            },
+        ]);
+        let usage = completed_usage("visible-0", tool_calls)
+            .as_object()
+            .cloned()
+            .map(|mut object| {
+                object.insert(
+                    "agentActions".to_string(),
+                    json!({
+                        &format!("agent-tool:{attempt_id}:0"): {
+                            "status": action_status,
+                            "workflow": serde_json::to_value(registration).unwrap(),
+                        },
+                    }),
+                );
+                Value::Object(object)
+            })
+            .unwrap();
+        seed_agent_run(
+            conn,
+            &registration.parent_handle.root_action_id,
+            &registration.parent_handle.run_id,
+            &agent_binding(&test_context(), &session_key, 0, None),
+            Some(AttemptFixture {
+                attempt_id: attempt_id.to_string(),
+                attempt_status: "settled",
+                usage_receipt_json: usage,
+                artifact: Some(("visible-0".to_string(), 0)),
+            }),
+        );
+    }
+
+    /// 合法选择（generate_blueprint → chapter-blueprint-directory；
+    /// planning 输入与 registration.planning {from:2, to:4,
+    /// targetUnits:700} 逐字段一致）。
+    fn admit_selection(registration_id: &str) -> Value {
+        json!({
+            "operation": "chapter-blueprint-directory",
+            "modelId": "model-1",
+            "parentRootActionId": "root-1",
+            "agentWorkflowRegistrationId": registration_id,
+            "authorInputs": [
+                { "id": "directory:requested-range", "text": "{\"startChapter\":2,\"endChapter\":4}" },
+                { "id": "planning:target-units", "text": "700" },
+            ],
+        })
+    }
+
+    /// 子代 run fixture：manifest 覆盖 operation / chapterNumber
+    /// （existing 幂等定位的过滤键）并登记 registrationId。
+    fn seed_admit_child(
+        conn: &Connection,
+        run_id: &str,
+        operation: &str,
+        chapter_number: Option<i64>,
+        registration_id: &str,
+    ) {
+        let mut extra = Map::new();
+        extra.insert(
+            "operation".to_string(),
+            Value::String(operation.to_string()),
+        );
+        if let Some(chapter_number) = chapter_number {
+            extra.insert(
+                "chapterNumber".to_string(),
+                Value::Number(chapter_number.into()),
+            );
+        }
+        extra.insert(
+            "agentWorkflowRegistrationId".to_string(),
+            Value::String(registration_id.to_string()),
+        );
+        seed_agent_run(
+            conn,
+            "root-1",
+            run_id,
+            &agent_binding(&test_context(), &text_hash(run_id), 0, Some(extra)),
+            None,
+        );
+    }
+
+    #[test]
+    fn admit_workflow_without_registration_id_passthrough() {
+        let conn = test_connection();
+        let agent = agent_generation(&conn);
+        // 无 registrationId、无父根 → 透传 Ok(None)。
+        assert_eq!(agent.admit_workflow(&json!({})).expect("passthrough"), None);
+        // 父根为 agent-round → GENERATION_AGENT_REGISTRATION_REQUIRED。
+        let session_key = text_hash("admit-no-registration");
+        seed_agent_run(
+            &conn,
+            "root-agent",
+            "run-agent",
+            &agent_binding(&test_context(), &session_key, 0, None),
+            None,
+        );
+        assert_eq!(
+            agent
+                .admit_workflow(&json!({ "parentRootActionId": "root-agent" }))
+                .unwrap_err(),
+            GENERATION_AGENT_REGISTRATION_REQUIRED
+        );
+        // 父根为非 agent 操作 → 透传 Ok(None)。
+        conn.execute(
+            "UPDATE generation_roots SET action_json = json_set(action_json,'$.operation','chapter-draft') WHERE root_action_id='root-agent'",
+            [],
+        )
+        .expect("reparent root operation");
+        assert_eq!(
+            agent
+                .admit_workflow(&json!({ "parentRootActionId": "root-agent" }))
+                .expect("non-agent parent"),
+            None
+        );
+    }
+
+    #[test]
+    fn admit_workflow_registration_missing() {
+        let conn = test_connection();
+        let agent = agent_generation(&conn);
+        // registrationId 不存在。
+        let missing = format!("agent-workflow:{}", text_hash("nonexistent"));
+        assert_eq!(
+            agent
+                .admit_workflow(&admit_selection(&missing))
+                .unwrap_err(),
+            GENERATION_AGENT_REGISTRATION_MISSING
+        );
+        // registrationId 重复（两个 agent-round run 携带同一 id）。
+        let (registration_id, registration) = admit_registration("duplicate", &[]);
+        let mut duplicate = registration.clone();
+        duplicate.parent_handle = MainGenerationRunHandle {
+            project_id: "project-1".to_string(),
+            epoch: "epoch-1".to_string(),
+            root_action_id: "root-2".to_string(),
+            run_id: "run-1".to_string(),
+        };
+        seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+        seed_workflow_run(&conn, &duplicate, "completed", "attempt-1");
+        assert_eq!(
+            agent
+                .admit_workflow(&admit_selection(&registration_id))
+                .unwrap_err(),
+            GENERATION_AGENT_REGISTRATION_MISSING
+        );
+    }
+
+    #[test]
+    fn admit_workflow_gates_reject_unauthorized_child() {
+        // 门禁①——action.status 非 running/completed。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("gate-status", &[]);
+            seed_workflow_run(&conn, &registration, "pending", "attempt-0");
+            assert_eq!(
+                agent
+                    .admit_workflow(&admit_selection(&registration_id))
+                    .unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+        // 门禁②——modelId 与 registration 不一致。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("gate-model", &[]);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            selection["modelId"] = Value::String("model-2".to_string());
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+        // 门禁③——parentRootActionId 与 registration 根不一致。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("gate-parent", &[]);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            selection["parentRootActionId"] = Value::String("root-2".to_string());
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+        // 门禁④——operation 不在 expectedOperations。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("gate-operation", &[]);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            selection["operation"] = Value::String("chapter-draft".to_string());
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+        // 门禁⑤——generate_draft 章节号与 registration 不一致。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, mut registration) = admit_registration("gate-chapter", &[]);
+            registration.workflow = "generate_draft".to_string();
+            registration.chapter_number = Some(3);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            selection["operation"] = Value::String("chapter-draft".to_string());
+            selection["chapterNumber"] = Value::Number(5.into());
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+        // 门禁⑥——选择携带批量键（batchId / batchIntent /
+        // continueDirectoryOperationId 任一）。
+        for key in ["batchId", "batchIntent", "continueDirectoryOperationId"] {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("gate-batch", &[]);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            selection[key] = json!("batch-1");
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+    }
+
+    #[test]
+    fn admit_workflow_planning_mismatch_rejected() {
+        // 区间不匹配（endChapter 5 ≠ planning.to 4）。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("planning-range", &[]);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            if let Some(inputs) = selection
+                .get_mut("authorInputs")
+                .and_then(Value::as_array_mut)
+            {
+                inputs[0] = json!({ "id": "directory:requested-range", "text": "{\"startChapter\":2,\"endChapter\":5}" });
+            }
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+        // 目标单位不匹配（600 ≠ planning.targetUnits 700）。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("planning-units", &[]);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            if let Some(inputs) = selection
+                .get_mut("authorInputs")
+                .and_then(Value::as_array_mut)
+            {
+                inputs[1] = json!({ "id": "planning:target-units", "text": "600" });
+            }
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+        // planning 输入 JSON 解析失败。
+        {
+            let conn = test_connection();
+            let agent = agent_generation(&conn);
+            let (registration_id, registration) = admit_registration("planning-json", &[]);
+            seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+            let mut selection = admit_selection(&registration_id);
+            if let Some(inputs) = selection
+                .get_mut("authorInputs")
+                .and_then(Value::as_array_mut)
+            {
+                inputs[0] = json!({ "id": "directory:requested-range", "text": "not-json" });
+            }
+            assert_eq!(
+                agent.admit_workflow(&selection).unwrap_err(),
+                GENERATION_AGENT_CHILD_NOT_AUTHORIZED
+            );
+        }
+    }
+
+    #[test]
+    fn admit_workflow_tool_stale_rejected() {
+        let conn = test_connection();
+        let agent = agent_generation(&conn);
+        let (registration_id, registration) = admit_registration("tool-stale", &[]);
+        seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+        // 根纪元与作用域不一致。
+        conn.execute(
+            "UPDATE generation_roots SET action_json = json_set(action_json,'$.epoch','epoch-2') WHERE root_action_id='root-1'",
+            [],
+        )
+        .expect("update root epoch");
+        assert_eq!(
+            agent
+                .admit_workflow(&admit_selection(&registration_id))
+                .unwrap_err(),
+            GENERATION_AGENT_TOOL_STALE
+        );
+        // 根已取消。
+        conn.execute(
+            "UPDATE generation_roots SET action_json = json_set(action_json,'$.epoch','epoch-1','$.status','cancelled') WHERE root_action_id='root-1'",
+            [],
+        )
+        .expect("cancel root");
+        assert_eq!(
+            agent
+                .admit_workflow(&admit_selection(&registration_id))
+                .unwrap_err(),
+            GENERATION_AGENT_TOOL_STALE
+        );
+    }
+
+    /// 源一致性失败宿主（`current` 恒 false——触发
+    /// `GENERATION_AGENT_SOURCE_CHANGED`）。
+    struct StaleSourceHost;
+
+    impl AgentHost for StaleSourceHost {
+        fn begin(&self, _conn: &Connection, _selection: &Value) -> Result<Value, String> {
+            Err("stale source host begin not implemented".to_string())
+        }
+        fn read(
+            &self,
+            _conn: &Connection,
+            _handle: &MainGenerationRunHandle,
+        ) -> Result<Value, String> {
+            Err("stale source host read not implemented".to_string())
+        }
+        fn resume(
+            &self,
+            _conn: &Connection,
+            _handle: &MainGenerationRunHandle,
+        ) -> Result<Value, String> {
+            Err("stale source host resume not implemented".to_string())
+        }
+        fn execute(
+            &self,
+            _conn: &Connection,
+            _handle: &MainGenerationRunHandle,
+            _nonce: &str,
+            _task: &Value,
+        ) -> Result<Value, String> {
+            Err("stale source host execute not implemented".to_string())
+        }
+        fn current(
+            &self,
+            _conn: &Connection,
+            _run: &DurableGenerationRun,
+            _expected: Option<&RunBinding>,
+        ) -> bool {
+            false
+        }
+        fn capture(
+            &self,
+            _conn: &Connection,
+            _run: &DurableGenerationRun,
+        ) -> Result<RunBinding, String> {
+            Err("stale source host capture not implemented".to_string())
+        }
+    }
+
+    #[test]
+    fn admit_workflow_source_changed_rejected() {
+        let conn = test_connection();
+        let agent = AgentGeneration::new(
+            &conn,
+            GenerationRunRepository::default(),
+            "project-1",
+            "epoch-1",
+            &assert_current,
+            &StaleSourceHost,
+        )
+        .expect("construct AgentGeneration with stale source host");
+        let (registration_id, registration) = admit_registration("source-changed", &[]);
+        seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+        assert_eq!(
+            agent
+                .admit_workflow(&admit_selection(&registration_id))
+                .unwrap_err(),
+            GENERATION_AGENT_SOURCE_CHANGED
+        );
+    }
+
+    #[test]
+    fn admit_workflow_admits_new_child() {
+        let conn = test_connection();
+        let agent = agent_generation(&conn);
+        let (registration_id, registration) = admit_registration("new-child", &[]);
+        seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+        // 无已登记子代 → 五重门禁 / planning / 根纪元 / 源一致性
+        // 全部通过，返回 { existing: None, parentRootActionId }。
+        let admitted = agent
+            .admit_workflow(&admit_selection(&registration_id))
+            .expect("admit workflow")
+            .expect("no existing child");
+        assert!(admitted.existing.is_none());
+        assert_eq!(admitted.parent_root_action_id, "root-1");
+    }
+
+    #[test]
+    fn admit_workflow_existing_child_idempotent() {
+        let conn = test_connection();
+        let agent = agent_generation(&conn);
+        let (registration_id, registration) = admit_registration("idempotent", &["child-0"]);
+        seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+        // 已登记子代：operation + chapterNumber 与选择一致 →
+        // 幂等返回 existing（跳过 planning / 根纪元 / 源一致性）。
+        seed_admit_child(
+            &conn,
+            "child-0",
+            "chapter-blueprint-directory",
+            Some(5),
+            &registration_id,
+        );
+        let mut selection = admit_selection(&registration_id);
+        selection["chapterNumber"] = Value::Number(5.into());
+        let admitted = agent
+            .admit_workflow(&selection)
+            .expect("admit workflow")
+            .expect("existing child");
+        assert_eq!(admitted.existing.expect("existing").run_id, "child-0");
+        assert_eq!(admitted.parent_root_action_id, "root-1");
+    }
+
+    #[test]
+    fn admit_workflow_ambiguous_children_rejected() {
+        let conn = test_connection();
+        let agent = agent_generation(&conn);
+        let (registration_id, registration) =
+            admit_registration("ambiguous", &["child-0", "child-1"]);
+        seed_workflow_run(&conn, &registration, "completed", "attempt-0");
+        // 两个已登记子代均匹配 operation + chapterNumber →
+        // GENERATION_AGENT_CHILD_AMBIGUOUS。
+        seed_admit_child(
+            &conn,
+            "child-0",
+            "chapter-blueprint-directory",
+            Some(5),
+            &registration_id,
+        );
+        seed_admit_child(
+            &conn,
+            "child-1",
+            "chapter-blueprint-directory",
+            Some(5),
+            &registration_id,
+        );
+        let mut selection = admit_selection(&registration_id);
+        selection["chapterNumber"] = Value::Number(5.into());
+        assert_eq!(
+            agent.admit_workflow(&selection).unwrap_err(),
+            GENERATION_AGENT_CHILD_AMBIGUOUS
+        );
+    }
 
     #[test]
     fn wave_b_c_placeholders_fail_closed() {
@@ -3538,14 +4413,9 @@ mod tests {
             agent.execute_round(&json!({})).unwrap_err(),
             "GENERATION_AGENT_ROUND_UNMIGRATED"
         );
+        // admit_workflow 已随子波次 B 实现（见下方 admit_workflow 用例）。
         assert_eq!(
-            agent.admit_workflow(&json!({})).unwrap_err(),
-            "GENERATION_AGENT_ADMIT_UNMIGRATED"
-        );
-        assert_eq!(
-            agent
-                .commit_domain_tool(&json!({}))
-                .unwrap_err(),
+            agent.commit_domain_tool(&json!({})).unwrap_err(),
             "GENERATION_AGENT_DOMAIN_TOOL_UNMIGRATED"
         );
     }

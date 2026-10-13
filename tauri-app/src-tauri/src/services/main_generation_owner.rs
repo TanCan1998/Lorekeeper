@@ -59,20 +59,20 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::repositories::generation_run_repository::{
     ChapterRange, DurableGenerationRun, FrozenInputFingerprint, GenerationExecutionReceipt,
-    GenerationRunRepository, GenerationTransportDiagnostics, PhysicalAttempt, PlotOutlineProgress,
-    RootBudget, RunBinding, RunView,
+    GenerationRunRepository, GenerationTransportDiagnostics, MainGenerationRunHandle,
+    PhysicalAttempt, PlotOutlineProgress, RootBudget, RunBinding, RunView,
 };
 
 use crate::security::{self, ProjectSessionContext};
+use crate::services::agent_generation::{AdmittedWorkflow, AgentGeneration, AgentHost};
 use crate::services::character_proposal::{
     prove_character_proposal, read_legacy_roster_generation_proof, CharacterProposalService,
 };
 use crate::services::generation_draft_effects::{
     assert_generation_batch_intent, GenerationDraftEffects,
 };
-use crate::services::legacy_roster_generation::{
-    keys_subset, LegacyRosterGeneration,
-};
+use crate::services::generation_source_binding::compare_generation_source_bindings;
+use crate::services::legacy_roster_generation::{keys_subset, LegacyRosterGeneration};
 use crate::services::legacy_roster_generation_context::read_legacy_roster_generation_context;
 use crate::services::legacy_roster_source::{
     adopt_legacy_cards, read_legacy_roster_source, AdoptLegacyCardsRequest,
@@ -1096,18 +1096,24 @@ impl MainGenerationOwner {
     /// - 选择形状校验（:357-363）→ `GENERATION_BEGIN_INVALID`（操作名
     ///   正则 `^[a-z0-9][a-z0-9:_-]{0,127}$`、`promptKeys` 非空数组、
     ///   `parentRootActionId` 字符串非空、`uiActionNonce` 字符串非空且
-    ///   ≤256、键集白名单 [`BEGIN_ALLOWED_KEYS`]——IPC 边界六个初始化
+    ///   ≤256、键集白名单 [`BEGIN_ALLOWED_KEYS`]——IPC 边界初始化
     ///   标志恒为 false，对齐 generation-controller.ts:173-178 注册形态；
     ///   `batch_initialization` 标志仅主进程内部 `beginBatch` 初始化
     ///   调用置 true（IPC 边界恒 false，见
-    ///   [`MainGenerationOwner::begin_batch`]）；
+    ///   [`MainGenerationOwner::begin_batch`]）；`agent_initialization`
+    ///   标志仅主进程内部 agent 子代路径置 true（基线 :897
+    ///   `begin(selection, false, true)`，IPC 边界恒 false——
+    ///   放行 `agentInput` / `agentSession` 条件键、豁免
+    ///   agent-round 准入拒绝与 `admitWorkflow` 子代准入）；
     /// - 子生成器准入（:364-369、:376）→ 五个 `*_ADMISSION_REQUIRED`；
+    /// - agent 子代准入（:367）→ `agents.admitWorkflow` 校验链
+    ///   （`GENERATION_AGENT_*`，见 [`Self::admit_workflow`]）；
+    /// - agent 子代幂等早退（:371）→ 已登记子代存在时返回其视图；
     /// - 根行动子代禁令（:379-383，经 `repository.budget`）→ 三个
     ///   `*_CHILD_FORBIDDEN`；
     /// - 批量意图主进程独占（:387）→ `GENERATION_BATCH_INTENT_MAIN_ONLY`
     ///   （`batch_initialization = false` 的 IPC 边界语义；主进程
     ///   内部批量初始化调用传 `true` 豁免该检查）。
-    ///
     /// ⚠️ 诚实化占位（B3 波次说明）：基线 :395-443 的 run 创建核心——
     /// `newMainGenerationPolicy` 策略构造器（electron/services/
     /// main-generation-plan.ts 写面，含 `planningGenerationScope` /
@@ -1126,6 +1132,7 @@ impl MainGenerationOwner {
         conn: &Connection,
         selection: &Value,
         batch_initialization: bool,
+        agent_initialization: bool,
     ) -> Result<Value, String> {
         self.assert_current()?;
         // 基线 :357-363 `GENERATION_BEGIN_INVALID` 选择形状校验。
@@ -1153,8 +1160,11 @@ impl MainGenerationOwner {
             .and_then(Value::as_str)
             .is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 256);
         let keys_valid = selection.as_object().is_some_and(|map| {
-            map.keys()
-                .all(|key| BEGIN_ALLOWED_KEYS.contains(&key.as_str()))
+            map.keys().all(|key| {
+                BEGIN_ALLOWED_KEYS.contains(&key.as_str())
+                    || (agent_initialization
+                        && matches!(key.as_str(), "agentInput" | "agentSession"))
+            })
         });
         if !operation_valid || !prompt_keys_valid || parent_invalid || !nonce_valid || !keys_valid {
             return Err(mutating_error("GENERATION_BEGIN_INVALID"));
@@ -1177,9 +1187,19 @@ impl MainGenerationOwner {
         if operation == "legacy-character-roster-repair" {
             return Err(mutating_error("GENERATION_LEGACY_ADMISSION_REQUIRED"));
         }
-        if operation == "agent-round" {
+        if operation == "agent-round" && !agent_initialization {
             return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
         }
+        // 基线 :367——主进程内部 agent 子代准入（agent 初始化
+        // 路径跳过）。方法级构造 AgentGeneration 对齐基线 :897
+        // owner 闭包内 `new AgentGeneration`（见 [`Self::admit_workflow`]
+        // 头注的已知偏差说明）。
+        let agent_workflow: Option<AdmittedWorkflow> = if agent_initialization {
+            None
+        } else {
+            self.admit_workflow(conn, selection)
+                .map_err(|error| mutating_error(&error))?
+        };
         // 基线 :379-383 根行动子代禁令（editor / graph / legacy 子代）。
         if let Some(parent_root_action_id) =
             selection.get("parentRootActionId").and_then(Value::as_str)
@@ -1200,6 +1220,17 @@ impl MainGenerationOwner {
                 return Err(mutating_error("GENERATION_LEGACY_CHILD_FORBIDDEN"));
             }
         }
+        // 基线 :371——agent 子代幂等早退：admitWorkflow 定位到
+        // 已登记子代时直接返回其运行视图，不重复创建。
+        if let Some(agent_workflow) = agent_workflow {
+            if let Some(existing) = agent_workflow.existing {
+                let run = self
+                    .repository
+                    .get(conn, &existing.run_id)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?;
+                return self.view_of(conn, &run);
+            }
+        }
         // 基线 :387-389 批量意图主进程独占（IPC 边界 batchInitialization
         // 恒 false；主进程内部 beginBatch 初始化调用传 true 豁免）。
         if selection
@@ -1215,6 +1246,37 @@ impl MainGenerationOwner {
         Err(mutating_error(
             "主生成运行创建尚未迁移：主生成策略规划器（newMainGenerationPolicy）与生成运行服务（generation-run-service）待后续批次移植",
         ))
+    }
+
+    /// 基线 owner 闭包内 `agents.admitWorkflow(selection)` 的等价
+    /// 辅助（main-generation-owner.ts:367 调用点 / :897 构造注入
+    /// 点）——方法级构造 `AgentGeneration`，对齐基线 owner 闭包内
+    /// `new AgentGeneration(deps.database, repository, { projectId,
+    /// epoch }, assertCurrent, host)`（host 即 owner 自身，经
+    /// [`impl AgentHost for MainGenerationOwner`] 注入）。
+    ///
+    /// 已知偏差：基线 `agents` 实例在 owner 创建时构造一次
+    /// （恢复扫描执行一次）；本辅助按方法级构造，构造期恢复扫描
+    /// 在每次 `begin` 调用时执行一次——扫描幂等（仅修复悬空
+    /// `running` 认领，见 `AgentGeneration::new` 头注），行为等价。
+    ///
+    /// 错误码（`GENERATION_AGENT_*`）经调用方折叠为
+    /// `mutating_error`。
+    fn admit_workflow(
+        &self,
+        conn: &Connection,
+        selection: &Value,
+    ) -> Result<Option<AdmittedWorkflow>, String> {
+        let assert_current = || self.assert_current();
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            &assert_current,
+            self,
+        )?;
+        agent.admit_workflow(selection)
     }
 
     /// 基线 `execute`（分发 → 流式回执，main-generation-owner.ts:501-623）。
@@ -1243,16 +1305,36 @@ impl MainGenerationOwner {
     /// 尚未迁移。fail-closed 于分发入口（命令层收敛为
     /// `GENERATION_REQUEST_FAILED`）。
     pub fn execute(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
+        // IPC 边界执行标志恒 false（基线 :501 默认参数）。
+        self.execute_inner(conn, request, false)
+    }
+
+    /// 基线 `execute` 主体（main-generation-owner.ts:501-623
+    /// 单函数体 + 执行标志参数分流）：`agent_execution` 仅
+    /// 主进程内部 agent 执行路径传 true（基线 :899 owner 闭包
+    /// `execute: (handle, invocationNonce, task) =>
+    /// execute({ handle, invocationNonce, task }, true)`，见
+    /// [`Self::execute_agent_round`]）——豁免 agent-round 的
+    /// IPC 准入拒绝（:504），其余准入校验面逐字不变。
+    ///
+    /// ⚠️ 诚实化占位（B3 波次说明）：见 [`Self::execute`] 头注。
+    fn execute_inner(
+        &self,
+        conn: &Connection,
+        request: &Value,
+        agent_execution: bool,
+    ) -> Result<Value, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
         let run = self.require_run(conn, &handle, true)?;
-        // 基线 :512-521 子生成器执行准入（IPC 边界执行标志恒为 false）。
+        // 基线 :512-521 子生成器执行准入（IPC 边界执行标志恒为
+        // false；主进程内部 agent 执行路径传 true 豁免 agent-round）。
         let manifest = &run.binding.source_manifest;
         let run_operation = manifest
             .get("operation")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        if run_operation == "agent-round" {
+        if run_operation == "agent-round" && !agent_execution {
             return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
         }
         if manifest
@@ -1333,6 +1415,30 @@ impl MainGenerationOwner {
         self.repository
             .assert_plot_outline_request(conn, &run.run_id, Some(task_purpose), Some(&task), None)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // 基线 :617——agent 执行路径的 agentToolNames 提取
+        // （`run.binding.sourceManifest.agentContext.input.tools`
+        // 逐项取 `name`，纯 JSON 遍历）。预置提取逻辑、
+        // 暂无消费者——随分发核心（generation-run-service）
+        // 波次接线 `service.execute` 的
+        // providerRequest.agentToolNames。
+        let _agent_tool_names: Vec<String> = if agent_execution {
+            manifest
+                .get("agentContext")
+                .and_then(|context| context.get("input"))
+                .and_then(|input| input.get("tools"))
+                .and_then(Value::as_array)
+                .map(|tools| {
+                    tools
+                        .iter()
+                        .filter_map(|tool| {
+                            tool.get("name").and_then(Value::as_str).map(str::to_string)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         // ⚠️ B3 占位：基线 :522-590 的任务形状 / 材料决策提示哈希校验
         // 与 :591-623 的调用重放 / 短细纲重试 / 可变性断言，及分发
         // 核心（LLM 分发循环 + 事件发射）未迁移——分发入口 fail-closed
@@ -1340,6 +1446,25 @@ impl MainGenerationOwner {
         Err(mutating_error(
             "主生成执行尚未迁移：生成运行服务（generation-run-service）的 LLM 分发循环待后续批次移植",
         ))
+    }
+
+    /// 基线 owner 闭包 :899 的 host.execute 注入等价物——
+    /// `execute({ handle, invocationNonce, task }, true)`
+    /// （主进程内部 agent 执行路径，豁免 agent-round 的
+    /// IPC 准入拒绝）。
+    fn execute_agent_round(
+        &self,
+        conn: &Connection,
+        handle: &MainGenerationRunHandle,
+        nonce: &str,
+        task: &Value,
+    ) -> Result<Value, String> {
+        let request = json!({
+            "handle": handle,
+            "invocationNonce": nonce,
+            "task": task,
+        });
+        self.execute_inner(conn, &request, true)
     }
 
     /// 基线 `bindMaterialDecision`（main-generation-owner.ts:646-665）：
@@ -1749,7 +1874,9 @@ impl MainGenerationOwner {
             }),
         );
         // 基线 :1282 `begin(..., true)`：主进程内部初始化调用。
-        let run = self.begin(conn, &Value::Object(selection), true)?;
+        // 基线 :1282 `begin(..., true)`：主进程内部初始化调用
+        // （agent 初始化标志 IPC 边界恒 false）。
+        let run = self.begin(conn, &Value::Object(selection), true, false)?;
         // 基线 :1284 `readBatch(run.handle.runId)`（owner 闭包
         // :880：`assertCurrent()` 后 `draftEffects.readBatch`）。
         let run_id = run
@@ -2360,14 +2487,11 @@ impl MainGenerationOwner {
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
         let mut matched: Vec<String> = Vec::new();
         for (run_id, action_json, binding_json) in candidates {
-            let action = serde_json::from_str::<Value>(&action_json)
-                .unwrap_or(Value::Null);
-            let binding = serde_json::from_str::<Value>(&binding_json)
-                .unwrap_or(Value::Null);
+            let action = serde_json::from_str::<Value>(&action_json).unwrap_or(Value::Null);
+            let binding = serde_json::from_str::<Value>(&binding_json).unwrap_or(Value::Null);
             if action.get("projectId").and_then(Value::as_str)
                 == Some(self.session.project_id.as_str())
-                && action.get("uiActionNonce").and_then(Value::as_str)
-                    == Some(ui_action_nonce)
+                && action.get("uiActionNonce").and_then(Value::as_str) == Some(ui_action_nonce)
                 && binding
                     .get("sourceManifest")
                     .and_then(|manifest| manifest.get("legacyRosterContext"))
@@ -2459,7 +2583,9 @@ impl MainGenerationOwner {
         // 基线 :988-1019 双阶段 LLM 执行循环依赖主生成分发核心
         // （service.execute 的 LLM 流式分发 + 事件发射，B3 未迁移）
         // —— fail-closed 于执行入口（占位码，见方法头注）。
-        Err(mutating_error("GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED"))
+        Err(mutating_error(
+            "GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED",
+        ))
     }
 
     /// 基线 `stageLegacyRosterGeneration`（main-generation-owner.ts:1023-1027）：
@@ -2766,6 +2892,76 @@ impl MainGenerationOwner {
     }
 }
 
+// ── AgentHost 注入（基线 main-generation-owner.ts:897-902）──
+
+/// 基线 owner 闭包 :897-902 的 `AgentHost` 注入等价物——
+/// owner 自身作为 agent 生成状态机的宿主：
+/// - `begin` → `begin(selection, false, true)`（agent
+///   初始化路径）；
+/// - `read` → `viewOf(requireRun(handle))`（非执行语义）；
+/// - `resume` → `resume(handle)`；
+/// - `execute` → `execute({ handle, invocationNonce,
+///   task }, true)`（主进程内部执行路径，见
+///   [`MainGenerationOwner::execute_agent_round`]）；
+/// - `current` / `capture` → 保守占位（见方法头注的
+///   偏差记录）。
+impl AgentHost for MainGenerationOwner {
+    fn begin(&self, conn: &Connection, selection: &Value) -> Result<Value, String> {
+        self.begin(conn, selection, false, true)
+    }
+
+    fn read(&self, conn: &Connection, handle: &MainGenerationRunHandle) -> Result<Value, String> {
+        // 基线 `read: handle => viewOf(requireRun(handle))`——
+        // `requireRun` 非执行语义（默认 execution = false）。
+        let handle_value = serde_json::to_value(handle).map_err(|error| error.to_string())?;
+        let run = self.require_run(conn, &handle_value, false)?;
+        self.view_of(conn, &run)
+    }
+
+    fn resume(&self, conn: &Connection, handle: &MainGenerationRunHandle) -> Result<Value, String> {
+        // 基线 `resume` 闭包捕获：owner.resume(handle)。
+        let handle_value = serde_json::to_value(handle).map_err(|error| error.to_string())?;
+        self.resume(conn, &handle_value)
+    }
+
+    fn execute(
+        &self,
+        conn: &Connection,
+        handle: &MainGenerationRunHandle,
+        nonce: &str,
+        task: &Value,
+    ) -> Result<Value, String> {
+        self.execute_agent_round(conn, handle, nonce, task)
+    }
+
+    fn current(
+        &self,
+        _conn: &Connection,
+        run: &DurableGenerationRun,
+        expected: Option<&RunBinding>,
+    ) -> bool {
+        // 保守占位（偏差记录）：基线第二参为
+        // `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
+        // ——`rebuildBinding` / `currentModelReceipt` 未迁移
+        // （先例 review_revision.rs:109-110、generation.rs:841），
+        // 此处以 `run.binding` 自身充当重建结果（expected 缺省
+        // 时基线即比对 `run.binding` 与重建结果，本占位恒相等
+        // 返回 true——与基线「源未变」语义等价；源已变场景
+        // 的检测随 rebuildBinding 迁移波次补齐）。
+        compare_generation_source_bindings(expected.unwrap_or(&run.binding), &run.binding)
+    }
+
+    fn capture(
+        &self,
+        _conn: &Connection,
+        run: &DurableGenerationRun,
+    ) -> Result<RunBinding, String> {
+        // 保守占位（偏差记录）：基线为
+        // `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
+        // ——未迁移，原样返回 `run.binding`。
+        Ok(run.binding.clone())
+    }
+}
 // ============================================================================
 // 草稿上下文准备辅助（基线 main-generation-owner.ts:295-308）
 // ============================================================================
@@ -3350,6 +3546,112 @@ mod tests {
         assert_eq!(view["ledger"]["physicalRequests"], Value::Number(0.into()));
         assert_eq!(view["ledger"]["activeElapsedMs"], Value::Number(0.into()));
         assert!(view["ledger"]["blockedCode"].is_null());
+    }
+
+    // ── 子波次 B：begin agent 初始化路径 / execute 回归 ──────
+
+    #[test]
+    fn begin_agent_initialization_allows_agent_keys() {
+        // 基线 :357——agentInitialization 时 agentInput /
+        // agentSession 条件键放行（形状校验通过后落到
+        // B3 占位「主生成运行创建尚未迁移」）。
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let selection = json!({
+            "operation": "chapter-draft",
+            "uiActionNonce": "nonce-1",
+            "modelId": "model-1",
+            "promptKeys": ["key-1"],
+            "agentInput": "代理输入",
+            "agentSession": { "key": "session-key", "roundIndex": 0 },
+        });
+        let error = owner
+            .begin(&conn, &selection, false, true)
+            .expect_err("B3 占位 fail-closed");
+        assert_eq!(
+            error,
+            mutating_error(
+                "主生成运行创建尚未迁移：主生成策略规划器（newMainGenerationPolicy）与生成运行服务（generation-run-service）待后续批次移植"
+            )
+        );
+    }
+
+    #[test]
+    fn begin_agent_initialization_still_enforces_shape() {
+        // 基线 :357——agentInitialization 仅放行条件键，
+        // 其余形状校验（promptKeys 非空）仍生效。
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let selection = json!({
+            "operation": "chapter-draft",
+            "uiActionNonce": "nonce-1",
+            "agentInput": "代理输入",
+        });
+        let error = owner
+            .begin(&conn, &selection, false, true)
+            .expect_err("形状校验必须生效");
+        assert_eq!(error, mutating_error("GENERATION_BEGIN_INVALID"));
+    }
+
+    #[test]
+    fn begin_rejects_agent_input_without_agent_initialization() {
+        // 基线 :357——IPC 边界 agentInitialization 恒 false，
+        // agentInput 键超白名单 → GENERATION_BEGIN_INVALID。
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let selection = json!({
+            "operation": "chapter-draft",
+            "uiActionNonce": "nonce-1",
+            "promptKeys": ["key-1"],
+            "agentInput": "代理输入",
+        });
+        let error = owner
+            .begin(&conn, &selection, false, false)
+            .expect_err("agentInput 键必须拒绝");
+        assert_eq!(error, mutating_error("GENERATION_BEGIN_INVALID"));
+    }
+
+    #[test]
+    fn begin_rejects_agent_round_without_agent_initialization() {
+        // 基线 :366——agent-round 操作 + IPC 边界
+        // （agentInitialization 恒 false）→
+        // GENERATION_AGENT_ADMISSION_REQUIRED。
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let selection = json!({
+            "operation": "agent-round",
+            "uiActionNonce": "nonce-1",
+            "promptKeys": ["key-1"],
+        });
+        let error = owner
+            .begin(&conn, &selection, false, false)
+            .expect_err("agent-round 必须拒绝");
+        assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+    }
+
+    #[test]
+    fn execute_rejects_agent_round_run_at_ipc_boundary() {
+        // 基线 :504——agent-round 运行的 IPC execute
+        // （executionInitialization 恒 false）→
+        // GENERATION_AGENT_ADMISSION_REQUIRED（回归保护：
+        // execute → execute_inner(agent_execution=false)）。
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run =
+            open_run(&conn, "project-1", "lease-1", "agent-round").expect("open agent-round run");
+        let owner = owner_with(&conn);
+        let request = json!({
+            "handle": handle_of_run(&run),
+            "task": { "purpose": "agent-round", "output": "visible-text", "messages": [] },
+        });
+        let error = owner
+            .execute(&conn, &request)
+            .expect_err("agent-round IPC execute 必须拒绝");
+        assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
     }
 
     #[test]
