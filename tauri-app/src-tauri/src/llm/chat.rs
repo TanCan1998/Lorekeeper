@@ -21,6 +21,19 @@
 //! 3. **错误文案前缀**：基线的 `String(error)` 对 `Error` 实例会带上 `"Error: "`
 //!    前缀；Rust 侧经 [`provider_error_text`] 复刻同一格式，但异常对象名（如
 //!    `TypeError`）无法逐字复刻 —— 只保留 `"Error: "` 一档。
+//! 4. **传输诊断发射**（B3-2a 偏差登记，待裁决项 B3-M4）：基线
+//!    `openai-provider.ts` 经 `notify()`（250ms 节流）发射
+//!    `onDiagnostics`（request→response→stream→complete 相位迁移、
+//!    HTTP_ERROR/RESPONSE_BODY_MISSING/PROVIDER_STREAM_ERROR/
+//!    STREAM_INVALID/STREAM_INCOMPLETE 错误码、visibleEvents/
+//!    reasoningEvents 计数、`safeTransportError` 的 Node undici 码提取）；
+//!    `gemini-provider.ts` 从不发射。Rust 侧传输诊断发射机器尚未移植
+//!    ——`GenerationTransportDiagnostics` 类型已就位于
+//!    `repositories/generation_run_repository.rs`（运行服务侧），但
+//!    provider 侧发射点（含 reqwest `ErrorKind` → 基线 undici 码的
+//!    映射裁决）属专波事项；基线测试 `openai-provider.test.ts` 的
+//!    `causeCode === 'UND_ERR_*'` 断言在 Rust 侧不可移植（排除并注释）。
+//!    本波及当前 IPC 路径均不发射传输诊断。
 
 use std::sync::LazyLock;
 
@@ -66,6 +79,73 @@ pub struct TokenUsage {
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
+}
+
+/// token 用量的分账口径（基线 `ProviderUsageEvidence.accounting` 字面量联合）。
+///
+/// 基线语义：**证据不是权限**——`included-in-completion` 表示推理
+/// token 已计入 `completion_tokens`（OpenAI 口径），`separately-billed`
+/// 表示单独计费（Gemini 口径）；可信记账结算由消费侧（生成运行服务的
+/// `settleProviderUsage`）据此做出，本类型只承载协议事实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UsageAccounting {
+    IncludedInCompletion,
+    SeparatelyBilled,
+    Unknown,
+}
+
+impl UsageAccounting {
+    /// 序列化形式（与基线字面量一致）。
+    ///
+    /// B3-2b 事件载荷序列化将消费本方法；当前仅契约测试使用。
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UsageAccounting::IncludedInCompletion => "included-in-completion",
+            UsageAccounting::SeparatelyBilled => "separately-billed",
+            UsageAccounting::Unknown => "unknown",
+        }
+    }
+}
+
+/// 证据来源协议（基线 `ProviderUsageEvidence.protocol` 字面量联合）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageProtocol {
+    OpenAi,
+    Gemini,
+}
+
+impl UsageProtocol {
+    /// 序列化形式（与基线字面量一致）。
+    ///
+    /// B3-2b 事件载荷序列化将消费本方法；当前仅契约测试使用。
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UsageProtocol::OpenAi => "openai",
+            UsageProtocol::Gemini => "gemini",
+        }
+    }
+}
+
+/// provider 侧 usage 证据（对齐基线 `ProviderUsageEvidence`，
+/// `electron/llm/provider.interface.ts`）。
+///
+/// **逐字段核对基线**：基线只有以下五个字段，**没有** `trusted` 字段
+/// （「可信」是消费侧依据 [`UsageAccounting`] 做出的判定，不是协议
+/// 事实）。`reasoning_tokens` 为协议报告的推理 token 分项
+/// （OpenAI：`usage.completion_tokens_details.reasoning_tokens`；
+/// Gemini：`usageMetadata.thoughtsTokenCount`），未报告时为 `None`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageEvidence {
+    pub usage: TokenUsage,
+    pub reasoning_tokens: Option<i64>,
+    pub accounting: UsageAccounting,
+    pub total_includes_reasoning: bool,
+    pub protocol: UsageProtocol,
 }
 
 /// 非流式生成响应（对齐 `LLMResponse` 的 `{ success, content, finishReason, usage?, error? }`）。
@@ -116,13 +196,143 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-/// 流式回调集合（对齐基线 `LLMStreamOptions` 的三个回调）。
+/// 流式回调集合（对齐基线 `LLMStreamOptions` 的回调）。
+///
+/// `on_reasoning` / `on_usage_evidence` 为 B3-2a 新增（基线
+/// `onReasoning` / `onUsageEvidence` 的 1:1 对应），**Option 化**：
+/// 现有 IPC 路径（`llm:generate` / `llm:generate-stream`）传 `None`，
+/// 可观测行为逐字不变——新增回调只在 B3-2b 生成运行服务消费。
+///
+/// 基线另有 `onDiagnostics`：openai provider 发射而 gemini 不发射；
+/// Rust 侧传输诊断发射机器待 B3-M4 专波移植，本波不建该回调
+/// （见模块头注偏差登记）。
 pub struct StreamCallbacks<'a> {
     pub on_chunk: &'a (dyn Fn(&str) + Send + Sync),
     /// `finish_reason` 恒为归一后的终态证据。
     pub on_done: &'a (dyn Fn(String, Option<TokenUsage>, LlmFinishReason) + Send + Sync),
     /// `content` 是**已交付的可见候选文本**，绝不是隐藏推理内容。
     pub on_error: &'a (dyn Fn(String, Option<String>, Option<TokenUsage>) + Send + Sync),
+    /// 隐藏推理文本（基线 `onReasoning`）：协议 reasoning 字段原文，
+    /// 或可见文本中带内 `</think>…</think>` 块的抽取结果。
+    /// **绝不**进入可见候选（基线注释：ephemeral provider text only）。
+    pub on_reasoning: Option<&'a (dyn Fn(&str) + Send + Sync)>,
+    /// provider 侧 usage 证据（基线 `onUsageEvidence`）：协议 metadata
+    /// 是证据而非释放预留的权限（基线注释原意）。
+    pub on_usage_evidence: Option<&'a (dyn Fn(&ProviderUsageEvidence) + Send + Sync)>,
+}
+
+/// 解码器单次 `push` 产生的交付物，顺序即基线回调触发顺序
+/// （单事件内：usage 证据 → 推理文本 → 可见 chunk）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SseDelivery {
+    /// 可见文本 chunk（基线 `onChunk`）。
+    Chunk(String),
+    /// 隐藏推理文本（基线 `onReasoning`）。
+    Reasoning(String),
+    /// provider 侧 usage 证据（基线 `onUsageEvidence`）。
+    UsageEvidence(ProviderUsageEvidence),
+}
+
+/// 把一枚解码交付物分发给回调；新增回调缺失时跳过
+/// （对齐基线 `opts.onReasoning?.()` 的可选调用语义）。
+pub fn deliver(delivery: SseDelivery, callbacks: &StreamCallbacks<'_>) {
+    match delivery {
+        SseDelivery::Chunk(chunk) => (callbacks.on_chunk)(&chunk),
+        SseDelivery::Reasoning(reasoning) => {
+            if let Some(on_reasoning) = callbacks.on_reasoning {
+                on_reasoning(&reasoning);
+            }
+        }
+        SseDelivery::UsageEvidence(evidence) => {
+            if let Some(on_usage_evidence) = callbacks.on_usage_evidence {
+                on_usage_evidence(&evidence);
+            }
+        }
+    }
+}
+
+/// 基线思考标签对（`InBandReasoningStream` / `VisibleStreamFilter` /
+/// `stripThinking` 共用同一对标签）。
+const THINK_OPEN_TAG: &str = "\x3cthink\x3e";
+const THINK_CLOSE_TAG: &str = "</think>";
+
+/// 复刻基线 `InBandReasoningStream`（`electron/llm/provider.interface.ts`）：
+/// 从**可见文本**中抽取 `</think>…</think>` 块内的推理文本。
+///
+/// 与 [`strip_thinking`] 的差异：本类型**保留**块内原文（含嵌套与块内
+/// 标记），只剥离标签本身；以深度计数处理嵌套；跨 `push` 的半枚标签
+/// 暂存于 `pending`，待后续文本补足后再分类——拆分到两个 chunk 的
+/// 开标签绝不会泄漏推理前缀（基线 `owner-visible-stream.test.ts` 的
+/// 拆分思维用例即验证此边界）。
+///
+/// 基线在 `onReasoning` 缺失时直接短路返回；Rust 侧由调用方决定
+/// 返回值是否投递，故本类型不持有回调。
+#[derive(Debug, Default)]
+pub struct InBandReasoning {
+    pending: String,
+    depth: u32,
+}
+
+impl InBandReasoning {
+    /// 喂入一段可见文本；返回本次抽取到的推理文本（`None` 表示无发射）。
+    pub fn push(&mut self, text: &str) -> Option<String> {
+        // 基线以 UTF-16 码元索引；标签与 `<` 均为 ASCII，逐 `char` 索引
+        // 在「标签分类」与「切片边界」上逐字等价（多字节字符只出现在
+        // 被收集的正文中，其边界恒由 ASCII 分隔符确定）。
+        let input: Vec<char> = self.pending.chars().chain(text.chars()).collect();
+        let mut parts: Vec<String> = Vec::new();
+        self.pending = String::new();
+        let mut cursor = 0usize;
+        while cursor < input.len() {
+            let opening = input[cursor..]
+                .iter()
+                .position(|&character| character == '<')
+                .map(|offset| cursor + offset);
+            let end = opening.unwrap_or(input.len());
+            if self.depth > 0 && end > cursor {
+                parts.push(input[cursor..end].iter().collect());
+            }
+            let Some(opening) = opening else {
+                break;
+            };
+            cursor = opening;
+            let tail: String = input[cursor..(cursor + 8).min(input.len())]
+                .iter()
+                .collect::<String>()
+                .to_lowercase();
+            let tag = if tail.starts_with(THINK_OPEN_TAG) {
+                Some(THINK_OPEN_TAG)
+            } else if tail.starts_with(THINK_CLOSE_TAG) {
+                Some(THINK_CLOSE_TAG)
+            } else {
+                None
+            };
+            if let Some(tag) = tag {
+                self.depth = if tag == THINK_OPEN_TAG {
+                    self.depth + 1
+                } else {
+                    self.depth.saturating_sub(1)
+                };
+                cursor += tag.chars().count();
+                continue;
+            }
+            // 半枚标签（输入在标签中途截断）：暂存待补，不做任何收集。
+            if THINK_OPEN_TAG.starts_with(&tail) || THINK_CLOSE_TAG.starts_with(&tail) {
+                self.pending = input[cursor..].iter().collect();
+                break;
+            }
+            if self.depth > 0 {
+                parts.push("<".to_string());
+            }
+            cursor += 1;
+        }
+        let reasoning = parts.concat();
+        if reasoning.is_empty() {
+            None
+        } else {
+            Some(reasoning)
+        }
+    }
 }
 
 /// 流式生成选项（生成参数 + 回调 + 取消探针）。
@@ -353,5 +563,51 @@ mod tests {
         assert!(!is_gemini(&json!({"protocol": "openai-compatible"})));
         assert!(!is_gemini(&json!({})), "缺 protocol 按 OpenAI 兼容处理");
         assert!(!is_gemini(&json!({"protocol": null})));
+    }
+
+    #[test]
+    fn usage_evidence_literals_match_baseline_contract_test() {
+        // 与基线 `ProviderUsageEvidence` 的字面量联合逐字一致
+        // （B3-2b 结算与事件载荷消费这些字面量）。
+        for (accounting, literal) in [
+            (
+                UsageAccounting::IncludedInCompletion,
+                "included-in-completion",
+            ),
+            (UsageAccounting::SeparatelyBilled, "separately-billed"),
+            (UsageAccounting::Unknown, "unknown"),
+        ] {
+            assert_eq!(accounting.as_str(), literal);
+            assert_eq!(serde_json::to_value(accounting).unwrap(), json!(literal));
+        }
+        for (protocol, literal) in [
+            (UsageProtocol::OpenAi, "openai"),
+            (UsageProtocol::Gemini, "gemini"),
+        ] {
+            assert_eq!(protocol.as_str(), literal);
+            assert_eq!(serde_json::to_value(protocol).unwrap(), json!(literal));
+        }
+        // `ProviderUsageEvidence` 的 camelCase 载荷形态（基线接口字段名）。
+        let evidence = ProviderUsageEvidence {
+            usage: TokenUsage {
+                prompt_tokens: Some(1),
+                completion_tokens: Some(2),
+                total_tokens: Some(3),
+            },
+            reasoning_tokens: Some(7),
+            accounting: UsageAccounting::IncludedInCompletion,
+            total_includes_reasoning: true,
+            protocol: UsageProtocol::OpenAi,
+        };
+        assert_eq!(
+            serde_json::to_value(&evidence).unwrap(),
+            json!({
+                "usage": {"promptTokens": 1, "completionTokens": 2, "totalTokens": 3},
+                "reasoningTokens": 7,
+                "accounting": "included-in-completion",
+                "totalIncludesReasoning": true,
+                "protocol": "openai",
+            })
+        );
     }
 }

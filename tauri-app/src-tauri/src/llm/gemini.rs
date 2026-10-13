@@ -15,8 +15,9 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde_json::{json, Map, Value};
 
 use crate::llm::chat::{
-    ChatMessage, LlmFinishReason, LlmGenerateOptions, LlmResponse, LlmStreamOptions, StreamFailure,
-    TokenUsage,
+    deliver, ChatMessage, InBandReasoning, LlmFinishReason, LlmGenerateOptions, LlmResponse,
+    LlmStreamOptions, ProviderUsageEvidence, SseDelivery, StreamFailure, TokenUsage,
+    UsageAccounting, UsageProtocol,
 };
 use crate::llm::reasoning::ProviderReasoningDirective;
 
@@ -150,6 +151,41 @@ fn usage_from(metadata: Option<&Value>) -> Option<TokenUsage> {
     })
 }
 
+/// 基线 `if (parsed.usageMetadata)` 的 JS 真值判据：对象 / 数组恒真，
+/// `null` / `false` / `0` / 空串为假。
+fn usage_metadata_truthy(metadata: &Value) -> bool {
+    match metadata {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_f64().is_some_and(|value| value != 0.0),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
+}
+
+/// 基线 `onUsageEvidence` 发射点：`usageMetadata` 为真值即发射
+/// （`accounting: 'separately-billed'`；`reasoning_tokens` 取自
+/// `thoughtsTokenCount`）。非对象 metadata 同样发射（usage 全
+/// `null`，对齐基线 `?? null` 的弱类型读取）。
+fn usage_evidence(metadata: Option<&Value>) -> Option<ProviderUsageEvidence> {
+    let metadata = metadata?;
+    if !usage_metadata_truthy(metadata) {
+        return None;
+    }
+    let usage = usage_from(Some(metadata)).unwrap_or(TokenUsage {
+        prompt_tokens: None,
+        completion_tokens: None,
+        total_tokens: None,
+    });
+    Some(ProviderUsageEvidence {
+        usage,
+        reasoning_tokens: metadata.get("thoughtsTokenCount").and_then(Value::as_i64),
+        accounting: UsageAccounting::SeparatelyBilled,
+        total_includes_reasoning: true,
+        protocol: UsageProtocol::Gemini,
+    })
+}
+
 fn response_text(data: &Value) -> String {
     data.pointer("/candidates/0/content/parts/0/text")
         .and_then(Value::as_str)
@@ -245,12 +281,13 @@ pub struct GeminiSseDecoder {
     full_text: String,
     usage: Option<TokenUsage>,
     finish_reason: Option<LlmFinishReason>,
+    in_band_reasoning: InBandReasoning,
 }
 
 impl GeminiSseDecoder {
-    /// 喂入一段字节；返回本次新产生的 chunk（顺序即交付顺序）。
-    pub fn push(&mut self, bytes: &[u8], is_final: bool) -> Vec<String> {
-        let mut chunks = Vec::new();
+    /// 喂入一段字节；返回本次新产生的交付物（顺序即交付顺序）。
+    pub fn push(&mut self, bytes: &[u8], is_final: bool) -> Vec<SseDelivery> {
+        let mut deliveries = Vec::new();
         self.buffer.extend_from_slice(bytes);
         if is_final {
             // 对齐基线：流结束后若仍有残留内容（且非纯空白）则处理一次。
@@ -259,18 +296,18 @@ impl GeminiSseDecoder {
                 let line = String::from_utf8_lossy(&tail)
                     .trim_end_matches('\r')
                     .to_string();
-                self.process_line(&line, &mut chunks);
+                self.process_line(&line, &mut deliveries);
             }
             self.buffer.clear();
-            return chunks;
+            return deliveries;
         }
         while let Some(index) = self.buffer.iter().position(|byte| *byte == b'\n') {
             let consumed: Vec<u8> = self.buffer.drain(..=index).collect();
             // 去掉行尾的 `\n`；行内残留的 `\r` 交给 `process_line` 的 `trim` 处理。
             let line = String::from_utf8_lossy(&consumed[..consumed.len() - 1]).to_string();
-            self.process_line(&line, &mut chunks);
+            self.process_line(&line, &mut deliveries);
         }
-        chunks
+        deliveries
     }
 
     /// 交付给 `onDone` 的完整文本（Gemini **不**剥离推理块）。
@@ -288,7 +325,7 @@ impl GeminiSseDecoder {
         self.finish_reason.unwrap_or(LlmFinishReason::Unknown)
     }
 
-    fn process_line(&mut self, line: &str, chunks: &mut Vec<String>) {
+    fn process_line(&mut self, line: &str, deliveries: &mut Vec<SseDelivery>) {
         let Some(rest) = line.strip_prefix("data: ") else {
             return;
         };
@@ -306,18 +343,41 @@ impl GeminiSseDecoder {
             if let Some(finish) = candidate.get("finishReason") {
                 self.finish_reason = Some(normalize_finish_reason(finish.as_str()));
             }
-            if let Some(chunk) = candidate
-                .pointer("/content/parts/0/text")
-                .and_then(Value::as_str)
+            // 基线逐 part 处理：`thought: true` 的 part 原文直发推理；
+            // 其余 part 的文本先入带内抽取器（可能发射推理），再汇入
+            // 可见 chunk（无 `text` 的 part——如 functionCall——贡献
+            // 空串，与基线 `map(...).join('')` 一致）。
+            let mut visible = String::new();
+            if let Some(parts) = candidate
+                .pointer("/content/parts")
+                .and_then(Value::as_array)
             {
-                if !chunk.is_empty() {
-                    self.full_text.push_str(chunk);
-                    chunks.push(chunk.to_string());
+                for part in parts {
+                    let is_thought = part.get("thought").and_then(Value::as_bool) == Some(true);
+                    let text = part.get("text").and_then(Value::as_str);
+                    if is_thought {
+                        // 基线：`if (part.text) opts.onReasoning?.(part.text)`
+                        if let Some(text) = text.filter(|text| !text.is_empty()) {
+                            deliveries.push(SseDelivery::Reasoning(text.to_string()));
+                        }
+                    } else if let Some(text) = text {
+                        if let Some(extracted) = self.in_band_reasoning.push(text) {
+                            deliveries.push(SseDelivery::Reasoning(extracted));
+                        }
+                        visible.push_str(text);
+                    }
                 }
             }
+            if !visible.is_empty() {
+                self.full_text.push_str(&visible);
+                deliveries.push(SseDelivery::Chunk(visible));
+            }
         }
-        if let Some(usage) = usage_from(parsed.get("usageMetadata")) {
-            self.usage = Some(usage);
+        // 基线：`usageMetadata` 为真值即发射证据（缺失字段记 `null`，
+        // 不跳过）；同时作为 `onDone` 的用量来源。
+        if let Some(evidence) = usage_evidence(parsed.get("usageMetadata")) {
+            self.usage = Some(evidence.usage.clone());
+            deliveries.push(SseDelivery::UsageEvidence(evidence));
         }
     }
 }
@@ -386,13 +446,13 @@ async fn stream_inner(
         let Some(bytes) = chunk else {
             break;
         };
-        for piece in decoder.push(&bytes, false) {
-            (opts.callbacks.on_chunk)(&piece);
+        for delivery in decoder.push(&bytes, false) {
+            deliver(delivery, &opts.callbacks);
         }
     }
 
-    for piece in decoder.push(&[], true) {
-        (opts.callbacks.on_chunk)(&piece);
+    for delivery in decoder.push(&[], true) {
+        deliver(delivery, &opts.callbacks);
     }
     (opts.callbacks.on_done)(
         decoder.full_text(),
@@ -405,6 +465,17 @@ async fn stream_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 只取解码交付物中的可见 chunk（既有断言口径）。
+    fn visible_chunks(deliveries: Vec<SseDelivery>) -> Vec<String> {
+        deliveries
+            .into_iter()
+            .filter_map(|delivery| match delivery {
+                SseDelivery::Chunk(chunk) => Some(chunk),
+                _ => None,
+            })
+            .collect()
+    }
 
     #[test]
     fn finish_reason_maps_gemini_vocabulary_test() {
@@ -527,20 +598,22 @@ mod tests {
     fn sse_decoder_is_lenient_and_accumulates_evidence_test() {
         let mut decoder = GeminiSseDecoder::default();
         let mut chunks = Vec::new();
-        chunks.extend(decoder.push(
+        chunks.extend(visible_chunks(decoder.push(
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"甲\"}]}}]}\n".as_bytes(),
             false,
-        ));
+        )));
         // 损坏的 keepalive 与注释行一律忽略
-        chunks.extend(decoder.push(":keepalive\ndata: {broken\n".as_bytes(), false));
-        chunks.extend(decoder.push(
+        chunks.extend(visible_chunks(
+            decoder.push(":keepalive\ndata: {broken\n".as_bytes(), false),
+        ));
+        chunks.extend(visible_chunks(decoder.push(
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"乙\"}]},\"finishReason\":\"STOP\"}],".as_bytes(),
             false,
-        ));
-        chunks.extend(decoder.push(
+        )));
+        chunks.extend(visible_chunks(decoder.push(
             "\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":2,\"totalTokenCount\":3}}\n".as_bytes(),
             false,
-        ));
+        )));
         assert_eq!(chunks.concat(), "甲乙");
         assert_eq!(decoder.full_text(), "甲乙");
         assert_eq!(decoder.finish_reason(), LlmFinishReason::Stop);
@@ -557,12 +630,12 @@ mod tests {
     #[test]
     fn sse_decoder_handles_crlf_and_trailing_buffer_test() {
         let mut decoder = GeminiSseDecoder::default();
-        let mut chunks = decoder.push(
+        let mut chunks = visible_chunks(decoder.push(
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"尾\"}]}}]}\r".as_bytes(),
             false,
-        );
+        ));
         assert!(chunks.is_empty(), "无换行时不得提前派发");
-        chunks = decoder.push(&[], true);
+        chunks = visible_chunks(decoder.push(&[], true));
         assert_eq!(chunks.concat(), "尾");
         assert_eq!(decoder.full_text(), "尾");
     }
@@ -581,6 +654,118 @@ mod tests {
             false,
         );
         assert_eq!(decoder.finish_reason(), LlmFinishReason::Unknown);
+    }
+
+    /// 基线 `owner-visible-stream.test.ts`：`thought: true` 的
+    /// part 原文直发推理；多 part 可见文本按序拼接（functionCall
+    /// 等无 text part 贡献空串）；`usageMetadata` 真值即发射证据
+    /// （`thoughtsTokenCount` → `reasoning_tokens`，
+    /// `accounting: separately-billed`）。
+    #[test]
+    fn gemini_decoder_emits_thought_parts_and_usage_evidence_test() {
+        let mut decoder = GeminiSseDecoder::default();
+        let mut reasoning: Vec<String> = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
+        let mut evidence: Vec<ProviderUsageEvidence> = Vec::new();
+        for delivery in decoder.push(
+            concat!(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[",
+                "{\"text\":\"hidden\",\"thought\":true},",
+                "{\"text\":\" 甲\"},",
+                "{\"functionCall\":{\"secret\":\"tool\"}},",
+                "{\"text\":\"乙 \",\"thought\":false}]},\"finishReason\":\"STOP\"}],",
+                "\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":20,",
+                "\"thoughtsTokenCount\":7,\"totalTokenCount\":37}}\n"
+            )
+            .as_bytes(),
+            false,
+        ) {
+            match delivery {
+                SseDelivery::Chunk(chunk) => chunks.push(chunk),
+                SseDelivery::Reasoning(text) => reasoning.push(text),
+                SseDelivery::UsageEvidence(item) => evidence.push(item),
+            }
+        }
+        assert_eq!(chunks.concat(), " 甲乙 ");
+        assert_eq!(reasoning.concat(), "hidden");
+        assert_eq!(
+            evidence,
+            vec![ProviderUsageEvidence {
+                usage: TokenUsage {
+                    prompt_tokens: Some(10),
+                    completion_tokens: Some(20),
+                    total_tokens: Some(37),
+                },
+                reasoning_tokens: Some(7),
+                accounting: UsageAccounting::SeparatelyBilled,
+                total_includes_reasoning: true,
+                protocol: UsageProtocol::Gemini,
+            }]
+        );
+        assert_eq!(decoder.full_text(), " 甲乙 ");
+        assert_eq!(decoder.finish_reason(), LlmFinishReason::Stop);
+    }
+
+    /// 基线「keeps Gemini thought parts and in-band thoughts out of
+    /// visible output」：带内 `</think>` 块从非 thought part 抽取，
+    /// 与 thought part 原文合并为推理序列；半枚标签跨事件暂存。
+    #[test]
+    fn gemini_decoder_extracts_in_band_thoughts_test() {
+        let mut decoder = GeminiSseDecoder::default();
+        let mut reasoning: Vec<String> = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
+        for piece in [
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"推理\",\"thought\":true},{\"text\":\"前<th\"}]}}]}\n\n".as_bytes(),
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ink>内</think>后\"}]},\"finishReason\":\"STOP\"}]}\n\n".as_bytes(),
+        ] {
+            for delivery in decoder.push(piece, false) {
+                match delivery {
+                    SseDelivery::Chunk(chunk) => chunks.push(chunk),
+                    SseDelivery::Reasoning(text) => reasoning.push(text),
+                    SseDelivery::UsageEvidence(_) => {}
+                }
+            }
+        }
+        assert_eq!(reasoning.concat(), "推理内");
+        assert_eq!(chunks.concat(), "前\x3cthink\x3e内\x3c/think\x3e后");
+        assert_eq!(decoder.full_text(), "前\x3cthink\x3e内\x3c/think\x3e后");
+    }
+
+    /// 基线 `if (parsed.usageMetadata)` 真值判据：`0` / `null`
+    /// 为假不发射；空对象为真——发射全 `null` 用量的证据。
+    #[test]
+    fn gemini_decoder_usage_evidence_requires_truthy_metadata_test() {
+        let mut decoder = GeminiSseDecoder::default();
+        assert!(decoder
+            .push(b"data: {\"usageMetadata\":0}\n", false)
+            .is_empty());
+        assert!(decoder
+            .push(b"data: {\"usageMetadata\":null}\n", false)
+            .is_empty());
+        assert_eq!(decoder.usage(), None);
+        let deliveries = decoder.push(b"data: {\"usageMetadata\":{}}\n", false);
+        assert_eq!(
+            deliveries,
+            vec![SseDelivery::UsageEvidence(ProviderUsageEvidence {
+                usage: TokenUsage {
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    total_tokens: None,
+                },
+                reasoning_tokens: None,
+                accounting: UsageAccounting::SeparatelyBilled,
+                total_includes_reasoning: true,
+                protocol: UsageProtocol::Gemini,
+            })]
+        );
+        assert_eq!(
+            decoder.usage(),
+            Some(TokenUsage {
+                prompt_tokens: None,
+                completion_tokens: None,
+                total_tokens: None,
+            })
+        );
     }
 
     #[test]
@@ -602,7 +787,7 @@ mod tests {
             decoder.push(&bytes[..split], false).is_empty(),
             "行未结束时不得派发"
         );
-        let chunks = decoder.push(&bytes[split..], false);
+        let chunks = visible_chunks(decoder.push(&bytes[split..], false));
         assert_eq!(chunks.concat(), "甲");
         assert_eq!(decoder.full_text(), "甲");
     }

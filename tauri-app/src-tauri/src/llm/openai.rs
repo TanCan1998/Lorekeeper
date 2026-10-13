@@ -15,8 +15,9 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_
 use serde_json::{json, Map, Value};
 
 use crate::llm::chat::{
-    strip_thinking, ChatMessage, LlmFinishReason, LlmGenerateOptions, LlmResponse,
-    LlmStreamOptions, StreamFailure, TokenUsage,
+    deliver, strip_thinking, ChatMessage, InBandReasoning, LlmFinishReason, LlmGenerateOptions,
+    LlmResponse, LlmStreamOptions, ProviderUsageEvidence, SseDelivery, StreamFailure, TokenUsage,
+    UsageAccounting, UsageProtocol,
 };
 use crate::llm::reasoning::ProviderReasoningDirective;
 
@@ -315,13 +316,14 @@ pub struct OpenAiSseDecoder {
     fatal_error: Option<String>,
     usage: Option<TokenUsage>,
     full_text: String,
+    in_band_reasoning: InBandReasoning,
 }
 
 impl OpenAiSseDecoder {
     /// 喂入一段字节（`is_final` 表示不会再有余量，需冲刷行缓冲与尾事件）。
-    pub fn push(&mut self, bytes: &[u8], is_final: bool) -> Vec<String> {
+    pub fn push(&mut self, bytes: &[u8], is_final: bool) -> Vec<SseDelivery> {
         self.line_buffer.extend_from_slice(bytes);
-        let mut chunks = Vec::new();
+        let mut deliveries = Vec::new();
         let mut consumed = 0usize;
         let mut index = 0usize;
         while index < self.line_buffer.len() {
@@ -335,7 +337,7 @@ impl OpenAiSseDecoder {
                 break;
             }
             let line = self.line_buffer[consumed..index].to_vec();
-            self.process_line(&line, &mut chunks);
+            self.process_line(&line, &mut deliveries);
             index += if byte == b'\r' && self.line_buffer.get(index + 1) == Some(&b'\n') {
                 2
             } else {
@@ -350,13 +352,13 @@ impl OpenAiSseDecoder {
         if is_final && self.fatal_error.is_none() && !self.saw_done {
             if !self.line_buffer.is_empty() {
                 let tail = std::mem::take(&mut self.line_buffer);
-                self.process_line(&tail, &mut chunks);
+                self.process_line(&tail, &mut deliveries);
             }
             // 末尾的空行触发最后一个事件的派发（对齐基线 `processLine('')`）。
-            self.process_line(b"", &mut chunks);
+            self.process_line(b"", &mut deliveries);
             self.line_buffer.clear();
         }
-        chunks
+        deliveries
     }
 
     /// 致命错误（损坏载荷 / 类型错误），非 `None` 时调用方必须中止。
@@ -405,12 +407,12 @@ impl OpenAiSseDecoder {
         Some(close_tag)
     }
 
-    fn process_line(&mut self, line: &[u8], chunks: &mut Vec<String>) {
+    fn process_line(&mut self, line: &[u8], deliveries: &mut Vec<SseDelivery>) {
         if line.is_empty() {
             if !self.data_lines.is_empty() {
                 let data = self.data_lines.join("\n");
                 self.data_lines.clear();
-                self.process_event(&data, chunks);
+                self.process_event(&data, deliveries);
             }
             return;
         }
@@ -436,7 +438,7 @@ impl OpenAiSseDecoder {
         self.data_lines.push(value.to_string());
     }
 
-    fn process_event(&mut self, data: &str, chunks: &mut Vec<String>) {
+    fn process_event(&mut self, data: &str, deliveries: &mut Vec<SseDelivery>) {
         if self.fatal_error.is_some() || self.saw_done {
             return;
         }
@@ -473,6 +475,24 @@ impl OpenAiSseDecoder {
         }
 
         if let Some(Value::Object(raw_usage)) = payload.get("usage") {
+            // 基线：`usage` 为非空非数组对象即发射证据——数值字段
+            // 缺失记 `null`（不跳过整条证据）；`reasoning_tokens`
+            // 取自 `completion_tokens_details.reasoning_tokens`。
+            let reasoning_tokens = raw_usage
+                .get("completion_tokens_details")
+                .and_then(|details| details.get("reasoning_tokens"))
+                .and_then(Value::as_i64);
+            deliveries.push(SseDelivery::UsageEvidence(ProviderUsageEvidence {
+                usage: TokenUsage {
+                    prompt_tokens: raw_usage.get("prompt_tokens").and_then(Value::as_i64),
+                    completion_tokens: raw_usage.get("completion_tokens").and_then(Value::as_i64),
+                    total_tokens: raw_usage.get("total_tokens").and_then(Value::as_i64),
+                },
+                reasoning_tokens,
+                accounting: UsageAccounting::IncludedInCompletion,
+                total_includes_reasoning: true,
+                protocol: UsageProtocol::OpenAi,
+            }));
             let prompt = raw_usage.get("prompt_tokens").and_then(Value::as_i64);
             let completion = raw_usage.get("completion_tokens").and_then(Value::as_i64);
             let total = raw_usage.get("total_tokens").and_then(Value::as_i64);
@@ -536,24 +556,36 @@ impl OpenAiSseDecoder {
             }
         };
 
+        // 基线发射顺序：`reasoning_content` 原文直发推理 →
+        // `content` 进带内抽取器（可能发射推理）→ 可见 chunk。
+        // 本段只增发射，下方的可见 chunk 构造逻辑逐字不变。
+        if let Some(text) = reasoning.filter(|text| !text.is_empty()) {
+            deliveries.push(SseDelivery::Reasoning((*text).to_string()));
+        }
+        if let Some(text) = content {
+            if let Some(extracted) = self.in_band_reasoning.push(text) {
+                deliveries.push(SseDelivery::Reasoning(extracted));
+            }
+        }
+
         let mut emit = String::new();
         if let Some(text) = reasoning.filter(|text| !text.is_empty()) {
             if !self.is_thinking {
                 self.is_thinking = true;
-                emit.push_str("<think>\n");
+                emit.push_str("\x3cthink\x3e\n");
             }
             emit.push_str(text);
         }
         if let Some(text) = content {
             if self.is_thinking {
                 self.is_thinking = false;
-                emit.push_str("\n</think>\n\n");
+                emit.push_str("\n\n</think>\n\n");
             }
             emit.push_str(text);
         }
         if !emit.is_empty() {
             self.full_text.push_str(&emit);
-            chunks.push(emit);
+            deliveries.push(SseDelivery::Chunk(emit));
         }
     }
 }
@@ -627,14 +659,14 @@ async fn stream_inner(
         let Some(bytes) = chunk else {
             break;
         };
-        for piece in decoder.push(&bytes, false) {
-            (opts.callbacks.on_chunk)(&piece);
+        for delivery in decoder.push(&bytes, false) {
+            deliver(delivery, &opts.callbacks);
         }
     }
 
     if decoder.fatal_error().is_none() && !decoder.saw_done() {
-        for piece in decoder.push(&[], true) {
-            (opts.callbacks.on_chunk)(&piece);
+        for delivery in decoder.push(&[], true) {
+            deliver(delivery, &opts.callbacks);
         }
     }
 
@@ -664,6 +696,17 @@ mod tests {
 
     fn model(value: Value) -> Value {
         value
+    }
+
+    /// 只取解码交付物中的可见 chunk（既有断言口径）。
+    fn visible_chunks(deliveries: Vec<SseDelivery>) -> Vec<String> {
+        deliveries
+            .into_iter()
+            .filter_map(|delivery| match delivery {
+                SseDelivery::Chunk(chunk) => Some(chunk),
+                _ => None,
+            })
+            .collect()
     }
     #[test]
     fn resolve_url_matches_baseline_branches_test() {
@@ -885,7 +928,7 @@ mod tests {
         let mut chunks: Vec<String> = Vec::new();
         // 故意按 3 字节切分，制造行尾/多字节被切断的情形。
         for piece in bytes.chunks(3) {
-            chunks.extend(decoder.push(piece, false));
+            chunks.extend(visible_chunks(decoder.push(piece, false)));
         }
         assert!(
             decoder.fatal_error().is_none(),
@@ -909,6 +952,110 @@ mod tests {
         assert_eq!(decoder.visible_full_text(), "正文");
     }
 
+    /// 基线 `owner-visible-stream.test.ts`：`usage` 对象存在即发射
+    /// 证据（数值字段缺失记 `null`，不跳过整条证据）；
+    /// `reasoning_tokens` 取自 `completion_tokens_details.reasoning_tokens`。
+    #[test]
+    fn sse_decoder_emits_usage_evidence_with_reasoning_split_test() {
+        let mut decoder = OpenAiSseDecoder::default();
+        let deliveries = decoder.push(
+            b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30,\"completion_tokens_details\":{\"reasoning_tokens\":7}}}\n\n",
+            false,
+        );
+        assert_eq!(
+            deliveries,
+            vec![SseDelivery::UsageEvidence(ProviderUsageEvidence {
+                usage: TokenUsage {
+                    prompt_tokens: Some(10),
+                    completion_tokens: Some(20),
+                    total_tokens: Some(30),
+                },
+                reasoning_tokens: Some(7),
+                accounting: UsageAccounting::IncludedInCompletion,
+                total_includes_reasoning: true,
+                protocol: UsageProtocol::OpenAi,
+            })]
+        );
+        // 分账明细缺失时 `reasoning_tokens` 记 `None`（基线 `?? null`）。
+        let mut decoder = OpenAiSseDecoder::default();
+        let deliveries = decoder.push(
+            b"data: {\"choices\":[],\"usage\":{\"completion_tokens_details\":{}}}\n\n",
+            false,
+        );
+        assert_eq!(
+            deliveries,
+            vec![SseDelivery::UsageEvidence(ProviderUsageEvidence {
+                usage: TokenUsage {
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    total_tokens: None,
+                },
+                reasoning_tokens: None,
+                accounting: UsageAccounting::IncludedInCompletion,
+                total_includes_reasoning: true,
+                protocol: UsageProtocol::OpenAi,
+            })]
+        );
+    }
+
+    /// 基线「never emits protocol reasoning fields」：
+    /// `reasoning_content` 原文直发推理；可见文本中的带内
+    /// `</think>` 块经抽取器发射（半枚标签跨 chunk 暂存，
+    /// 不泄漏推理前缀）。
+    #[test]
+    fn sse_decoder_emits_reasoning_raw_and_in_band_test() {
+        let mut decoder = OpenAiSseDecoder::default();
+        let mut reasoning: Vec<String> = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
+        for piece in [
+            b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"protocol secret\"}}]}\n\n".as_slice(),
+            "data: {\"choices\":[{\"delta\":{\"content\":\" 前<th\"}}]}\n\n".as_bytes(),
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ink>inband secret</think>乙 \\n\"}}]}\n\n".as_bytes(),
+        ] {
+            for delivery in decoder.push(piece, false) {
+                match delivery {
+                    SseDelivery::Chunk(chunk) => chunks.push(chunk),
+                    SseDelivery::Reasoning(text) => reasoning.push(text),
+                    SseDelivery::UsageEvidence(_) => {}
+                }
+            }
+        }
+        assert_eq!(reasoning.concat(), "protocol secretinband secret");
+        assert_eq!(chunks.len(), 3);
+        // 非 visibleOnly 路径：`onDone` 文本经 `strip_thinking` 归一
+        // （`<th` 与 `ink>` 拼成完整开标签，块内文本被剥离，与基线
+        // 非 visibleOnly 路径的 `stripThinking(fullText)` 一致）。
+        assert_eq!(decoder.visible_full_text(), "前乙");
+    }
+
+    /// 基线「delivers split in-band thoughts separately」：拆分到
+    /// 三个 chunk 的思维块只发射一次抽取结果，且块内标记（`<em>`）
+    /// 保留；闭合标签跨 chunk 拼接后才触发剥离。
+    #[test]
+    fn sse_decoder_holds_split_in_band_thoughts_test() {
+        let mut decoder = OpenAiSseDecoder::default();
+        let mut reasoning: Vec<String> = Vec::new();
+        let mut chunks: Vec<String> = Vec::new();
+        for piece in [
+            "data: {\"choices\":[{\"delta\":{\"content\":\"前<th\"}}]}\n\n".as_bytes(),
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ink>秘密<em>里</em></thi\"}}]}\n\n".as_bytes(),
+            "data: {\"choices\":[{\"delta\":{\"content\":\"nk>后\",\"finish_reason\":\"stop\"}}]}\n\n".as_bytes(),
+        ] {
+            for delivery in decoder.push(piece, false) {
+                match delivery {
+                    SseDelivery::Chunk(chunk) => chunks.push(chunk),
+                    SseDelivery::Reasoning(text) => reasoning.push(text),
+                    SseDelivery::UsageEvidence(_) => {}
+                }
+            }
+        }
+        assert_eq!(reasoning.concat(), "秘密<em>里</em>");
+        assert_eq!(
+            chunks.concat(),
+            "前\x3cthink\x3e秘密<em>里</em>\x3c/think\x3e后"
+        );
+        assert_eq!(decoder.visible_full_text(), "前后");
+    }
     #[test]
     fn sse_decoder_reports_typed_fatal_errors_test() {
         // 损坏 JSON

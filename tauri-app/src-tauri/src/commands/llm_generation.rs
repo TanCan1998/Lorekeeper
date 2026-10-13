@@ -709,6 +709,8 @@ async fn run_stream(
         on_chunk: &on_chunk,
         on_done: &on_done,
         on_error: &on_error,
+        on_reasoning: None,
+        on_usage_evidence: None,
     };
     let stream_options = LlmStreamOptions {
         generate: options,
