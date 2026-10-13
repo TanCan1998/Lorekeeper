@@ -343,7 +343,7 @@ impl<'a> LegacyRosterGeneration<'a> {
 
 /// 键集子集校验（对齐上游 `Object.keys(source).some(key =>
 /// !allowed.includes(key))` 的失败语义）。
-fn keys_subset(source: &Value, allowed: &[&str]) -> bool {
+pub(crate) fn keys_subset(source: &Value, allowed: &[&str]) -> bool {
     source
         .as_object()
         .map(|fields| {

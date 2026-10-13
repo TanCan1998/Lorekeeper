@@ -285,6 +285,14 @@ pub fn run() {
             commands::generation_compose_visible,
             // 批次 G4-6c：主生成 owner 草稿上下文准备（generation:* 1 频道）
             commands::generation_prepare_draft_context,
+            // 批次 G4-8b：旧名册生成（legacy-roster:* 7 频道）
+            commands::legacy_roster_read_source,
+            commands::legacy_roster_adopt_existing,
+            commands::legacy_roster_begin,
+            commands::legacy_roster_read,
+            commands::legacy_roster_execute,
+            commands::legacy_roster_stage,
+            commands::legacy_roster_cancel,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,

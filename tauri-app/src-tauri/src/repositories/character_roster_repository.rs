@@ -4087,4 +4087,36 @@ mod tests {
         assert_eq!(snapshot.fact_hash.len(), 64);
         assert_eq!(snapshot.name_only_fact_hash, "");
     }
+
+    #[test]
+    fn validate_legacy_roster_candidate_rejects_non_object_test() {
+        assert_eq!(
+            validate_legacy_roster_candidate(&json!("not-an-object")).unwrap_err(),
+            "角色名单提交请求格式无效"
+        );
+    }
+
+    #[test]
+    fn validate_legacy_roster_candidate_rejects_unsupported_schema_version_test() {
+        let candidate = json!({
+            "schemaVersion": 2,
+            "entries": [entry_payload("甲", "protagonist")],
+        });
+        assert_eq!(
+            validate_legacy_roster_candidate(&candidate).unwrap_err(),
+            "角色名单 schema 版本不受支持"
+        );
+    }
+
+    #[test]
+    fn validate_legacy_roster_candidate_returns_normalized_entries_test() {
+        let candidate = json!({
+            "schemaVersion": 1,
+            "entries": [entry_payload("林清玄", "protagonist")],
+        });
+        let entries = validate_legacy_roster_candidate(&candidate)
+            .expect("合法候选应通过校验");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "林清玄");
+    }
 }

@@ -64,11 +64,20 @@ use crate::repositories::generation_run_repository::{
 };
 
 use crate::security::{self, ProjectSessionContext};
+use crate::services::character_proposal::{
+    prove_character_proposal, CharacterProposalService,
+};
 use crate::services::generation_draft_effects::{
     assert_generation_batch_intent, GenerationDraftEffects,
 };
+use crate::services::legacy_roster_generation::{
+    keys_subset, LegacyRosterGeneration,
+};
+use crate::services::legacy_roster_generation_context::read_legacy_roster_generation_context;
+use crate::services::legacy_roster_source::{
+    adopt_legacy_cards, read_legacy_roster_source, AdoptLegacyCardsRequest,
+};
 use crate::state::ActiveProject;
-
 // ============================================================================
 // 错误码（字符串值逐字对齐上游 throw 调用）
 // ============================================================================
@@ -2174,6 +2183,347 @@ impl MainGenerationOwner {
         }
         // 基线 :676-677 rebuildBinding 深比较 —— fail-closed 占位（见方法头注）。
         Ok(())
+    }
+
+    /// 构造角色提案服务（对齐基线 main-generation-owner.ts:880-896
+    /// `characters` 依赖）：prove 闭包内 `assertCurrent` +
+    /// `proveCharacterProposal`，其 `assertSources` 闭包做
+    /// `requireRun` + budget 取消态检查 →
+    /// `CHARACTER_PROPOSAL_SOURCE_CHANGED`。
+    ///
+    /// ⚠️ 基线 :676-677 的 `rebuildBinding(run.binding,
+    /// currentModelReceipt(run.binding))` 深比较 —— fail-closed
+    /// 占位（`currentModelReceipt → loadModel` 依赖未迁移，
+    /// G4-6c-1 既定范式）：闭包内保守判定为一致。
+    fn character_proposal_service<'a>(
+        &'a self,
+        conn: &'a Connection,
+    ) -> CharacterProposalService<'a> {
+        let project_id = self.session.project_id.clone();
+        CharacterProposalService::new(
+            conn,
+            &self.session.project_id,
+            move |source, for_write, version| {
+                self.assert_current()?;
+                prove_character_proposal(
+                    conn,
+                    &self.repository,
+                    &project_id,
+                    source,
+                    for_write,
+                    |handle, _committed_blueprint_chapters| {
+                        let run = self.require_run(conn, handle, false)?;
+                        if self
+                            .repository
+                            .budget(conn, &run.root_action_id)
+                            .map_err(|error| mutating_error(map_generation_error(&error)))?
+                            .root
+                            .status
+                            == "cancelled"
+                        {
+                            return Err(mutating_error("CHARACTER_PROPOSAL_SOURCE_CHANGED"));
+                        }
+                        // 基线 :676-677 rebuildBinding 深比较 —— fail-closed 占位（见方法头注）。
+                        Ok(())
+                    },
+                    version,
+                )
+            },
+        )
+    }
+
+    /// 构造旧名册生成恢复视图（对齐基线 main-generation-owner.ts:953-961
+    /// `legacyRosterRecovery`）：`view` / `modelId` / `context` /
+    /// `sourceStatus`（`assertFinalizationSources` 等价物——
+    /// `assert_sources_current` 无 blueprintRange 形态）/
+    /// `attemptCount`，条件展开 `artifact` / `proposal`。
+    fn legacy_roster_recovery(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        proposal: Option<Value>,
+        artifact: Option<Value>,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let context = read_legacy_roster_generation_context(run)?;
+        // 基线 :956-958 assertFinalizationSources(run) 等价物：
+        // assert_sources_current 无 blueprintRange 时（roster 提交
+        // 钩子形态）跳过范围检查，仅做身份校验 + budget 取消态检查。
+        let handle = handle_of(run);
+        let current = self.assert_sources_current(conn, &handle, None).is_ok();
+        // 基线 :959 modelReceipt(run.binding).modelId
+        let model_id = run
+            .binding
+            .source_manifest
+            .get("modelReceipt")
+            .and_then(|receipt| receipt.get("modelId"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // 基线 :960 attemptCount
+        let attempt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?1",
+                [run.run_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let view = self.view_of(conn, run)?;
+        let mut recovery = json!({
+            "view": view,
+            "modelId": model_id,
+            "context": context,
+            "sourceStatus": if current { "current" } else { "conflict" },
+            "attemptCount": attempt_count,
+        });
+        // 基线 :961 条件展开 ...(artifact ? {artifact} : {}) / ...(proposal ? {proposal} : {})
+        if let Some(artifact) = artifact {
+            recovery["artifact"] = artifact;
+        }
+        if let Some(proposal) = proposal {
+            recovery["proposal"] = proposal;
+        }
+        Ok(recovery)
+    }
+
+    /// 基线 `readLegacyRosterSource`（main-generation-owner.ts:963）：
+    /// `assertCurrent` → `readLegacyRosterSource(deps.database)`。
+    pub fn read_legacy_roster_source_cmd(&self, conn: &Connection) -> Result<Value, String> {
+        self.assert_current()?;
+        let source = read_legacy_roster_source(conn)?;
+        serde_json::to_value(source)
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))
+    }
+
+    /// 基线 `adoptLegacyCards`（main-generation-owner.ts:964）：
+    /// `assertCurrent` → `adoptLegacyCards(deps.database, request)`。
+    pub fn adopt_legacy_cards_cmd(
+        &self,
+        conn: &Connection,
+        request: &AdoptLegacyCardsRequest,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let receipt = adopt_legacy_cards(conn, request)?;
+        serde_json::to_value(receipt)
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))
+    }
+
+    /// 基线 `beginLegacyRosterGeneration`（main-generation-owner.ts:965-973）：
+    /// 请求校验（modelId / uiActionNonce 键集 + 非空 nonce ≤256）→
+    /// 幂等查询（projectId + uiActionNonce + legacyRosterContext）→
+    /// `GENERATION_NONCE_CONFLICT` → 命中即 `legacyRosterRecovery` 重放；
+    /// 否则内部 `begin(..., legacyInitialization=true)` 创建运行。
+    ///
+    /// ⚠️ 诚实化占位：基线 :972-973 的运行创建核心（主生成策略
+    /// 规划器 `newMainGenerationPolicy` + 生成运行服务
+    /// `generation-run-service`）未迁移（B3）——Tauri `owner.begin`
+    /// 对 `legacy-character-roster-repair` 操作硬拒绝
+    /// `GENERATION_LEGACY_ADMISSION_REQUIRED`（对齐基线 IPC 边界
+    /// 行为，begin 方法头注）。本命令 fail-closed 于创建入口
+    /// （`GENERATION_LEGACY_ROSTER_BEGIN_UNMIGRATED` 为迁移占位码、
+    /// 非基线码），待创建核心迁移波次活化。
+    pub fn begin_legacy_roster_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        // 基线 :967-970 请求校验（modelId / uiActionNonce 键集 + nonce 形态）
+        if !keys_subset(request, &["modelId", "uiActionNonce"]) {
+            return Err(mutating_error("GENERATION_LEGACY_REQUEST_INVALID"));
+        }
+        let ui_action_nonce = request
+            .get("uiActionNonce")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if ui_action_nonce.trim().is_empty() || ui_action_nonce.chars().count() > 256 {
+            return Err(mutating_error("GENERATION_LEGACY_REQUEST_INVALID"));
+        }
+        // 基线 :971-972 幂等查询（projectId + uiActionNonce + legacyRosterContext）。
+        // ⚠️ JSON1 扩展（`json_extract`）在 rusqlite bundled 下可用性未验证，
+        // 改用 Rust 端解析 action_json / binding_json 过滤（语义逐字对齐，
+        // legacy roster 运行数量少，全量扫描无性能顾虑）。
+        let candidates: Vec<(String, String, String)> = conn
+            .prepare(
+                "SELECT r.run_id, g.action_json, r.binding_json FROM generation_runs r \
+                 JOIN generation_roots g ON g.root_action_id = r.root_action_id",
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?
+            .collect::<Result<Vec<(String, String, String)>, _>>()
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let mut matched: Vec<String> = Vec::new();
+        for (run_id, action_json, binding_json) in candidates {
+            let action = serde_json::from_str::<Value>(&action_json)
+                .unwrap_or(Value::Null);
+            let binding = serde_json::from_str::<Value>(&binding_json)
+                .unwrap_or(Value::Null);
+            if action.get("projectId").and_then(Value::as_str)
+                == Some(self.session.project_id.as_str())
+                && action.get("uiActionNonce").and_then(Value::as_str)
+                    == Some(ui_action_nonce)
+                && binding
+                    .get("sourceManifest")
+                    .and_then(|manifest| manifest.get("legacyRosterContext"))
+                    .is_some()
+            {
+                matched.push(run_id);
+            }
+        }
+        if matched.len() > 1 {
+            return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
+        }
+        if let Some(run_id) = matched.first() {
+            // 基线 :972 幂等重放：legacyRosterRecovery(repository.get(run_id))
+            // ——只读路径，不依赖运行创建核心。
+            let proposals = self.character_proposal_service(conn);
+            let repository = self.repository.clone();
+            let project_id = self.session.project_id.clone();
+            let roster = LegacyRosterGeneration::new(conn, repository, &project_id, &proposals);
+            let run = self
+                .repository
+                .get(conn, run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+            let proposal = roster.proposal(&run)?;
+            let artifact = roster.artifact_for(&run)?;
+            return self.legacy_roster_recovery(conn, &run, proposal, artifact);
+        }
+        // 基线 :972-973 运行创建核心（主生成策略规划器 `newMainGenerationPolicy`
+        // + 生成运行服务 `generation-run-service`）未迁移（B3）——fail-closed
+        // 于创建入口（占位码，见方法头注）。
+        Err(mutating_error("GENERATION_LEGACY_ROSTER_BEGIN_UNMIGRATED"))
+    }
+
+    /// 基线 `readLegacyRosterGeneration`（main-generation-owner.ts:976-980）：
+    /// 请求校验（handle 键集）→ `legacyRosters.require(handle)` 身份
+    /// 校验 → `legacyRosterRecovery` 恢复视图。
+    pub fn read_legacy_roster_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        // 基线 :978-979 请求校验（handle 键集）
+        if !keys_subset(request, &["handle"]) {
+            return Err(mutating_error("GENERATION_LEGACY_REQUEST_INVALID"));
+        }
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        // 基线 :880-896 characters + legacyRosters 依赖构造
+        let proposals = self.character_proposal_service(conn);
+        let repository = self.repository.clone();
+        let project_id = self.session.project_id.clone();
+        let roster = LegacyRosterGeneration::new(conn, repository, &project_id, &proposals);
+        // 基线 :980 legacyRosters.require(request.handle) → legacyRosterRecovery
+        let run = roster.require(&handle)?;
+        let proposal = roster.proposal(&run)?;
+        let artifact = roster.artifact_for(&run)?;
+        self.legacy_roster_recovery(conn, &run, proposal, artifact)
+    }
+
+    /// 基线 `executeLegacyRosterGeneration`（main-generation-owner.ts:981-1021）：
+    /// 请求校验（handle 键集）→ `legacyRosters.require(handle)` →
+    /// 双阶段 LLM 执行循环（initial / repair 各至多 3 次尝试，
+    /// `buildLegacyRosterJsonRepairTask` 修复重试）→ 产物解析 →
+    /// `generation_attempts.usage_receipt_json` 回执写入。
+    ///
+    /// ⚠️ 诚实化占位：基线 :988-1019 的双阶段 LLM 执行循环依赖
+    /// 主生成分发核心（`service.execute` 的 LLM 流式分发 +
+    /// `generation:snapshot` / `generation:reasoning` 事件发射，
+    /// B3 未迁移）——本命令 fail-closed 于执行入口
+    /// （`GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED` 为迁移占位码、
+    /// 非基线码），待 LLM 执行循环迁移波次活化。
+    pub fn execute_legacy_roster_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        // 基线 :983-984 请求校验（handle 键集）
+        if !keys_subset(request, &["handle"]) {
+            return Err(mutating_error("GENERATION_LEGACY_REQUEST_INVALID"));
+        }
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        // 基线 :880-896 characters + legacyRosters 依赖构造
+        let proposals = self.character_proposal_service(conn);
+        let repository = self.repository.clone();
+        let project_id = self.session.project_id.clone();
+        let roster = LegacyRosterGeneration::new(conn, repository, &project_id, &proposals);
+        // 基线 :985 legacyRosters.require(request.handle) 身份校验（就位）
+        roster.require(&handle)?;
+        // 基线 :988-1019 双阶段 LLM 执行循环依赖主生成分发核心
+        // （service.execute 的 LLM 流式分发 + 事件发射，B3 未迁移）
+        // —— fail-closed 于执行入口（占位码，见方法头注）。
+        Err(mutating_error("GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED"))
+    }
+
+    /// 基线 `stageLegacyRosterGeneration`（main-generation-owner.ts:1023-1027）：
+    /// 请求校验（handle + artifact 键集）→ `legacyRosters.stage(handle,
+    /// artifact, assertFinalizationSources)` 阶段提交（幂等重放 /
+    /// artifact 校验 → proof → assertSources → 提案阶段提交 →
+    /// 效应写回 usage_receipt_json）。
+    pub fn stage_legacy_roster_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        // 基线 :1025-1026 请求校验（handle + artifact 键集）
+        if !keys_subset(request, &["handle", "artifact"]) {
+            return Err(mutating_error("GENERATION_LEGACY_REQUEST_INVALID"));
+        }
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        let artifact = request.get("artifact").cloned().unwrap_or(Value::Null);
+        // 基线 :880-896 characters + legacyRosters 依赖构造
+        let proposals = self.character_proposal_service(conn);
+        let repository = self.repository.clone();
+        let project_id = self.session.project_id.clone();
+        let roster = LegacyRosterGeneration::new(conn, repository, &project_id, &proposals);
+        // 基线 :1027 legacyRosters.stage(handle, artifact, assertFinalizationSources)
+        // —— assertFinalizationSources 等价物：assert_sources_current 无
+        // blueprintRange 形态（roster 提交钩子，跳过范围检查）。
+        roster.stage(&handle, &artifact, &|run| {
+            let handle = handle_of(run);
+            self.assert_sources_current(conn, &handle, None)
+        })
+    }
+
+    /// 基线 `cancelLegacyRosterGeneration`（main-generation-owner.ts:1028-1032）：
+    /// 请求校验（handle 键集）→ `legacyRosters.require(handle)` 身份
+    /// 校验 → `service.cancel(run.rootActionId)`（`repository.pause(cancel=true)`
+    /// 等价物）→ `viewOf` 运行视图。
+    pub fn cancel_legacy_roster_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        // 基线 :1030-1031 请求校验（handle 键集）
+        if !keys_subset(request, &["handle"]) {
+            return Err(mutating_error("GENERATION_LEGACY_REQUEST_INVALID"));
+        }
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        // 基线 :880-896 characters + legacyRosters 依赖构造（require 需要）
+        let proposals = self.character_proposal_service(conn);
+        let repository = self.repository.clone();
+        let project_id = self.session.project_id.clone();
+        let roster = LegacyRosterGeneration::new(conn, repository, &project_id, &proposals);
+        // 基线 :1032 legacyRosters.require(request.handle); service.cancel(run.rootActionId); return viewOf(...)
+        let run = roster.require(&handle)?;
+        self.repository
+            .pause(conn, &run.root_action_id, true)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let run = self
+            .repository
+            .get(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.view_of(conn, &run)
     }
 
     /// 基线 `withGenerationAgentChildEffect`（generation-controller.ts:66-71

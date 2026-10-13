@@ -74,6 +74,7 @@ use crate::repositories::generation_run_repository::{
 use crate::repositories::project_core_repository as project_core;
 use crate::security::ProjectSessionContext;
 use crate::services::generation_draft_effects::GenerationDraftEffects;
+use crate::services::legacy_roster_source::AdoptLegacyCardsRequest;
 use crate::services::main_generation_owner::{
     map_generation_error, mutating_error, MainGenerationOwnerCache,
 };
@@ -2343,4 +2344,129 @@ pub async fn generation_prepare_draft_context(
         // fail-closed（KB 命令层待 F2 收口）。
         Err(mutating_error("KNOWLEDGE_BASE_NATIVE_UNAVAILABLE"))
     })
+}
+
+// ============================================================================
+// 批次 G4-8b：旧名册生成命令 —— `legacy-roster:*` 7 频道
+// （平移自 electron/controllers/generation-controller.ts:206-212；
+//  owner 接线见 services/main_generation_owner.rs 末段）
+// ============================================================================
+
+/// `legacy-roster:read-source` —— 旧名册模型来源读取
+/// （基线 `readLegacyRosterSource()`，main-generation-owner.ts:963）。
+#[tauri::command]
+pub async fn legacy_roster_read_source(
+    state: State<'_, AppState>,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.read_legacy_roster_source_cmd(conn))
+}
+
+/// `legacy-roster:adopt-existing` —— 旧卡片收养
+/// （基线 `adoptLegacyCards(request)`，main-generation-owner.ts:964）。
+#[tauri::command]
+pub async fn legacy_roster_adopt_existing(
+    state: State<'_, AppState>,
+    request: AdoptLegacyCardsRequest,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.adopt_legacy_cards_cmd(conn, &request))
+}
+
+/// `legacy-roster:begin` —— 旧名册修复生成开始
+/// （基线 `beginLegacyRosterGeneration(request)`，
+/// main-generation-owner.ts:965-973）。
+///
+/// ⚠️ 诚实化占位：运行创建核心（newMainGenerationPolicy /
+/// generation-run-service）未迁移（B3）——幂等重放路径
+/// （命中既有 run）可用，创建路径 fail-closed
+/// （`GENERATION_LEGACY_ROSTER_BEGIN_UNMIGRATED` 占位码）。
+#[tauri::command]
+pub async fn legacy_roster_begin(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.begin_legacy_roster_generation(conn, &request))
+}
+
+/// `legacy-roster:read` —— 旧名册生成恢复视图读取
+/// （基线 `readLegacyRosterGeneration(request)`，
+/// main-generation-owner.ts:976-980）。
+#[tauri::command]
+pub async fn legacy_roster_read(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.read_legacy_roster_generation(conn, &request))
+}
+
+/// `legacy-roster:execute` —— 旧名册修复生成执行
+/// （基线 `executeLegacyRosterGeneration(request)`，
+/// main-generation-owner.ts:981-1021）。
+///
+/// ⚠️ 诚实化占位：双阶段 LLM 执行循环依赖主生成分发核心
+/// （service.execute，B3 未迁移）——身份校验就位，执行
+/// 入口 fail-closed（`GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED`
+/// 占位码）。
+#[tauri::command]
+pub async fn legacy_roster_execute(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.execute_legacy_roster_generation(conn, &request))
+}
+
+/// `legacy-roster:stage` —— 旧名册生成产物阶段提交
+/// （基线 `stageLegacyRosterGeneration(request)`，
+/// main-generation-owner.ts:1023-1027）。
+#[tauri::command]
+pub async fn legacy_roster_stage(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.stage_legacy_roster_generation(conn, &request))
+}
+
+/// `legacy-roster:cancel` —— 旧名册生成取消
+/// （基线 `cancelLegacyRosterGeneration(request)`，
+/// main-generation-owner.ts:1028-1032）。
+#[tauri::command]
+pub async fn legacy_roster_cancel(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = MainGenerationOwnerCache::new();
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.cancel_legacy_roster_generation(conn, &request))
 }
