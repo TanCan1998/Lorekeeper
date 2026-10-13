@@ -65,7 +65,7 @@ use crate::repositories::generation_run_repository::{
 
 use crate::security::{self, ProjectSessionContext};
 use crate::services::character_proposal::{
-    prove_character_proposal, CharacterProposalService,
+    prove_character_proposal, read_legacy_roster_generation_proof, CharacterProposalService,
 };
 use crate::services::generation_draft_effects::{
     assert_generation_batch_intent, GenerationDraftEffects,
@@ -1063,7 +1063,6 @@ impl MainGenerationOwner {
     /// 项目关闭前挂起 owner——清准备态、关子生成器、挂起运行服务、
     /// 关闭全部在途模型执行租约、置 `closed`。
     ///
-    /// 幂等：基线 `if (closed) return` 之后的清理只在首次执行
     /// 幂等：基线 `if (closed) return` 之后的清理只在首次执行
     /// （:1394-1398）；`preparations` 清理（:1391）随
     /// `prepareDraftContext` 迁移（G4-6c）接入；子生成器的
@@ -2554,6 +2553,217 @@ impl MainGenerationOwner {
     ) -> Result<T, String> {
         Err(mutating_error("GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED"))
     }
+
+    // =====================================================================
+    // 批次 G4-9a：角色提案 owner 方法（平移自
+    // electron/services/main-generation-owner.ts 的 owner 接线
+    // + electron/controllers/generation-controller.ts:181-190 的
+    // register 项；服务层见 services/character_proposal.rs）
+    // =====================================================================
+
+    /// 服务层结果 → MUTATING 信封（**前缀感知**，对齐
+    /// `commands::db::blueprint_commit_range_result` 的 G4-7 先例）：
+    /// 服务层裸码（如 `CHARACTER_APPROVAL_INVALID`）按基线
+    /// generation-controller.ts:160-162 的 catch 映射
+    /// （[`map_generation_error`]，`CHARACTER` 前缀在透传正则内）
+    /// 后补 `Error: ` 前缀；已带前缀的错误（prove 闭包 /
+    /// `assert_current` / `with_agent_child_effect` / 仓储访问点的
+    /// MUTATING 信封）原样透传，避免双重前缀。
+    fn character_proposal_result(result: Result<Value, String>) -> Result<Value, String> {
+        result.map_err(|error| {
+            if error.starts_with("Error: ") {
+                error
+            } else {
+                mutating_error(map_generation_error(&error))
+            }
+        })
+    }
+
+    /// 基线 `owner.characterProposals.stage(source)`
+    /// （generation-controller.ts:183 → main-generation-owner.ts:880-896
+    /// 的 `characters` 依赖构造）。
+    ///
+    /// 基线 admission 门禁（controller:182
+    /// `source.kind === 'legacy-roster-generation'` →
+    /// `GENERATION_LEGACY_ADMISSION_REQUIRED`）由命令层承载
+    /// （对齐基线 register 顺序：门禁在 owner 方法之前）。
+    pub fn stage_character_proposal(
+        &self,
+        conn: &Connection,
+        source: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let proposals = self.character_proposal_service(conn);
+        Self::character_proposal_result(proposals.stage(source))
+    }
+
+    /// 基线 `owner.characterProposals.read(proposalBatchId)`
+    /// （generation-controller.ts:185）。
+    pub fn read_character_proposal(
+        &self,
+        conn: &Connection,
+        proposal_batch_id: &str,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let proposals = self.character_proposal_service(conn);
+        Self::character_proposal_result(proposals.read(proposal_batch_id))
+    }
+
+    /// 基线 `owner.characterProposals.listPendingFinalized()`
+    /// （generation-controller.ts:186）。
+    pub fn list_pending_finalized_character_proposals(
+        &self,
+        conn: &Connection,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let proposals = self.character_proposal_service(conn);
+        let summaries = proposals.list_pending_finalized().map_err(|error| {
+            if error.starts_with("Error: ") {
+                error
+            } else {
+                mutating_error(map_generation_error(&error))
+            }
+        })?;
+        Ok(Value::Array(summaries))
+    }
+
+    /// 基线 `owner.characterProposals.readPendingFinalized(proposalBatchId)`
+    /// （generation-controller.ts:187）。
+    pub fn read_pending_finalized_character_proposal(
+        &self,
+        conn: &Connection,
+        proposal_batch_id: &str,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let proposals = self.character_proposal_service(conn);
+        Self::character_proposal_result(proposals.read_pending_finalized(proposal_batch_id))
+    }
+
+    /// 基线 `owner.approveCharacterProposal(request)`
+    /// （generation-controller.ts:188 → main-generation-owner.ts:1255-1266）：
+    /// `assertCurrent` → 事务内 `characters.read` → 幂等重放
+    /// （已批准 → 直接 `approve`）→ handle 四分支解析 →
+    /// `agents.withChildEffect(handle, () => approve)`（handle 存在时）。
+    ///
+    /// # 刻意偏离（均有上游语义理由）
+    /// - **外层事务**：基线以 `db.transaction(...).immediate()` 包裹
+    ///   `read` + `approve`（better-sqlite3 嵌套事务退化为 savepoint）；
+    ///   Tauri 侧服务层 `read` / `approve` 自包 `unchecked_transaction`
+    ///   （rusqlite 不支持嵌套事务，服务层仅 `stage` 有 `is_autocommit`
+    ///   适配），故本方法不包外层事务、顺序调用。差异面：`read` 的
+    ///   envelope 刷新（pending 时 revision / items 同步）在 `approve`
+    ///   前提交——该刷新为幂等收敛操作（下次 `read` 同样执行），
+    ///   `approve` 失败时仅影响写入时序、不影响正确性。
+    /// - **finalized-generation 分支**：基线 `proveFinalizedCharacterGeneration`
+    ///   未迁移（B1 待移植叶函数，见 `services/character_proposal.rs`
+    ///   头注）——服务层 `read_envelope` 按基线 `readEnvelope` 的
+    ///   catch 语义把未移植证明的失败折叠为
+    ///   `CHARACTER_PROPOSAL_SOURCE_CHANGED`，故 finalized-generation
+    ///   提案在 `read` 步即 fail-closed；本方法的
+    ///   `CHARACTER_PROPOSAL_PROOF_PORT_PENDING` 分支为证明函数
+    ///   移植后的结构占位（迁移占位码、非基线码），待证明函数
+    ///   移植后活化 handle 解析。
+    /// - **withChildEffect**：基线事务门禁（agent-generation.ts:345）
+    ///   由调用方结构保证（见 [`MainGenerationOwner::with_agent_child_effect`]
+    ///   头注）；主体 fail-closed 占位
+    ///   （`GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED`）。
+    pub fn approve_character_proposal(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let proposals = self.character_proposal_service(conn);
+        // 基线 :1257 `characters.read(request.proposalBatchId)`
+        let batch = Self::character_proposal_result(
+            proposals.read(request["proposalBatchId"].as_str().unwrap_or_default()),
+        )?;
+        // 基线 :1258 幂等重放：已批准 → 直接 approve（重放决策校验）
+        if batch["status"].as_str() == Some("approved") {
+            return Self::character_proposal_result(proposals.approve(request));
+        }
+        // 基线 :1260-1263 handle 解析（finalized-generation / legacy-roster-generation
+        // / generation / directory 四分支；import / 其他 → undefined）
+        let source = batch["source"].clone();
+        let handle = match source["kind"].as_str() {
+            // 基线 :1261 proveFinalizedCharacterGeneration(...).currentHandle ——
+            // 证明函数未迁移（B1），fail-closed（见方法头注）。
+            Some("finalized-generation") => {
+                return Err(mutating_error("CHARACTER_PROPOSAL_PROOF_PORT_PENDING"));
+            }
+            // 基线 :1262 readLegacyRosterGenerationProof(...).currentHandle
+            Some("legacy-roster-generation") => {
+                let runs = GenerationRunRepository::default();
+                let proof = Self::character_proposal_result(read_legacy_roster_generation_proof(
+                    conn,
+                    &runs,
+                    &self.session.project_id,
+                    &source,
+                ))?;
+                Some(proof["currentHandle"].clone())
+            }
+            // 基线 :1263 `source.kind === 'generation' ? source.handle`
+            Some("generation") => Some(source["handle"].clone()),
+            // 基线 :1264 directory 分支：listDirectoryProgress 查找
+            // operationId 匹配项的 sourceHandle（未命中 → undefined）
+            Some("directory") => {
+                let progress = self.list_directory_progress(conn).map_err(|error| {
+                    if error.starts_with("Error: ") {
+                        error
+                    } else {
+                        mutating_error(map_generation_error(&error))
+                    }
+                })?;
+                let operation_id = source["operationId"].as_str().unwrap_or_default();
+                progress
+                    .as_array()
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .find(|item| item["operationId"].as_str() == Some(operation_id))
+                            .cloned()
+                    })
+                    .map(|item| item["sourceHandle"].clone())
+            }
+            _ => None,
+        };
+        // 基线 :1265 `handle ? agents.withChildEffect(handle, () =>
+        // characters.approve(request)) : characters.approve(request)`。
+        // withChildEffect 返回 Result<Value>，拍平双层 Result。
+        match handle {
+            Some(handle) if !handle.is_null() => self
+                .with_agent_child_effect(conn, &handle, || proposals.approve(request))
+                .and_then(|result| result)
+                .map_err(|error| {
+                    if error.starts_with("Error: ") {
+                        error
+                    } else {
+                        mutating_error(map_generation_error(&error))
+                    }
+                }),
+            _ => Self::character_proposal_result(proposals.approve(request)),
+        }
+    }
+
+    /// 基线 `owner.characterProposals.cancel(request)`
+    /// （generation-controller.ts:189）。
+    pub fn cancel_character_proposal(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let proposals = self.character_proposal_service(conn);
+        Self::character_proposal_result(proposals.cancel(request))
+    }
+
+    /// 基线 `owner.characterProposals.identitySnapshot()`
+    /// （generation-controller.ts:190，`character-identity:read` 频道）。
+    pub fn character_identity_snapshot(&self, conn: &Connection) -> Result<Value, String> {
+        self.assert_current()?;
+        let proposals = self.character_proposal_service(conn);
+        Self::character_proposal_result(proposals.identity_snapshot())
+    }
 }
 
 // ============================================================================
@@ -3302,5 +3512,65 @@ mod tests {
             .owner()
             .assert_current()
             .expect("rebuilt owner is open");
+    }
+    #[test]
+    fn read_character_proposal_rejects_unknown_batch_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let error = owner
+            .read_character_proposal(&conn, "cpb:missing")
+            .expect_err("未知提案批次必须拒绝");
+        assert_eq!(error, mutating_error("CHARACTER_PROPOSAL_RECEIPT_INVALID"));
+    }
+
+    #[test]
+    fn approve_character_proposal_rejects_unknown_batch_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let request = json!({
+            "proposalBatchId": "cpb:missing",
+            "expectedRevision": 1,
+            "operationId": "op-1",
+            "selections": []
+        });
+        // 幂等重放前置的 read 步先失败（未知批次）
+        let error = owner
+            .approve_character_proposal(&conn, &request)
+            .expect_err("未知提案批次必须拒绝");
+        assert_eq!(error, mutating_error("CHARACTER_PROPOSAL_RECEIPT_INVALID"));
+    }
+
+    #[test]
+    fn cancel_character_proposal_rejects_invalid_request_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        // 键集超集（含非法键 illegalKey）→ 请求校验拒绝
+        let request = json!({
+            "proposalBatchId": "cpb:missing",
+            "expectedRevision": 1,
+            "illegalKey": true
+        });
+        let error = owner
+            .cancel_character_proposal(&conn, &request)
+            .expect_err("非法请求必须拒绝");
+        assert_eq!(error, mutating_error("CHARACTER_APPROVAL_INVALID"));
+    }
+
+    #[test]
+    fn character_identity_snapshot_returns_empty_snapshot_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let snapshot = owner
+            .character_identity_snapshot(&conn)
+            .expect("身份快照读取失败");
+        // create_tables 种子化 character_identity_meta(id='main', revision=0)
+        assert_eq!(snapshot["revision"], Value::from(0));
+        assert_eq!(snapshot["characters"], Value::Array(vec![]));
+        assert_eq!(snapshot["aliases"], Value::Array(vec![]));
+        assert_eq!(snapshot["relationships"], Value::Array(vec![]));
     }
 }

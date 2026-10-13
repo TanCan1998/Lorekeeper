@@ -288,6 +288,16 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'legacy-roster:execute': ['request'],
   'legacy-roster:stage': ['request'],
   'legacy-roster:cancel': ['request'],
+  // 批次 G4-9a：角色提案（character-proposal:* 6 频道 +
+  // character-identity:read；单对象参数频道统一登记 request
+  // ——位置参数整体映射为命名参数 request，对齐基线 handler
+  // 接收整个 request 对象的语义；无参频道 list-pending-finalized /
+  // character-identity:read 无需登记）
+  'character-proposal:stage': ['request'],
+  'character-proposal:read': ['request'],
+  'character-proposal:read-pending-finalized': ['request'],
+  'character-proposal:approve': ['request'],
+  'character-proposal:cancel': ['request'],
 }
 
 /** 频道 → Tauri 命令名（`channel:seg-name` → `channel_seg_name`）。 */

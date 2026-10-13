@@ -293,6 +293,15 @@ pub fn run() {
             commands::legacy_roster_execute,
             commands::legacy_roster_stage,
             commands::legacy_roster_cancel,
+            // 批次 G4-9a：角色提案（character-proposal:* 6 频道
+            // + character-identity:read）
+            commands::character_proposal_stage,
+            commands::character_proposal_read,
+            commands::character_proposal_list_pending_finalized,
+            commands::character_proposal_read_pending_finalized,
+            commands::character_proposal_approve,
+            commands::character_proposal_cancel,
+            commands::character_identity_read,
             // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
             commands::prompt_load_global,
             commands::prompt_save_global,
