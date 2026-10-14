@@ -78,7 +78,7 @@ use crate::services::agent_generation::GENERATION_PLANNING_RANGE_INVALID;
 use crate::services::generation_draft_effects::GenerationDraftEffects;
 use crate::services::legacy_roster_source::AdoptLegacyCardsRequest;
 use crate::services::main_generation_owner::{
-    map_generation_error, mutating_error, MainGenerationOwnerCache,
+    map_generation_error, mutating_error, MainGenerationOwner, MainGenerationOwnerCache,
 };
 use crate::state::AppState;
 
@@ -133,8 +133,127 @@ fn authorized_gate<'a>(
     let Some(session) = project_session else {
         return Err("缺少项目会话上下文，已拒绝操作".to_string());
     };
-    let active = state.active_project_snapshot();
-    cache.authorized_owner(session, active.as_ref())
+    cache.authorized_owner_current(session, || state.active_project_snapshot())
+}
+
+/// 每次短回调都在 owner → 数据库锁序内认证实时会话、连接归属与完整句柄。
+struct GenerationExecutionDatabase<'a> {
+    state: &'a AppState,
+    session: &'a ProjectSessionContext,
+    handle: Value,
+}
+
+impl GenerationExecutionDatabase<'_> {
+    fn with_owner_connection<T>(
+        &self,
+        action: impl FnOnce(&mut MainGenerationOwner, &Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut guard = authorized_gate(
+            &self.state.generation_owners,
+            self.state,
+            Some(self.session),
+        )?;
+        let database = self
+            .state
+            .project_db
+            .lock()
+            .map_err(|_| mutating_error("GENERATION_DATABASE_NOT_READY"))?;
+        let database = database
+            .as_ref()
+            .ok_or_else(|| mutating_error("GENERATION_DATABASE_NOT_READY"))?;
+        crate::security::assert_current_project_context(
+            self.session,
+            self.state.active_project_snapshot().as_ref(),
+        )
+        .map_err(|_| mutating_error("GENERATION_REQUEST_FAILED"))?;
+        if crate::security::normalized_project_path(&database.root_path().to_string_lossy())
+            != crate::security::normalized_project_path(&self.session.project_path)
+        {
+            return Err(mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"));
+        }
+        let conn = database.connection();
+        let owner = guard.owner();
+        owner.require_run(conn, &self.handle, true)?;
+        action(owner, conn)
+    }
+}
+
+impl crate::services::generation_run_service::GenerationDatabaseAccess
+    for GenerationExecutionDatabase<'_>
+{
+    fn with_connection<T>(
+        &self,
+        action: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with_owner_connection(|_, conn| action(conn))
+            .map_err(|error| error.strip_prefix("Error: ").unwrap_or(&error).to_string())
+    }
+}
+
+// 字段按声明顺序释放：失败和栈展开时也先清除在途准备守卫，再通知停止/关闭等待者。
+struct ControlledGenerationExecution<'a> {
+    prepared: crate::services::main_generation_owner::PreparedMainGenerationExecution,
+    _control: crate::services::main_generation_owner::ExecutionControlGuard<'a>,
+}
+
+/// 与真实 IPC 共用，不依赖 Tauri State 包装；网络阶段不保留业务守卫。
+pub(crate) fn execute_generation_for_state(
+    state: &AppState,
+    request: &Value,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    let session = session.ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    let database = GenerationExecutionDatabase {
+        state,
+        session,
+        handle: request.get("handle").cloned().unwrap_or(Value::Null),
+    };
+    let execution = database.with_owner_connection(|owner, conn| {
+        let control =
+            state
+                .generation_owners
+                .register_execution_control(owner, conn, &database.handle)?;
+        let prepared = owner.prepare_execution(conn, request, false)?;
+        Ok(ControlledGenerationExecution {
+            prepared,
+            _control: control,
+        })
+    })?;
+    let result = execution
+        .prepared
+        .execute_blocking_with_database(&database)?;
+    let outcome = database.with_owner_connection(|owner, conn| {
+        owner.finish_prepared_execution(conn, &execution.prepared, &result)
+    });
+    drop(execution);
+    outcome
+}
+
+/// 完整句柄认证的停止信号与持久暂停/取消之间，用围栏拒绝插入新执行。
+pub(crate) fn stop_generation_for_state(
+    state: &AppState,
+    handle: &MainGenerationRunHandle,
+    session: Option<&ProjectSessionContext>,
+    cancel: bool,
+) -> Result<Value, String> {
+    let session = session.ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    let stop = state.generation_owners.begin_execution_stop(
+        session,
+        state.active_project_snapshot().as_ref(),
+        handle,
+    )?;
+    stop.wait()?;
+    let mut guard = authorized_gate(&state.generation_owners, state, Some(session))?;
+    let handle = serde_json::to_value(handle)
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| {
+        if cancel {
+            owner.cancel(conn, &handle)
+        } else {
+            owner.pause(conn, &handle)
+        }
+    })
 }
 
 /// `generation:read` —— 句柄 → 运行视图
@@ -2093,16 +2212,8 @@ pub async fn generation_execute(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = &state.generation_owners;
-    // 门禁等待和网络执行都在阻塞区域内，不占用 Tokio worker。
     tokio::task::block_in_place(|| {
-        let mut guard = authorized_gate(cache, state, project_session.as_ref())?;
-        let owner = guard.owner();
-        state.with_project_db(|conn| {
-            let handle = request.get("handle").cloned().unwrap_or(Value::Null);
-            let _control = cache.register_execution_control(owner, conn, &handle)?;
-            owner.execute(conn, &request)
-        })
+        execute_generation_for_state(state, &request, project_session.as_ref())
     })
 }
 
@@ -2132,17 +2243,8 @@ pub async fn generation_pause(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = &state.generation_owners;
-    let session = project_session
-        .as_ref()
-        .ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
-    cache.request_execution_abort(session, state.active_project_snapshot().as_ref(), &handle)?;
     tokio::task::block_in_place(|| {
-        let mut guard = authorized_gate(cache, state, Some(session))?;
-        let handle = serde_json::to_value(&handle)
-            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
-        let owner = guard.owner();
-        state.with_project_db(|conn| owner.pause(conn, &handle))
+        stop_generation_for_state(state, &handle, project_session.as_ref(), false)
     })
 }
 
@@ -2155,17 +2257,8 @@ pub async fn generation_cancel(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = &state.generation_owners;
-    let session = project_session
-        .as_ref()
-        .ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
-    cache.request_execution_abort(session, state.active_project_snapshot().as_ref(), &handle)?;
     tokio::task::block_in_place(|| {
-        let mut guard = authorized_gate(cache, state, Some(session))?;
-        let handle = serde_json::to_value(&handle)
-            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
-        let owner = guard.owner();
-        state.with_project_db(|conn| owner.cancel(conn, &handle))
+        stop_generation_for_state(state, &handle, project_session.as_ref(), true)
     })
 }
 

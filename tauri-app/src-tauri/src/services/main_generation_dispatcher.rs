@@ -305,7 +305,7 @@ pub(crate) mod tests {
         server_with_ready(body, pause, None)
     }
 
-    fn server_with_ready(
+    pub(crate) fn server_with_ready(
         body: &'static str,
         pause: Duration,
         ready: Option<tokio::sync::oneshot::Sender<()>>,

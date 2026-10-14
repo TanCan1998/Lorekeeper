@@ -1013,11 +1013,20 @@ impl GenerationRunService {
         conn: &Connection,
         request: ExecuteGenerationRequest,
     ) -> Result<GenerationExecutionReceipt, String> {
+        self.execute_blocking_with_database(conn, request)
+    }
+
+    /// 生产执行使用阶段性短回调，不在网络等待期间持有数据库守卫。
+    pub(crate) fn execute_blocking_with_database<D: GenerationDatabaseAccess>(
+        &self,
+        database: &D,
+        request: ExecuteGenerationRequest,
+    ) -> Result<GenerationExecutionReceipt, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|_| "GENERATION_RUNTIME_UNAVAILABLE".to_string())?;
-        runtime.block_on(self.execute_with_database(conn, request))
+        runtime.block_on(self.execute_with_database(database, request))
     }
 
     // -------------------------------------------------------------------------

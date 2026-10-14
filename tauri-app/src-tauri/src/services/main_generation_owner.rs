@@ -49,7 +49,7 @@
 use std::path::PathBuf;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard};
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -492,13 +492,22 @@ impl PreparedMainGenerationExecution {
         &self,
         conn: &Connection,
     ) -> Result<PreparedMainGenerationResult, String> {
+        self.execute_blocking_with_database(conn)
+    }
+
+    pub(crate) fn execute_blocking_with_database<
+        D: crate::services::generation_run_service::GenerationDatabaseAccess,
+    >(
+        &self,
+        database: &D,
+    ) -> Result<PreparedMainGenerationResult, String> {
         match &self.plan {
             PreparedExecutionPlan::Replay(outcome) => {
                 Ok(PreparedMainGenerationResult::Replay(outcome.clone()))
             }
             PreparedExecutionPlan::Dispatch(request) => self
                 .service
-                .execute_blocking(conn, request.as_ref().clone())
+                .execute_blocking_with_database(database, request.as_ref().clone())
                 .map(|receipt| PreparedMainGenerationResult::Receipt(Box::new(receipt)))
                 .map_err(|error| mutating_error(map_generation_error(&error))),
         }
@@ -694,7 +703,7 @@ impl MainGenerationOwner {
     /// 基线 `handleOf(run)` 的句柄比对等价物（main-generation-owner.ts:145）：
     /// 运行的项目归属 + 句柄四元组（`projectId` / `epoch` / `rootActionId` /
     /// `runId`）必须与入参逐字段一致，否则 `GENERATION_RUN_IDENTITY_MISMATCH`。
-    fn require_run(
+    pub(crate) fn require_run(
         &self,
         conn: &Connection,
         handle: &Value,
@@ -4340,6 +4349,8 @@ pub struct MainGenerationOwnerCache {
     entries: Mutex<HashMap<String, OwnerCacheEntry>>,
     /// 独立短锁，网络等待时仍可访问；只保存身份和中止服务，不保存正文/模型配置。
     execution_controls: Mutex<HashMap<String, ExecutionControlEntry>>,
+    /// 暂停/取消等待执行结算期间阻止新登记，不阻止原执行的短数据库回调。
+    stopping_projects: Mutex<HashMap<String, usize>>,
     /// 关闭登记的引用计数：并发关闭请求全部退出后才重新开放执行登记。
     closing_projects: Mutex<HashMap<String, usize>>,
     lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
@@ -4350,21 +4361,97 @@ struct ExecutionControlEntry {
     session: ProjectSessionContext,
     handle: MainGenerationRunHandle,
     service: Arc<crate::services::generation_run_service::GenerationRunService>,
+    users: usize,
+    completion: Arc<ExecutionCompletion>,
 }
 
-/// 控制登记与执行同寿命；错误返回也必须撤销中止意图。
+/// 同句柄控制登记引用计数；最后一个准备/投影退出后才撤销中止意图并通知等待者。
 pub(crate) struct ExecutionControlGuard<'a> {
     cache: &'a MainGenerationOwnerCache,
     key: String,
+    completion: Arc<ExecutionCompletion>,
 }
 
 impl Drop for ExecutionControlGuard<'_> {
     fn drop(&mut self) {
-        if let Ok(mut controls) = self.cache.execution_controls.lock() {
-            if let Some(entry) = controls.remove(&self.key) {
-                entry
-                    .service
-                    .clear_abort_request(&entry.handle.root_action_id);
+        let finished = if let Ok(mut controls) = self.cache.execution_controls.lock() {
+            let (remove, finished) = match controls.get_mut(&self.key) {
+                Some(entry) if Arc::ptr_eq(&entry.completion, &self.completion) => {
+                    entry.users -= 1;
+                    (entry.users == 0, entry.users == 0)
+                }
+                _ => (false, true),
+            };
+            if remove {
+                if let Some(entry) = controls.remove(&self.key) {
+                    entry
+                        .service
+                        .clear_abort_request(&entry.handle.root_action_id);
+                }
+            }
+            finished
+        } else {
+            true
+        };
+        if finished {
+            self.completion.finish();
+        }
+    }
+}
+
+#[derive(Default)]
+struct ExecutionCompletion {
+    done: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl ExecutionCompletion {
+    fn wait(&self) -> Result<(), String> {
+        let mut done = self
+            .done
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        while !*done {
+            done = self
+                .changed
+                .wait(done)
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        }
+        Ok(())
+    }
+
+    fn finish(&self) {
+        if let Ok(mut done) = self.done.lock() {
+            *done = true;
+            self.changed.notify_all();
+        }
+    }
+}
+
+/// 用户停止操作的短准入围栏，等待的是捕获的执行实例，而非后续新执行。
+pub(crate) struct ExecutionStopGuard<'a> {
+    cache: &'a MainGenerationOwnerCache,
+    key: String,
+    completion: Option<Arc<ExecutionCompletion>>,
+}
+
+impl ExecutionStopGuard<'_> {
+    pub(crate) fn wait(&self) -> Result<(), String> {
+        match &self.completion {
+            Some(completion) => completion.wait(),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for ExecutionStopGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut stopping) = self.cache.stopping_projects.lock() {
+            if let Some(count) = stopping.get_mut(&self.key) {
+                *count -= 1;
+                if *count == 0 {
+                    stopping.remove(&self.key);
+                }
             }
         }
     }
@@ -4443,6 +4530,7 @@ impl MainGenerationOwnerCache {
         Self {
             entries: Mutex::new(HashMap::new()),
             execution_controls: Mutex::new(HashMap::new()),
+            stopping_projects: Mutex::new(HashMap::new()),
             closing_projects: Mutex::new(HashMap::new()),
             lease_store,
         }
@@ -4467,25 +4555,49 @@ impl MainGenerationOwnerCache {
         if closing.contains_key(&key) {
             return Err(mutating_error("GENERATION_PROJECT_CLOSED"));
         }
+        let stopping = self
+            .stopping_projects
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        if stopping.contains_key(&key) {
+            return Err(mutating_error("GENERATION_INVOCATION_CONFLICT"));
+        }
         let mut controls = self
             .execution_controls
             .lock()
             .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
-        if controls.contains_key(&key) {
-            return Err(mutating_error("GENERATION_INVOCATION_CONFLICT"));
-        }
-        owner
-            .run_service
-            .clear_abort_request(&handle.root_action_id);
-        controls.insert(
-            key.clone(),
-            ExecutionControlEntry {
-                session: owner.session.clone(),
-                handle,
-                service: Arc::clone(&owner.run_service),
-            },
-        );
-        Ok(ExecutionControlGuard { cache: self, key })
+        let completion = if let Some(entry) = controls.get_mut(&key) {
+            if entry.handle != handle
+                || entry.session.project_id != owner.session.project_id
+                || entry.session.lease_id != owner.session.lease_id
+                || !Arc::ptr_eq(&entry.service, &owner.run_service)
+            {
+                return Err(mutating_error("GENERATION_INVOCATION_CONFLICT"));
+            }
+            entry.users += 1;
+            entry.completion.clone()
+        } else {
+            let completion = Arc::new(ExecutionCompletion::default());
+            owner
+                .run_service
+                .clear_abort_request(&handle.root_action_id);
+            controls.insert(
+                key.clone(),
+                ExecutionControlEntry {
+                    session: owner.session.clone(),
+                    handle,
+                    service: Arc::clone(&owner.run_service),
+                    users: 1,
+                    completion: completion.clone(),
+                },
+            );
+            completion
+        };
+        Ok(ExecutionControlGuard {
+            cache: self,
+            key,
+            completion,
+        })
     }
 
     /// 在等待 owner/数据库长锁前中止已认证的在途运行。
@@ -4515,6 +4627,63 @@ impl MainGenerationOwnerCache {
             }
         }
         Ok(())
+    }
+
+    /// 先发布停止围栏、认证完整句柄并发信号，再由调用方无业务锁等待。
+    pub(crate) fn begin_execution_stop(
+        &self,
+        session: &ProjectSessionContext,
+        active: Option<&ActiveProject>,
+        handle: &MainGenerationRunHandle,
+    ) -> Result<ExecutionStopGuard<'_>, String> {
+        security::assert_current_project_context(session, active)
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let key = security::normalized_project_path(&session.project_path);
+        {
+            let mut stopping = self
+                .stopping_projects
+                .lock()
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+            *stopping.entry(key.clone()).or_default() += 1;
+        }
+        let mut guard = ExecutionStopGuard {
+            cache: self,
+            key: key.clone(),
+            completion: None,
+        };
+        self.request_execution_abort(session, active, handle)?;
+        {
+            let controls = self
+                .execution_controls
+                .lock()
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+            if let Some(entry) = controls.get(&key) {
+                if entry.session.project_id != session.project_id
+                    || entry.session.lease_id != session.lease_id
+                {
+                    return Err(mutating_error(GENERATION_REQUEST_FAILED));
+                }
+                if entry.handle == *handle {
+                    // 信号已由认证中止入口发布；这里只捕获该实例的完成通知。
+                    guard.completion = Some(entry.completion.clone());
+                }
+            }
+        }
+        Ok(guard)
+    }
+
+    fn wait_project_execution(&self, project_root: &str) -> Result<(), String> {
+        let key = security::normalized_project_path(project_root);
+        let completion = self
+            .execution_controls
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?
+            .get(&key)
+            .map(|entry| entry.completion.clone());
+        match completion {
+            Some(completion) => completion.wait(),
+            None => Ok(()),
+        }
     }
 
     /// 只用于内部数据库关闭钩子。先阻止新执行登记，再唤醒已登记执行；
@@ -4554,6 +4723,9 @@ impl MainGenerationOwnerCache {
         let _closing = project_root
             .map(|root| self.register_project_close(root))
             .transpose()?;
+        if let Some(root) = project_root {
+            self.wait_project_execution(root)?;
+        }
         let mut entries = self
             .entries
             .lock()
@@ -4615,12 +4787,38 @@ impl MainGenerationOwnerCache {
         let Some(active) = active else {
             return Err(mutating_error(GENERATION_DATABASE_NOT_READY));
         };
+        // 缓存键由持锁认证后的活跃项目确定。
+        // 调用方传入的快照仍受既有身份校验；生产使用下方实时入口。
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        self.authorized_owner_locked(entries, session, Some(active))
+    }
+
+    pub(crate) fn authorized_owner_current(
+        &self,
+        session: &ProjectSessionContext,
+        read_active: impl FnOnce() -> Option<ActiveProject>,
+    ) -> Result<OwnerGuard<'_>, String> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let active = read_active();
+        self.authorized_owner_locked(entries, session, active.as_ref())
+    }
+
+    fn authorized_owner_locked<'a>(
+        &'a self,
+        mut entries: MutexGuard<'a, HashMap<String, OwnerCacheEntry>>,
+        session: &ProjectSessionContext,
+        active: Option<&ActiveProject>,
+    ) -> Result<OwnerGuard<'a>, String> {
+        security::assert_current_project_context(session, active)
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let active = active.ok_or_else(|| mutating_error(GENERATION_DATABASE_NOT_READY))?;
         let key = security::normalized_project_path(&active.root_path);
-        // 锁中毒（持有锁的线程 panic）：按基线兜底码收敛（同 register catch）
-        let mut entries = match self.entries.lock() {
-            Ok(entries) => entries,
-            Err(_) => return Err(mutating_error(GENERATION_REQUEST_FAILED)),
-        };
         // 3) 会话身份不一致 → 挂起并逐出（基线 generation-controller.ts:91-95）
         let stale_session = entries.get(&key).is_some_and(|entry| {
             entry.owner.session.project_id != session.project_id
@@ -6582,6 +6780,860 @@ mod tests {
             .begin(&conn, &selection, false, false)
             .expect_err("agent-round 必须拒绝");
         assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+    }
+
+    struct ProductionExecutionFixture {
+        _temp: crate::services::main_generation_sources::tests::TempRoot,
+        state: Arc<crate::state::AppState>,
+        session: ProjectSessionContext,
+        request: Value,
+        run: DurableGenerationRun,
+        started: std::sync::mpsc::Receiver<()>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl ProductionExecutionFixture {
+        fn new(late_visible: bool) -> Self {
+            use crate::services::generation_run_service::{
+                create_generation_run_service, DispatchOptions, GenerationDispatchResult,
+                GenerationDispatcher, GenerationRunServiceDependencies, VisibleEventKind,
+                VisibleGenerationEvent,
+            };
+            struct WaitingProvider {
+                started: std::sync::mpsc::Sender<()>,
+                release: Arc<tokio::sync::Notify>,
+                late_visible: bool,
+            }
+            impl GenerationDispatcher for WaitingProvider {
+                fn dispatch<'a>(
+                    &'a self,
+                    _request: &'a Value,
+                    options: DispatchOptions<'a>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = Result<GenerationDispatchResult, String>>
+                            + Send
+                            + 'a,
+                    >,
+                > {
+                    Box::pin(async move {
+                        let visible = || {
+                            (options.on_visible)(VisibleGenerationEvent {
+                                kind: VisibleEventKind::Delta,
+                                text: "短锁合成正文".to_string(),
+                                event_id: None,
+                            })
+                        };
+                        if !self.late_visible {
+                            visible();
+                        }
+                        self.started.send(()).unwrap();
+                        self.release.notified().await;
+                        if self.late_visible {
+                            visible();
+                        }
+                        Ok(GenerationDispatchResult {
+                            usage: None,
+                            finish_reason: Some("stop".into()),
+                        })
+                    })
+                }
+            }
+
+            let (temp, conn, fixture_owner, run) = source_owner_fixture();
+            let session = fixture_owner.session.clone();
+            let path =
+                crate::db::project_database_path(std::path::Path::new(&session.project_path));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // 只复制本测试合成的内存库到本测试临时根，生产不新增连接或迁移。
+            conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])
+                .unwrap();
+            let state = Arc::new(crate::state::AppState::new());
+            let active = ActiveProject {
+                project_id: session.project_id.clone(),
+                lease_id: session.lease_id.clone(),
+                root_path: session.project_path.clone(),
+            };
+            state.activate_project(active.clone()).unwrap();
+            let (started, wait_started) = std::sync::mpsc::channel();
+            let release = Arc::new(tokio::sync::Notify::new());
+            let run = {
+                let mut guard = state
+                    .generation_owners
+                    .authorized_owner(&session, Some(&active))
+                    .unwrap();
+                let owner = guard.owner();
+                owner.global_data_root = fixture_owner.global_data_root.clone();
+                owner.run_service = Arc::new(create_generation_run_service(
+                    GenerationRunServiceDependencies {
+                        repository: GenerationRunRepository::default(),
+                        dispatch: Arc::new(WaitingProvider {
+                            started,
+                            release: release.clone(),
+                            late_visible,
+                        }),
+                        on_reasoning: None,
+                        on_snapshot: None,
+                        validate_recovery: None,
+                    },
+                ));
+                state
+                    .with_project_db(|conn| {
+                        owner.repository.pause(conn, &run.root_action_id, false)?;
+                        owner.resume(conn, &handle_of(&run))?;
+                        owner.repository.get(conn, &run.run_id)
+                    })
+                    .unwrap()
+            };
+            let request = json!({
+                "handle": handle_of(&run),
+                "invocationNonce": "production-short-lock",
+                "task": {
+                    "purpose": "brainstorm", "output": "visible-text",
+                    "messages": [{"role": "user", "content": "合成短锁请求"}]
+                }
+            });
+            Self {
+                _temp: temp,
+                state,
+                session,
+                request,
+                run,
+                started: wait_started,
+                release,
+            }
+        }
+
+        fn start(
+            &self,
+        ) -> (
+            std::thread::JoinHandle<()>,
+            std::sync::mpsc::Receiver<Result<Value, String>>,
+        ) {
+            let state = self.state.clone();
+            let session = self.session.clone();
+            let request = self.request.clone();
+            let (done, result) = std::sync::mpsc::channel();
+            let execution = std::thread::spawn(move || {
+                done.send(crate::commands::generation::execute_generation_for_state(
+                    &state,
+                    &request,
+                    Some(&session),
+                ))
+                .unwrap();
+            });
+            self.started
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("真实执行路径开始分发");
+            (execution, result)
+        }
+    }
+
+    #[test]
+    fn production_short_lock_releases_owner_and_database_during_network_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let (execution, result) = fixture.start();
+        // 读取与真实执行共用 AppState 和同一个磁盘连接，必须在网络结束前完成。
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let run = fixture.run.clone();
+        let (read_done, read_result) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn(move || {
+            let result = (|| {
+                let mut guard = state
+                    .generation_owners
+                    .authorized_owner_current(&session, || state.active_project_snapshot())?;
+                state.with_project_db(|conn| guard.owner().read_run(conn, &handle_of(&run)))
+            })();
+            read_done.send(result).unwrap();
+        });
+        let read_result = read_result.recv_timeout(std::time::Duration::from_secs(5));
+        // 即使断言失败，也先解除合成网络等待，避免测试留下挂起线程。
+        fixture.release.notify_one();
+        reading.join().unwrap();
+        let view = read_result.expect("读取必须在网络结束前完成").unwrap();
+        assert_eq!(view["handle"]["runId"], fixture.run.run_id);
+        // 上方已在读回之后解除网络等待。
+        let outcome = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome["outcome"]["content"], "短锁合成正文");
+        execution.join().unwrap();
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_pause_and_cancel_wait_for_flush_before_state_change_test() {
+        for cancel in [false, true] {
+            let fixture = ProductionExecutionFixture::new(false);
+            let (execution, result) = fixture.start();
+            let state = fixture.state.clone();
+            let session = fixture.session.clone();
+            let handle = serde_json::from_value(handle_of(&fixture.run)).unwrap();
+            let (stopped, stop_result) = std::sync::mpsc::channel();
+            let stopping = std::thread::spawn(move || {
+                stopped
+                    .send(crate::commands::generation::stop_generation_for_state(
+                        &state,
+                        &handle,
+                        Some(&session),
+                        cancel,
+                    ))
+                    .unwrap();
+            });
+            let outcome = result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome["outcome"]["content"], "短锁合成正文");
+            stop_result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            execution.join().unwrap();
+            stopping.join().unwrap();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let run = GenerationRunRepository::default().get(conn, &fixture.run.run_id)?;
+                    assert_eq!(run.status, if cancel { "cancelled" } else { "paused" });
+                    Ok(())
+                })
+                .unwrap();
+            assert!(fixture
+                .state
+                .generation_owners
+                .stopping_projects
+                .lock()
+                .unwrap()
+                .is_empty());
+            fixture.state.close_project_database().unwrap();
+        }
+    }
+
+    #[test]
+    fn production_short_lock_close_settles_original_database_and_retries_failure_test() {
+        for fail_close in [false, true] {
+            let fixture = ProductionExecutionFixture::new(false);
+            if fail_close {
+                fixture.state.with_project_db(|conn| {
+                    conn.execute_batch("CREATE TRIGGER reject_short_close BEFORE UPDATE OF status ON generation_runs
+                        WHEN NEW.status='paused' BEGIN SELECT RAISE(ABORT, 'synthetic-close-failure'); END;")
+                        .map_err(|error| error.to_string())
+                }).unwrap();
+            }
+            let (execution, result) = fixture.start();
+            let state = fixture.state.clone();
+            let (closed, close_result) = std::sync::mpsc::channel();
+            let closing = std::thread::spawn(move || {
+                closed.send(state.close_project_database()).unwrap();
+            });
+            let outcome = result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome["outcome"]["content"], "短锁合成正文");
+            let closed = close_result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            execution.join().unwrap();
+            closing.join().unwrap();
+            if fail_close {
+                assert!(closed.is_err());
+                assert_eq!(
+                    fixture.state.active_project_snapshot().unwrap().lease_id,
+                    fixture.session.lease_id
+                );
+                assert_eq!(fixture.state.generation_owners.len(), 1);
+                fixture
+                    .state
+                    .with_project_db(|conn| {
+                        conn.execute_batch("DROP TRIGGER reject_short_close;")
+                            .map_err(|error| error.to_string())
+                    })
+                    .unwrap();
+                fixture.state.close_project_database().unwrap();
+            } else {
+                closed.unwrap();
+            }
+            let mut next = ActiveProject {
+                project_id: fixture.session.project_id.clone(),
+                lease_id: "reopened-short-lock".into(),
+                root_path: fixture.session.project_path.clone(),
+            };
+            fixture.state.activate_project(next.clone()).unwrap();
+            let reopened = ProjectSessionContext {
+                project_id: next.project_id.clone(),
+                lease_id: next.lease_id.clone(),
+                project_path: next.root_path.clone(),
+            };
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&reopened, || fixture.state.active_project_snapshot())
+                .unwrap();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let owner = guard.owner();
+                    let budget = owner.repository.budget(conn, &fixture.run.root_action_id)?;
+                    let receipt = owner
+                        .run_service
+                        .read_attempt(conn, &budget.attempts[0].attempt_id)?;
+                    assert_eq!(
+                        receipt.failure_code.as_deref(),
+                        Some("GENERATION_PROJECT_CLOSED")
+                    );
+                    assert_eq!(receipt.artifact.unwrap().text, "短锁合成正文");
+                    Ok(())
+                })
+                .unwrap();
+            drop(guard);
+            next.lease_id.clear();
+            fixture.state.close_project_database().unwrap();
+        }
+    }
+
+    #[test]
+    fn production_short_lock_stale_epoch_refuses_late_database_write_test() {
+        let fixture = ProductionExecutionFixture::new(true);
+        let (execution, result) = fixture.start();
+        let service = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            guard.owner().run_service.clone()
+        };
+        fixture
+            .state
+            .active_project
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .lease_id = "replaced-epoch".into();
+        fixture.release.notify_one();
+        assert!(result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .is_err());
+        execution.join().unwrap();
+        assert_eq!(service.read_unsaved_tails()[0].text, "短锁合成正文");
+        // 仅测试恢复被故意篡改的状态，用原会话读原库，迟到正文不能已落盘。
+        fixture
+            .state
+            .active_project
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .lease_id = fixture.session.lease_id.clone();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let repo = GenerationRunRepository::default();
+                let budget = repo.budget(conn, &fixture.run.root_action_id)?;
+                let receipt = service.read_attempt(conn, &budget.attempts[0].attempt_id)?;
+                assert_eq!(receipt.artifact.unwrap().text, "");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            fixture.state.close_project_database(),
+            Err(mutating_error("GENERATION_UNSAVED_TAIL_PRESENT"))
+        );
+        assert!(fixture.state.active_project_snapshot().is_some());
+        assert_eq!(service.read_unsaved_tails()[0].text, "短锁合成正文");
+        let artifact_id = service.read_unsaved_tails()[0].artifact_id.clone();
+        // 测试显式丢弃合成候选后再清理；生产禁止静默丢失未落盘正文。
+        fixture
+            .state
+            .with_project_db(|conn| service.discard_candidate(conn, &artifact_id))
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_project_switch_settles_old_project_before_install_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let (execution, result) = fixture.start();
+        let state = fixture.state.clone();
+        let next = ActiveProject {
+            project_id: "switched-project".into(),
+            lease_id: "switched-lease".into(),
+            root_path: std::path::Path::new(&fixture.session.project_path)
+                .join("other-project")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        let next_for_thread = next.clone();
+        let (switched, switch_result) = std::sync::mpsc::channel();
+        let switching = std::thread::spawn(move || {
+            switched
+                .send(state.activate_project(next_for_thread))
+                .unwrap();
+        });
+        let outcome = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome["outcome"]["content"], "短锁合成正文");
+        switch_result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        switching.join().unwrap();
+        assert_eq!(
+            fixture.state.active_project_snapshot().unwrap().project_id,
+            next.project_id
+        );
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM generation_runs", [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(count, 0);
+                Ok(())
+            })
+            .unwrap();
+        let old_database =
+            crate::db::ProjectDatabase::open(std::path::Path::new(&fixture.session.project_path))
+                .unwrap();
+        let repo = GenerationRunRepository::default();
+        let budget = repo
+            .budget(old_database.connection(), &fixture.run.root_action_id)
+            .unwrap();
+        let receipt = repo
+            .receipt(
+                old_database.connection(),
+                &budget.attempts[0].attempt_id,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_PROJECT_CLOSED")
+        );
+        assert_eq!(receipt.artifact.unwrap().text, "短锁合成正文");
+        drop(old_database);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_stop_fence_counts_waiters_and_keeps_completed_notification_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let cache = MainGenerationOwnerCache::new();
+        let session = session("project-1", "lease-1");
+        let active = active();
+        let mut owner_guard = cache.authorized_owner(&session, Some(&active)).unwrap();
+        let owner = owner_guard.owner();
+        let handle_value = handle_of(&run);
+        let handle = serde_json::from_value(handle_value.clone()).unwrap();
+        let control = cache
+            .register_execution_control(owner, &conn, &handle_value)
+            .unwrap();
+        let duplicate = cache
+            .register_execution_control(owner, &conn, &handle_value)
+            .unwrap();
+        let completion = control.completion.clone();
+        let first = cache
+            .begin_execution_stop(&session, Some(&active), &handle)
+            .unwrap();
+        let second = cache
+            .begin_execution_stop(&session, Some(&active), &handle)
+            .unwrap();
+        drop(control);
+        assert!(!*completion.done.lock().unwrap());
+        drop(duplicate);
+        // 完成早于等待时不能丢通知；这里仍持 owner 守卫，等待不能再取业务锁。
+        first.wait().unwrap();
+        second.wait().unwrap();
+        assert!(cache
+            .register_execution_control(owner, &conn, &handle_value)
+            .is_err());
+        drop(first);
+        assert!(cache
+            .register_execution_control(owner, &conn, &handle_value)
+            .is_err());
+        drop(second);
+        let next = cache
+            .register_execution_control(owner, &conn, &handle_value)
+            .unwrap();
+        drop(next);
+        assert!(cache.stopping_projects.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn production_short_lock_tampered_stop_cannot_abort_or_wait_on_other_handle_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let cache = MainGenerationOwnerCache::new();
+        let session = session("project-1", "lease-1");
+        let active = active();
+        let mut owner_guard = cache.authorized_owner(&session, Some(&active)).unwrap();
+        let owner = owner_guard.owner();
+        let control = cache
+            .register_execution_control(owner, &conn, &handle_of(&run))
+            .unwrap();
+        let mut handle: MainGenerationRunHandle = serde_json::from_value(handle_of(&run)).unwrap();
+        handle.root_action_id = "tampered-root".into();
+        let stop = cache
+            .begin_execution_stop(&session, Some(&active), &handle)
+            .unwrap();
+        stop.wait().unwrap();
+        assert!(!owner.run_service.has_abort_request(&run.root_action_id));
+        drop(stop);
+        let mut stale = session.clone();
+        stale.lease_id = "stale-lease".into();
+        assert!(cache
+            .begin_execution_stop(&stale, Some(&active), &handle)
+            .is_err());
+        assert!(cache.stopping_projects.lock().unwrap().is_empty());
+        drop(control);
+    }
+
+    #[test]
+    fn production_short_lock_real_http_read_finishes_before_stream_body_test() {
+        use crate::services::generation_run_service::{
+            create_generation_run_service, GenerationRunServiceDependencies,
+        };
+        use crate::services::main_generation_dispatcher::{
+            tests::server_with_ready, MainGenerationDispatcher,
+        };
+        let fixture = ProductionExecutionFixture::new(false);
+        let (ready, stream_ready) = tokio::sync::oneshot::channel();
+        let (url, server) = server_with_ready(
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"本地 HTTP 合成正文\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            std::time::Duration::from_secs(2),
+            Some(ready),
+        );
+        let run = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            let path = crate::app_paths::models_config_path_at(&owner.global_data_root);
+            let mut profiles: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            profiles[0]["baseUrl"] = json!(url);
+            std::fs::write(&path, serde_json::to_string(&profiles).unwrap()).unwrap();
+            owner.run_service = Arc::new(create_generation_run_service(
+                GenerationRunServiceDependencies {
+                    repository: GenerationRunRepository::default(),
+                    dispatch: Arc::new(MainGenerationDispatcher::new(
+                        reqwest::Client::builder().no_proxy().build().unwrap(),
+                    )),
+                    on_reasoning: None,
+                    on_snapshot: None,
+                    validate_recovery: None,
+                },
+            ));
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let begin = owner.begin(conn, &json!({
+                    "operation": "brainstorm", "uiActionNonce": "real-http-short-lock",
+                    "modelId": "fixture", "selectedDraftIds": [], "selectedFinalizedDraftIds": [],
+                    "promptKeys": ["edit_selected_text"], "skillStages": ["planning"],
+                    "output": "visible-text",
+                }), false, false)?;
+                    owner
+                        .repository
+                        .get(conn, begin["handle"]["runId"].as_str().unwrap())
+                })
+                .unwrap()
+        };
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let mut request = fixture.request.clone();
+        request["handle"] = handle_of(&run);
+        let (done, result) = std::sync::mpsc::channel();
+        let execution = std::thread::spawn(move || {
+            done.send(crate::commands::generation::execute_generation_for_state(
+                &state,
+                &request,
+                Some(&session),
+            ))
+            .unwrap();
+        });
+        stream_ready
+            .blocking_recv()
+            .expect("本地 HTTP 已接收真实冻结请求并发送流头");
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let run_for_read = run.clone();
+        let (read_done, read_result) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn(move || {
+            let result = (|| {
+                let mut guard = state
+                    .generation_owners
+                    .authorized_owner_current(&session, || state.active_project_snapshot())?;
+                state
+                    .with_project_db(|conn| guard.owner().read_run(conn, &handle_of(&run_for_read)))
+            })();
+            read_done.send(result).unwrap();
+        });
+        let read = read_result.recv_timeout(std::time::Duration::from_secs(1));
+        let still_waiting = matches!(result.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty));
+        reading.join().unwrap();
+        let outcome = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        let sent = server.join().unwrap();
+        assert_eq!(
+            read.expect("真实 HTTP 流未结束时读取必须完成").unwrap()["handle"]["runId"],
+            run.run_id
+        );
+        assert!(still_waiting, "读取结束时真实 HTTP 正文尚未交付");
+        assert_eq!(outcome["outcome"]["content"], "本地 HTTP 合成正文");
+        assert_eq!(sent["stream"], true);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_mismatched_connection_refuses_late_write_test() {
+        let fixture = ProductionExecutionFixture::new(true);
+        let (execution, result) = fixture.start();
+        let service = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            guard.owner().run_service.clone()
+        };
+        let other_root =
+            std::path::Path::new(&fixture.session.project_path).join("wrong-connection");
+        let other_path = crate::db::project_database_path(&other_root);
+        std::fs::create_dir_all(other_path.parent().unwrap()).unwrap();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                // 合成错库也包含同名运行，必须凭连接根校验拒绝，不能仅靠行身份。
+                conn.execute("VACUUM INTO ?1", [other_path.to_string_lossy().as_ref()])
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let other_database = crate::db::ProjectDatabase::open(&other_root).unwrap();
+        let original_database = fixture
+            .state
+            .project_db
+            .lock()
+            .unwrap()
+            .replace(other_database);
+        fixture.release.notify_one();
+        assert!(result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .is_err());
+        execution.join().unwrap();
+        assert_eq!(service.read_unsaved_tails()[0].text, "短锁合成正文");
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let repo = GenerationRunRepository::default();
+                let budget = repo.budget(conn, &fixture.run.root_action_id)?;
+                let receipt = service.read_attempt(conn, &budget.attempts[0].attempt_id)?;
+                assert_eq!(receipt.artifact.unwrap().text, "");
+                Ok(())
+            })
+            .unwrap();
+        let wrong = std::mem::replace(
+            &mut *fixture.state.project_db.lock().unwrap(),
+            original_database,
+        );
+        drop(wrong);
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let repo = GenerationRunRepository::default();
+                let budget = repo.budget(conn, &fixture.run.root_action_id)?;
+                let receipt = service.read_attempt(conn, &budget.attempts[0].attempt_id)?;
+                assert_eq!(receipt.artifact.unwrap().text, "");
+                let artifact_id = service.read_unsaved_tails()[0].artifact_id.clone();
+                service.discard_candidate(conn, &artifact_id)
+            })
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_duplicate_invocation_shares_control_and_one_attempt_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let (execution, result) = fixture.start();
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let request = fixture.request.clone();
+        let (duplicate_done, duplicate_result) = std::sync::mpsc::channel();
+        let duplicate = std::thread::spawn(move || {
+            duplicate_done
+                .send(crate::commands::generation::execute_generation_for_state(
+                    &state,
+                    &request,
+                    Some(&session),
+                ))
+                .unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let shared = fixture
+                .state
+                .generation_owners
+                .execution_controls
+                .lock()
+                .unwrap()
+                .values()
+                .any(|entry| entry.users == 2);
+            if shared {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                fixture.release.notify_one();
+                execution.join().unwrap();
+                duplicate.join().unwrap();
+                panic!("同一在途调用必须共用控制登记");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        fixture.release.notify_one();
+        let first = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let second = duplicate_result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        duplicate.join().unwrap();
+        assert_eq!(first["outcome"]["content"], "短锁合成正文");
+        assert_eq!(second["outcome"]["content"], "短锁合成正文");
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let budget =
+                    GenerationRunRepository::default().budget(conn, &fixture.run.root_action_id)?;
+                assert_eq!(budget.attempts.len(), 1);
+                Ok(())
+            })
+            .unwrap();
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_conflicting_task_keeps_original_control_alive_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let (execution, result) = fixture.start();
+        let mut conflicting = fixture.request.clone();
+        conflicting["task"]["messages"][0]["content"] = json!("另一份合成请求");
+        let error = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &conflicting,
+            Some(&fixture.session),
+        )
+        .unwrap_err();
+        assert_eq!(error, mutating_error("GENERATION_INVOCATION_CONFLICT"));
+        {
+            let controls = fixture
+                .state
+                .generation_owners
+                .execution_controls
+                .lock()
+                .unwrap();
+            let entry = controls.values().next().unwrap();
+            assert_eq!(entry.users, 1);
+            assert!(!*entry.completion.done.lock().unwrap());
+            assert!(!entry.service.has_abort_request(&fixture.run.root_action_id));
+        }
+        assert!(matches!(
+            result.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        fixture.release.notify_one();
+        assert_eq!(
+            result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap()["outcome"]["content"],
+            "短锁合成正文"
+        );
+        execution.join().unwrap();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                assert_eq!(
+                    GenerationRunRepository::default()
+                        .budget(conn, &fixture.run.root_action_id)?
+                        .attempts
+                        .len(),
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_late_guard_cannot_remove_replacement_control_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let cache = MainGenerationOwnerCache::new();
+        let owner = owner_with(&conn);
+        let control = cache
+            .register_execution_control(&owner, &conn, &handle_of(&run))
+            .unwrap();
+        let old_completion = control.completion.clone();
+        let replacement = Arc::new(ExecutionCompletion::default());
+        // 合成实例替换，迟到守卫只能完成旧通知，不能移除新实例。
+        cache
+            .execution_controls
+            .lock()
+            .unwrap()
+            .get_mut(&control.key)
+            .unwrap()
+            .completion = replacement.clone();
+        drop(control);
+        assert!(*old_completion.done.lock().unwrap());
+        assert!(!*replacement.done.lock().unwrap());
+        assert_eq!(cache.execution_controls.lock().unwrap().len(), 1);
     }
 
     fn prepared_owner_fixture() -> (
