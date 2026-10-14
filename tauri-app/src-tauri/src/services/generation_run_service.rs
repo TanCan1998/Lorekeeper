@@ -239,7 +239,10 @@ pub struct GenerationRunServiceDependencies {
     pub dispatch: Arc<dyn GenerationDispatcher>,
     /// 渲染层专用投影。推理永不进入 artifact 或回执。
     pub on_reasoning: Option<Arc<dyn Fn(ReasoningEvent) + Send + Sync>>,
+    /// 原始瞬时快照观察者不访问数据库。
     pub on_snapshot: Option<Arc<dyn Fn(SnapshotEvent) + Send + Sync>>,
+    /// 持久快照观察者仅借用当前短回调连接，禁止重取业务锁或保留连接。
+    pub on_durable_snapshot: Option<Arc<dyn Fn(&Connection, SnapshotEvent) + Send + Sync>>,
     /// 恢复重分发校验（基线 owner 注入 `rebuildBinding` 比对）。
     pub validate_recovery: Option<ValidateRecovery>,
 }
@@ -608,6 +611,7 @@ pub struct GenerationRunService {
     dispatch: Arc<dyn GenerationDispatcher>,
     on_reasoning: Option<Arc<dyn Fn(ReasoningEvent) + Send + Sync>>,
     on_snapshot: Option<Arc<dyn Fn(SnapshotEvent) + Send + Sync>>,
+    on_durable_snapshot: Option<Arc<dyn Fn(&Connection, SnapshotEvent) + Send + Sync>>,
     validate_recovery: Option<ValidateRecovery>,
     /// 基线 `controllers: Map<attemptId, …>`。
     controllers: Mutex<HashMap<String, ControllerRecord>>,
@@ -630,6 +634,7 @@ pub fn create_generation_run_service(
         dispatch: deps.dispatch,
         on_reasoning: deps.on_reasoning,
         on_snapshot: deps.on_snapshot,
+        on_durable_snapshot: deps.on_durable_snapshot,
         validate_recovery: deps.validate_recovery,
         controllers: Mutex::new(HashMap::new()),
         abort_requested_roots: Mutex::new(HashMap::new()),
@@ -715,6 +720,19 @@ impl GenerationRunService {
         self.flush_attempt(conn, record);
         let state = record.state.lock().unwrap();
         self.notify_snapshot(&state, &record.attempt_id, &record.diagnostics);
+        if let Some(observer) = &self.on_durable_snapshot {
+            observer(
+                conn,
+                SnapshotEvent {
+                    attempt_id: record.attempt_id.clone(),
+                    visible_text: state.text.clone(),
+                    durable_text: state.durable.clone(),
+                    durable_revision: state.revision,
+                    storage_failed: state.storage_failed,
+                    diagnostics: record.diagnostics.lock().unwrap().value.clone(),
+                },
+            );
+        }
     }
 
     /// 连接/身份已不可用时禁止回写；尾部仅保留在进程内并围住根。
@@ -1928,6 +1946,7 @@ mod tests {
             dispatch,
             on_reasoning: None,
             on_snapshot: None,
+            on_durable_snapshot: None,
             validate_recovery: None,
         })
     }
@@ -2547,6 +2566,7 @@ mod tests {
                 received_reasoning.lock().unwrap().push_str(&event.text)
             })),
             on_snapshot: None,
+            on_durable_snapshot: None,
             validate_recovery: None,
         });
         let mut request = execute_request(
@@ -2727,6 +2747,7 @@ mod tests {
                 *counter += 1;
             })),
             on_snapshot: None,
+            on_durable_snapshot: None,
             validate_recovery: None,
         });
         // Mock 未发射推理事件——推理投影通道未被调用。

@@ -49,6 +49,7 @@
 use std::path::PathBuf;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard};
 
 use serde::Serialize;
@@ -261,7 +262,7 @@ fn read_main_generation_policy(value: Option<&Value>) -> Result<Value, String> {
 /// `snapshotOf` 结果上展开这两个字段（main-generation-owner.ts:251-252）。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct MainGenerationSnapshotProjection {
+pub(crate) struct MainGenerationSnapshotProjection {
     project_id: String,
     epoch: String,
     root_action_id: String,
@@ -474,7 +475,7 @@ enum PreparedExecutionPlan {
 }
 
 /// 准备阶段冻结任务、模型请求与服务；不借用 owner 或数据库连接。
-/// 本切片的兼容执行仍用直接连接，生产短回调接线另行推进。
+/// 生产短回调与兼容直接连接路径共用冻结计划。
 pub(crate) struct PreparedMainGenerationExecution {
     task: Value,
     plan: PreparedExecutionPlan,
@@ -556,8 +557,55 @@ pub struct MainGenerationOwner {
     /// 强类型；IPC 边界为 `Value`，基线 `structuredClone`
     /// 的等价物为 `Value::clone` 深拷贝）。
     preparations: Vec<(String, PreparationEntry)>,
+    /// 不依赖业务锁的事件出口与当前 owner 生命周期围栏。
+    events: Arc<OwnerEventDelivery>,
     /// 基线 `closed` 标志（main-generation-owner.ts:116）。
     closed: bool,
+}
+
+/// 原生层事件出口；载荷保持现有契约，services 不依赖 Tauri。
+#[derive(Clone)]
+pub(crate) enum MainGenerationEvent {
+    Snapshot(Box<MainGenerationSnapshotProjection>),
+    Reasoning(MainGenerationReasoningEventProjection),
+}
+
+pub(crate) type MainGenerationEventSink = Arc<dyn Fn(MainGenerationEvent) + Send + Sync>;
+type SharedGenerationEventSink = Arc<Mutex<Option<MainGenerationEventSink>>>;
+
+struct OwnerEventDelivery {
+    session: ProjectSessionContext,
+    active: AtomicBool,
+    sink: SharedGenerationEventSink,
+}
+
+impl OwnerEventDelivery {
+    fn is_listening(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+            && self.sink.lock().map(|sink| sink.is_some()).unwrap_or(false)
+    }
+
+    fn publish(&self, event: MainGenerationEvent) {
+        let (project_id, epoch) = match &event {
+            MainGenerationEvent::Snapshot(snapshot) => (&snapshot.project_id, &snapshot.epoch),
+            MainGenerationEvent::Reasoning(reasoning) => (&reasoning.project_id, &reasoning.epoch),
+        };
+        if project_id != &self.session.project_id
+            || epoch != &self.session.lease_id
+            || !self.active.load(Ordering::Acquire)
+        {
+            return;
+        }
+        let sink = self.sink.lock().ok().and_then(|sink| sink.clone());
+        if let Some(sink) = sink {
+            // 出口异常不能改变账本；调用时不持出口锁，允许安全替换出口。
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(event)));
+        }
+    }
+
+    fn close(&self) {
+        self.active.store(false, Ordering::Release);
+    }
 }
 
 /// 基线 `graphOperations`（main-generation-owner.ts:55）：图生成操作集
@@ -612,29 +660,83 @@ impl MainGenerationOwner {
         )
     }
 
+    #[cfg(test)]
     fn with_lease_store(
         session: ProjectSessionContext,
         lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
     ) -> Self {
+        Self::with_event_sink(session, lease_store, Arc::new(Mutex::new(None)))
+    }
+
+    fn with_event_sink(
+        session: ProjectSessionContext,
+        lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+        sink: SharedGenerationEventSink,
+    ) -> Self {
+        let events = Arc::new(OwnerEventDelivery {
+            session: session.clone(),
+            active: AtomicBool::new(true),
+            sink,
+        });
         let global_data_root = crate::app_paths::lorekeeper_home();
         let repository = GenerationRunRepository::default();
         let run_service = Arc::new(crate::services::generation_run_service::create_generation_run_service(
-            crate::services::generation_run_service::GenerationRunServiceDependencies {
-                repository: repository.clone(),
-                dispatch: Arc::new(crate::services::main_generation_dispatcher::ConfiguredMainGenerationDispatcher::new(global_data_root.clone())),
-                on_snapshot: None, on_reasoning: None, validate_recovery: None,
-            },
+            Self::dependencies_with_events(
+                repository.clone(),
+                events.clone(),
+                Arc::new(crate::services::main_generation_dispatcher::ConfiguredMainGenerationDispatcher::new(global_data_root.clone())),
+            ),
         ));
         Self {
             global_data_root,
             lease_store,
             run_service,
+            events,
             session,
             repository,
             run_leases: Mutex::new(HashMap::new()),
             pending_invocations: Arc::new(Mutex::new(HashMap::new())),
             preparations: Vec::new(),
             closed: false,
+        }
+    }
+
+    fn dependencies_with_events(
+        repository: GenerationRunRepository,
+        events: Arc<OwnerEventDelivery>,
+        dispatch: Arc<dyn crate::services::generation_run_service::GenerationDispatcher>,
+    ) -> crate::services::generation_run_service::GenerationRunServiceDependencies {
+        let snapshot_repository = repository.clone();
+        let snapshots = events.clone();
+        crate::services::generation_run_service::GenerationRunServiceDependencies {
+            repository,
+            dispatch,
+            validate_recovery: None,
+            on_snapshot: None,
+            on_durable_snapshot: Some(Arc::new(move |conn, event| {
+                if event.storage_failed || !snapshots.is_listening() {
+                    return;
+                }
+                // 使用服务正在借用的同一连接，不重新进入业务门禁。
+                if let Ok(receipt) = snapshot_repository.receipt(conn, &event.attempt_id, None) {
+                    if let Ok(Some(mut snapshot)) = Self::project_snapshot(conn, &receipt, None) {
+                        snapshot.diagnostics = event.diagnostics.or(snapshot.diagnostics);
+                        snapshots.publish(MainGenerationEvent::Snapshot(Box::new(snapshot)));
+                    }
+                }
+            })),
+            on_reasoning: Some(Arc::new(move |event| {
+                events.publish(MainGenerationEvent::Reasoning(
+                    MainGenerationReasoningEventProjection {
+                        project_id: events.session.project_id.clone(),
+                        epoch: events.session.lease_id.clone(),
+                        root_action_id: event.root_action_id,
+                        run_id: event.run_id,
+                        attempt_id: event.attempt_id,
+                        text: event.text,
+                    },
+                ));
+            })),
         }
     }
 
@@ -794,6 +896,14 @@ impl MainGenerationOwner {
     /// 要求制品未被丢弃。`fingerprint` / `non_replayable` 由调用方按候选面补齐。
     fn snapshot_of(
         &self,
+        conn: &Connection,
+        receipt: &GenerationExecutionReceipt,
+        visible_purpose: Option<&str>,
+    ) -> Result<Option<MainGenerationSnapshotProjection>, String> {
+        Self::project_snapshot(conn, receipt, visible_purpose)
+    }
+
+    fn project_snapshot(
         conn: &Connection,
         receipt: &GenerationExecutionReceipt,
         visible_purpose: Option<&str>,
@@ -1315,6 +1425,7 @@ impl MainGenerationOwner {
         }
         // 生产关闭路径先经 suspend_with_database 持久化服务状态；此处仅清进程资源。
         self.closed = true;
+        self.events.close();
         // 逐个关闭 owner 登记的模型租约，不影响同注册表中其它 IPC 租约。
         let leases: Vec<String> = self
             .run_leases
@@ -2108,6 +2219,10 @@ impl MainGenerationOwner {
         match result {
             PreparedMainGenerationResult::Replay(outcome) => Ok(outcome.clone()),
             PreparedMainGenerationResult::Receipt(receipt) => {
+                if let Some(snapshot) = self.snapshot_of(conn, receipt, None)? {
+                    self.events
+                        .publish(MainGenerationEvent::Snapshot(Box::new(snapshot)));
+                }
                 self.outcome_of(conn, receipt, &prepared.task)
             }
         }
@@ -2120,7 +2235,7 @@ impl MainGenerationOwner {
     /// [`Self::prepare_execution`] fail-closed），短细纲重试准入在此显式拒绝；
     /// 子生成器可变性断言所属域（`reviewRevisions` / `imports` /
     /// `finalizations` / `graphs` / `legacyRosters`）的 `begin` 准入仍未
-    /// 开放，运行不可能到达此处。快照 / 推理事件发射随依赖注入波次接线。
+    /// 开放，运行不可能到达此处。快照在持久 flush 和最终收据时投影；推理只走易失出口。
     #[allow(clippy::too_many_arguments)]
     fn prepare_execution_plan(
         &self,
@@ -4354,6 +4469,7 @@ pub struct MainGenerationOwnerCache {
     /// 关闭登记的引用计数：并发关闭请求全部退出后才重新开放执行登记。
     closing_projects: Mutex<HashMap<String, usize>>,
     lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+    event_sink: SharedGenerationEventSink,
 }
 
 /// 已经由 owner 和项目数据库门禁验证的在途执行身份。
@@ -4533,6 +4649,12 @@ impl MainGenerationOwnerCache {
             stopping_projects: Mutex::new(HashMap::new()),
             closing_projects: Mutex::new(HashMap::new()),
             lease_store,
+            event_sink: Arc::new(Mutex::new(None)),
+        }
+    }
+    pub(crate) fn set_event_sink(&self, sink: MainGenerationEventSink) {
+        if let Ok(mut current) = self.event_sink.lock() {
+            *current = Some(sink);
         }
     }
 
@@ -4834,13 +4956,14 @@ impl MainGenerationOwnerCache {
         entries
             .entry(key.clone())
             .or_insert_with(|| OwnerCacheEntry {
-                owner: MainGenerationOwner::with_lease_store(
+                owner: MainGenerationOwner::with_event_sink(
                     session.clone(),
                     Arc::clone(&self.lease_store),
+                    Arc::clone(&self.event_sink),
                 ),
                 subscribers: HashSet::new(),
             });
-        // 5) TODO(B3)：基线在此登记 `event.sender` 到 subscribers。
+        // 5) D-2 既定广播/客户端身份过滤；不额外登记窗口订阅。
         Ok(OwnerGuard { entries, key })
     }
 
@@ -4861,42 +4984,8 @@ impl MainGenerationOwnerCache {
 }
 
 // ============================================================================
-// 事件发射接线点（**TODO(B3)**：真实发射）
-// ============================================================================
-
-/// `generation:snapshot` 事件发射接线点。
-///
-/// 基线：owner 构造时注入 `onSnapshot`（generation-controller.ts:117-120），
-/// 生成运行服务每步经 `subscriber.send('generation:snapshot', snapshot)`
-/// 向全部订阅窗口广播 `MainGenerationSnapshot`（契约见
-/// `src/shared/generation-owner-contract.ts` 的 `GenerationOwnerChannels`）。
-///
-/// Tauri 等价物（D-2 既定决策：**广播 + 客户端过滤**）：命令层
-/// [`crate::commands::generation::emit_generation_snapshot`] 经
-/// `AppHandle::emit` 全窗口广播（客户端按载荷 `projectId` / `epoch`
-/// 过滤——等价基线 `subscriber.send` 的每窗口定向，但省去订阅登记）。
-/// services 层保持无 Tauri 依赖（`services/mod.rs` 约定），故此处仅留
-/// 接线点；调用点随生成运行服务（`generation-run-service.ts`）迁移波次
-/// 接入——基线唯一发射点为 `execute` 的 LLM 调用循环
-/// （main-generation-owner.ts:613-615，`snapshotOf(receipt)` 之后）。
-#[allow(dead_code)]
-fn emit_generation_snapshot(_subscribers: &HashSet<String>, _snapshot: &serde_json::Value) {
-    // TODO(B3)：`for label in subscribers { app_handle.emit_to(label, "generation:snapshot", snapshot) }`
-}
-
-/// `generation:reasoning` 事件发射接线点（基线 generation-controller.ts:121-124；
-/// 载荷 `{ projectId, epoch, rootActionId, runId, attemptId, text }`，
-/// 见 `MainGenerationOwnerDependencies::onReasoning`）。
-///
-/// Tauri 等价物（D-2 既定决策：同上，广播 + 客户端过滤）：命令层
-/// [`crate::commands::generation::emit_generation_reasoning`] 经
-/// `AppHandle::emit` 全窗口广播；调用点随生成运行服务迁移波次接入
-/// （基线发射点：LLM 分发流的可见文本增量）。
-#[allow(dead_code)]
-fn emit_generation_reasoning(_subscribers: &HashSet<String>, _event: &serde_json::Value) {
-    // TODO(B3)：`for label in subscribers { app_handle.emit_to(label, "generation:reasoning", event) }`
-}
-
+// 事件经 OwnerEventDelivery 注入命令层出口；services 保持无 Tauri 依赖。
+// 快照取自当前连接的持久收据，推理仅在内存出口交付。
 // ============================================================================
 // 事件频道与载荷（契约 `GenerationOwnerEvents`，
 // src/shared/generation-owner-contract.ts）
@@ -6192,6 +6281,7 @@ mod tests {
                     repository: GenerationRunRepository::default(),
                     dispatch: Arc::new(WaitingProvider(started)),
                     on_snapshot: None,
+                    on_durable_snapshot: None,
                     on_reasoning: None,
                     validate_recovery: None,
                 },
@@ -6333,6 +6423,7 @@ mod tests {
                     repository: GenerationRunRepository::default(),
                     dispatch: Arc::new(WaitingProvider(started)),
                     on_snapshot: None,
+                    on_durable_snapshot: None,
                     on_reasoning: None,
                     validate_recovery: None,
                 },
@@ -6796,8 +6887,7 @@ mod tests {
         fn new(late_visible: bool) -> Self {
             use crate::services::generation_run_service::{
                 create_generation_run_service, DispatchOptions, GenerationDispatchResult,
-                GenerationDispatcher, GenerationRunServiceDependencies, VisibleEventKind,
-                VisibleGenerationEvent,
+                GenerationDispatcher, VisibleEventKind, VisibleGenerationEvent,
             };
             struct WaitingProvider {
                 started: std::sync::mpsc::Sender<()>,
@@ -6817,6 +6907,9 @@ mod tests {
                     >,
                 > {
                     Box::pin(async move {
+                        if let Some(on_reasoning) = options.on_reasoning {
+                            on_reasoning("合成易失推理".to_string());
+                        }
                         let visible = || {
                             (options.on_visible)(VisibleGenerationEvent {
                                 kind: VisibleEventKind::Delta,
@@ -6865,17 +6958,15 @@ mod tests {
                 let owner = guard.owner();
                 owner.global_data_root = fixture_owner.global_data_root.clone();
                 owner.run_service = Arc::new(create_generation_run_service(
-                    GenerationRunServiceDependencies {
-                        repository: GenerationRunRepository::default(),
-                        dispatch: Arc::new(WaitingProvider {
+                    MainGenerationOwner::dependencies_with_events(
+                        owner.repository.clone(),
+                        owner.events.clone(),
+                        Arc::new(WaitingProvider {
                             started,
                             release: release.clone(),
                             late_visible,
                         }),
-                        on_reasoning: None,
-                        on_snapshot: None,
-                        validate_recovery: None,
-                    },
+                    ),
                 ));
                 state
                     .with_project_db(|conn| {
@@ -7311,16 +7402,22 @@ mod tests {
 
     #[test]
     fn production_short_lock_real_http_read_finishes_before_stream_body_test() {
-        use crate::services::generation_run_service::{
-            create_generation_run_service, GenerationRunServiceDependencies,
-        };
+        use crate::services::generation_run_service::create_generation_run_service;
         use crate::services::main_generation_dispatcher::{
             tests::server_with_ready, MainGenerationDispatcher,
         };
         let fixture = ProductionExecutionFixture::new(false);
+        let (published, received) = std::sync::mpsc::channel();
+        fixture
+            .state
+            .generation_owners
+            .set_event_sink(Arc::new(move |event| {
+                published.send(generation_event_payload(event)).unwrap();
+            }));
         let (ready, stream_ready) = tokio::sync::oneshot::channel();
         let (url, server) = server_with_ready(
             concat!(
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"本地 HTTP 合成推理\"}}]}\n\n",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"本地 HTTP 合成正文\"},\"finish_reason\":\"stop\"}]}\n\n",
                 "data: [DONE]\n\n"
             ),
@@ -7342,15 +7439,13 @@ mod tests {
             profiles[0]["baseUrl"] = json!(url);
             std::fs::write(&path, serde_json::to_string(&profiles).unwrap()).unwrap();
             owner.run_service = Arc::new(create_generation_run_service(
-                GenerationRunServiceDependencies {
-                    repository: GenerationRunRepository::default(),
-                    dispatch: Arc::new(MainGenerationDispatcher::new(
+                MainGenerationOwner::dependencies_with_events(
+                    owner.repository.clone(),
+                    owner.events.clone(),
+                    Arc::new(MainGenerationDispatcher::new(
                         reqwest::Client::builder().no_proxy().build().unwrap(),
                     )),
-                    on_reasoning: None,
-                    on_snapshot: None,
-                    validate_recovery: None,
-                },
+                ),
             ));
             fixture
                 .state
@@ -7413,6 +7508,17 @@ mod tests {
         assert!(still_waiting, "读取结束时真实 HTTP 正文尚未交付");
         assert_eq!(outcome["outcome"]["content"], "本地 HTTP 合成正文");
         assert_eq!(sent["stream"], true);
+        let delivered: Vec<_> = received.try_iter().collect();
+        assert!(delivered
+            .iter()
+            .any(|(channel, payload)| *channel == GENERATION_REASONING_EVENT
+                && payload["text"] == "本地 HTTP 合成推理"
+                && payload["runId"] == run.run_id));
+        assert!(delivered
+            .iter()
+            .any(|(channel, payload)| *channel == GENERATION_SNAPSHOT_EVENT
+                && payload["status"] == "completed"
+                && payload["text"] == "本地 HTTP 合成正文"));
         fixture.state.close_project_database().unwrap();
     }
 
@@ -7636,6 +7742,347 @@ mod tests {
         assert_eq!(cache.execution_controls.lock().unwrap().len(), 1);
     }
 
+    fn generation_event_payload(event: MainGenerationEvent) -> (&'static str, Value) {
+        match event {
+            MainGenerationEvent::Snapshot(snapshot) => (
+                GENERATION_SNAPSHOT_EVENT,
+                serde_json::to_value(snapshot).unwrap(),
+            ),
+            MainGenerationEvent::Reasoning(reasoning) => (
+                GENERATION_REASONING_EVENT,
+                serde_json::to_value(reasoning).unwrap(),
+            ),
+        }
+    }
+
+    #[test]
+    fn generation_events_stream_durable_snapshot_and_keep_reasoning_volatile_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let (sent, events) = std::sync::mpsc::channel();
+        fixture
+            .state
+            .generation_owners
+            .set_event_sink(Arc::new(move |event| {
+                sent.send(generation_event_payload(event)).unwrap();
+            }));
+        let (execution, result) = fixture.start();
+        let first = events
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(first.0, GENERATION_REASONING_EVENT);
+        assert_eq!(first.1["text"], "合成易失推理");
+        let mut captured = vec![first];
+        loop {
+            let event = events
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let durable = event.0 == GENERATION_SNAPSHOT_EVENT
+                && event.1["status"] == "running"
+                && event.1["text"] == "短锁合成正文";
+            captured.push(event);
+            if durable {
+                break;
+            }
+        }
+        // 在网络仍挂起且快照观察者借用业务连接时，出口已交付持久正文。
+        assert!(matches!(
+            result.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        fixture.release.notify_one();
+        let outcome = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        captured.extend(events.try_iter());
+        let mut revision = 0;
+        for (channel, payload) in &captured {
+            assert_eq!(payload["projectId"], fixture.session.project_id);
+            assert_eq!(payload["epoch"], fixture.session.lease_id);
+            assert_eq!(payload["runId"], fixture.run.run_id);
+            assert_eq!(payload["rootActionId"], fixture.run.root_action_id);
+            assert!(payload.get("projectPath").is_none());
+            if *channel == GENERATION_SNAPSHOT_EVENT {
+                let current = payload["revision"].as_i64().unwrap();
+                assert!(current >= revision);
+                revision = current;
+                assert_eq!(payload["revision"], payload["durableRevision"]);
+                assert_eq!(payload["textHash"].as_str().unwrap().len(), 64);
+                assert!(payload.get("fingerprint").is_none());
+                assert!(payload.get("nonReplayable").is_none());
+            }
+        }
+        assert!(captured
+            .iter()
+            .any(|(channel, payload)| *channel == GENERATION_SNAPSHOT_EVENT
+                && payload["status"] == "completed"
+                && payload["compositionEligible"] == true
+                && payload["text"] == "短锁合成正文"));
+        assert_eq!(outcome["outcome"]["content"], "短锁合成正文");
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let repo = GenerationRunRepository::default();
+                let budget = repo.budget(conn, &fixture.run.root_action_id)?;
+                let receipt = repo.receipt(conn, &budget.attempts[0].attempt_id, None)?;
+                assert!(!serde_json::to_string(&receipt)
+                    .unwrap()
+                    .contains("合成易失推理"));
+                assert_eq!(receipt.artifact.unwrap().text, "短锁合成正文");
+                Ok(())
+            })
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn generation_events_sink_panic_does_not_poison_business_locks_or_ledger_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delivered = count.clone();
+        fixture
+            .state
+            .generation_owners
+            .set_event_sink(Arc::new(move |_| {
+                delivered.fetch_add(1, Ordering::Relaxed);
+                panic!("合成事件出口失败");
+            }));
+        let (execution, result) = fixture.start();
+        fixture.release.notify_one();
+        assert_eq!(
+            result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap()["outcome"]["content"],
+            "短锁合成正文"
+        );
+        execution.join().unwrap();
+        assert!(count.load(Ordering::Relaxed) >= 2);
+        assert!(fixture.state.generation_owners.entries.lock().is_ok());
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let budget =
+                    GenerationRunRepository::default().budget(conn, &fixture.run.root_action_id)?;
+                // 合成 provider 不报告 usage；预算仍按原规则保守结算为 unknown。
+                assert_eq!(budget.attempts[0].status, "unknown");
+                let receipt = GenerationRunRepository::default().receipt(
+                    conn,
+                    &budget.attempts[0].attempt_id,
+                    None,
+                )?;
+                assert!(receipt.failure_code.is_none());
+                assert_eq!(
+                    receipt.result.unwrap().finish_reason.as_deref(),
+                    Some("stop")
+                );
+                Ok(())
+            })
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn generation_events_sink_can_replace_itself_without_reentering_business_gate_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let old_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let next_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let old = old_count.clone();
+        let next = next_count.clone();
+        let state = Arc::downgrade(&fixture.state);
+        fixture
+            .state
+            .generation_owners
+            .set_event_sink(Arc::new(move |_| {
+                old.fetch_add(1, Ordering::Relaxed);
+                let next = next.clone();
+                state
+                    .upgrade()
+                    .unwrap()
+                    .generation_owners
+                    .set_event_sink(Arc::new(move |_| {
+                        next.fetch_add(1, Ordering::Relaxed);
+                    }));
+            }));
+        let (execution, result) = fixture.start();
+        fixture.release.notify_one();
+        result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        assert_eq!(old_count.load(Ordering::Relaxed), 1);
+        assert!(next_count.load(Ordering::Relaxed) >= 1);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn generation_events_closed_owner_blocks_late_callbacks_but_new_epoch_delivers_test() {
+        use crate::services::generation_run_service::ReasoningEvent;
+        let cache = MainGenerationOwnerCache::new();
+        let active = active();
+        let first_session = session("project-1", "lease-1");
+        let (sent, events) = std::sync::mpsc::channel();
+        cache.set_event_sink(Arc::new(move |event| {
+            sent.send(generation_event_payload(event)).unwrap();
+        }));
+        let callback = {
+            let mut guard = cache
+                .authorized_owner(&first_session, Some(&active))
+                .unwrap();
+            let owner = guard.owner();
+            MainGenerationOwner::dependencies_with_events(
+                owner.repository.clone(), owner.events.clone(),
+                Arc::new(crate::services::main_generation_dispatcher::ConfiguredMainGenerationDispatcher::new(
+                    owner.global_data_root.clone(),
+                )),
+            ).on_reasoning.unwrap()
+        };
+        let reasoning = || ReasoningEvent {
+            root_action_id: "synthetic-root".into(),
+            run_id: "synthetic-run".into(),
+            attempt_id: "synthetic-attempt".into(),
+            text: "合成迟到推理".into(),
+        };
+        callback(reasoning());
+        assert_eq!(events.recv().unwrap().1["epoch"], "lease-1");
+        cache.suspend_for_project_close(&active.root_path);
+        callback(reasoning());
+        assert!(events.try_recv().is_err());
+        let mut next = active.clone();
+        next.lease_id = "lease-2".into();
+        let next_session = session("project-1", "lease-2");
+        let mut guard = cache.authorized_owner(&next_session, Some(&next)).unwrap();
+        let owner = guard.owner();
+        let callback = MainGenerationOwner::dependencies_with_events(
+            owner.repository.clone(), owner.events.clone(),
+            Arc::new(crate::services::main_generation_dispatcher::ConfiguredMainGenerationDispatcher::new(
+                owner.global_data_root.clone(),
+            )),
+        ).on_reasoning.unwrap();
+        callback(reasoning());
+        assert_eq!(events.recv().unwrap().1["epoch"], "lease-2");
+    }
+
+    #[test]
+    fn generation_events_identity_and_failed_storage_do_not_publish_snapshot_test() {
+        use crate::services::generation_run_service::SnapshotEvent;
+        let fixture = ProductionExecutionFixture::new(false);
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        fixture
+            .state
+            .generation_owners
+            .set_event_sink(Arc::new(move |_| {
+                seen.fetch_add(1, Ordering::Relaxed);
+            }));
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        for (project, epoch) in [("other-project", "lease-1"), ("project-1", "stale-lease")] {
+            owner.events.publish(MainGenerationEvent::Reasoning(
+                MainGenerationReasoningEventProjection {
+                    project_id: project.into(),
+                    epoch: epoch.into(),
+                    root_action_id: fixture.run.root_action_id.clone(),
+                    run_id: fixture.run.run_id.clone(),
+                    attempt_id: "synthetic".into(),
+                    text: "不应交付".into(),
+                },
+            ));
+        }
+        let callback = MainGenerationOwner::dependencies_with_events(
+            owner.repository.clone(), owner.events.clone(),
+            Arc::new(crate::services::main_generation_dispatcher::ConfiguredMainGenerationDispatcher::new(
+                owner.global_data_root.clone(),
+            )),
+        ).on_durable_snapshot.unwrap();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                callback(
+                    conn,
+                    SnapshotEvent {
+                        attempt_id: "missing".into(),
+                        visible_text: "未落盘正文".into(),
+                        durable_text: "".into(),
+                        durable_revision: 0,
+                        storage_failed: true,
+                        diagnostics: None,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+        drop(guard);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn generation_events_failed_flush_never_labels_unsaved_text_as_durable_test() {
+        let fixture = ProductionExecutionFixture::new(false);
+        let (sent, events) = std::sync::mpsc::channel();
+        fixture
+            .state
+            .generation_owners
+            .set_event_sink(Arc::new(move |event| {
+                sent.send(generation_event_payload(event)).unwrap();
+            }));
+        let service = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            guard.owner().run_service.clone()
+        };
+        fixture.state.with_project_db(|conn| {
+            conn.execute_batch("CREATE TRIGGER reject_event_text BEFORE UPDATE OF artifact_json ON generation_artifacts
+                WHEN NEW.artifact_json <> OLD.artifact_json BEGIN SELECT RAISE(ABORT, 'synthetic-storage-failure'); END;")
+                .map_err(|error| error.to_string())
+        }).unwrap();
+        let (execution, result) = fixture.start();
+        // 挂起 provider，由持久 flush 失败主动中止，不用显式取消或解除网络等待。
+        result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        let snapshots: Vec<_> = events
+            .try_iter()
+            .filter(|(channel, _)| *channel == GENERATION_SNAPSHOT_EVENT)
+            .collect();
+        assert!(!snapshots.is_empty());
+        for (_, snapshot) in snapshots {
+            assert_eq!(snapshot["text"], "");
+            assert_eq!(snapshot["durableRevision"], 0);
+            assert_eq!(snapshot["compositionEligible"], false);
+        }
+        assert_eq!(service.read_unsaved_tails()[0].text, "短锁合成正文");
+        assert_eq!(
+            fixture.state.close_project_database(),
+            Err(mutating_error("GENERATION_UNSAVED_TAIL_PRESENT"))
+        );
+        fixture
+            .state
+            .with_project_db(|conn| {
+                conn.execute_batch("DROP TRIGGER reject_event_text;")
+                    .map_err(|error| error.to_string())?;
+                let artifact_id = service.read_unsaved_tails()[0].artifact_id.clone();
+                // 测试显式丢弃合成尾部才能关库，生产不代替用户确认。
+                service.discard_candidate(conn, &artifact_id)
+            })
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
     fn prepared_owner_fixture() -> (
         crate::services::main_generation_sources::tests::TempRoot,
         Connection,
@@ -7803,6 +8250,7 @@ mod tests {
                 }),
                 on_reasoning: None,
                 on_snapshot: None,
+                on_durable_snapshot: None,
                 validate_recovery: None,
             },
         ));

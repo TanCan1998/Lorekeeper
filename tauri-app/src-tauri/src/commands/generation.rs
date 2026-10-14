@@ -2087,6 +2087,24 @@ fn plot_outline_recovery_draft(
 // （begin / bind-material-decision / execute / resume）
 // ============================================================================
 
+/// 启动时安装纯 Rust 出口，覆盖已有和后来创建的 owner；不新增频道或窗口权限。
+pub(crate) fn install_generation_events(app: &AppHandle, cache: &MainGenerationOwnerCache) {
+    use crate::services::main_generation_owner::MainGenerationEvent;
+    let app = app.clone();
+    cache.set_event_sink(std::sync::Arc::new(move |event| match event {
+        MainGenerationEvent::Snapshot(snapshot) => {
+            if let Ok(payload) = serde_json::to_value(snapshot) {
+                emit_generation_snapshot(&app, &payload);
+            }
+        }
+        MainGenerationEvent::Reasoning(reasoning) => {
+            if let Ok(payload) = serde_json::to_value(reasoning) {
+                emit_generation_reasoning(&app, &payload);
+            }
+        }
+    }));
+}
+
 /// 广播 `generation:snapshot` 事件。
 ///
 /// D-2 既定决策：**广播 + 客户端过滤**——经 `AppHandle::emit`
@@ -2095,10 +2113,7 @@ fn plot_outline_recovery_draft(
 /// 订阅登记），客户端按载荷 `projectId` / `epoch` 过滤。
 /// 频道名单一事实源：`services::main_generation_owner`。
 ///
-/// ⚠️ 调用点随生成运行服务（`generation-run-service.ts`）迁移波次
-/// 接入——基线唯一发射点为 `execute` 的 LLM 调用循环
-/// （main-generation-owner.ts:613-615，`snapshotOf(receipt)` 之后）。
-#[allow(dead_code)]
+/// 由 owner 的增量 flush 与最终收据投影调用；出口失败不改变持久账本。
 pub fn emit_generation_snapshot(app: &AppHandle, payload: &Value) {
     let _ = app.emit(
         crate::services::main_generation_owner::GENERATION_SNAPSHOT_EVENT,
@@ -2111,9 +2126,7 @@ pub fn emit_generation_snapshot(app: &AppHandle, payload: &Value) {
 /// （`{ projectId, epoch, rootActionId, runId, attemptId, text }`，
 /// 绝不进入运行视图或回执）。
 ///
-/// ⚠️ 调用点随生成运行服务迁移波次接入（基线发射点：LLM 分发流的
-/// 可见文本增量，generation-controller.ts:121-124 的 `onReasoning`）。
-#[allow(dead_code)]
+/// 由 provider 推理回调调用；不进入制品、候选或持久收据。
 pub fn emit_generation_reasoning(app: &AppHandle, payload: &Value) {
     let _ = app.emit(
         crate::services::main_generation_owner::GENERATION_REASONING_EVENT,

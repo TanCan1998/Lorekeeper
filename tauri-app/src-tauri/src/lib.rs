@@ -91,10 +91,16 @@ pub fn run() {
         // 对齐基线 `ensureVelaHome()`：启动即保证 `~/.lorekeeper/{prompts,logs}` 存在。
         // 失败不阻断启动（首次写入时会再次建目录并给出可读错误）。
         .setup(|app| {
+            use crate::commands as generation_events;
             use tauri::Manager;
             if let Err(error) = app_paths::ensure_lorekeeper_home() {
                 eprintln!("[Lorekeeper] {error}");
             }
+            // 主生成事件沿用既定广播/客户端身份过滤，领域服务只持纯 Rust 出口。
+            generation_events::install_generation_events(
+                app.handle(),
+                &app.state::<state::AppState>().generation_owners,
+            );
             // 批次 H（H3）：装配更新运行时（失败降级为「更新不可用」，绝不阻断启动）
             let outcome = update::startup::start_update_runtime(app.handle());
             app.state::<state::AppState>()
