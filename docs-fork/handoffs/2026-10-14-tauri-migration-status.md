@@ -11,44 +11,49 @@
 
 ---
 
-## 快照（最后更新：2026-10-14 · 第 44 次）
+## 快照（最后更新：2026-10-14 · 第 46 次）
 
-> **本表只填最新一次自检的实测值。**
+> 验证版本：HEAD `efb96e0d` + 本轮未提交 Rust diff；核验截至 2026-10-14 16:08 +08:00。主会话直接实施，子代理派发已按用户要求在本机 AGENTS.md 临时禁用，明确恢复前有效。
 
 | 项 | 值 |
 |---|---|
-| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；复验基线 HEAD `2fbddb47`（B3-M）；B3-3 已验证切片与文档随本次提交入库 |
+| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；本轮未提交、未推送，人工逐项核验待完成 |
 | 产品身份 | Lorekeeper（设定司）/ `com.tancan1998.lorekeeper` |
-| 已注册命令 | 243（不变——本波无命令注册） |
-| 覆盖 invoke 频道 | 242（不变） |
-| 未迁移 invoke 频道 | 48（不变——本波无命令注册） |
-| 运行核实 | 登记 run `b390feab` 已 complete，当前无活动子代理；未扫描无关运行目录 |
-| `cargo test` | 1225 passed / 0 failed（61.25s）；bin 与 doc-test 均 0 failed（较第 43 次新增 8 项） |
-| `cargo check --all-targets` | 0 错误 0 告警（exit 0） |
-| `pnpm typecheck` / `lint` | 均 exit 0，lint 零告警 |
-| 定向 `vitest` | 本轮重跑：generation runtime / renderer / harness，3 文件 / 43 passed / 0 failed，exit 0 |
-| 已完成批次 | B3-1a/b/c、B3-2a/b、B3-M 已提交；B3-3 核心/分发器/真实源绑定/准备绑定及 owner 缓存、普通恢复、关闭生命周期切片已验证，随本次提交入库 |
-| 当前阶段 | B3-3 owner begin/execute_inner 与网络执行、事件接线待续；普通 resume 账本恢复和运行服务实例已接入，特殊域恢复仍关闭；不是整波完成 |
-| 依赖 | 本波无新依赖、schema、权限或 CI 变更；Cargo.toml / Cargo.lock 不变 |
+| 命令 / invoke 覆盖 / 未迁移 | check:channels exit 0：243 / 242 / 48；契约 invoke 290、事件 7；本轮无命令注册 |
+| `cargo test` | 1247 passed / 0 failed（88.96s）；bin/doc-test 无失败；本次新增 11 项，较 HEAD 累计新增 22 项 |
+| `cargo check --all-targets` | exit 0，零告警 |
+| `pnpm typecheck` / `pnpm run lint` | 均 exit 0 |
+| 前端测试 | 本次定向 generation runtime/renderer/harness：3 文件 / 43 项通过；第 45 次扩展检查仍有 4 项及 Agent store 9 项失败，未重新验收，不能宣称全绿 |
+| `git diff --check` | exit 0 |
+| 当前范围 | B3-3 普通根运行 begin 与 B3-4 草稿提交切片已验证；execute_inner、网络执行和事件接线仍待续，整波未完成 |
+| 隔离 / 依赖 | Electron、根 src、docs/、根配置和锁文件无改动；无新依赖/schema/权限/CI |
 | GUI 冒烟 | 未做 |
-| 双栈隔离 | 维持（Tauri 用 `AI_NOVEL_LOREKEEPER_HOME` / `~/.lorekeeper`；项目库 `<root>/.lore/lorekeeper.db`） |
-| Rust 工具链 | rustc/cargo 1.99.0 stable-msvc（`D:\Environment\rust`） |
+
+## 本次更新（第 46 次：B3-3 普通 begin 策略、租约与运行创建）
+
+- 主会话直接推进，没有派发、恢复或重派代理。新增写面为 generation_run_repository、generation_run_service、main_generation_plan，继续修改 main_generation_owner；累计六个 Rust 文件及三份 fork 文档未提交/推送，人工逐项核验待完成。
+- 普通根运行 begin 移除占位：校验输出合同及最多八个唯一用途覆盖，获取模型租约，冻结安全模型收据，在 immediate 事务内规划、构造真实绑定、创建根/运行和投影视图；成功移交 owner，失败由守卫回收临时租约及事务。
+- 仓储/服务增加调用方事务入口，不嵌套 BEGIN、不提前提交。重复 begin 复用既有运行及租约；重新打开项目仍按不含 epoch 的根行动键读回旧运行，不分配新预算或可执行租约，普通 resume 再绑定新 epoch。
+- 规划范围对照真实 project_core 总章数；显式目标必须唯一且合法，仅缺省时使用 600，并冻结规范十进制文本。数值解析补 BOM/空白和无符号进制前缀。草稿 preparation 缓存冻结知识快照，要求材料决策并复核准备来源；命令层知识采集仍待接入。
+- 新增 11 项 begin 测试：真实写入与安全投影、幂等租约、输出合同、写入失败根/运行回滚、来源/准备失败租约回收、特殊域/外层事务拒绝、nonce 冲突、规划目标/默认值/范围、准备材料与来源漂移、调用方事务回滚、跨纪元重放与 resume。
+- 保持特殊域关闭：Agent 初始化/新子代、导入、审阅修订、批量、目录续接及内部子代根预算准入未接入；仅保留既有 Agent 子代幂等读回。普通 begin 拒绝调用方外层事务；restart 及 execute_inner 未激活。
+- 验证：完整 cargo test **1247 passed / 0 failed**（88.96s），cargo check --all-targets 零告警，typecheck、lint、check:channels、定向 pnpm test（3 文件 / 43 项）、git diff --check 均 exit 0；本次未运行扩展前端失败套件或 GUI，没有真实外部模型调用。
+- 证据：`.pi/tmp/b33-begin-{target,test,check,typecheck,lint,channels,vitest}.log`、`b33-begin-reviewed.diff`，均不入库。累计 Rust diff SHA256：`e91a29de09db12a4bada70071eea02b934e2507913834a1b5cd30d6134f80f49`；无新依赖/schema/权限/CI、Electron、根 src、docs/、根配置或锁文件改动。
+- 下一步 execute_inner 的网络分发、流式 flush/settle、终态/取消与事件接线，再接知识采集及特殊域准入；补批次/真实 Agent 子效应及前端既存失败专项复验。不能将普通 begin 与草稿提交当作主生成端到端完成。
 
 ---
 
-## 本次更新（第 44 次：B3-3 owner 缓存、普通恢复与关闭生命周期）
 
-- 沿用开发 Todo plan #3，主会话直接推进，无子代理或新 runId。复验基线 HEAD 为 `2fbddb47`；随后用户确认已人工逐项审核本轮全部代码与文档，并授权提交、推送至 origin/master。已验证切片随本次提交入库；不将局部接线表述为 B3-3 整波完成。
-- 修正命令每次新建 owner 缓存的接线：generation、agent-generation、character-proposal 和 DB child effect 统一使用 AppState 常驻缓存。共享既有模型租约注册表，不新建依赖或数据结构迁移。
-- 每个 owner 保留 GenerationRunService 和按当前 Lorekeeper 全局代理配置构造 HTTP client 的配置分发入口。普通 resume 重建真实源及当前纪元，校验只读模型证据与可执行租约证据一致，再通过服务恢复账本；未跨 await 持有 owner/SQLite 守卫。原异步服务恢复仍必须有 validateRecovery。
-- 临时模型租约由 RAII 守卫回收；只有恢复成功才登记到 owner，替换时关闭旧租约。源漂移、模型缺失、重复恢复被拒绝均不泄漏新租约。
-- pause/cancel 委托运行服务，保留 controller 主动取消能力；运行视图按根账本尝试身份过滤服务未保存尾，discardCandidate 委托服务清理尾记录。
-- 项目关闭严格按 owner → 项目库锁顺序，在连接释放前 flush/suspend。失败保留库、会话、owner 与租约供重试；成功后清准备态和 owner 租约、逐出缓存、释放连接及会话。项目创建/打开/删除沿用原授权，仅传播关闭失败，不继续删除或强制失效。
-- 新增 8 项回归（owner 6、AppState 2）：跨纪元恢复、旧租约替换、拒绝后临时租约回收、作者漂移、模型缺失、关闭失败与重试、缓存跨门禁保留及共享注册表清理。夹具只使用临时合成数据和本机 SSE，无真实配置或外部 API。
-- 前次全量在 SSE 夹具出现 Windows 10035；接受连接后显式恢复阻塞模式，不放宽生产协议校验。最终完整 cargo test **1225 passed / 0 failed**（61.25s，bin/doc-test 无失败），cargo check --all-targets 零告警；check:channels（243/242/48）、typecheck、lint、定向 vitest（3 文件/43 项）、git diff --check 均 exit 0。核验截至 2026-10-14 15:05 +08:00。
-- 证据 `.pi/tmp/b33-owner-{test,check,channels,typecheck,lint,vitest,target}.log` 与 `b33-owner-reviewed.diff`，均不入库。跟踪 Rust diff SHA256 `dd8af959c56d4d11cc5c5734c094b90130232e2aeb615c20da134f058d6388c6`；新文件哈希单独维护于 pipeline。
-- 未完成边界：begin/execute_inner 尚未激活，owner 尚未实际执行网络分发；事件回调未接，知识采集命令接线、特殊域恢复准入及共享符号去重待续，再推进 B3-4 commit_draft。无新依赖/schema/权限/CI 或 Electron、根 src、docs/、根配置/锁文件改动。GUI 和 B3-M4/M5 专项仍待续。
+## 本次更新（第 45 次：B3-4 草稿提交事务与幂等收据）
 
+- 写面仅三个 Rust 文件：draft_repository 提取 `create_in_transaction`；generation_draft_effects 新增真实提交；main_generation_owner 移除草稿提交占位并接入真实来源复核及 Agent child effect。
+- 独立提交使用 immediate 事务。复用调用方事务时增加保存点守卫：只释放本次保存点，不提前提交外层；来源、草稿正文/版本/依赖、attempt 的 draftCommit 收据及代理效应同一原子边界，失败/异常退出回滚本次效应。
+- 校验 write 来源、章节/操作/batch 身份、visible composition 算法和哈希、最后 attempt 的 stop 终态、目标单位正安全整数及 70% 正文下限。目标字符串兼容 Number 的十进制、指数及无符号进制前缀。
+- 草稿依赖由真实 candidate/finalized source refs 构建，复用既有仓储验证；批次写前后复核进度。提交收据写入既有 attempt usage JSON，不新增账本或数据库结构。收据使用 camelCase，保留旧 Rust snake_case 读取 alias；既有提交在正文/收据完整且哈希一致时幂等返回，不重新要求来源未变化。
+- 新增 11 项测试：实际创建与重放、哈希/目标/合成冲突、截断与短文、蓝图/候选来源漂移、依赖保留、收据失败回滚/重试、外层回滚、外层捕获失败后提交仍无残留、纪元/取消拒绝、camelCase/旧字段读取及数值解析。
+- 前端扩展检查暴露既存缺口：MIGRATED_CHANNELS 与注册表/旧 97 断言不一致（集合口径 56，而注册口径 48），review-revision 四频道缺参数登记，两处既有 review Rust 入参缺 camelCase；Agent store 九个模拟测试失败。本轮未改这些文件，HEAD 原文确认 review 两结构缺标注。本轮 StoredDraftCommit 扫描问题已修正，不修改测试以掩盖其他失败。
+- 证据：`.pi/tmp/b34-{test,check,typecheck,lint,channels,vitest,vitest-target,target}.log`、`b34-reviewed.diff`，均不入库。Rust diff SHA256：`348491d1c23a4a8696b03cb455ab624e69738c4c0652f03357fb35ceb7a2c6a1`。第 44 次 owner 缓存/普通恢复/关闭切片已提交为 `efb96e0d`，此前授权不代表本轮已人工核验。
+- 下一步：继续 B3-3 普通 begin 的策略/租约/运行创建，再接 execute_inner 的分发/终态/事件；补批次与真实 Agent 子效应专项及前端既存失败复验。知识采集、特殊域恢复准入、B3-M4/M5 与 GUI 仍未完成；无 schema/依赖/权限等新增授权项。活动任务和运行事实只维护在 pipeline 状态。
 ---
 
 
