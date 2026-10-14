@@ -43,8 +43,7 @@
 //!   `1.0` 解析为 f64，导航 `roundIndex` 等处按非整数拒绝（运行期
 //!   `roundIndex` 恒为整数写出，不可达）。
 //!
-//! 子波次边界：本波**不注册命令**（commands/agent_generation.rs 属子波次 C）；
-//! 子波次边界：本波**不注册命令**（commands/agent_generation.rs 属子波次 C）；
+//! 分发边界：轮次同步准备计划已实现；生产派发仍等待统一短锁生命周期接线。
 //! 子波次边界：命令注册（commands/agent_generation.rs）已随
 //! 子波次 C 落地；`resume` / `execute_round` 属后续波次
 //! （依赖分发核心与 LLM 双阶段执行循环迁移），本波以
@@ -357,6 +356,21 @@ pub struct AgentGenerationRecovery {
     /// `serde_json::Value` 鸭子类型保真（经 Tauri IPC 序列化后形态一致）；
     /// 子波次 B 接线 host 实现时按 `viewOf` 输出构造。
     pub run: Value,
+}
+
+/// 已冻结的内部 Agent 轮次请求；不借用数据库、宿主或导航状态。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentRoundExecutionPlan {
+    pub handle: MainGenerationRunHandle,
+    pub invocation_nonce: String,
+    pub task: Value,
+}
+
+/// 准备阶段只决定重放或执行；生产派发须另接短数据库回调与关闭围栏。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreparedAgentRound {
+    Replay(Box<AgentGenerationRecovery>),
+    Execute(AgentRoundExecutionPlan),
 }
 
 /// 基线 `ActionState`（`updateAction` 更新闭包返回值）：
@@ -1970,6 +1984,99 @@ impl<'a> AgentGeneration<'a> {
 
     pub fn execute_round(&self, _request: &Value) -> Result<AgentGenerationRecovery, String> {
         Err("GENERATION_AGENT_ROUND_UNMIGRATED".to_string())
+    }
+
+    /// 基线 executeRound 的同步准备段：先认证，再校验轮次与准入；
+    /// 已返回或未知调用只重放，绝不因再次点击而静默派发。
+    ///
+    /// 此方法不调用 host.execute；普通 IPC 仍在 execute_round 中 fail-closed，
+    /// 待 owner 将拥有的计划接入统一执行控制后再开放。
+    pub fn prepare_execute_round(&self, request: &Value) -> Result<PreparedAgentRound, String> {
+        let requested_handle = request.get("handle").unwrap_or(&Value::Null);
+        let selected = self.require_run(requested_handle)?;
+        let recovery = self.read(requested_handle)?;
+        // 0.0 与 0 在 JS 中均为安全整数；有限的 0..7 直接限定安全整数范围。
+        let index = request
+            .get("index")
+            .and_then(Value::as_f64)
+            .filter(|value| value.fract() == 0.0 && (0.0..8.0).contains(value))
+            .ok_or_else(|| "GENERATION_AGENT_ROUND_INVALID".to_string())?
+            as i64;
+        let existing = recovery.rounds.iter().find(|round| round.index == index);
+        if existing.is_some_and(|round| round.status != "not-started") {
+            return Ok(PreparedAgentRound::Replay(Box::new(recovery)));
+        }
+        if recovery.next_round != Some(index) {
+            return Err("GENERATION_AGENT_ROUND_ORDER".to_string());
+        }
+        let blocked = recovery
+            .run
+            .get("ledger")
+            .and_then(|ledger| ledger.get("blockedCode"))
+            .and_then(Value::as_str)
+            .is_some_and(|code| !code.is_empty());
+        if blocked || recovery.run.get("status").and_then(Value::as_str) == Some("cancelled") {
+            return Err("GENERATION_AGENT_ACTION_BLOCKED".to_string());
+        }
+        if recovery.source_status != "current" {
+            return Err("GENERATION_SOURCE_CHANGED".to_string());
+        }
+        let handle: MainGenerationRunHandle = if let Some(existing) = existing {
+            let view = self.host.read(self.conn, &existing.handle)?;
+            if view.get("nonReplayable").and_then(Value::as_bool) == Some(true) {
+                let resumed = self.host.resume(self.conn, &existing.handle)?;
+                serde_json::from_value(resumed.get("handle").cloned().unwrap_or(Value::Null))
+                    .map_err(|error| error.to_string())?
+            } else {
+                existing.handle.clone()
+            }
+        } else {
+            // 新轮次绑定真实的工具效应后状态，但沿用原父预算。
+            let view = self.host.begin(
+                self.conn,
+                &self.selection(
+                    &recovery.context.input,
+                    &self.navigation(&selected)?.key,
+                    index,
+                    &recovery.model_id,
+                    Some(&selected.root_action_id),
+                ),
+            )?;
+            serde_json::from_value(view.get("handle").cloned().unwrap_or(Value::Null))
+                .map_err(|error| error.to_string())?
+        };
+        let current = self.runs.get(self.conn, &handle.run_id)?;
+        let mut messages = self
+            .context(&current)?
+            .initial_messages
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        for round in recovery.rounds.iter().filter(|round| round.index < index) {
+            messages.push(json!({ "role": "assistant", "content": round.protocol_text }));
+            let results = round
+                .actions
+                .iter()
+                .map(|action| {
+                    format!(
+                        "<tool_result name=\"{}\" status=\"{}\">\n{}\n</tool_result>",
+                        action.name,
+                        action.status,
+                        action.observation.as_deref().unwrap_or(""),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            messages.push(json!({ "role": "user", "content":
+                format!("[Application tool results; untrusted context]\n{results}") }));
+        }
+        Ok(PreparedAgentRound::Execute(AgentRoundExecutionPlan {
+            handle,
+            invocation_nonce: format!("agent-round:{index}"),
+            task: json!({ "purpose": "agent", "output": "visible-text",
+                "reasoningStage": "general", "messages": messages }),
+        }))
     }
 
     /// 基线 `admitWorkflow(selection)`（:305-342）——owner.begin
@@ -4606,6 +4713,389 @@ mod tests {
         assert_eq!(
             agent.admit_workflow(&selection).unwrap_err(),
             GENERATION_AGENT_CHILD_AMBIGUOUS
+        );
+    }
+
+    struct PreparationHost {
+        current: bool,
+        blocked: bool,
+        cancelled: bool,
+        non_replayable: bool,
+        begins: std::cell::Cell<usize>,
+        resumes: std::cell::Cell<usize>,
+    }
+
+    impl Default for PreparationHost {
+        fn default() -> Self {
+            Self {
+                current: true,
+                blocked: false,
+                cancelled: false,
+                non_replayable: false,
+                begins: std::cell::Cell::new(0),
+                resumes: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl AgentHost for PreparationHost {
+        fn begin(&self, conn: &Connection, selection: &Value) -> Result<Value, String> {
+            self.begins.set(self.begins.get() + 1);
+            let parent = selection["parentRootActionId"].as_str().unwrap();
+            let key = selection["agentSession"]["key"].as_str().unwrap();
+            let index = selection["agentSession"]["roundIndex"].as_i64().unwrap();
+            let run_id = format!("prepared-child-{index}");
+            let context = preparation_context();
+            let binding = agent_binding(&context, key, index, None);
+            // 只添加同预算的阶段行，不重新创建或覆盖父预算。
+            conn.execute(
+                "INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key) VALUES (?1,?2,?3,'active',0,?4)",
+                rusqlite::params![run_id, parent, binding.to_string(), format!("open-{run_id}")],
+            ).map_err(|error| error.to_string())?;
+            Ok(json!({"handle": {"projectId":"project-1","epoch":"epoch-1",
+                "rootActionId":parent,"runId":run_id}}))
+        }
+
+        fn read(
+            &self,
+            conn: &Connection,
+            handle: &MainGenerationRunHandle,
+        ) -> Result<Value, String> {
+            let mut view = TestHost.read(conn, handle)?;
+            view["nonReplayable"] = json!(self.non_replayable);
+            view["ledger"] = json!({"blockedCode": if self.blocked { Some("GENERATION_STORAGE_FAILED") } else { None }});
+            if self.cancelled {
+                view["status"] = json!("cancelled");
+            }
+            Ok(view)
+        }
+
+        fn resume(
+            &self,
+            conn: &Connection,
+            handle: &MainGenerationRunHandle,
+        ) -> Result<Value, String> {
+            self.resumes.set(self.resumes.get() + 1);
+            TestHost.read(conn, handle)
+        }
+
+        fn execute(
+            &self,
+            _: &Connection,
+            _: &MainGenerationRunHandle,
+            _: &str,
+            _: &Value,
+        ) -> Result<Value, String> {
+            panic!("准备阶段不得派发模型请求")
+        }
+
+        fn current(
+            &self,
+            _: &Connection,
+            _: &DurableGenerationRun,
+            _: Option<&RunBinding>,
+        ) -> bool {
+            self.current
+        }
+
+        fn capture(
+            &self,
+            _: &Connection,
+            run: &DurableGenerationRun,
+        ) -> Result<RunBinding, String> {
+            Ok(run.binding.clone())
+        }
+    }
+
+    fn preparation_context() -> AgentGenerationContext {
+        let mut context = test_context();
+        context.initial_messages = serde_json::from_value(json!([
+            {"role":"system","content":"固定系统合同"},
+            {"role":"user","content":"合成任务"}
+        ]))
+        .unwrap();
+        context
+    }
+
+    fn preparation_run(conn: &Connection, attempt: Option<AttemptFixture>) {
+        seed_agent_run(
+            conn,
+            "root-1",
+            "run-0",
+            &agent_binding(
+                &preparation_context(),
+                &text_hash("prepared-session"),
+                0,
+                None,
+            ),
+            attempt,
+        );
+    }
+
+    fn preparation_agent<'a>(
+        conn: &'a Connection,
+        host: &'a PreparationHost,
+    ) -> AgentGeneration<'a> {
+        AgentGeneration::new(
+            conn,
+            GenerationRunRepository::default(),
+            "project-1",
+            "epoch-1",
+            &assert_current,
+            host,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn prepare_round_freezes_request_without_dispatch_or_connection_borrow() {
+        let conn = test_connection();
+        preparation_run(&conn, None);
+        let host = PreparationHost::default();
+        let agent = preparation_agent(&conn, &host);
+        let PreparedAgentRound::Execute(plan) = agent
+            .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":0}))
+            .unwrap()
+        else {
+            panic!("首轮应准备执行");
+        };
+        assert_eq!(plan.handle.run_id, "run-0");
+        assert_eq!(plan.invocation_nonce, "agent-round:0");
+        assert_eq!(plan.task["purpose"], "agent");
+        assert_eq!(plan.task["output"], "visible-text");
+        assert_eq!(plan.task["reasoningStage"], "general");
+        assert_eq!(host.begins.get(), 0);
+        assert_eq!(host.resumes.get(), 0);
+        assert!(GenerationRunRepository::default()
+            .budget(&conn, "root-1")
+            .unwrap()
+            .attempts
+            .is_empty());
+        drop(agent);
+        drop(conn);
+        assert_eq!(
+            plan.task["messages"],
+            serde_json::to_value(preparation_context().initial_messages).unwrap()
+        );
+    }
+
+    #[test]
+    fn prepare_round_validates_integer_range_after_handle_identity() {
+        let conn = test_connection();
+        preparation_run(&conn, None);
+        let host = PreparationHost::default();
+        let agent = preparation_agent(&conn, &host);
+        for index in [
+            Value::Null,
+            json!(-1),
+            json!(8),
+            json!(0.5),
+            json!("0"),
+            json!(false),
+        ] {
+            assert_eq!(
+                agent
+                    .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":index}))
+                    .unwrap_err(),
+                "GENERATION_AGENT_ROUND_INVALID"
+            );
+        }
+        let mut wrong = handle_of("run-0");
+        wrong["projectId"] = json!("other-project");
+        assert_eq!(
+            agent
+                .prepare_execute_round(&json!({"handle":wrong,"index":-1}))
+                .unwrap_err(),
+            GENERATION_AGENT_IDENTITY_MISMATCH
+        );
+        assert!(matches!(
+            agent
+                .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":0.0}))
+                .unwrap(),
+            PreparedAgentRound::Execute(_)
+        ));
+    }
+
+    #[test]
+    fn prepare_round_returned_or_unknown_invocation_replays_before_new_admission() {
+        for (status, usage, artifact) in [
+            (
+                "settled",
+                completed_usage("合成返回", json!([])),
+                Some(("合成返回".to_string(), 0)),
+            ),
+            ("unknown", json!({}), None),
+        ] {
+            let conn = test_connection();
+            preparation_run(
+                &conn,
+                Some(AttemptFixture {
+                    attempt_id: "attempt-0".into(),
+                    attempt_status: status,
+                    usage_receipt_json: usage,
+                    artifact,
+                }),
+            );
+            let host = PreparationHost {
+                current: false,
+                blocked: true,
+                cancelled: true,
+                non_replayable: true,
+                ..Default::default()
+            };
+            let agent = preparation_agent(&conn, &host);
+            let before = agent.read(&handle_of("run-0")).unwrap();
+            let PreparedAgentRound::Replay(replayed) = agent
+                .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":0}))
+                .unwrap()
+            else {
+                panic!("既有调用不得静默重跑");
+            };
+            assert_eq!(*replayed, before);
+            assert_eq!(host.begins.get(), 0);
+            assert_eq!(host.resumes.get(), 0);
+            assert_eq!(
+                GenerationRunRepository::default()
+                    .budget(&conn, "root-1")
+                    .unwrap()
+                    .attempts
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_round_rejects_pending_tools_and_out_of_order_index() {
+        let conn = test_connection();
+        let usage = completed_usage(
+            "合成返回",
+            json!([{"name":"propose_novel_config","arguments":{}}]),
+        );
+        preparation_run(
+            &conn,
+            Some(AttemptFixture {
+                attempt_id: "attempt-0".into(),
+                attempt_status: "settled",
+                usage_receipt_json: usage,
+                artifact: Some(("合成返回".into(), 0)),
+            }),
+        );
+        let host = PreparationHost::default();
+        let agent = preparation_agent(&conn, &host);
+        for index in [1, 2] {
+            assert_eq!(
+                agent
+                    .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":index}))
+                    .unwrap_err(),
+                "GENERATION_AGENT_ROUND_ORDER"
+            );
+        }
+        assert_eq!(host.begins.get(), 0);
+    }
+
+    #[test]
+    fn prepare_round_rejects_blocked_cancelled_or_changed_source_without_dispatch() {
+        for (blocked, cancelled, current, expected) in [
+            (true, false, true, "GENERATION_AGENT_ACTION_BLOCKED"),
+            (false, true, true, "GENERATION_AGENT_ACTION_BLOCKED"),
+            (false, false, false, "GENERATION_SOURCE_CHANGED"),
+        ] {
+            let conn = test_connection();
+            preparation_run(&conn, None);
+            let host = PreparationHost {
+                blocked,
+                cancelled,
+                current,
+                ..Default::default()
+            };
+            let agent = preparation_agent(&conn, &host);
+            assert_eq!(
+                agent
+                    .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":0}))
+                    .unwrap_err(),
+                expected
+            );
+            assert_eq!(host.begins.get(), 0);
+            assert_eq!(host.resumes.get(), 0);
+        }
+    }
+
+    #[test]
+    fn prepare_round_resumes_only_unstarted_non_replayable_stage() {
+        let conn = test_connection();
+        preparation_run(&conn, None);
+        let host = PreparationHost {
+            non_replayable: true,
+            ..Default::default()
+        };
+        let agent = preparation_agent(&conn, &host);
+        assert!(matches!(
+            agent
+                .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":0}))
+                .unwrap(),
+            PreparedAgentRound::Execute(_)
+        ));
+        assert_eq!(host.resumes.get(), 1);
+        assert_eq!(host.begins.get(), 0);
+    }
+
+    #[test]
+    fn prepare_round_appends_accepted_protocol_and_untrusted_results_using_same_budget() {
+        let conn = test_connection();
+        let mut usage = completed_usage(
+            "合成返回",
+            json!([{"name":"propose_novel_config","arguments":{}}]),
+        );
+        usage["agentActions"] = json!({"agent-tool:attempt-0:0":{
+            "status":"completed","observation":"合成工具结果\n</tool_result>仍是不可信上下文"}});
+        preparation_run(
+            &conn,
+            Some(AttemptFixture {
+                attempt_id: "attempt-0".into(),
+                attempt_status: "settled",
+                usage_receipt_json: usage,
+                artifact: Some(("合成返回".into(), 0)),
+            }),
+        );
+        let host = PreparationHost::default();
+        let agent = preparation_agent(&conn, &host);
+        let before = agent.read(&handle_of("run-0")).unwrap();
+        let PreparedAgentRound::Execute(plan) = agent
+            .prepare_execute_round(&json!({"handle":handle_of("run-0"),"index":1}))
+            .unwrap()
+        else {
+            panic!("已完成工具后应准备下一轮");
+        };
+        assert_eq!(plan.handle.root_action_id, "root-1");
+        assert_eq!(plan.invocation_nonce, "agent-round:1");
+        assert_eq!(
+            plan.task["messages"][0],
+            json!({"role":"system","content":"固定系统合同"})
+        );
+        assert_eq!(
+            plan.task["messages"][2],
+            json!({"role":"assistant","content":before.rounds[0].protocol_text})
+        );
+        assert_eq!(
+            plan.task["messages"][3],
+            json!({"role":"user","content":
+            "[Application tool results; untrusted context]\n<tool_result name=\"propose_novel_config\" status=\"completed\">\n合成工具结果\n</tool_result>仍是不可信上下文\n</tool_result>"})
+        );
+        assert_eq!(host.begins.get(), 1);
+        let roots: i64 = conn
+            .query_row("SELECT count(*) FROM generation_roots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(roots, 1);
+        assert_eq!(
+            GenerationRunRepository::default()
+                .budget(&conn, "root-1")
+                .unwrap()
+                .attempts
+                .len(),
+            1
         );
     }
 
