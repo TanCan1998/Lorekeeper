@@ -11,34 +11,35 @@
 
 ---
 
-## 快照（最后更新：2026-10-14 · 第 48 次）
+## 快照（最后更新：2026-10-14 · 第 49 次）
 
-> 验证版本：HEAD `2895c6db` + 本轮两份 Rust diff；核验截至 2026-10-14 21:33 +08:00。主会话直接实施，没有派发代理。
+> 已验证代码提交：`a1884ac96d1b1c7c7342b6d07a71b47096fdf815`；核验截至 2026-10-14 21:55 +08:00。主会话直接实施，没有派发代理。快照文档随后独立提交；最终 HEAD 以 Git 和本机 pipeline 为准。
 
 | 项 | 值 |
 |---|---|
-| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；中止通道切片 `2895c6db` 已推送到 origin/master；后续关闭切片及交接文档未提交 |
+| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；关闭切片 `cf23c0ba` 已推送；短数据库访问代码 `a1884ac9` 已提交，与本快照一起推送 origin/master |
 | 产品身份 | Lorekeeper（设定司）/ `com.tancan1998.lorekeeper` |
 | 命令 / invoke 覆盖 / 未迁移 | check:channels exit 0：243 / 242 / 48；契约 invoke 290、事件 7；本轮无命令注册 |
-| `cargo test` | 1262 passed / 0 failed（57.42s）；bin/doc-test 无失败；本次新增 7 项关闭/准入/持久收据测试 |
+| `cargo test` | 1267 passed / 0 failed（55.32s）；bin/doc-test 无失败；本次新增 5 项短数据库访问与重放测试 |
 | `cargo check --all-targets` | exit 0，零告警 |
 | `pnpm typecheck` / `pnpm run lint` | 均 exit 0 |
-| 前端测试 | 本次定向 generation runtime/renderer/harness：3 文件 / 43 项通过；第 45 次扩展检查的频道/参数/review 与 Agent store 失败未复验，不能宣称全绿 |
-| 格式 / 差异检查 | 两份修改 Rust 的定向 rustfmt --check、git diff --check 均 exit 0；撤销全仓 cargo fmt 对四份非本轮文件的格式漂移后重新验证 |
-| 当前范围 | 普通 begin、草稿提交、普通 execute 与认证暂停/取消已接通；关闭可提前中止已登记 IPC execute，保留正文并持久暂停；网络长锁完整拆解与事件接线未完成 |
-| 隔离 / 依赖 | Electron、根 src、docs/、根配置和锁文件无改动；无新依赖/schema/权限/CI |
+| 前端测试 | 本次定向 generation runtime/renderer/harness：3 文件 / 43 项通过；既存扩展前端与 Agent store 失败未复验，不能宣称全绿 |
+| 格式 / 差异检查 | 修改 Rust 的定向 rustfmt --check、git diff --check 均 exit 0 |
+| 当前范围 | 运行服务支持按阶段的同步数据库访问回调；旧直接连接接口仍兼容。生产 owner/IPC 尚未切换，网络长锁完整拆解与事件接线未完成 |
+| 隔离 / 依赖 | Electron、根 src、docs/、根配置和锁文件无改动；无新依赖/schema/权限/CI；本机 AGENTS 的提交授权已按用户确认更新，不入库 |
 | GUI 冒烟 | 未做 |
 
-## 本次更新（第 48 次：中止通道推送与项目关闭解阻）
+## 本次更新（第 49 次：关闭切片推送与短数据库访问基础）
 
-- 用户确认已逐项人工核验此前中止通道及交接文档，并同意提交、推送当前分支后，提交 `2895c6db29024c8b61c45dfbc721797ef589c1d0`：`🐛 fix(tauri): 接通独立认证中止通道以解除生成取消等待`。秘密扫描、提交消息校验通过；origin/master 从 `8f5f0b36` 更新至 `2895c6db`，未推送 upstream。
-- 提交后继续修改 generation_run_service 和 main_generation_owner：before_database_close 在等待 owner/数据库锁前发布按规范项目路径隔离的关闭准入围栏，并向已登记执行发送关闭信号。新执行控制登记与围栏发布使用统一短锁顺序；重叠关闭请求用引用计数，成功或失败退出均撤销围栏。
-- 根级中止意图增加原因：关闭优先于用户取消，controller 登记前也生效；关闭退出收据持久记录 `GENERATION_PROJECT_CLOSED`。执行线程仍持原库完成 flush/settle，再按 owner → 数据库原锁序持久暂停、关闭租约并释放库/会话；未引入旧库回写或跨 epoch 继续写入。
-- 新增七项测试：登记前关闭不轮询 provider 且持久关闭原因、原因隔离/清理与取消不降级、并发关闭计数/重新开放、跨项目围栏隔离、关闭回调失败保留 owner、真实 AppState/磁盘项目库在双业务锁占用时中止并重开读取正文/收据、持久暂停故障保留会话/库/owner 后成功重试。provider 是本地合成挂起 Future，非 HTTP 假服务器或真实外部模型。
-- 最新完整 Rust 1262 passed / 0 failed；check 零告警；定向 rustfmt、typecheck、lint、check:channels 和前端三文件 43 项通过。证据 `.pi/tmp/b33-close-{test,test-full,check,rustfmt,typecheck,lint,channels,vitest}.log` 与 `b33-close-reviewed.diff`，均不入库。Rust diff SHA256：`14203c38606ab32638f40248b514d3d44c7501a03f0f03cc22a6c2e835a8291c`。
-- **未完成**：网络 await 仍持 owner/数据库长锁，普通读取仍可能等待；关闭中止只覆盖已登记 IPC execute，其他子代句柄、内部 Agent、通用排队/项目切换竞争和关窗 GUI 仍待专项。关闭围栏解决发布后至退出间的新控制登记，不代表所有排队命令生命周期完成。
-- 接续优先拆分网络与短数据库临界区，在 flush/settle 重新认证 epoch、连接及项目身份，补暂停、内部 Agent 与本地 HTTP 假服务器并发测试，再接快照/推理事件。材料提示哈希、短细纲重试、知识采集、特殊域准入、B3-M4/M5 和前端既存失败仍待续。
-- 两份 Rust 与三份 fork 文档未提交，需独立人工逐项核验；此前提交/推送确认不自动覆盖新改动。当前任务/占用事实只维护 `.pi/tmp/pipeline-state.md`。
+- 用户确认当前关闭切片已人工核验，并明确授权后续普通迁移切片在自动检查通过后直接提交、推送，免逐次人工审核。授权不恢复代理派发，不放宽新依赖/schema/权限/CI/ADR/旧 Electron 清理等先确认边界。关闭切片 `cf23c0ba` 已推送 origin/master。
+- generation_run_service 增加 GenerationDatabaseAccess 同步短回调入口：幂等读取、预算预留、标记分发、预算时钟、周期/增量 flush、终态成功/失败结算和终态读取均经该入口。网络 Future 不保存回调中取得的连接/守卫；原 execute/execute_blocking 通过直接连接适配共用逻辑，兼容现有 owner/内部调用。
+- 回调因连接/身份不可用而拒绝时，不回写旧库；根级内存围栏、取消信号和 unsaved tail 保留未落盘正文。新增测试在分发后撤销回调授权，验证原库正文和结算字段未被修改。
+- 并发在途登记改成短锁原子 get-or-insert，同键不同哈希先拒绝，防止两线程都读到空状态后重复启动；等待在途操作之前释放 pending 锁。watch 完成通知改为保留完成值，即使先完成、后订阅也不会丢失结果。
+- 新增五项回归：跨线程网络等待时可读取同一连接、取消正文持久化；在途重放不持 pending/连接锁且只产生一条 attempt；分发后撤销授权不写旧库；迟到订阅立即取得完成值；预留前同键哈希冲突拒绝且不分配 attempt。均为本地合成 provider，不是 HTTP 假服务器或真实模型验收。
+- 完整 Rust 1267 passed / 0 failed；check 零告警；定向 rustfmt、typecheck、lint、check:channels 和定向前端三文件 43 项通过。证据 `.pi/tmp/b33-scoped-{target,test,check,rustfmt,typecheck,lint,channels,vitest}.log` 与 `b33-scoped-reviewed.diff`，均不入库。Rust diff SHA256：`6336c02a9b0c9de57059797251b653d7a983e821e851324ddd094cfcaf234a59`。
+- **关键边界**：当前生产 IPC 仍由 owner 持库调用直接连接适配，故普通读取仍可能等待。本切片完成服务层短锁基础与测试，不代表生产网络长锁已消除；无新增数据库连接、schema 或依赖。
+- **下一步**：把 owner 准备/分发/回执投影拆开，冻结 provider 请求与在途守卫；生产回调每次按 owner → 数据库锁序重新认证项目路径、epoch、会话和连接。关闭钩子还需在不持业务锁时等待执行控制退出，避免短锁化后过早关闭库；补真实 AppState 并发读取/暂停/关闭/切换及本地 HTTP 假服务器测试后自动提交推送。
+- 快照/推理事件、材料提示哈希、短细纲重试、知识采集、特殊域准入、内部 Agent/子代生命周期、B3-M4/M5、既存扩展前端失败和 GUI 专项仍待续。当前任务/占用只维护 `.pi/tmp/pipeline-state.md`。
 
 ---
 
