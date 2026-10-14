@@ -2094,15 +2094,16 @@ pub async fn generation_execute(
 ) -> Result<Value, String> {
     let state = state.inner();
     let cache = &state.generation_owners;
-    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
-    let owner = guard.owner();
-    // 执行链路是「同步阻塞 + 自持 current-thread runtime 承载网络 await」
-    // （`GenerationRunService::execute_blocking`）：其 future 捕获
-    // `&Connection`（`rusqlite::Connection` 非 `Sync`）与 `MutexGuard`，
-    // 无法作为 Tauri 异步命令的 `Send` future。`block_in_place` 先把本线程
-    // 让给 tokio 调度器，再在该线程上阻塞等待执行完成——命令语义与基线
-    // 的 async `execute` 一致（IPC 仍等待回执）。
-    tokio::task::block_in_place(|| state.with_project_db(|conn| owner.execute(conn, &request)))
+    // 门禁等待和网络执行都在阻塞区域内，不占用 Tokio worker。
+    tokio::task::block_in_place(|| {
+        let mut guard = authorized_gate(cache, state, project_session.as_ref())?;
+        let owner = guard.owner();
+        state.with_project_db(|conn| {
+            let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+            let _control = cache.register_execution_control(owner, conn, &handle)?;
+            owner.execute(conn, &request)
+        })
+    })
 }
 
 /// `generation:resume` —— 运行恢复重分发
@@ -2132,11 +2133,17 @@ pub async fn generation_pause(
 ) -> Result<Value, String> {
     let state = state.inner();
     let cache = &state.generation_owners;
-    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
-    let handle = serde_json::to_value(&handle)
-        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
-    let owner = guard.owner();
-    state.with_project_db(|conn| owner.pause(conn, &handle))
+    let session = project_session
+        .as_ref()
+        .ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    cache.request_execution_abort(session, state.active_project_snapshot().as_ref(), &handle)?;
+    tokio::task::block_in_place(|| {
+        let mut guard = authorized_gate(cache, state, Some(session))?;
+        let handle = serde_json::to_value(&handle)
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let owner = guard.owner();
+        state.with_project_db(|conn| owner.pause(conn, &handle))
+    })
 }
 
 /// `generation:cancel` —— 运行取消
@@ -2149,11 +2156,17 @@ pub async fn generation_cancel(
 ) -> Result<Value, String> {
     let state = state.inner();
     let cache = &state.generation_owners;
-    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
-    let handle = serde_json::to_value(&handle)
-        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
-    let owner = guard.owner();
-    state.with_project_db(|conn| owner.cancel(conn, &handle))
+    let session = project_session
+        .as_ref()
+        .ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    cache.request_execution_abort(session, state.active_project_snapshot().as_ref(), &handle)?;
+    tokio::task::block_in_place(|| {
+        let mut guard = authorized_gate(cache, state, Some(session))?;
+        let handle = serde_json::to_value(&handle)
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let owner = guard.owner();
+        state.with_project_db(|conn| owner.cancel(conn, &handle))
+    })
 }
 
 /// `generation:restart` —— 运行重启（新选择重开 + 旧 run 处置）

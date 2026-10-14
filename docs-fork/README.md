@@ -10,7 +10,7 @@
 迁移总进度  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨⬜⬜  242/290 ≈83%
 ```
 
-> 🟩 已迁移 242 · 🟨 进度零头（agent-generation 域 8 频道命令层注册完成——G4-10 收口；**B3 创建核心与 LLM 双阶段执行循环迁移进行中**：B3-1a/b/c + B3-2a/2b 已收口，B3-M 已提交 `2fbddb47`；B3-3 流式核心、分发器、真实源/准备绑定及 owner 缓存、普通恢复、关闭切片已提交 `efb96e0d`；普通 begin 策略/租约/运行创建与 B3-4 草稿提交事务/幂等收据切片已验证但未提交，owner execute、网络执行/事件接线及前端失败复验待续）· ⬜ 未迁移 48（cloud-backup=8 finalization-generation=5 finalized-character=5 graph-generation=5 project=5 character-avatar=4 dialog=4 editor-inline=4 kb=3 startup=3 import-generation=2）；事件频道 7 待迁。
+> 🟩 已迁移 242 · 🟨 主生成 B3 仍进行中：普通 begin/草稿提交已提交 `a54c8c13`，普通 execute 切片已提交 `8f5f0b36`；独立认证中止通道已验证未提交（Rust 1255 项通过），网络长锁/关闭/事件及前端既存失败待续，不能视为端到端完成 · ⬜ 未迁移 48；契约事件频道 7，主生成事件接线待续。最新范围与证据见 [CURRENT](handoffs/CURRENT.md)。
 > 口径：当前已合并上游（@ `21d67211`，2026-10-10）为全集，**上游新提交不计入**；权威实测值见 [当前交接入口](handoffs/CURRENT.md) 指标表，频道明细见 [频道盘点](plans/tauri-migration-channel-inventory.md)。
 
 

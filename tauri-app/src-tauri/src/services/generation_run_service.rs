@@ -580,6 +580,8 @@ pub struct GenerationRunService {
     validate_recovery: Option<ValidateRecovery>,
     /// 基线 `controllers: Map<attemptId, …>`。
     controllers: Mutex<HashMap<String, ControllerRecord>>,
+    /// 独立中止通道的根级意图，覆盖 controller 尚未登记的短窗口。
+    abort_requested_roots: Mutex<HashSet<String>>,
     /// 基线 `pending: Map<key, Promise>`。
     pending: Mutex<HashMap<String, Arc<PendingOperation>>>,
     /// 基线 `failedRoots: Set<rootId>`——存储失败围栏。
@@ -599,6 +601,7 @@ pub fn create_generation_run_service(
         on_snapshot: deps.on_snapshot,
         validate_recovery: deps.validate_recovery,
         controllers: Mutex::new(HashMap::new()),
+        abort_requested_roots: Mutex::new(HashSet::new()),
         pending: Mutex::new(HashMap::new()),
         failed_roots: Mutex::new(HashSet::new()),
         unsaved_tails: Mutex::new(HashMap::new()),
@@ -1102,6 +1105,14 @@ impl GenerationRunService {
             .lock()
             .unwrap()
             .insert(attempt_id.clone(), record.clone());
+        if self
+            .abort_requested_roots
+            .lock()
+            .unwrap()
+            .contains(&run.root_action_id)
+        {
+            token.cancel();
+        }
 
         // ⑫ 基线 :196-204——markDispatched。失败置围栏并
         // block，随后进入 catch 路径（storageFailed 收据）。
@@ -1296,6 +1307,11 @@ impl GenerationRunService {
                 // 与定时器循环。
                 let dispatch_outcome;
                 loop {
+                    // 已中止时不得先轮询 provider future，避免登记前取消仍发起网络。
+                    if signal.is_cancelled() {
+                        dispatch_outcome = Some(DispatchOutcome::Cancelled);
+                        break;
+                    }
                     tokio::select! {
                         _ = flush_timer.tick() => {
                             self.flush_and_notify(conn, &record);
@@ -1512,6 +1528,26 @@ impl GenerationRunService {
             .unwrap()
             .retain(|_, tail| tail.artifact_id != artifact_id);
         Ok(())
+    }
+
+    /// 只发送易失中止意图，不读写数据库；调用方必须先验证会话与完整句柄。
+    /// 持久暂停/取消仍由原命令在执行结算后完成。
+    pub(crate) fn request_abort_root(&self, root_id: &str) {
+        self.abort_requested_roots
+            .lock()
+            .unwrap()
+            .insert(root_id.to_string());
+        self.abort_root_controllers(root_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_abort_request(&self, root_id: &str) -> bool {
+        self.abort_requested_roots.lock().unwrap().contains(root_id)
+    }
+
+    /// 执行控制登记退出时清理意图，后续恢复不得继承旧中止。
+    pub(crate) fn clear_abort_request(&self, root_id: &str) {
+        self.abort_requested_roots.lock().unwrap().remove(root_id);
     }
 
     /// 基线 `pause`（:345-347）——暂停根并 abort 匹配 controller。
@@ -1916,6 +1952,131 @@ mod tests {
         crate::db::schema::create_tables(&conn).expect("schema");
         let run = open_run(&conn, "project-1", "lease-1");
         (conn, run)
+    }
+
+    /// 永不主动结束的合成 provider，用于跨线程中止验证，不访问外部网络。
+    struct WaitingDispatcher {
+        started: std::sync::mpsc::Sender<()>,
+    }
+
+    impl GenerationDispatcher for WaitingDispatcher {
+        fn dispatch<'a>(
+            &'a self,
+            _request: &'a Value,
+            options: DispatchOptions<'a>,
+        ) -> Pin<Box<dyn Future<Output = Result<GenerationDispatchResult, String>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                (options.on_visible)(VisibleGenerationEvent {
+                    kind: VisibleEventKind::Delta,
+                    text: "中止前正文".to_string(),
+                    event_id: None,
+                });
+                self.started.send(()).unwrap();
+                std::future::pending().await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_request_before_controller_registration_skips_provider_poll_test() {
+        let (conn, run) = test_setup();
+        let (started, received) = std::sync::mpsc::channel();
+        let svc = service(Arc::new(WaitingDispatcher { started }));
+        svc.request_abort_root(&run.root_action_id);
+        let receipt = tokio::time::timeout(
+            Duration::from_secs(3),
+            svc.execute(
+                &conn,
+                execute_request(
+                    &run,
+                    &"b".repeat(64),
+                    usage_policy("included-in-completion"),
+                ),
+            ),
+        )
+        .await
+        .expect("登记前中止不得等待网络")
+        .unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_CANCELLED")
+        );
+        assert!(received.try_recv().is_err(), "provider future 不得被轮询");
+        assert!(svc.controllers.lock().unwrap().is_empty());
+        assert!(svc.pending.lock().unwrap().is_empty());
+        svc.clear_abort_request(&run.root_action_id);
+        assert!(!svc.has_abort_request(&run.root_action_id));
+    }
+
+    #[tokio::test]
+    async fn abort_request_from_other_thread_ends_wait_and_preserves_prefix_test() {
+        let (conn, run) = test_setup();
+        let (started, received) = std::sync::mpsc::channel();
+        let svc = Arc::new(service(Arc::new(WaitingDispatcher { started })));
+        let abort_service = Arc::clone(&svc);
+        let root = run.root_action_id.clone();
+        let control = std::thread::spawn(move || {
+            received
+                .recv_timeout(Duration::from_secs(3))
+                .expect("等待分发开始");
+            abort_service.request_abort_root(&root);
+        });
+        let receipt = tokio::time::timeout(
+            Duration::from_secs(5),
+            svc.execute(
+                &conn,
+                execute_request(
+                    &run,
+                    &"c".repeat(64),
+                    usage_policy("included-in-completion"),
+                ),
+            ),
+        )
+        .await
+        .expect("跨线程中止必须唤醒网络等待")
+        .unwrap();
+        control.join().unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_CANCELLED")
+        );
+        assert_eq!(receipt.artifact.as_ref().unwrap().text, "中止前正文");
+        assert!(svc.controllers.lock().unwrap().is_empty());
+        assert!(svc.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn abort_request_is_root_scoped_and_clear_allows_later_execution_test() {
+        let (conn, run) = test_setup();
+        let svc = service(Arc::new(MockDispatcher {
+            result: Ok(GenerationDispatchResult {
+                usage: Some(trusted_usage()),
+                finish_reason: Some("stop".to_string()),
+            }),
+            visible_events: Vec::new(),
+            cancel_on_dispatch: false,
+        }));
+        svc.request_abort_root("other-root");
+        svc.request_abort_root(&run.root_action_id);
+        svc.clear_abort_request(&run.root_action_id);
+        let receipt = svc
+            .execute(
+                &conn,
+                execute_request(
+                    &run,
+                    &"d".repeat(64),
+                    usage_policy("included-in-completion"),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(receipt.failure_code.is_none());
+        assert_eq!(
+            receipt.result.as_ref().unwrap().finish_reason.as_deref(),
+            Some("stop")
+        );
+        assert!(svc.has_abort_request("other-root"));
     }
 
     #[tokio::test]

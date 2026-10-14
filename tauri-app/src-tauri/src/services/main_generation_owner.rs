@@ -1879,7 +1879,9 @@ impl MainGenerationOwner {
         self.inject_planning_target_instruction(conn, &run, &mut task)?;
         // 基线 :532-537 材料决策必需性（审稿 / 精修类操作与带准备的
         // chapter-draft 必须已绑定材料决策收据）。
-        let material_decision = manifest.get("materialDecision").filter(|value| !value.is_null());
+        let material_decision = manifest
+            .get("materialDecision")
+            .filter(|value| !value.is_null());
         if (material_decision.is_none()
             && matches!(
                 run_operation.as_str(),
@@ -1999,7 +2001,11 @@ impl MainGenerationOwner {
             &task,
             manifest,
             task_purpose,
-            if agent_execution { Some(agent_tool_names) } else { None },
+            if agent_execution {
+                Some(agent_tool_names)
+            } else {
+                None
+            },
             &invocation_nonce,
             &request_hash,
         );
@@ -2040,7 +2046,8 @@ impl MainGenerationOwner {
             .find_invocation(conn, &run.run_id, invocation_nonce, request_hash)
             .map_err(|error| mutating_error(map_generation_error(&error)))?
         {
-            if existing.attempt.status != "dispatch-marked" && existing.attempt.status != "reserved" {
+            if existing.attempt.status != "dispatch-marked" && existing.attempt.status != "reserved"
+            {
                 return self.outcome_of(conn, &existing, task);
             }
         }
@@ -2073,7 +2080,9 @@ impl MainGenerationOwner {
         // ③ 基线 :634-637——创作策略、冻结策略、预算与模型能力证据。
         let creative_strategy = crate::repositories::project_core_repository::get(conn)
             .map_err(|error| mutating_error(map_generation_error(&error)))?
-            .map(|core| crate::llm::reasoning::CreativeStrategy::parse(Some(&core.creative_strategy)))
+            .map(|core| {
+                crate::llm::reasoning::CreativeStrategy::parse(Some(&core.creative_strategy))
+            })
             .unwrap_or(crate::llm::reasoning::CreativeStrategy::Auto);
         let policy: crate::services::main_generation_plan::MainGenerationPolicy =
             crate::services::main_generation_plan::read_main_generation_policy(
@@ -2122,26 +2131,25 @@ impl MainGenerationOwner {
                 .read_plot_outline(conn, &run.run_id, None)
                 .map_err(|error| mutating_error(map_generation_error(&error)))?
                 .is_some();
-        let execution_request =
-            crate::services::generation_run_service::ExecuteGenerationRequest {
-                run_id: run.run_id.clone(),
-                invocation_nonce: invocation_nonce.to_string(),
-                request_hash: request_hash.to_string(),
-                provider_request,
-                reserved_tokens: plan.reserved_tokens,
-                requested_output_tokens: plan.requested_output_tokens,
-                input_upper_bound_tokens: plan.input_upper_bound_tokens,
-                reasoning_upper_bound_tokens: plan.reasoning_upper_bound_tokens,
-                usage_policy: plan.usage_policy.clone(),
-                purpose: Some(task_purpose.to_string()),
-                budget_decision: plan
-                    .budget_decision
-                    .as_ref()
-                    .map(Self::task_budget_decision_value),
-                agent_tool_names,
-                replay_task: replay_task.then(|| task.clone()),
-                reconciliation_injected: false,
-            };
+        let execution_request = crate::services::generation_run_service::ExecuteGenerationRequest {
+            run_id: run.run_id.clone(),
+            invocation_nonce: invocation_nonce.to_string(),
+            request_hash: request_hash.to_string(),
+            provider_request,
+            reserved_tokens: plan.reserved_tokens,
+            requested_output_tokens: plan.requested_output_tokens,
+            input_upper_bound_tokens: plan.input_upper_bound_tokens,
+            reasoning_upper_bound_tokens: plan.reasoning_upper_bound_tokens,
+            usage_policy: plan.usage_policy.clone(),
+            purpose: Some(task_purpose.to_string()),
+            budget_decision: plan
+                .budget_decision
+                .as_ref()
+                .map(Self::task_budget_decision_value),
+            agent_tool_names,
+            replay_task: replay_task.then(|| task.clone()),
+            reconciliation_injected: false,
+        };
         // ⑥ 真实分发（网络流式 + 持久化 + 结算）：命令层已让出 tokio
         //    worker，这里由服务自持 runtime 执行。
         let receipt = self
@@ -2314,7 +2322,11 @@ impl MainGenerationOwner {
             .map_err(|error| mutating_error(map_generation_error(&error)))?
             .map(|core| core.writing_language)
             .unwrap_or_else(|| "zh-CN".to_string());
-        let language = if language == "en-US" { "en-US" } else { "zh-CN" };
+        let language = if language == "en-US" {
+            "en-US"
+        } else {
+            "zh-CN"
+        };
         let target_units = crate::commands::generation::parse_planning_target_units(Some(target))
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
         let instruction =
@@ -2393,7 +2405,9 @@ impl MainGenerationOwner {
                     TaskBudgetReasonCode::SingleItemCapacityConflict => {
                         "single-item-capacity-conflict"
                     }
-                    TaskBudgetReasonCode::DraftSegmentationDisabled => "draft-segmentation-disabled",
+                    TaskBudgetReasonCode::DraftSegmentationDisabled => {
+                        "draft-segmentation-disabled"
+                    }
                     TaskBudgetReasonCode::ScopeSplit => "scope-split",
                 };
                 let mut projected = Map::new();
@@ -2581,12 +2595,9 @@ impl MainGenerationOwner {
     /// `repository.pause(rootActionId)` 状态迁移（仓储层已逐字
     /// 移植，generation-run-repository.ts:641-657）。
     ///
-    /// ⚠️ B3 波次说明：基线 `service.pause` 的进行中分发中止
-    /// （generation-run-service.ts:342-344，遍历进行中
-    /// `AbortController` 注册表并 `abort()`）依赖生成运行服务的
-    /// LLM 分发循环，尚未迁移——当前 `execute` fail-closed、
-    /// 不存在进行中分发，该副作用恒为空操作；分发循环迁移后
-    /// 需在此接线中止逻辑。
+    /// 命令层先通过已认证的独立控制登记唤醒进行中分发，再取得业务锁；
+    /// 此处完成持久暂停与再次中止。网络结算后才迁移根状态，不能把
+    /// 易失中止信号当作已经持久暂停的收据。
     pub fn pause(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
         let run = self.require_run(conn, handle, true)?;
         self.run_service
@@ -2607,9 +2618,8 @@ impl MainGenerationOwner {
     /// 校验（`require_run`，非执行语义，:1337）与
     /// `repository.pause(rootActionId, true)` 状态迁移。
     ///
-    /// ⚠️ B3 波次说明：基线 `service.cancel` 的进行中分发中止
-    /// （generation-run-service.ts:345-347）同 `pause`——依赖
-    /// 生成运行服务的 LLM 分发循环，尚未迁移、当前恒为空操作。
+    /// 命令层的提前中止与暂停共用独立控制登记；此处仍验证运行身份，
+    /// 完成持久取消并返回最终视图，不绕过数据库/会话门禁。
     pub fn cancel(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
         let run = self.require_run(conn, handle, false)?;
         self.run_service
@@ -4247,7 +4257,34 @@ impl Drop for DraftCommitSavepoint<'_> {
 #[derive(Default)]
 pub struct MainGenerationOwnerCache {
     entries: Mutex<HashMap<String, OwnerCacheEntry>>,
+    /// 独立短锁，网络等待时仍可访问；只保存身份和中止服务，不保存正文/模型配置。
+    execution_controls: Mutex<HashMap<String, ExecutionControlEntry>>,
     lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+}
+
+/// 已经由 owner 和项目数据库门禁验证的在途执行身份。
+struct ExecutionControlEntry {
+    session: ProjectSessionContext,
+    handle: MainGenerationRunHandle,
+    service: Arc<crate::services::generation_run_service::GenerationRunService>,
+}
+
+/// 控制登记与执行同寿命；错误返回也必须撤销中止意图。
+pub(crate) struct ExecutionControlGuard<'a> {
+    cache: &'a MainGenerationOwnerCache,
+    key: String,
+}
+
+impl Drop for ExecutionControlGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut controls) = self.cache.execution_controls.lock() {
+            if let Some(entry) = controls.remove(&self.key) {
+                entry
+                    .service
+                    .clear_abort_request(&entry.handle.root_action_id);
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for MainGenerationOwnerCache {
@@ -4303,8 +4340,70 @@ impl MainGenerationOwnerCache {
     ) -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            execution_controls: Mutex::new(HashMap::new()),
             lease_store,
         }
+    }
+
+    /// 必须在 owner → 数据库临界区内调用；先校验完整运行身份，再公开中止句柄。
+    pub(crate) fn register_execution_control<'a>(
+        &'a self,
+        owner: &MainGenerationOwner,
+        conn: &Connection,
+        handle: &Value,
+    ) -> Result<ExecutionControlGuard<'a>, String> {
+        owner.require_run(conn, handle, true)?;
+        let handle: MainGenerationRunHandle = serde_json::from_value(handle.clone())
+            .map_err(|_| mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"))?;
+        let key = security::normalized_project_path(&owner.session.project_path);
+        let mut controls = self
+            .execution_controls
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        if controls.contains_key(&key) {
+            return Err(mutating_error("GENERATION_INVOCATION_CONFLICT"));
+        }
+        owner
+            .run_service
+            .clear_abort_request(&handle.root_action_id);
+        controls.insert(
+            key.clone(),
+            ExecutionControlEntry {
+                session: owner.session.clone(),
+                handle,
+                service: Arc::clone(&owner.run_service),
+            },
+        );
+        Ok(ExecutionControlGuard { cache: self, key })
+    }
+
+    /// 在等待 owner/数据库长锁前中止已认证的在途运行。
+    /// 此处不替代持久化门禁：命令仍须重新取得 owner 并完成暂停/取消。
+    pub(crate) fn request_execution_abort(
+        &self,
+        session: &ProjectSessionContext,
+        active: Option<&ActiveProject>,
+        handle: &MainGenerationRunHandle,
+    ) -> Result<(), String> {
+        security::assert_current_project_context(session, active)
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let key = security::normalized_project_path(&session.project_path);
+        let controls = self
+            .execution_controls
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        if let Some(entry) = controls.get(&key) {
+            if entry.session.project_id != session.project_id
+                || entry.session.lease_id != session.lease_id
+            {
+                return Err(mutating_error(GENERATION_REQUEST_FAILED));
+            }
+            // 只有逐字段一致的完整句柄才允许提前中止；其他句柄走原持久化校验。
+            if entry.handle == *handle {
+                entry.service.request_abort_root(&handle.root_action_id);
+            }
+        }
+        Ok(())
     }
 
     /// 同时持有 owner 缓存锁与关闭临界区，锁序始终为 owner → 项目库。
@@ -5563,6 +5662,203 @@ mod tests {
     }
 
     #[test]
+    fn execution_abort_channel_does_not_wait_for_owner_lock_and_cleans_up_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let cache = MainGenerationOwnerCache::new();
+        let session = session("project-1", "lease-1");
+        let active = active();
+        let mut owner_guard = cache.authorized_owner(&session, Some(&active)).unwrap();
+        let owner = owner_guard.owner();
+        let control = cache
+            .register_execution_control(owner, &conn, &handle_of(&run))
+            .unwrap();
+        let handle: MainGenerationRunHandle = serde_json::from_value(handle_of(&run)).unwrap();
+        // owner 锁被当前线程持有，中止必须只取独立短锁，不能自死锁。
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    cache
+                        .request_execution_abort(&session, Some(&active), &handle)
+                        .unwrap()
+                })
+                .join()
+                .unwrap();
+        });
+        assert!(owner.run_service.has_abort_request(&run.root_action_id));
+        drop(control);
+        assert!(cache.execution_controls.lock().unwrap().is_empty());
+        assert!(!owner.run_service.has_abort_request(&run.root_action_id));
+    }
+
+    #[test]
+    fn execution_abort_channel_rejects_stale_session_and_ignores_tampered_handle_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let cache = MainGenerationOwnerCache::new();
+        let session = session("project-1", "lease-1");
+        let active = active();
+        let mut owner_guard = cache.authorized_owner(&session, Some(&active)).unwrap();
+        let owner = owner_guard.owner();
+        let _control = cache
+            .register_execution_control(owner, &conn, &handle_of(&run))
+            .unwrap();
+        let handle: MainGenerationRunHandle = serde_json::from_value(handle_of(&run)).unwrap();
+        let mut stale = session.clone();
+        stale.lease_id = "old-lease".to_string();
+        assert!(cache
+            .request_execution_abort(&stale, Some(&active), &handle)
+            .is_err());
+        let mut foreign = session.clone();
+        foreign.project_path = r"F:\novel\other".to_string();
+        assert!(cache
+            .request_execution_abort(&foreign, Some(&active), &handle)
+            .is_err());
+        for field in ["projectId", "epoch", "rootActionId", "runId"] {
+            let mut changed = handle_of(&run);
+            changed[field] = json!("tampered");
+            let changed = serde_json::from_value(changed).unwrap();
+            cache
+                .request_execution_abort(&session, Some(&active), &changed)
+                .unwrap();
+            assert!(!owner.run_service.has_abort_request(&run.root_action_id));
+        }
+        assert!(!owner.run_service.has_abort_request(&run.root_action_id));
+    }
+
+    #[test]
+    fn execution_control_registration_rejects_invalid_identity_without_entry_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let cache = MainGenerationOwnerCache::new();
+        let owner = owner_with(&conn);
+        let mut handle = handle_of(&run);
+        handle["rootActionId"] = json!("tampered");
+        assert!(cache
+            .register_execution_control(&owner, &conn, &handle)
+            .is_err());
+        assert!(cache.execution_controls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn execution_abort_unblocks_durable_cancel_with_owner_and_database_locked_test() {
+        use crate::services::generation_run_service::{
+            create_generation_run_service, DispatchOptions, ExecuteGenerationRequest,
+            GenerationDispatchResult, GenerationDispatcher, GenerationRunServiceDependencies,
+            VisibleEventKind, VisibleGenerationEvent,
+        };
+        struct WaitingProvider(std::sync::mpsc::Sender<()>);
+        impl GenerationDispatcher for WaitingProvider {
+            fn dispatch<'a>(
+                &'a self,
+                _request: &'a Value,
+                options: DispatchOptions<'a>,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<GenerationDispatchResult, String>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    (options.on_visible)(VisibleGenerationEvent {
+                        kind: VisibleEventKind::Delta,
+                        text: "已收到正文".to_string(),
+                        event_id: None,
+                    });
+                    self.0.send(()).unwrap();
+                    std::future::pending().await
+                })
+            }
+        }
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let database = Arc::new(Mutex::new(conn));
+        let cache = Arc::new(MainGenerationOwnerCache::new());
+        let session = session("project-1", "lease-1");
+        let active = active();
+        let (started, wait_started) = std::sync::mpsc::channel();
+        {
+            let mut guard = cache.authorized_owner(&session, Some(&active)).unwrap();
+            guard.owner().run_service = Arc::new(create_generation_run_service(
+                GenerationRunServiceDependencies {
+                    repository: GenerationRunRepository::default(),
+                    dispatch: Arc::new(WaitingProvider(started)),
+                    on_snapshot: None,
+                    on_reasoning: None,
+                    validate_recovery: None,
+                },
+            ));
+        }
+        let execution_cache = Arc::clone(&cache);
+        let execution_database = Arc::clone(&database);
+        let execution_session = session.clone();
+        let execution_active = active.clone();
+        let execution_run = run.clone();
+        let (done, wait_done) = std::sync::mpsc::channel();
+        let execution =
+            std::thread::spawn(move || {
+                let mut guard = execution_cache
+                    .authorized_owner(&execution_session, Some(&execution_active))
+                    .unwrap();
+                let owner = guard.owner();
+                let conn = execution_database.lock().unwrap();
+                let _control = execution_cache
+                    .register_execution_control(owner, &conn, &handle_of(&execution_run))
+                    .unwrap();
+                let receipt = owner.run_service.execute_blocking(&conn, ExecuteGenerationRequest {
+                run_id: execution_run.run_id,
+                invocation_nonce: "cancel-lock-test".to_string(),
+                request_hash: "a".repeat(64),
+                provider_request: Value::Null,
+                reserved_tokens: 1024,
+                requested_output_tokens: 256,
+                input_upper_bound_tokens: 128,
+                reasoning_upper_bound_tokens: 0,
+                usage_policy: crate::repositories::generation_run_repository::ProviderUsagePolicy {
+                    estimator_version: "fixture".to_string(),
+                    safety_margin_tokens: 512,
+                    reasoning: "included-in-completion".to_string(),
+                    can_bound_total_liability: true,
+                },
+                purpose: None,
+                budget_decision: None,
+                agent_tool_names: None,
+                replay_task: None,
+                reconciliation_injected: false,
+            }).unwrap();
+                done.send(receipt).unwrap();
+            });
+        wait_started
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("分发开始");
+        assert!(cache.entries.try_lock().is_err());
+        assert!(database.try_lock().is_err());
+        let handle = serde_json::from_value(handle_of(&run)).unwrap();
+        cache
+            .request_execution_abort(&session, Some(&active), &handle)
+            .unwrap();
+        let receipt = wait_done
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("中止必须释放网络等待，不依赖业务锁");
+        execution.join().unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_CANCELLED")
+        );
+        assert_eq!(receipt.artifact.as_ref().unwrap().text, "已收到正文");
+        let mut guard = cache.authorized_owner(&session, Some(&active)).unwrap();
+        let conn = database.lock().unwrap();
+        let view = guard.owner().cancel(&conn, &handle_of(&run)).unwrap();
+        assert_eq!(view["status"], json!("cancelled"));
+        assert!(cache.execution_controls.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn error_mapping_passes_generation_codes_through() {
         assert_eq!(
             map_generation_error("GENERATION_EPOCH_STALE"),
@@ -5885,13 +6181,22 @@ mod tests {
         crate::db::schema::create_tables(&conn).expect("schema");
         let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("open run");
         let owner = owner_with(&conn);
-        let before = owner.repository().budget(&conn, &run.root_action_id).expect("budget");
+        let before = owner
+            .repository()
+            .budget(&conn, &run.root_action_id)
+            .expect("budget");
         let request = json!({ "handle": handle_of_run(&run), "task": null });
-        let expected = crate::services::main_generation_plan::assert_semantic_generation_task(&Value::Null)
-            .expect_err("非法任务");
-        assert_eq!(owner.execute(&conn, &request).expect_err("拒绝执行"),
-            mutating_error(map_generation_error(&expected)));
-        let after = owner.repository().budget(&conn, &run.root_action_id).expect("budget");
+        let expected =
+            crate::services::main_generation_plan::assert_semantic_generation_task(&Value::Null)
+                .expect_err("非法任务");
+        assert_eq!(
+            owner.execute(&conn, &request).expect_err("拒绝执行"),
+            mutating_error(map_generation_error(&expected))
+        );
+        let after = owner
+            .repository()
+            .budget(&conn, &run.root_action_id)
+            .expect("budget");
         assert_eq!(before.attempts.len(), after.attempts.len());
         assert!(owner.pending_invocations.lock().unwrap().is_empty());
     }
