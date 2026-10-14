@@ -157,6 +157,32 @@ pub struct MainGenerationPolicy {
     pub planning: Option<PlanningGenerationScope>,
 }
 
+impl MainGenerationPolicy {
+    /// 保持规范 JSON 合同，复用既有规划联合与预算的投影，不复制序列化分支。
+    pub fn to_value(&self) -> Value {
+        let budget = serde_json::to_value(&self.budget).expect("根预算可序列化");
+        let mut value = policy_to_value_with(&self.version, &budget, self.planning.as_ref());
+        let object = value.as_object_mut().expect("策略投影是对象");
+        object.insert(
+            "taskBudgetPolicy".to_string(),
+            self.task_budget_policy.clone(),
+        );
+        object.insert(
+            "capabilityPolicyVersion".to_string(),
+            json!(self.capability_policy_version),
+        );
+        object.insert(
+            "estimatorVersion".to_string(),
+            json!(self.estimator_version),
+        );
+        object.insert(
+            "safetyMarginTokens".to_string(),
+            json!(self.safety_margin_tokens),
+        );
+        value
+    }
+}
+
 /// 基线 `MAIN_GENERATION_POLICY` 冻结常量
 /// （`version: 's07-task-and-liability-v1'`）——见模块头注第 5 条。
 pub fn main_generation_policy() -> MainGenerationPolicy {

@@ -80,3 +80,9 @@ pub mod main_generation_plan;
 // llm::openai/gemini 进程内流式核心实现）。
 pub mod agent_response_protocol;
 pub mod generation_run_service;
+
+// B3-3：从 owner 的 dispatchProvider 抽出的进程内适配器。
+pub mod main_generation_dispatcher;
+
+pub mod builtin_writing_skills;
+pub(crate) mod main_generation_sources;

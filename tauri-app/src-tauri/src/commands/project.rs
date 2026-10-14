@@ -627,11 +627,15 @@ fn open_project_inner(
     let core = match loaded {
         Ok(Some(core)) => core,
         Ok(None) => {
-            state.invalidate_current_session();
+            state
+                .invalidate_current_session()
+                .map_err(|error| (error, None))?;
             return Err(("项目主台账初始化失败".to_string(), None));
         }
         Err(error) => {
-            state.invalidate_current_session();
+            state
+                .invalidate_current_session()
+                .map_err(|error| (error, None))?;
             return Err((format!("项目数据库读取失败：{error}"), None));
         }
     };
@@ -817,7 +821,7 @@ fn project_create_inner(
         root_path: trusted.root_path.clone(),
     };
     if let Err(error) = app.activate_project(lease) {
-        app.invalidate_current_session();
+        // 旧项目挂起失败时保留其可恢复状态，不进行二次强制失效。
         return create_failure(
             &request_token,
             app,
@@ -849,12 +853,16 @@ fn project_create_inner(
         project_core::update(conn, &update)
     });
     if let Err(error) = initialized {
-        app.invalidate_current_session();
+        if let Err(close_error) = app.invalidate_current_session() {
+            return create_failure(&request_token, app, close_error, None);
+        }
         return create_failure(&request_token, app, error, None);
     }
 
     // 与基线一致：创建只落盘，不保留新库打开（渲染层随后调用 `project:open`）
-    app.invalidate_current_session();
+    if let Err(error) = app.invalidate_current_session() {
+        return create_failure(&request_token, app, error, None);
+    }
     let _ = add_recent_project(RecentProject {
         name: display_name,
         path: trusted.root_path.clone(),
@@ -1114,8 +1122,9 @@ pub fn project_delete(
         Err(error) => return delete_failure(true, error, None),
     };
 
-    app.close_project_database();
-    app.invalidate_current_session();
+    if let Err(error) = app.invalidate_current_session() {
+        return delete_failure(true, error, None);
+    }
 
     let deletion = remove_directory_with_retry(std::path::Path::new(&authorized));
     if std::path::Path::new(&authorized).exists() {

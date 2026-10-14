@@ -146,7 +146,8 @@ pub struct GenerationDispatchResult {
 }
 
 /// 基线 `GenerationUnsavedTail`——存储失败时保留的可复制尾文本。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GenerationUnsavedTail {
     pub attempt_id: String,
     pub artifact_id: String,
@@ -428,7 +429,7 @@ pub struct GenerationCancelToken {
 
 impl GenerationCancelToken {
     /// 基线 `new AbortController()`——构造令牌与信号对。
-    fn pair() -> (Self, GenerationCancelSignal) {
+    pub(crate) fn pair() -> (Self, GenerationCancelSignal) {
         let (sender, receiver) = watch::channel(false);
         (
             Self {
@@ -1501,31 +1502,51 @@ impl GenerationRunService {
     /// 基线 `resume`（:348-350 区域，公共 API）——恢复重分发
     /// 校验：fingerprint / contextSnapshotId / sourceManifest 三重
     /// deep-equal + 注入式 `validateRecovery`，任一失败拒绝。
+    fn prepare_resume(
+        &self,
+        conn: &Connection,
+        run_id: &str,
+        next: &RunBinding,
+    ) -> Result<DurableGenerationRun, String> {
+        let old = self.repository.get(conn, run_id)?;
+        if serde_json::to_value(&old.binding.fingerprint).ok()
+            != serde_json::to_value(&next.fingerprint).ok()
+            || old.binding.context_snapshot_id != next.context_snapshot_id
+            || old.binding.source_manifest != next.source_manifest
+        {
+            return Err("GENERATION_RECOVERY_UNAUTHORIZED".to_string());
+        }
+        Ok(old)
+    }
+
+    /// owner 已在同一命令临界区完成真实源重建；同步恢复不跨 await 持有 SQLite/owner 守卫。
+    pub(crate) fn resume_with_authorization(
+        &self,
+        conn: &Connection,
+        run_id: &str,
+        next: RunBinding,
+        validate: impl FnOnce(&RunBinding, &RunBinding) -> Result<bool, String>,
+    ) -> Result<DurableGenerationRun, String> {
+        let old = self.prepare_resume(conn, run_id, &next)?;
+        if !validate(&old.binding, &next)? {
+            return Err("GENERATION_RECOVERY_UNAUTHORIZED".to_string());
+        }
+        self.repository.resume(conn, run_id, &next)?;
+        self.repository.get(conn, run_id)
+    }
+
     pub async fn resume(
         &self,
         conn: &Connection,
         run_id: &str,
         next: RunBinding,
     ) -> Result<DurableGenerationRun, String> {
-        let old = self.repository.get(conn, run_id)?;
-        // 基线 `isDeepStrictEqual` 等价：序列化为 JSON 值后结构
-        // 比较（FrozenInputFingerprint 无派生相等；serde_json 值
-        // 比较与 isDeepStrictEqual 同为键序无关的结构相等）。
-        let fingerprint_unchanged = serde_json::to_value(&old.binding.fingerprint).ok()
-            == serde_json::to_value(&next.fingerprint).ok();
-        let manifest_unchanged = old.binding.source_manifest == next.source_manifest;
-        if !fingerprint_unchanged
-            || old.binding.context_snapshot_id != next.context_snapshot_id
-            || !manifest_unchanged
-            || self.validate_recovery.is_none()
-        {
-            return Err("GENERATION_RECOVERY_UNAUTHORIZED".to_string());
-        }
+        let old = self.prepare_resume(conn, run_id, &next)?;
         let validate = self
             .validate_recovery
             .as_ref()
-            .expect("validate_recovery 已检查非空");
-        if !validate(old.binding.clone(), next.clone()).await? {
+            .ok_or_else(|| "GENERATION_RECOVERY_UNAUTHORIZED".to_string())?;
+        if !validate(old.binding, next.clone()).await? {
             return Err("GENERATION_RECOVERY_UNAUTHORIZED".to_string());
         }
         self.repository.resume(conn, run_id, &next)?;
@@ -1865,6 +1886,94 @@ mod tests {
         crate::db::schema::create_tables(&conn).expect("schema");
         let run = open_run(&conn, "project-1", "lease-1");
         (conn, run)
+    }
+
+    #[tokio::test]
+    async fn real_dispatcher_persists_only_visible_text_and_replays_without_network() {
+        use crate::services::main_generation_dispatcher::{
+            tests::{fixture, server},
+            MainGenerationDispatcher,
+        };
+        let (conn, run) = test_setup();
+        let (url, server) = server(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\" 正文<th\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ink>secret</think>尾 \"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30}}\n\n",
+            "data: [DONE]\n\n"
+        ), Duration::ZERO);
+        let reasoning = Arc::new(Mutex::new(String::new()));
+        let received_reasoning = reasoning.clone();
+        let svc = create_generation_run_service(GenerationRunServiceDependencies {
+            repository: GenerationRunRepository::default(),
+            dispatch: Arc::new(MainGenerationDispatcher::new(
+                reqwest::Client::builder().no_proxy().build().unwrap(),
+            )),
+            on_reasoning: Some(Arc::new(move |event| {
+                received_reasoning.lock().unwrap().push_str(&event.text)
+            })),
+            on_snapshot: None,
+            validate_recovery: None,
+        });
+        let mut request = execute_request(
+            &run,
+            &"a".repeat(64),
+            usage_policy("included-in-completion"),
+        );
+        request.provider_request = fixture("openai", &url);
+        let receipt = svc.execute(&conn, request.clone()).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.attempt.status, "settled");
+        assert!(receipt.failure_code.is_none());
+        assert_eq!(receipt.artifact.as_ref().unwrap().text, " 正文尾 ");
+        assert_eq!(*reasoning.lock().unwrap(), "hiddensecret");
+        assert_eq!(
+            receipt
+                .result
+                .as_ref()
+                .unwrap()
+                .usage
+                .as_ref()
+                .unwrap()
+                .actual_tokens,
+            Some(30)
+        );
+        // 服务器已经关闭，同 invocation 再执行只能重放，不能第二次发起网络/结算。
+        let replay = svc.execute(&conn, request).await.unwrap();
+        assert_eq!(receipt.attempt.attempt_id, replay.attempt.attempt_id);
+        assert_eq!(replay.artifact.unwrap().text, " 正文尾 ");
+        let attempts: i64 = conn
+            .query_row("SELECT count(*) FROM generation_attempts", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn real_dispatcher_transport_failure_preserves_visible_prefix_in_receipt() {
+        use crate::services::main_generation_dispatcher::{
+            tests::{fixture, server},
+            MainGenerationDispatcher,
+        };
+        let (conn, run) = test_setup();
+        let (url, server) = server(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden\",\"content\":\"正文 \"}}]}\n\n",
+            Duration::ZERO,
+        );
+        let svc = service(Arc::new(MainGenerationDispatcher::new(
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+        )));
+        let mut request = execute_request(
+            &run,
+            &"a".repeat(64),
+            usage_policy("included-in-completion"),
+        );
+        request.provider_request = fixture("openai", &url);
+        let receipt = svc.execute(&conn, request).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(receipt.failure_code.as_deref(), Some("NETWORK_ERROR"));
+        assert_eq!(receipt.artifact.unwrap().text, "正文 ");
     }
 
     #[tokio::test]

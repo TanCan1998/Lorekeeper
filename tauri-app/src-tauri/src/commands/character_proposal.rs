@@ -74,7 +74,7 @@ pub async fn character_proposal_stage(
         )));
     }
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.stage_character_proposal(conn, &source))
@@ -98,7 +98,7 @@ pub async fn character_proposal_read(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.read_character_proposal(conn, &proposal_batch_id))
@@ -113,7 +113,7 @@ pub async fn character_proposal_list_pending_finalized(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.list_pending_finalized_character_proposals(conn))
@@ -137,7 +137,7 @@ pub async fn character_proposal_read_pending_finalized(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| {
@@ -164,7 +164,7 @@ pub async fn character_proposal_approve(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.approve_character_proposal(conn, &request))
@@ -179,7 +179,7 @@ pub async fn character_proposal_cancel(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.cancel_character_proposal(conn, &request))
@@ -193,7 +193,7 @@ pub async fn character_identity_read(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.character_identity_snapshot(conn))

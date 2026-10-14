@@ -31,3 +31,5 @@ pub mod openai;
 pub mod presets;
 pub mod provider_presets;
 pub mod reasoning;
+
+pub mod visible_stream;

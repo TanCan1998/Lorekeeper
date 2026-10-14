@@ -338,6 +338,9 @@ impl InBandReasoning {
 
 /// 流式生成选项（生成参数 + 回调 + 取消探针）。
 pub struct LlmStreamOptions<'a> {
+    /// 持久化生成只交付正文；旧 IPC 必须显式保持 false。
+    pub visible_only: bool,
+
     pub generate: LlmGenerateOptions,
     pub callbacks: StreamCallbacks<'a>,
     /// 取消探针：返回 `true` 时流式循环在下个 chunk 处终止（对齐基线 `AbortSignal`）。

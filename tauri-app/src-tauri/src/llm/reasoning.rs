@@ -122,7 +122,7 @@ pub enum ThinkingState {
 }
 
 /// provider 级推理指令 —— 唯一允许进入请求载荷的推理表达形式。
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "adapter")]
 pub enum ProviderReasoningDirective {
     #[serde(rename = "openai-reasoning-effort")]

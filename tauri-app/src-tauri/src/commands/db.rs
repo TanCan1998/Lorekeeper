@@ -39,7 +39,6 @@ use crate::security::{
     assert_current_project_context, assert_required_expected_project_path, guard_message,
     ProjectSessionContext,
 };
-use crate::services::main_generation_owner::MainGenerationOwnerCache;
 use crate::state::AppState;
 
 /// 项目会话门禁：会话必须与活跃项目租约完全一致
@@ -111,8 +110,16 @@ pub(crate) fn close_inner(
             error: Some(mutating_error(error)),
         };
     }
-    state.close_project_database();
-    state.invalidate_current_session();
+    if let Err(error) = state.invalidate_current_session() {
+        return SimpleResult {
+            success: false,
+            error: Some(if error.starts_with("Error: ") {
+                error
+            } else {
+                mutating_error(error)
+            }),
+        };
+    }
     SimpleResult {
         success: true,
         error: None,
@@ -231,7 +238,7 @@ pub(crate) fn project_core_commit_generated_inner(
     // owner 门禁（基线 withGenerationAgentChildEffect 的 owner 缓存查找，
     // generation-controller.ts:67-69；锁序：owner 缓存锁 → 项目库锁，
     // 与 blueprint_commit_range_with_generation 同序）
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let session_context = session.expect("guard_read 已校验会话存在");
     let mut guard =
         match cache.authorized_owner(session_context, state.active_project_snapshot().as_ref()) {
@@ -409,7 +416,7 @@ pub(crate) fn character_roster_commit_inner(
     // `owners.get(database)` 守卫的 Tauri 形态）；其错误已是 MUTATING
     // 信封形态（带 `"Error: "` 前缀），直接返回不再二次包装。
     // OwnerGuard 借用缓存锁，故缓存声明于函数作用域（与守卫同寿命）。
-    let owner_cache = MainGenerationOwnerCache::new();
+    let owner_cache = &state.generation_owners;
     let generation_guard = match request
         .get("generationRunHandle")
         .filter(|value| !value.is_null())
@@ -896,7 +903,7 @@ fn blueprint_commit_range_with_generation(
     // 的 Tauri 等价物（authorized_owner 无活跃项目 → 同码）；同时为源断言闭包
     // 持有 owner 守卫（门禁 → 提交临界区，等价基线单线程事件循环）。
     // 锁序：owner 缓存锁 → 项目库锁，与 generation 命令同序。
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let session_context = session.expect("guard_read 已校验会话存在");
     let mut guard =
         match cache.authorized_owner(session_context, state.active_project_snapshot().as_ref()) {

@@ -1149,7 +1149,7 @@ mod tests {
             None,
         )
         .is_err());
-        state.invalidate_current_session();
+        state.invalidate_current_session().unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 }

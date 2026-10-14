@@ -573,6 +573,28 @@ fn remove_stream(app: &AppHandle, request_id: &str) {
     }
 }
 
+/// 进程内流式核心：IPC 与持久化生成运行服务共用同一协议分发入口。
+///
+/// 调用方负责冻结模型、构造请求以及终态结算；本函数不访问 AppState、
+/// 不注册 IPC 流、不发射 UI 事件。取消探针和全部回调原样交给 provider，
+/// 持久化生成服务可注入自己的 watch 取消令牌，不依赖 llm_streams。
+/// 已取消的请求不启动网络调用，也不代替调用方重复交付取消终态。
+pub async fn generate_stream_core(
+    client: &reqwest::Client,
+    model: &Value,
+    messages: &[ChatMessage],
+    options: &LlmStreamOptions<'_>,
+) {
+    if (options.is_cancelled)() {
+        return;
+    }
+    if is_gemini(model) {
+        crate::llm::gemini::generate_stream(client, model, messages, options).await;
+    } else {
+        crate::llm::openai::generate_stream(client, model, messages, options).await;
+    }
+}
+
 /// 后台流式任务：驱动 provider 并把三个回调翻译为 Tauri 事件。
 async fn run_stream(
     app: AppHandle,
@@ -715,16 +737,14 @@ async fn run_stream(
         on_usage_evidence: None,
     };
     let stream_options = LlmStreamOptions {
+        visible_only: false,
+
         generate: options,
         callbacks,
         is_cancelled: &is_cancelled,
     };
 
-    if is_gemini(&model) {
-        crate::llm::gemini::generate_stream(&client, &model, &messages, &stream_options).await;
-    } else {
-        crate::llm::openai::generate_stream(&client, &model, &messages, &stream_options).await;
-    }
+    generate_stream_core(&client, &model, &messages, &stream_options).await;
 
     // 兜底清理：正常路径已由 done/error 回调移除，取消路径由 `llm_cancel` 移除。
     remove_stream(&app, &request_id);
@@ -865,6 +885,201 @@ pub fn llm_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn core_options<'a>(
+        callbacks: StreamCallbacks<'a>,
+        is_cancelled: &'a (dyn Fn() -> bool + Send + Sync),
+    ) -> LlmStreamOptions<'a> {
+        LlmStreamOptions {
+            visible_only: false,
+
+            generate: LlmGenerateOptions {
+                temperature: None,
+                max_tokens: Some(32),
+                output_token_parameter: Some("max_completion_tokens"),
+                response_format: None,
+                reasoning: None,
+                conversation_id: None,
+            },
+            callbacks,
+            is_cancelled,
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_core_pre_cancelled_does_not_call_provider_test() {
+        let on_chunk = |_: &str| panic!("取消后不得交付文本");
+        let on_done =
+            |_: String, _: Option<TokenUsage>, _: LlmFinishReason| panic!("取消终态由调用方结算");
+        let on_error = |_: String, _: Option<String>, _: Option<TokenUsage>| {
+            panic!("不得启动 provider 或重复发射错误")
+        };
+        let cancelled = || true;
+        let options = core_options(
+            StreamCallbacks {
+                on_chunk: &on_chunk,
+                on_done: &on_done,
+                on_error: &on_error,
+                on_reasoning: None,
+                on_usage_evidence: None,
+            },
+            &cancelled,
+        );
+        for protocol in ["gemini", "openai-compatible"] {
+            generate_stream_core(
+                &reqwest::Client::new(),
+                &json!({"protocol": protocol, "baseUrl": "无效地址"}),
+                &[],
+                &options,
+            )
+            .await;
+        }
+    }
+
+    async fn assert_stream_core_protocol(protocol: &str, body: &'static str) {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        // 本机一次性 SSE 夹具，不读取真实配置、凭据或用户数据。
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline, "未收到核心请求");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                headers.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            // 先消费请求正文，避免关闭连接时丢弃未读字节影响响应。
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            let mut request_body = vec![0; length];
+            std::io::Read::read_exact(&mut reader, &mut request_body).unwrap();
+            write!(socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            ).unwrap();
+            (
+                headers,
+                serde_json::from_slice::<Value>(&request_body).unwrap(),
+            )
+        });
+
+        let visible = Mutex::new(String::new());
+        let reasoning = Mutex::new(String::new());
+        let evidence = Mutex::new(0);
+        let terminal = Mutex::new(None);
+        let on_chunk = |chunk: &str| visible.lock().unwrap().push_str(chunk);
+        let on_reasoning = |text: &str| reasoning.lock().unwrap().push_str(text);
+        let on_usage = |_: &crate::llm::chat::ProviderUsageEvidence| {
+            *evidence.lock().unwrap() += 1;
+        };
+        let on_done = |text: String, usage: Option<TokenUsage>, finish: LlmFinishReason| {
+            *terminal.lock().unwrap() = Some((text, usage, finish));
+        };
+        let on_error = |error: String, _: Option<String>, _: Option<TokenUsage>| {
+            panic!("本机 SSE 请求失败：{error}");
+        };
+        let cancelled = || false;
+        let options = core_options(
+            StreamCallbacks {
+                on_chunk: &on_chunk,
+                on_done: &on_done,
+                on_error: &on_error,
+                on_reasoning: Some(&on_reasoning),
+                on_usage_evidence: Some(&on_usage),
+            },
+            &cancelled,
+        );
+        let model = json!({
+            "protocol": protocol, "baseUrl": format!("http://{address}"),
+            "modelName": "test-model", "apiKey": "test-only",
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        generate_stream_core(&client, &model, &[], &options).await;
+        let (headers, request) = server.join().unwrap();
+        let (text, usage, finish) = terminal.into_inner().unwrap().unwrap();
+        assert_eq!(text, "正文");
+        // IPC 兼容流保留带内思考标签；持久化分发器需另作可见投影。
+        // 核心抽取不能改写旧 IPC 的 chunk 合同，终态正文则由 provider 剥离。
+        let chunks = visible.lock().unwrap().clone();
+        assert_eq!(strip_thinking(&chunks), "正文");
+        if protocol != "gemini" {
+            assert!(chunks.contains("<think>"));
+        }
+        assert_eq!(*reasoning.lock().unwrap(), "推理");
+        assert!(*evidence.lock().unwrap() > 0);
+        assert!(usage.is_some());
+        assert_eq!(finish, LlmFinishReason::Stop);
+        if protocol == "gemini" {
+            assert!(headers.contains(":streamGenerateContent"));
+            assert_eq!(request["generationConfig"]["maxOutputTokens"], 32);
+        } else {
+            assert!(headers.contains("/chat/completions"));
+            assert_eq!(request["max_completion_tokens"], 32);
+            assert!(request.get("max_tokens").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_core_openai_callbacks_and_output_key_test() {
+        assert_stream_core_protocol(
+            "openai-compatible",
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"推理\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"正文\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],",
+                "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n",
+                "data: [DONE]\n\n"
+            ),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn stream_core_gemini_callbacks_test() {
+        assert_stream_core_protocol(
+            "gemini",
+            concat!(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[",
+                "{\"text\":\"推理\",\"thought\":true},{\"text\":\"正文\"}]},",
+                "\"finishReason\":\"STOP\"}],",
+                "\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":2,",
+                "\"thoughtsTokenCount\":1,\"totalTokenCount\":4}}\n\n"
+            ),
+        )
+        .await;
+    }
 
     fn model_snapshot() -> Value {
         json!({

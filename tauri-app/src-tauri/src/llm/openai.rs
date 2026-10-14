@@ -369,6 +369,9 @@ pub struct OpenAiSseDecoder {
     usage: Option<TokenUsage>,
     full_text: String,
     in_band_reasoning: InBandReasoning,
+
+    visible: crate::llm::visible_stream::VisibleStreamFilter,
+    visible_only: bool,
 }
 
 impl OpenAiSseDecoder {
@@ -435,12 +438,16 @@ impl OpenAiSseDecoder {
 
     /// 交付给 `onDone` 的最终文本（已剥离推理块）。
     pub fn visible_full_text(&self) -> String {
-        strip_thinking(&self.full_text)
+        if self.visible_only {
+            self.visible.text().to_string()
+        } else {
+            strip_thinking(&self.full_text)
+        }
     }
 
     /// 交付给 `onError` 的可见候选（为空时返回 `None`，对齐基线 `|| undefined`）。
     pub fn visible_candidate(&self) -> Option<String> {
-        let visible = strip_thinking(&self.full_text);
+        let visible = self.visible_full_text();
         if visible.is_empty() {
             None
         } else {
@@ -450,7 +457,7 @@ impl OpenAiSseDecoder {
 
     /// 流结束时若推理块仍未闭合，补发闭合标签（对齐基线在 `onDone` 前补 `\n</think>\n\n`）。
     pub fn close_thinking(&mut self) -> Option<String> {
-        if !self.is_thinking {
+        if self.visible_only || !self.is_thinking {
             return None;
         }
         self.is_thinking = false;
@@ -635,6 +642,10 @@ impl OpenAiSseDecoder {
             }
             emit.push_str(text);
         }
+        if self.visible_only {
+            emit = self.visible.push(content.unwrap_or_default());
+        }
+
         if !emit.is_empty() {
             self.full_text.push_str(&emit);
             deliveries.push(SseDelivery::Chunk(emit));
@@ -649,7 +660,10 @@ pub async fn generate_stream(
     messages: &[ChatMessage],
     opts: &LlmStreamOptions<'_>,
 ) {
-    let mut decoder = OpenAiSseDecoder::default();
+    let mut decoder = OpenAiSseDecoder {
+        visible_only: opts.visible_only,
+        ..Default::default()
+    };
     match stream_inner(client, model, messages, opts, &mut decoder).await {
         Ok(()) => {}
         Err(failure) => {

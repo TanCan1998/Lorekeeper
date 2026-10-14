@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
-use rusqlite::{Connection, OptionalExtension, Row, Transaction};
+use rusqlite::{Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -2415,24 +2415,32 @@ pub fn build_generation_source_binding(
     let mut graph_context: Option<GraphGenerationContext> = None;
     let mut legacy_context: Option<LegacyRosterGenerationContext> = None;
     let facts = {
-        let transaction = deps
-            .db
-            .unchecked_transaction()
-            .map_err(|error| error.to_string())?;
-        let result = build_facts_in_transaction(
-            &transaction,
-            deps,
-            input,
-            agent_input.is_some(),
-            &author_inputs,
-            &blueprint_chapters,
-            &transfer_authority,
-            &mut collector,
-            &mut graph_context,
-            &mut legacy_context,
-        )?;
-        transaction.commit().map_err(|error| error.to_string())?;
-        result
+        let mut read_facts = |connection: &Connection| {
+            build_facts_in_transaction(
+                connection,
+                deps,
+                input,
+                agent_input.is_some(),
+                &author_inputs,
+                &blueprint_chapters,
+                &transfer_authority,
+                &mut collector,
+                &mut graph_context,
+                &mut legacy_context,
+            )
+        };
+        if deps.db.is_autocommit() {
+            let transaction = deps
+                .db
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
+            let facts = read_facts(&transaction)?;
+            transaction.commit().map_err(|error| error.to_string())?;
+            facts
+        } else {
+            // 子代效应已持有 immediate 事务：共享句柄，不嵌套 BEGIN，也不提交调用方事务。
+            read_facts(deps.db)?
+        }
     };
     let mut assets: Vec<AssetEntry> = Vec::new();
     let mut observer = AssetObserver::default();
@@ -3181,7 +3189,7 @@ fn json_operation_policy(input: &GenerationSourceBindingInput) -> Value {
 /// 基线事务闭包：一次读事务内的项目事实冻结。
 #[allow(clippy::too_many_arguments)]
 fn build_facts_in_transaction(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     deps: &GenerationSourceBindingDependencies,
     input: &GenerationSourceBindingInput,
     has_agent_input: bool,

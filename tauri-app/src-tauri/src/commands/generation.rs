@@ -146,7 +146,7 @@ pub async fn generation_read(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -162,7 +162,7 @@ pub async fn generation_list(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.list(conn))
@@ -176,7 +176,7 @@ pub async fn generation_list_directory_progress(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.list_directory_progress(conn))
@@ -192,7 +192,7 @@ pub async fn generation_read_visible_composition(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -210,7 +210,7 @@ pub async fn generation_read_batch(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let project_id = guard.session().project_id.clone();
     let owner = guard.owner();
@@ -230,7 +230,7 @@ pub async fn generation_list_batches(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let project_id = guard.session().project_id.clone();
     let owner = guard.owner();
@@ -274,7 +274,7 @@ pub async fn generation_read_context(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let epoch = guard.session().lease_id.clone();
     let handle = serde_json::to_value(&handle)
@@ -2048,7 +2048,7 @@ pub async fn generation_begin(
         )));
     }
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.begin(conn, &selection, false, false))
@@ -2073,7 +2073,7 @@ pub async fn generation_bind_material_decision(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&request.handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -2093,7 +2093,7 @@ pub async fn generation_execute(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.execute(conn, &request))
@@ -2108,7 +2108,7 @@ pub async fn generation_resume(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -2125,7 +2125,7 @@ pub async fn generation_pause(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -2142,7 +2142,7 @@ pub async fn generation_cancel(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -2197,7 +2197,7 @@ pub async fn generation_restart(
         )));
     }
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -2216,7 +2216,7 @@ pub async fn generation_discard_candidate(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -2237,7 +2237,7 @@ pub async fn generation_commit_draft(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.commit_draft(conn, &request))
@@ -2257,7 +2257,7 @@ pub async fn generation_retry_draft_short_outline(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.retry_draft_short_outline(conn, &request))
@@ -2279,7 +2279,7 @@ pub async fn generation_begin_batch(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.begin_batch(conn, &request))
@@ -2313,7 +2313,7 @@ pub async fn generation_confirm_batch_finalization(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| {
@@ -2348,7 +2348,7 @@ pub async fn generation_compose_visible(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -2406,7 +2406,7 @@ pub async fn generation_prepare_draft_context(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| {
@@ -2433,7 +2433,7 @@ pub async fn legacy_roster_read_source(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.read_legacy_roster_source_cmd(conn))
@@ -2448,7 +2448,7 @@ pub async fn legacy_roster_adopt_existing(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.adopt_legacy_cards_cmd(conn, &request))
@@ -2469,7 +2469,7 @@ pub async fn legacy_roster_begin(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.begin_legacy_roster_generation(conn, &request))
@@ -2485,7 +2485,7 @@ pub async fn legacy_roster_read(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.read_legacy_roster_generation(conn, &request))
@@ -2506,7 +2506,7 @@ pub async fn legacy_roster_execute(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.execute_legacy_roster_generation(conn, &request))
@@ -2522,7 +2522,7 @@ pub async fn legacy_roster_stage(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.stage_legacy_roster_generation(conn, &request))
@@ -2538,7 +2538,7 @@ pub async fn legacy_roster_cancel(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| owner.cancel_legacy_roster_generation(conn, &request))

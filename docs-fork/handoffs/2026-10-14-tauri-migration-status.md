@@ -11,28 +11,88 @@
 
 ---
 
-## 快照（最后更新：2026-10-14 · 第 39 次）
+## 快照（最后更新：2026-10-14 · 第 44 次）
 
 > **本表只填最新一次自检的实测值。**
 
 | 项 | 值 |
 |---|---|
-| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`（与 origin/master 同步） |
+| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；复验基线 HEAD `2fbddb47`（B3-M）；B3-3 已验证切片与文档随本次提交入库 |
 | 产品身份 | Lorekeeper（设定司）/ `com.tancan1998.lorekeeper` |
 | 已注册命令 | 243（不变——本波无命令注册） |
 | 覆盖 invoke 频道 | 242（不变） |
 | 未迁移 invoke 频道 | 48（不变——本波无命令注册） |
-| orphan | 无 |
-| `cargo test --lib` | 1184 passed / 0 failed（1152+32 新测试：agent_response_protocol 12 + generation_run_service 20） |
+| 运行核实 | 登记 run `b390feab` 已 complete，当前无活动子代理；未扫描无关运行目录 |
+| `cargo test` | 1225 passed / 0 failed（61.25s）；bin 与 doc-test 均 0 failed（较第 43 次新增 8 项） |
 | `cargo check --all-targets` | 0 错误 0 告警（exit 0） |
-| `pnpm typecheck` / `lint` | 未跑（本波纯 Rust 改动，无 TS 改动面） |
-| 定向 `vitest` | 未跑（本波无前端逻辑改动） |
-| 已完成批次 | G4-1 / G4-2 / G4-3a / G4-3b / G4-5 / G4-6a / G4-6b-1~4 / G4-6c-1~2 / G4-7 / G4-8a / G4-8b / G4-9a / G4-9b / G4-10a / G4-10b / G4-10c / G4-10d / **B3-1a / B3-1b / B3-1c / B3-2a / B3-2b**（2026-10-14 新增） |
-| 当前阶段 | B3-2b 生成运行服务本体收口（generation_run_service + agent_response_protocol 1:1 平移，dispatch 经 GenerationDispatcher trait 依赖注入）；B3-2 剩余（llm_generation.rs 流式核心抽取 + 事件发射活化）随 B3-3；下一波 = **推理机器对齐专波**（B3-M1 + B3-M2 + B3-M3 合并）→ B3-3 → B3-4 |
-| 依赖 | 无新增 crate（Cargo.toml 启用 tokio "time" feature——tokio 依赖已有，Cargo.lock 不变；rusqlite 0.40.2 [bundled] / reqwest 0.13 / hnsw_rs / jieba 等不变） |
+| `pnpm typecheck` / `lint` | 均 exit 0，lint 零告警 |
+| 定向 `vitest` | 本轮重跑：generation runtime / renderer / harness，3 文件 / 43 passed / 0 failed，exit 0 |
+| 已完成批次 | B3-1a/b/c、B3-2a/b、B3-M 已提交；B3-3 核心/分发器/真实源绑定/准备绑定及 owner 缓存、普通恢复、关闭生命周期切片已验证，随本次提交入库 |
+| 当前阶段 | B3-3 owner begin/execute_inner 与网络执行、事件接线待续；普通 resume 账本恢复和运行服务实例已接入，特殊域恢复仍关闭；不是整波完成 |
+| 依赖 | 本波无新依赖、schema、权限或 CI 变更；Cargo.toml / Cargo.lock 不变 |
 | GUI 冒烟 | 未做 |
 | 双栈隔离 | 维持（Tauri 用 `AI_NOVEL_LOREKEEPER_HOME` / `~/.lorekeeper`；项目库 `<root>/.lore/lorekeeper.db`） |
 | Rust 工具链 | rustc/cargo 1.99.0 stable-msvc（`D:\Environment\rust`） |
+
+---
+
+## 本次更新（第 44 次：B3-3 owner 缓存、普通恢复与关闭生命周期）
+
+- 沿用开发 Todo plan #3，主会话直接推进，无子代理或新 runId。复验基线 HEAD 为 `2fbddb47`；随后用户确认已人工逐项审核本轮全部代码与文档，并授权提交、推送至 origin/master。已验证切片随本次提交入库；不将局部接线表述为 B3-3 整波完成。
+- 修正命令每次新建 owner 缓存的接线：generation、agent-generation、character-proposal 和 DB child effect 统一使用 AppState 常驻缓存。共享既有模型租约注册表，不新建依赖或数据结构迁移。
+- 每个 owner 保留 GenerationRunService 和按当前 Lorekeeper 全局代理配置构造 HTTP client 的配置分发入口。普通 resume 重建真实源及当前纪元，校验只读模型证据与可执行租约证据一致，再通过服务恢复账本；未跨 await 持有 owner/SQLite 守卫。原异步服务恢复仍必须有 validateRecovery。
+- 临时模型租约由 RAII 守卫回收；只有恢复成功才登记到 owner，替换时关闭旧租约。源漂移、模型缺失、重复恢复被拒绝均不泄漏新租约。
+- pause/cancel 委托运行服务，保留 controller 主动取消能力；运行视图按根账本尝试身份过滤服务未保存尾，discardCandidate 委托服务清理尾记录。
+- 项目关闭严格按 owner → 项目库锁顺序，在连接释放前 flush/suspend。失败保留库、会话、owner 与租约供重试；成功后清准备态和 owner 租约、逐出缓存、释放连接及会话。项目创建/打开/删除沿用原授权，仅传播关闭失败，不继续删除或强制失效。
+- 新增 8 项回归（owner 6、AppState 2）：跨纪元恢复、旧租约替换、拒绝后临时租约回收、作者漂移、模型缺失、关闭失败与重试、缓存跨门禁保留及共享注册表清理。夹具只使用临时合成数据和本机 SSE，无真实配置或外部 API。
+- 前次全量在 SSE 夹具出现 Windows 10035；接受连接后显式恢复阻塞模式，不放宽生产协议校验。最终完整 cargo test **1225 passed / 0 failed**（61.25s，bin/doc-test 无失败），cargo check --all-targets 零告警；check:channels（243/242/48）、typecheck、lint、定向 vitest（3 文件/43 项）、git diff --check 均 exit 0。核验截至 2026-10-14 15:05 +08:00。
+- 证据 `.pi/tmp/b33-owner-{test,check,channels,typecheck,lint,vitest,target}.log` 与 `b33-owner-reviewed.diff`，均不入库。跟踪 Rust diff SHA256 `dd8af959c56d4d11cc5c5734c094b90130232e2aeb615c20da134f058d6388c6`；新文件哈希单独维护于 pipeline。
+- 未完成边界：begin/execute_inner 尚未激活，owner 尚未实际执行网络分发；事件回调未接，知识采集命令接线、特殊域恢复准入及共享符号去重待续，再推进 B3-4 commit_draft。无新依赖/schema/权限/CI 或 Electron、根 src、docs/、根配置/锁文件改动。GUI 和 B3-M4/M5 专项仍待续。
+
+---
+
+
+## 本次更新（第 43 次：B3-3 模型只读证据、真实源绑定与草稿准备绑定）
+
+- 主会话直接推进，无子代理或新 runId；HEAD 仍为 `2fbddb47`，本轮代码与文档未提交/推送。沿用第 42 次已验证的流式核心、分发器与可见流；这些实现仍未接入 owner 执行主体。
+- 新增 `main_generation_sources.rs`：Lorekeeper 模型读取与必需字段/协议校验；用既有租约工厂生成 `read-only-evidence`、时间 0/0 的安全模型收据，不登记可执行租约，不走过期判定，不泄漏 API key 或地址。owner 捕获全局根，模型、提示词、技能均无 Electron 目录回退。
+- 新增 `builtin_writing_skills.rs/json`：七项双语内置技能的只读目录与元数据。内置提示词先投影规范 JSON，避免变量 HashMap 遍历顺序造成伪漂移。沿用既有 source binding 构造/重建与资产权限门禁。
+- owner `current` / `capture` / `assert_sources_current` 接入真实绑定；检测模型、作者事实、技能或蓝图事实变化。主生成策略补 `to_value`，复用既有序列化器，并验证严格读回。
+- `draft_preparation_binding` 移除旧构造占位：同一模型快照生成证据与策略，批次读取根策略，冻结六章蓝图窗口、知识快照及 visible-text 合同。不创建运行；命令层知识采集仍待接线。
+- source binding 在已存在事务时共享调用方连接，不嵌套 BEGIN、不提交调用方事务；独立读取仍创建读事务。真实 host 测试证明事务内作者效应可见，回滚后恢复原绑定。
+- 新增 13 项测试：内置技能 2、模型/源绑定 6、真实 host 3、草稿准备绑定 2；覆盖双语稳定性、证据脱敏、模型移除/错误协议、跨纪元重建、非法技能身份、真实漂移及事务回滚。仅临时合成数据，无真实模型配置或外部网络。
+- 早期夹具误用了不存在的 tempfile 依赖，改为既有 std 临时目录模式，未加依赖。蓝图漂移夹具由非源事实 notes 改为真实 title 事实，未放宽生产校验。最终全量通过。
+- 独立验证（2026-10-14 14:19–14:22 +08:00）：完整 cargo test **1217 passed / 0 failed**（49.30s，bin/doc-test 无失败），cargo check --all-targets 零告警，check:channels（243/242/48）、typecheck、lint、定向 vitest（3 文件/43 项）、git diff --check 均 exit 0。证据 `.pi/tmp/b33-sources-{test,check,channels,typecheck,lint,vitest,target,host,preparation}.log`，前切片日志保留，均不入库。
+- 跟踪 Rust diff SHA256 `69ee20372af98c1d5ca52bebb6d6b6dd6482479e465a99c241e412372d0e00c9`。新文件不含于该哈希：sources `403884067d8256bcb1693179645cf737499ea32df6a447f5c447cc85ee6ff9fb`；builtin skills rs `b6c9d4635450d295b76bf881eb813195b478cd4bf746a4c4c56ce0158d8fce9a`；skills json `259c8326ed18f2bfbe8c889149e8110c910d875226bc87d739b36e78093617a8`。可见流/分发器新文件哈希沿用第 42 次，记录在 pipeline。
+- 下一步 owner begin/execute_inner/resume、service 生命周期与事件发射、共享符号去重，再 B3-4。B3-M4/M5 专项与 GUI 未完成；主会话复核不替代人工逐项核验。无新依赖/schema/权限/CI、Electron、根 src、docs/、根配置或锁文件变更。
+
+---
+
+
+## 本次更新（第 41 次：B3-M 提交与 B3-3 流式核心抽取切片）
+
+- B3-M Rust diff 复核 SHA256 与第 40 次一致，提交 `2fbddb47`（15 文件）；未推送。主会话代码复核不替代人工逐项核验，人工审核记录仍未取得。
+- `commands/llm_generation.rs` 抽取公开进程内 `generate_stream_core`，IPC 后台任务委托；不持有 AppState、不访问 llm_streams、不发射 UI 事件，取消探针及回调原样传给 provider。启动前已取消时不发起网络调用，取消终态由调用方结算。
+- 新增 3 项测试：启动前取消（两协议均无回调）、本机 OpenAI SSE、本机 Gemini SSE；校验协议路由、终态正文、推理回调、usage 证据及输出键名透传。无真实外部 API 调用。
+- 初次 OpenAI 测试误将原始 chunk 等同可见正文而失败；复核后修正断言，保留 IPC 带内思考标签合同。后续 GenerationDispatcher 必须过滤这些 chunk，不能直接写入 artifact。
+- 验证版本：HEAD `2fbddb47` + Rust diff SHA256 `4d926f090a54e97b638512d972d01ed9843960b1eda678dc15f674d3bb02f4d6`；2026-10-14 13:23–13:27 +08:00。完整 cargo test 1189 passed / 0 failed（55.59s，bin/doc-test 无失败）；cargo check --all-targets 零告警；check:channels（243/242/48）、typecheck、lint、git diff --check 均 exit 0。
+- 证据 `.pi/tmp/b33-core-{test,check,channels,typecheck,lint}.log`，不入库。仅 Rust 单文件；无新依赖/schema/权限/CI、Electron、根 src、docs/、根配置或锁文件改动。
+- 边界：owner begin/execute_inner/resume、current/capture 真实重建、GenerationDispatcher、事件发射仍未完成；B3-4、M4/M5 与 GUI 待续。本切片与文档未提交，待人工核验；状态只在收口后统一更新。
+
+---
+
+
+## 本次更新（第 40 次：G4-B3-M 推理机器对齐专波，主会话直接收尾）
+
+- 原 attempt 1 / runId `b390feab-b2ee-435b-8553-d1d357ae4edb` 已 complete，但任务未完成（2 个失败、M3 未实施）；本次未派发或恢复子代理，由主会话修复并独立验收。
+- M1：移除旧 `llm/params.rs` 双实现，生成与连接探测统一用 `generation_parameter_policy`；补钳制差例 `8192 / 4096 / 32768 → 4096`。
+- M2：补齐五类 adapter、SiliconFlow 三模型、手动映射优先校验与协议门禁、租约字段透传、OpenAI 载荷翻译。复核补齐基线六档强度（含 xhigh）、OpenAI 自定义 wire 原样透传、DeepSeek enabled / 强度重映射，以及 off 无映射时 unsupported（不强制开启推理）。
+- 修复原失败夹具：DeepSeek high→enabled 是基线合法映射，非法值改为 invalid 并补合法断言；numeric() 恢复继承 unknown() 的端点、模型名与 65536 上限，不改容量算法以迎合错误夹具。
+- M3：共享 token_liability / 规划单位校验 / 章节默认值 / 协议常量；f64 入参保留字符串薄适配，Value 内容构造器保留；LlmGenerateOptions 新增 output_token_parameter，OpenAI 消费选择的请求键名，所有构造点补齐（Gemini 仅测试构造面）。
+- 实际 Rust 写面 15 文件（含旧 params 删除）；无 Electron、根 src、docs/ 或根锁文件改动。仅定向 rustfmt（skip_children），未清理运行产物。
+- 验证版本：HEAD `1e45cc1a` + Rust diff SHA256 `f5fee6436181dd78e66c76b4f7b332731dbc479d99b4e48c667433c1482def7e`；验证时间 2026-10-14 13:08–13:15 +08:00。`cargo check --all-targets` exit 0 / 零告警；完整 `cargo test` exit 0 / 1186 passed；频道检查 exit 0 / 243 命令、242 覆盖、48 未迁移；typecheck / lint / 定向 vitest 均 exit 0；`git diff --check` exit 0。
+- 本机证据：`.pi/tmp/b3m-check.log`、`b3m-test.log`、`b3m-run-check-channels.log`、`b3m-typecheck.log`、`b3m-run-lint.log`、`b3m-vitest.log`（不入库）。
+- 未完成边界：B3-3 / B3-4 未实施；owner 的本地副本与 current/capture 保守占位仍待接线；B3-M4 传输诊断与 B3-M5 Gemini 错误部分内容仍待后续专项；历史未移植规划断言不计为本波覆盖；GUI 未测。提交等待人工逐项核验，未提交或推送。
 
 ---
 

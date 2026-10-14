@@ -269,7 +269,7 @@ async fn generate_inner(
     })
 }
 
-/// Gemini 流式事件解码器 —— 宽松解析（损坏的 keepalive 直接忽略，不判致命）。
+/// Gemini 流式解码器：旧 IPC 宽松解析；持久化可见流严格校验载荷。
 ///
 /// 行缓冲是**字节**级（`Vec<u8>`）：reqwest 的 `chunk()` 可能在任意字节处切分，
 /// 若按 `&str` 严格解码，一个多字节字符被拆到两个 chunk 就会误判为流错误。
@@ -282,6 +282,47 @@ pub struct GeminiSseDecoder {
     usage: Option<TokenUsage>,
     finish_reason: Option<LlmFinishReason>,
     in_band_reasoning: InBandReasoning,
+
+    visible: crate::llm::visible_stream::VisibleStreamFilter,
+    visible_only: bool,
+    fatal_error: Option<String>,
+}
+
+/// 持久化可见流启用基线的严格载荷门禁；旧 IPC 保留宽松解析。
+fn assert_visible_stream_payload(value: &Value) -> Result<(), &'static str> {
+    let invalid = "Gemini 响应流格式无效";
+    let record = value.as_object().ok_or(invalid)?;
+    if record.contains_key("error") {
+        return Err("Gemini 响应流报告错误");
+    }
+    let Some(candidates) = record.get("candidates") else {
+        return Ok(());
+    };
+    for candidate in candidates.as_array().ok_or(invalid)? {
+        let candidate = candidate.as_object().ok_or(invalid)?;
+        if candidate
+            .get("finishReason")
+            .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return Err(invalid);
+        }
+        let Some(content) = candidate.get("content") else {
+            continue;
+        };
+        let content = content.as_object().ok_or(invalid)?;
+        let Some(parts) = content.get("parts") else {
+            continue;
+        };
+        for part in parts.as_array().ok_or(invalid)? {
+            let part = part.as_object().ok_or(invalid)?;
+            if part.get("text").is_some_and(|value| !value.is_string())
+                || part.get("thought").is_some_and(|value| !value.is_boolean())
+            {
+                return Err(invalid);
+            }
+        }
+    }
+    Ok(())
 }
 
 impl GeminiSseDecoder {
@@ -310,7 +351,7 @@ impl GeminiSseDecoder {
         deliveries
     }
 
-    /// 交付给 `onDone` 的完整文本（Gemini **不**剥离推理块）。
+    /// 终态正文；visible_only 模式保留原始空白并隔离带内思考。
     pub fn full_text(&self) -> String {
         self.full_text.clone()
     }
@@ -326,6 +367,10 @@ impl GeminiSseDecoder {
     }
 
     fn process_line(&mut self, line: &str, deliveries: &mut Vec<SseDelivery>) {
+        if self.fatal_error.is_some() {
+            return;
+        }
+
         let Some(rest) = line.strip_prefix("data: ") else {
             return;
         };
@@ -335,8 +380,19 @@ impl GeminiSseDecoder {
         }
         // 宽松解析：非 `data:` 行与损坏的 keepalive 一并忽略。
         let Ok(parsed) = serde_json::from_str::<Value>(json_text) else {
+            if self.visible_only {
+                self.fatal_error = Some("Gemini 响应流格式无效".to_string());
+            }
+
             return;
         };
+        if self.visible_only {
+            if let Err(error) = assert_visible_stream_payload(&parsed) {
+                self.fatal_error = Some(error.to_string());
+                return;
+            }
+        }
+
         if let Some(candidate) = parsed.pointer("/candidates/0") {
             // 基线判据是 `!== undefined`：`null` 与非字符串值同样会被归一为 `unknown`
             // （`as_str()` 仅对字符串返回 `Some`，其余落到 `normalize(None)`）。
@@ -368,6 +424,10 @@ impl GeminiSseDecoder {
                     }
                 }
             }
+            if self.visible_only {
+                visible = self.visible.push(&visible);
+            }
+
             if !visible.is_empty() {
                 self.full_text.push_str(&visible);
                 deliveries.push(SseDelivery::Chunk(visible));
@@ -384,19 +444,28 @@ impl GeminiSseDecoder {
 
 /// 一次流式生成。
 ///
-/// 与 OpenAI provider 的**关键差异**：失败时基线只回传错误文案，
-/// 不回传已交付的可见候选与用量（`opts.onError(error)` 单参调用）。
+/// 旧 IPC 失败回调合同不变；visible_only 模式回传可见候选与 usage，
+/// 供持久化运行服务保留已交付文本，不把错误流升级为成功终态。
 pub async fn generate_stream(
     client: &reqwest::Client,
     model: &Value,
     messages: &[ChatMessage],
     opts: &LlmStreamOptions<'_>,
 ) {
-    let mut decoder = GeminiSseDecoder::default();
+    let mut decoder = GeminiSseDecoder {
+        visible_only: opts.visible_only,
+        ..Default::default()
+    };
     match stream_inner(client, model, messages, opts, &mut decoder).await {
         Ok(()) => {}
         Err(failure) => {
-            (opts.callbacks.on_error)(failure.into_message(), None, None);
+            let content = opts.visible_only.then(|| decoder.full_text());
+            let usage = if opts.visible_only {
+                decoder.usage()
+            } else {
+                None
+            };
+            (opts.callbacks.on_error)(failure.into_message(), content, usage);
         }
     }
 }
@@ -449,11 +518,19 @@ async fn stream_inner(
         for delivery in decoder.push(&bytes, false) {
             deliver(delivery, &opts.callbacks);
         }
+
+        if let Some(error) = &decoder.fatal_error {
+            return Err(StreamFailure::Message(error.clone()));
+        }
     }
 
     for delivery in decoder.push(&[], true) {
         deliver(delivery, &opts.callbacks);
     }
+    if let Some(error) = &decoder.fatal_error {
+        return Err(StreamFailure::Message(error.clone()));
+    }
+
     (opts.callbacks.on_done)(
         decoder.full_text(),
         decoder.usage(),
@@ -465,6 +542,32 @@ async fn stream_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_only_rejects_all_baseline_malformed_payloads_after_stop() {
+        for payload in [
+            serde_json::json!({"error": {"message": "fixture"}}),
+            serde_json::json!({"candidates": [{"content": {"parts": [{"text": 42}]}}]}),
+            serde_json::json!({"candidates": [{"content": {"parts": [{"text": "隐藏", "thought": "true"}]}}]}),
+            serde_json::json!({"candidates": "invalid"}),
+            Value::Null,
+        ] {
+            let mut decoder = GeminiSseDecoder {
+                visible_only: true,
+                ..Default::default()
+            };
+            decoder.push(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"prefix \"}]},\"finishReason\":\"STOP\"}]}\n", false);
+            decoder.push(format!("data: {payload}\n").as_bytes(), false);
+            assert!(decoder.fatal_error.is_some());
+            assert_eq!(decoder.full_text(), "prefix ");
+            assert!(decoder
+                .push(
+                    b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"late\"}]}}]}\n",
+                    false
+                )
+                .is_empty());
+        }
+    }
 
     /// 只取解码交付物中的可见 chunk（既有断言口径）。
     fn visible_chunks(deliveries: Vec<SseDelivery>) -> Vec<String> {

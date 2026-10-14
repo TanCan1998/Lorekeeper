@@ -46,8 +46,10 @@
 //!   `security::assert_current_project_context` 等价执行一次
 //!   （持守卫期间项目库 / 会话态被同一把锁保护，结构上不会被并发切换）。
 
+use std::path::PathBuf;
+
 use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -183,6 +185,10 @@ fn default_now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn owner_now_ms() -> u64 {
+    default_now_ms().max(0) as u64
 }
 
 /// `Number.isSafeInteger` 等价物（JS 安全整数为 ±2^53-1；Rust i64 可能超出）。
@@ -329,8 +335,7 @@ struct MainGenerationLedgerProjection {
 /// `MainGenerationRunView`（src/services/generation/generation-runtime.ts:90-104）。
 /// 基线为宽松对象（`plotOutline?` / `candidates?` 等均可缺省）；本投影按
 /// `viewOf` 的实际输出建模——`plotOutline` 仅在存在时输出（`skip_serializing_if`），
-/// 其余字段基线恒输出。`unsavedTails` 依赖未迁移的生成运行服务
-/// （`service.readUnsavedTails`，generation-run-service.ts），恒为 `[]`。
+/// 其余字段基线恒输出；未保存尾来自 owner 的运行服务，并按根账本尝试身份过滤。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MainGenerationRunViewProjection {
@@ -448,11 +453,18 @@ pub struct MainGenerationOwner {
     /// 门禁比对（`projectId` / `leaseId`）与 `ownerSessions`
     /// WeakMap 读取均使用它。
     session: ProjectSessionContext,
+
+    /// 捕获 Lorekeeper 全局根，模型与全局提示词在同一数据边界读取。
+    global_data_root: PathBuf,
+
     /// 生成账本仓储（W1；`repositories/generation_run_repository.rs`）。
     repository: GenerationRunRepository,
     /// 基线 `runLeases: Map<string, string>`（attemptId → leaseId，
     /// main-generation-owner.ts:112）。挂起时逐 lease 关闭并清空。
-    run_leases: HashMap<String, String>,
+    run_leases: Mutex<HashMap<String, String>>,
+    /// 与 owner 同寿命的服务与执行租约，不能在每次 IPC 中重建。
+    lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+    run_service: Arc<crate::services::generation_run_service::GenerationRunService>,
     /// 基线 `preparations: Map<string, { binding: RunBinding;
     /// knowledgeSnapshot: GenerationKnowledgeSnapshot }>`
     /// （main-generation-owner.ts:115）——草稿上下文准备
@@ -516,14 +528,99 @@ impl MainGenerationOwner {
     /// `createMainGenerationOwner({...})` 调用，裁剪到当前已迁移的依赖面：
     /// 仅会话身份与生成账本仓储；`leases` / `loadModel` / `buildBinding` /
     /// `onSnapshot` / `onReasoning` 等依赖随对应批次接入）。
+    #[cfg(test)]
     fn new(session: ProjectSessionContext) -> Self {
-        Self {
+        Self::with_lease_store(
             session,
-            repository: GenerationRunRepository::default(),
-            run_leases: HashMap::new(),
+            Arc::new(Mutex::new(crate::llm::lease::LlmLeaseStore::new())),
+        )
+    }
+
+    fn with_lease_store(
+        session: ProjectSessionContext,
+        lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+    ) -> Self {
+        let global_data_root = crate::app_paths::lorekeeper_home();
+        let repository = GenerationRunRepository::default();
+        let run_service = Arc::new(crate::services::generation_run_service::create_generation_run_service(
+            crate::services::generation_run_service::GenerationRunServiceDependencies {
+                repository: repository.clone(),
+                dispatch: Arc::new(crate::services::main_generation_dispatcher::ConfiguredMainGenerationDispatcher::new(global_data_root.clone())),
+                on_snapshot: None, on_reasoning: None, validate_recovery: None,
+            },
+        ));
+        Self {
+            global_data_root,
+            lease_store,
+            run_service,
+            session,
+            repository,
+            run_leases: Mutex::new(HashMap::new()),
             preparations: Vec::new(),
             closed: false,
         }
+    }
+
+    /// 用实时模型证据重建源；只读收据不进入可执行租约注册表。
+    fn rebuild_binding(
+        &self,
+        conn: &Connection,
+        previous: &RunBinding,
+    ) -> Result<RunBinding, String> {
+        self.assert_current()?;
+        crate::services::main_generation_sources::rebuild_binding(
+            conn,
+            &PathBuf::from(&self.session.project_path).join(".lore"),
+            &self.global_data_root,
+            &self.session.lease_id,
+            previous,
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))
+    }
+
+    fn build_binding(
+        &self,
+        conn: &Connection,
+        selection: &Value,
+        receipt: &crate::services::generation_source_binding::SafeGenerationModelReceipt,
+        policy: &Value,
+        output_contract: &Value,
+    ) -> Result<RunBinding, String> {
+        self.assert_current()?;
+        let mut input = selection.clone();
+        input["projectId"] = json!(self.session.project_id);
+        input["epoch"] = json!(self.session.lease_id);
+        input["modelReceipt"] = serde_json::to_value(receipt).expect("安全模型收据可序列化");
+        input["policy"] = policy.clone();
+        input["outputContract"] = output_contract.clone();
+        let input: crate::services::generation_source_binding::GenerationSourceBindingInput =
+            serde_json::from_value(input)
+                .map_err(|_| mutating_error("GENERATION_SOURCE_BINDING_INVALID"))?;
+        crate::services::main_generation_sources::with_source_dependencies(
+            conn,
+            &PathBuf::from(&self.session.project_path).join(".lore"),
+            &self.global_data_root,
+            |deps| {
+                Ok(
+                    crate::services::generation_source_binding::build_generation_source_binding(
+                        deps, &input,
+                    )?
+                    .binding,
+                )
+            },
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))
+    }
+
+    fn assert_binding_current(
+        &self,
+        conn: &Connection,
+        previous: &RunBinding,
+    ) -> Result<(), String> {
+        if self.rebuild_binding(conn, previous)? != *previous {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        Ok(())
     }
 
     /// 基线 `handleOf(run)` 的句柄比对等价物（main-generation-owner.ts:145）：
@@ -855,8 +952,19 @@ impl MainGenerationOwner {
             },
             artifacts,
             candidates,
-            // 基线 `service.readUnsavedTails()`（生成运行服务，B3 迁移）→ 恒空。
-            unsaved_tails: Vec::new(),
+            unsaved_tails: self
+                .run_service
+                .read_unsaved_tails()
+                .into_iter()
+                .filter(|tail| {
+                    budget
+                        .attempts
+                        .iter()
+                        .any(|attempt| attempt.attempt_id == tail.attempt_id)
+                })
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?,
         };
         serde_json::to_value(view)
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))
@@ -1056,10 +1164,59 @@ impl MainGenerationOwner {
         &self.repository
     }
 
-    /// 基线 `runLeases` 登记点（`runLeases.set(attemptId, leaseId)` 的
-    /// 等价物；B3 迁移执行编排时启用）。
-    pub fn record_run_lease(&mut self, attempt_id: String, lease_id: String) {
-        self.run_leases.insert(attempt_id, lease_id);
+    /// 从当前 Lorekeeper 模型配置冻结临时租约；成功绑定运行前由守卫负责回收。
+    fn acquire_model_lease(&self, model_id: &str) -> Result<OwnerModelLease, String> {
+        let now = owner_now_ms();
+        let mut store = self
+            .lease_store
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let receipt = store
+            .begin_at(
+                &crate::app_paths::models_config_path_at(&self.global_data_root),
+                model_id,
+                crate::project_access::random_uuid_v4(),
+                now,
+            )
+            .map_err(|error| mutating_error(map_generation_error(error.message())))?;
+        let lease = OwnerModelLease {
+            store: Arc::clone(&self.lease_store),
+            receipt,
+            attached: false,
+        };
+        let model = store.resolve_model_at(&lease.receipt.lease_id, now);
+        // 必须先释放注册表锁，错误分支才可由租约守卫安全清理。
+        drop(store);
+        let model = model.map_err(|error| mutating_error(map_generation_error(&error)))?;
+        crate::services::main_generation_sources::validate_model(&model)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        Ok(lease)
+    }
+
+    pub fn record_run_lease(&self, run_id: String, lease_id: String) {
+        let previous = self
+            .run_leases
+            .lock()
+            .unwrap()
+            .insert(run_id, lease_id.clone());
+        if let Some(previous) = previous.filter(|previous| previous != &lease_id) {
+            self.lease_store
+                .lock()
+                .unwrap()
+                .close(&previous, owner_now_ms());
+        }
+    }
+
+    /// 关闭前必须在数据库仍可用时 flush/suspend。失败时保留 owner 与租约供重试。
+    pub(crate) fn suspend_with_database(&mut self, conn: &Connection) -> Result<(), String> {
+        if self.closed {
+            return Ok(());
+        }
+        self.run_service
+            .suspend_for_project_close(conn)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.suspend_for_project_close();
+        Ok(())
     }
 
     /// 对齐基线 `suspendForProjectClose`（main-generation-owner.ts:1390-1399）：
@@ -1079,12 +1236,20 @@ impl MainGenerationOwner {
         if self.closed {
             return;
         }
-        // TODO(B3+)：`service.suspendForProjectClose()`——生成运行服务挂起
-        //   （main-generation-owner.ts:1395；`generation-run-service.ts` 迁移后接入）。
+        // 生产关闭路径先经 suspend_with_database 持久化服务状态；此处仅清进程资源。
         self.closed = true;
-        // TODO(B3+)：基线逐个 `deps.leases.close(leaseId)` 关闭模型执行租约
-        //   （main-generation-owner.ts:1397；`llm::lease` 注册表接线后接入）。
-        self.run_leases.clear();
+        // 逐个关闭 owner 登记的模型租约，不影响同注册表中其它 IPC 租约。
+        let leases: Vec<String> = self
+            .run_leases
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, lease)| lease)
+            .collect();
+        let mut store = self.lease_store.lock().unwrap();
+        for lease in leases {
+            store.close(&lease, owner_now_ms());
+        }
     }
 
     // -----------------------------------------------------------------
@@ -1704,26 +1869,79 @@ impl MainGenerationOwner {
 
     /// 基线 `resume`（运行恢复重分发，main-generation-owner.ts:625-646）。
     ///
-    /// 本波次就位：运行身份校验（`require_run`，非执行语义）与大纲
-    /// 可写性断言（`repository.assert_plot_outline_writable`，:626-627）。
-    ///
-    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :628-630 的
-    /// `plotOutlineAlreadyCurrent` 早退优化（依赖 `renderPlotOutlineRange`
-    /// / `plotOutlineTargetCurrent` 的源重建比对）、:631-634 的子生成器
-    /// 登记册可变性断言（imports / finalizations / graphs / legacyRosters
-    /// 未迁移）、:635-644 的模型收据重建（`currentModelReceipt` 的模型
-    /// 配置加载）与 `service.resume` 重分发（生成运行服务未迁移）尚未
-    /// 迁移。fail-closed 于恢复入口（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+    /// 运行身份校验与大纲可写性断言保持基线顺序。
+    /// 普通运行恢复：真实源重建、临时模型租约校验、服务授权与账本恢复。
+    /// 保守跳过规划早退优化；未迁移特殊域仍按准入码拒绝。执行重分发入口另行接线。
     pub fn resume(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
         let run = self.require_run(conn, handle, false)?;
         self.repository
             .assert_plot_outline_writable(conn, &run.run_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
-        // ⚠️ B3 占位：基线 :628-644 的早退优化 / 可变性断言 / 模型源
-        // 重建 / service.resume 重分发未迁移——恢复入口 fail-closed。
-        Err(mutating_error(
-            "主生成恢复尚未迁移：生成运行服务（generation-run-service）的 resume 重分发待后续批次移植",
-        ))
+        // 特殊域的可变性合同尚未接入，不能因恢复接线绕过其准入。
+        let manifest = &run.binding.source_manifest;
+        let operation = manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let blocked = if operation == "editor-inline" {
+            Some("GENERATION_EDITOR_ADMISSION_REQUIRED")
+        } else if operation == "agent-round"
+            || ["agentInput", "agentSession", "agentAdmission"]
+                .iter()
+                .any(|key| manifest.get(*key).is_some_and(|value| !value.is_null()))
+        {
+            Some("GENERATION_AGENT_ADMISSION_REQUIRED")
+        } else if manifest
+            .get("importSlot")
+            .is_some_and(|value| !value.is_null())
+        {
+            Some("GENERATION_IMPORT_ADMISSION_REQUIRED")
+        } else if matches!(
+            operation,
+            "finalized-chapter-notes" | "finalized-character-state"
+        ) {
+            Some("GENERATION_FINALIZATION_ADMISSION_REQUIRED")
+        } else if GRAPH_OPERATIONS.contains(&operation) {
+            Some("GENERATION_GRAPH_ADMISSION_REQUIRED")
+        } else if operation == "legacy-character-roster-repair" {
+            Some("GENERATION_LEGACY_ADMISSION_REQUIRED")
+        } else {
+            None
+        };
+        if let Some(blocked) = blocked {
+            return Err(mutating_error(blocked));
+        }
+        let receipt = crate::services::main_generation_sources::current_model_receipt(
+            &self.global_data_root,
+            &run.binding,
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let next = crate::services::main_generation_sources::rebuild_binding_with_receipt(
+            conn,
+            &PathBuf::from(&self.session.project_path).join(".lore"),
+            &self.global_data_root,
+            &self.session.lease_id,
+            &run.binding,
+            &receipt,
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let lease = self.acquire_model_lease(&receipt.model_id)?;
+        if crate::services::main_generation_sources::safe_model_receipt(&lease.receipt) != receipt {
+            return Err(mutating_error("GENERATION_MODEL_CHANGED"));
+        }
+        let resumed = self
+            .run_service
+            .resume_with_authorization(conn, &run.run_id, next, |previous, current| {
+                Ok(
+                    crate::services::generation_source_binding::compare_generation_source_bindings(
+                        previous, current,
+                    ),
+                )
+            })
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.assert_current()?;
+        lease.attach(self, &run.run_id);
+        self.view_of(conn, &resumed)
     }
 
     /// 基线 `pause`（运行暂停，main-generation-owner.ts:1336）：
@@ -1744,8 +1962,8 @@ impl MainGenerationOwner {
     /// 需在此接线中止逻辑。
     pub fn pause(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
         let run = self.require_run(conn, handle, true)?;
-        self.repository
-            .pause(conn, &run.root_action_id, false)
+        self.run_service
+            .pause(conn, &run.root_action_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
         let run = self
             .repository
@@ -1767,8 +1985,8 @@ impl MainGenerationOwner {
     /// 生成运行服务的 LLM 分发循环，尚未迁移、当前恒为空操作。
     pub fn cancel(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
         let run = self.require_run(conn, handle, false)?;
-        self.repository
-            .pause(conn, &run.root_action_id, true)
+        self.run_service
+            .cancel(conn, &run.root_action_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
         let run = self
             .repository
@@ -1848,13 +2066,7 @@ impl MainGenerationOwner {
     /// discardCandidate(artifactId)` 状态迁移（仓储层已逐字移植，
     /// generation-run-repository.ts:701-705）。
     ///
-    /// ⚠️ B3 波次说明：基线 :1379-1384 的子生成器登记册可变性
-    /// 断言（reviewRevisions / imports / finalizations / graphs /
-    /// legacyRosters，未迁移）、`service.discardCandidate` 的
-    /// `unsavedTails` 清理（generation-run-service.ts:338-341，
-    /// 恒空——`readUnsavedTails` 依赖未迁移）与
-    /// `volatileReceipts.delete`（:1387，易失回执缓存未迁移）
-    /// 尚未迁移，均为空操作。
+    /// 特殊域可变性与易失回执接线仍待续；候选清理委托运行服务回收未保存尾。
     pub fn discard_candidate(
         &self,
         conn: &Connection,
@@ -1887,7 +2099,7 @@ impl MainGenerationOwner {
         if !discardable {
             return Err(mutating_error("GENERATION_CANDIDATE_NOT_DISCARDABLE"));
         }
-        self.repository
+        self.run_service
             .discard_candidate(conn, artifact_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
         self.view_of(conn, &run)
@@ -2164,40 +2376,12 @@ impl MainGenerationOwner {
     /// 准备的绑定构造（`generation:prepare-draft-context`
     /// 命令的第一步，controller :167 的 `baseline`）。
     ///
-    /// 本波次就位**准入校验面**（错误码逐字对齐基线）：
-    /// - `GENERATION_DRAFT_PREPARATION_INVALID`（:322-324）：
-    ///   request 非对象 / `query` 非字符串 /
-    ///   `knowledgeSnapshot` 存在时 `request.query !==`
-    ///   `knowledgeSnapshot.query` / 键集超白名单
-    ///   [`PREPARATION_ALLOWED_KEYS`]；
-    /// - 基线 :325-326 `GENERATION_MODEL_MISSING`——依赖
-    ///   `deps.loadModel`（模型加载命令面）未迁移，见下。
-    ///
-    /// ⚠️ 诚实化占位（G4-6c 波次说明）：基线 :325-335 的
-    /// 绑定构造核心——`deps.loadModel(request.modelId)` 模型
-    /// 加载（`load_model` 未迁移）、`safeGenerationModelReceipt(
-    /// createModelExecutionLeaseReceipt(model, { leaseId:
-    /// 'read-only-evidence', createdAt: 0, expiresAt: 0 }))`
-    /// 模型执行租约回执（`safe_generation_model_receipt`
-    /// 未迁移）、策略构造（`request.batchId ? rootPolicy(
-    /// draftEffects.readBatch(batchId, projectId).rootHandle
-    /// .rootActionId) : newMainGenerationPolicy(selection, model)`
-    /// ——`newMainGenerationPolicy` 依赖 main-generation-plan.ts
-    /// 写面未迁移（G4-6b-1 既定 fail-closed 依赖；`rootPolicy`
-    /// 读面已就位，但其输入 run 由策略规划器落库面创建）、
-    /// 以及 `deps.buildBinding(selection, receipt, policy)`
-    /// 源绑定构造（`generation_source_binding` 已就位但需
-    /// receipt / policy 输入）——依赖未迁移。校验面与
-    /// `selection` 构造（基线 :328-331，仅依赖 request /
-    /// knowledgeSnapshot，与模型加载解耦、无副作用）之后
-    /// 按基线顺序在模型加载构造点 fail-closed（方法末段；
-    /// 命令层收敛为 `GENERATION_REQUEST_FAILED`）。
-    ///
-    /// 影响面：合法请求当前收到「尚未迁移」拒绝而非
-    /// `RunBinding`；非法请求的错误码与基线逐字一致。
+    /// 选择形状与查询一致性校验后，从同一模型快照构造只读证据，
+    /// 读取批次根策略或计算独立策略，再冻结六章蓝图窗口与知识快照。
+    /// 不创建运行、不签发可执行租约；知识快照采集仍由命令层负责。
     pub fn draft_preparation_binding(
         &self,
-        _conn: &Connection,
+        conn: &Connection,
         request: &Value,
         knowledge_snapshot: Option<&Value>,
     ) -> Result<RunBinding, String> {
@@ -2217,11 +2401,17 @@ impl MainGenerationOwner {
         if invalid {
             return Err(mutating_error("GENERATION_DRAFT_PREPARATION_INVALID"));
         }
-        // 基线 :328-331 `selection` 构造（逐字平移；仅依赖
-        // request / knowledgeSnapshot，与模型加载解耦——
-        // 模型租约回执未迁移，构造结果随策略构造点
-        // fail-closed 一并丢弃，见方法头注）。
-        {
+        let model_id = request
+            .get("modelId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let model =
+            crate::services::main_generation_sources::load_model(&self.global_data_root, model_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let receipt = crate::services::main_generation_sources::model_read_only_receipt(&model)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // 基线 :328-331：六章蓝图窗口及知识快照，不保存运行、不签发可执行租约。
+        let selection = {
             let mut selection = Map::new();
             selection.insert(
                 "operation".to_string(),
@@ -2296,16 +2486,26 @@ impl MainGenerationOwner {
             if let Some(snapshot) = knowledge_snapshot {
                 selection.insert("knowledgeSnapshot".to_string(), snapshot.clone());
             }
-            let _ = Value::Object(selection);
-        }
-        // ⚠️ 基线 :325-335 绑定构造核心 fail-closed（依赖
-        // 未迁移，见方法头注）：`deps.loadModel` /
-        // `safeGenerationModelReceipt(createModelExecutionLeaseReceipt(
-        // ...))` / 策略构造（`newMainGenerationPolicy` /
-        // `rootPolicy`）/ `deps.buildBinding`。
-        Err(mutating_error(
-            "草稿上下文准备尚未迁移：模型加载（loadModel）与模型执行租约回执（safeGenerationModelReceipt）以及主生成策略规划器（newMainGenerationPolicy）待后续批次移植",
-        ))
+            Value::Object(selection)
+        };
+        let policy = if let Some(batch_id) = request.get("batchId").and_then(Value::as_str) {
+            let batch = GenerationDraftEffects.read_batch(
+                conn,
+                &self.repository,
+                batch_id,
+                &self.session.project_id,
+            )?;
+            let root_id = batch
+                .pointer("/rootHandle/rootActionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| mutating_error("GENERATION_BATCH_INVALID"))?;
+            self.root_policy(conn, root_id)?
+        } else {
+            crate::services::main_generation_plan::new_main_generation_policy(&selection, &model)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .to_value()
+        };
+        self.build_binding(conn, &selection, &receipt, &policy, &json!("visible-text"))
     }
 
     /// 基线 `prepareDraftContext(request, knowledgeSnapshot,
@@ -2447,15 +2647,7 @@ impl MainGenerationOwner {
     ///    - `selectedBlueprintChapterNumbers` 缺失 / 范围非安全整数 /
     ///      `startChapter < 1` / `endChapter < startChapter` / 跨度 ≥ 10000 /
     ///      范围内任一章未选中 → `GENERATION_FORMAL_RANGE_NOT_SELECTED`；
-    /// 4. **rebuildBinding 比对点 —— fail-closed 占位（G4-6c-1 既定）**：
-    ///    基线末步为
-    ///    `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
-    ///    与 `run.binding` 深比较，不等 → `GENERATION_SOURCE_CHANGED`。
-    ///    `rebuildBinding` 的 `currentModelReceipt → loadModel` 依赖未迁移，
-    ///    比对无法执行——实现到比对点即 fail-closed：此处刻意省略比对
-    ///    （恒 `Ok(())`），未迁移依赖引发的源漂移由命令层经
-    ///    `map_generation_error` 兜底码统一收敛 `GENERATION_REQUEST_FAILED`，
-    ///    待模型加载面迁移后补齐深比较。
+    /// 4. 实时模型只读证据与源绑定深比较；漂移 → GENERATION_SOURCE_CHANGED。
     pub fn assert_sources_current(
         &self,
         conn: &Connection,
@@ -2475,7 +2667,7 @@ impl MainGenerationOwner {
         }
         let Some(range) = blueprint_range else {
             // 基线无 blueprintRange 时跳过第 3 步（roster 提交钩子形态）。
-            return Ok(());
+            return self.assert_binding_current(conn, &run.binding);
         };
         // 基线 :665-666 —— 目录续接运行的剩余范围一致性
         let continued = self
@@ -2520,8 +2712,7 @@ impl MainGenerationOwner {
         if !formal_range_selected {
             return Err(mutating_error("GENERATION_FORMAL_RANGE_NOT_SELECTED"));
         }
-        // 基线 :676-677 rebuildBinding 深比较 —— fail-closed 占位（见方法头注）。
-        Ok(())
+        self.assert_binding_current(conn, &run.binding)
     }
 
     /// 构造角色提案服务（对齐基线 main-generation-owner.ts:880-896
@@ -2891,19 +3082,8 @@ impl MainGenerationOwner {
     /// （`is_autocommit()` 对「效应自开事务」路径为误报），故方法内
     /// 不重复检查。
     ///
-    /// ⚠️ 诚实化项（host 依赖未迁移面）：`AgentHost::current` /
-    /// `capture` 保持保守占位（见 [`impl AgentHost for
-    /// MainGenerationOwner`]）——基线 capture 经
-    /// `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
-    /// 重建；`rebuild_generation_source_binding` 已迁移
-    /// （generation_source_binding.rs:3636），但 `currentModelReceipt`
-    /// （基线 :251-256：模型注册表 loadModel + 只读租据收据构造）
-    /// 未迁移——with_child_effect 写入的 agentSourceTransition 为
-    /// 退化形态（before/after 均取自占位 capture，hash 相等；
-    /// binding 为效应前快照）。源变迁真实检测随 currentModelReceipt
-    /// 迁移波次补齐。激活后 sourcesCurrent 对「expected 与
-    /// run.binding 一致」场景与基线等价；源已变场景的检测缺口
-    /// 按 G4-10b 已记录偏差延续。
+    /// AgentHost current/capture 使用真实模型收据与源重建；子代效应前后
+    /// 的源过渡由 AgentGeneration 在调用方事务内验证并冻结，不以旧 binding 冒充当前源。
     pub fn with_agent_child_effect<T>(
         &self,
         conn: &Connection,
@@ -3167,8 +3347,7 @@ impl MainGenerationOwner {
 /// - `execute` → `execute({ handle, invocationNonce,
 ///   task }, true)`（主进程内部执行路径，见
 ///   [`MainGenerationOwner::execute_agent_round`]）；
-/// - `current` / `capture` → 保守占位（见方法头注的
-///   偏差记录）。
+/// - `current` / `capture` → 以实时模型收据重建源；读取失败按基线返回 false / 错误。
 impl AgentHost for MainGenerationOwner {
     fn begin(&self, conn: &Connection, selection: &Value) -> Result<Value, String> {
         self.begin(conn, selection, false, true)
@@ -3200,30 +3379,18 @@ impl AgentHost for MainGenerationOwner {
 
     fn current(
         &self,
-        _conn: &Connection,
+        conn: &Connection,
         run: &DurableGenerationRun,
         expected: Option<&RunBinding>,
     ) -> bool {
-        // 保守占位（偏差记录）：基线第二参为
-        // `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
-        // ——`rebuildBinding` / `currentModelReceipt` 未迁移
-        // （先例 review_revision.rs:109-110、generation.rs:841），
-        // 此处以 `run.binding` 自身充当重建结果（expected 缺省
-        // 时基线即比对 `run.binding` 与重建结果，本占位恒相等
-        // 返回 true——与基线「源未变」语义等价；源已变场景
-        // 的检测随 rebuildBinding 迁移波次补齐）。
-        compare_generation_source_bindings(expected.unwrap_or(&run.binding), &run.binding)
+        self.rebuild_binding(conn, &run.binding)
+            .is_ok_and(|current| {
+                compare_generation_source_bindings(expected.unwrap_or(&run.binding), &current)
+            })
     }
 
-    fn capture(
-        &self,
-        _conn: &Connection,
-        run: &DurableGenerationRun,
-    ) -> Result<RunBinding, String> {
-        // 保守占位（偏差记录）：基线为
-        // `deps.rebuildBinding(run.binding, currentModelReceipt(run.binding))`
-        // ——未迁移，原样返回 `run.binding`。
-        Ok(run.binding.clone())
+    fn capture(&self, conn: &Connection, run: &DurableGenerationRun) -> Result<RunBinding, String> {
+        self.rebuild_binding(conn, &run.binding)
     }
 }
 // ============================================================================
@@ -3344,6 +3511,29 @@ struct OwnerCacheEntry {
     subscribers: HashSet<String>,
 }
 
+/// 临时执行租约守卫：只有运行创建/恢复成功后才交给 owner。
+/// 任一校验或账本错误均自动关闭新租约，原运行租约不受影响。
+struct OwnerModelLease {
+    store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+    receipt: crate::llm::lease::ModelExecutionLeaseReceipt,
+    attached: bool,
+}
+impl OwnerModelLease {
+    fn attach(mut self, owner: &MainGenerationOwner, run_id: &str) {
+        owner.record_run_lease(run_id.to_string(), self.receipt.lease_id.clone());
+        self.attached = true;
+    }
+}
+impl Drop for OwnerModelLease {
+    fn drop(&mut self) {
+        if !self.attached {
+            if let Ok(mut store) = self.store.lock() {
+                store.close(&self.receipt.lease_id, owner_now_ms());
+            }
+        }
+    }
+}
+
 /// per-database owner 缓存（对齐基线 `owners` Map，
 /// generation-controller.ts:37）。
 ///
@@ -3354,6 +3544,16 @@ struct OwnerCacheEntry {
 #[derive(Default)]
 pub struct MainGenerationOwnerCache {
     entries: Mutex<HashMap<String, OwnerCacheEntry>>,
+    lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+}
+
+impl std::fmt::Debug for MainGenerationOwnerCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 不展示准备快照、源绑定、模型配置或正文。
+        formatter
+            .debug_struct("MainGenerationOwnerCache")
+            .finish_non_exhaustive()
+    }
 }
 
 /// [`MainGenerationOwnerCache::authorized_owner`] 返回的 owner 守卫：
@@ -3393,6 +3593,38 @@ impl MainGenerationOwnerCache {
     /// 新建空缓存（等价基线模块级 `const owners = new Map()` 的初始态）。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_lease_store(
+        lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+    ) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            lease_store,
+        }
+    }
+
+    /// 同时持有 owner 缓存锁与关闭临界区，锁序始终为 owner → 项目库。
+    /// 回调必须在关闭连接前挂起 owner；失败时条目仍留在缓存，不能丢失可重试状态。
+    pub(crate) fn before_database_close<T>(
+        &self,
+        project_root: Option<&str>,
+        close: impl FnOnce(Option<&mut MainGenerationOwner>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let key = project_root.map(security::normalized_project_path);
+        let owner = key
+            .as_ref()
+            .and_then(|key| entries.get_mut(key))
+            .map(|entry| &mut entry.owner);
+        let result = close(owner)?;
+        if let Some(key) = key {
+            entries.remove(&key);
+        }
+        Ok(result)
     }
 
     /// 缓存条目数（诊断 / 测试用；基线无等价物）。
@@ -3461,7 +3693,10 @@ impl MainGenerationOwnerCache {
         entries
             .entry(key.clone())
             .or_insert_with(|| OwnerCacheEntry {
-                owner: MainGenerationOwner::new(session.clone()),
+                owner: MainGenerationOwner::with_lease_store(
+                    session.clone(),
+                    Arc::clone(&self.lease_store),
+                ),
                 subscribers: HashSet::new(),
             });
         // 5) TODO(B3)：基线在此登记 `event.sender` 到 subscribers。
@@ -3552,6 +3787,312 @@ pub struct MainGenerationReasoningEventProjection {
 mod tests {
     use super::*;
     use crate::repositories::generation_run_repository::OpenGenerationRunRequest;
+
+    fn source_owner_fixture() -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        DurableGenerationRun,
+    ) {
+        let (temp, conn, binding, global, project) =
+            crate::services::main_generation_sources::tests::fixture("zh-CN");
+        let mut session = session("project-1", "lease-1");
+        session.project_path = project.to_string_lossy().into_owned();
+        let mut owner = MainGenerationOwner::new(session);
+        owner.global_data_root = global;
+        let policy = crate::services::main_generation_plan::read_main_generation_policy(
+            binding.source_manifest.get("policy").unwrap(),
+        )
+        .unwrap();
+        let run = owner
+            .repository
+            .open(
+                &conn,
+                &OpenGenerationRunRequest {
+                    project_id: binding.project_id,
+                    epoch: binding.epoch,
+                    fingerprint: binding.fingerprint,
+                    context_snapshot_id: binding.context_snapshot_id,
+                    source_manifest: binding.source_manifest,
+                    source_refs: binding.source_refs,
+                    operation: "brainstorm".to_string(),
+                    ui_action_nonce: "source-fixture".to_string(),
+                    frozen_input_hash: fake_content_hash(),
+                    budget: policy.budget,
+                    parent_root_action_id: None,
+                },
+            )
+            .unwrap();
+        (temp, conn, owner, run)
+    }
+
+    #[test]
+    fn owner_resume_rebuilds_epoch_and_replaces_execution_lease_test() {
+        let (_temp, conn, mut owner, run) = source_owner_fixture();
+        owner
+            .repository
+            .pause(&conn, &run.root_action_id, false)
+            .unwrap();
+        owner.session.lease_id = "lease-2".to_string();
+        owner.resume(&conn, &handle_of(&run)).unwrap();
+        let resumed = owner.repository.get(&conn, &run.run_id).unwrap();
+        assert_eq!(resumed.binding.epoch, "lease-2");
+        let first = owner.run_leases.lock().unwrap()[&run.run_id].clone();
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        // 已开放的根不能重复恢复；拒绝时新租约回收，原租约仍有效。
+        assert_eq!(
+            owner.resume(&conn, &handle_of(&resumed)),
+            Err(mutating_error("GENERATION_RESUME_REFUSED"))
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert_eq!(owner.run_leases.lock().unwrap()[&run.run_id], first);
+        owner
+            .repository
+            .pause(&conn, &run.root_action_id, false)
+            .unwrap();
+        owner.resume(&conn, &handle_of(&resumed)).unwrap();
+        let replacement = owner.run_leases.lock().unwrap()[&run.run_id].clone();
+        assert_ne!(first, replacement);
+        let mut store = owner.lease_store.lock().unwrap();
+        assert_eq!(store.live_lease_count(), 1);
+        assert_eq!(
+            store.resolve_model_at(&first, owner_now_ms()),
+            Err("模型执行租约无效".to_string())
+        );
+        drop(store);
+        owner.suspend_with_database(&conn).unwrap();
+        assert!(owner.closed);
+        assert!(owner.run_leases.lock().unwrap().is_empty());
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+    }
+
+    #[test]
+    fn owner_resume_author_drift_cleans_temporary_lease_and_preserves_binding_test() {
+        let (_temp, conn, owner, run) = source_owner_fixture();
+        owner
+            .repository
+            .pause(&conn, &run.root_action_id, false)
+            .unwrap();
+        crate::repositories::project_core_repository::update(
+            &conn,
+            json!({"globalGuidance":"变化的合成事实"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            owner.resume(&conn, &handle_of(&run)),
+            Err(mutating_error("GENERATION_RECOVERY_UNAUTHORIZED"))
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+        assert!(owner.run_leases.lock().unwrap().is_empty());
+        assert_eq!(
+            owner.repository.get(&conn, &run.run_id).unwrap().binding,
+            run.binding
+        );
+    }
+
+    #[test]
+    fn owner_resume_missing_model_does_not_issue_execution_lease_test() {
+        let (_temp, conn, owner, run) = source_owner_fixture();
+        std::fs::write(
+            crate::app_paths::models_config_path_at(&owner.global_data_root),
+            "[]",
+        )
+        .unwrap();
+        assert_eq!(
+            owner.resume(&conn, &handle_of(&run)),
+            Err(mutating_error("GENERATION_MODEL_MISSING"))
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+    }
+
+    #[test]
+    fn temporary_owner_lease_closes_when_not_attached_test() {
+        let (_temp, _conn, owner, _run) = source_owner_fixture();
+        let lease = owner.acquire_model_lease("fixture").unwrap();
+        let id = lease.receipt.lease_id.clone();
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        drop(lease);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+        assert_eq!(
+            owner
+                .lease_store
+                .lock()
+                .unwrap()
+                .resolve_model_at(&id, owner_now_ms()),
+            Err("模型执行租约无效".to_string())
+        );
+    }
+
+    #[test]
+    fn failed_owner_suspend_keeps_lease_until_successful_retry_test() {
+        let (_temp, conn, mut owner, run) = source_owner_fixture();
+        owner
+            .acquire_model_lease("fixture")
+            .unwrap()
+            .attach(&owner, &run.run_id);
+        let unavailable = Connection::open_in_memory().unwrap();
+        assert!(owner.suspend_with_database(&unavailable).is_err());
+        assert!(!owner.closed);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        owner.suspend_with_database(&conn).unwrap();
+        assert!(owner.closed);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+    }
+
+    #[test]
+    fn before_close_failure_keeps_cached_owner_for_retry_test() {
+        let cache = MainGenerationOwnerCache::new();
+        let active = active();
+        cache
+            .authorized_owner(&session("project-1", "lease-1"), Some(&active))
+            .unwrap();
+        assert_eq!(
+            cache.before_database_close(Some(&active.root_path), |_| Err::<(), _>(
+                "合成失败".to_string()
+            )),
+            Err("合成失败".to_string())
+        );
+        assert_eq!(cache.len(), 1);
+        cache
+            .before_database_close(Some(&active.root_path), |owner| {
+                owner.unwrap().suspend_for_project_close();
+                Ok(())
+            })
+            .unwrap();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn real_host_current_capture_and_source_assertion_reject_author_drift_test() {
+        let (_temp, conn, owner, run) = source_owner_fixture();
+        assert!(AgentHost::current(&owner, &conn, &run, None));
+        assert_eq!(
+            AgentHost::capture(&owner, &conn, &run).unwrap(),
+            run.binding
+        );
+        owner
+            .assert_sources_current(&conn, &handle_of(&run), None)
+            .unwrap();
+        crate::repositories::project_core_repository::update(
+            &conn,
+            json!({"globalGuidance":"新的合成约束"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!AgentHost::current(&owner, &conn, &run, None));
+        let captured = AgentHost::capture(&owner, &conn, &run).unwrap();
+        assert_ne!(captured.fingerprint, run.binding.fingerprint);
+        assert!(AgentHost::current(&owner, &conn, &run, Some(&captured)));
+        assert_eq!(
+            owner
+                .assert_sources_current(&conn, &handle_of(&run), None)
+                .unwrap_err(),
+            mutating_error("GENERATION_SOURCE_CHANGED")
+        );
+    }
+
+    #[test]
+    fn real_host_model_missing_and_owner_closed_fail_closed_test() {
+        let (_temp, conn, mut owner, run) = source_owner_fixture();
+        std::fs::write(
+            crate::app_paths::models_config_path_at(&owner.global_data_root),
+            "[]",
+        )
+        .unwrap();
+        assert!(!AgentHost::current(&owner, &conn, &run, None));
+        assert_eq!(
+            AgentHost::capture(&owner, &conn, &run).unwrap_err(),
+            mutating_error("GENERATION_MODEL_MISSING")
+        );
+        owner.suspend_for_project_close();
+        assert!(!AgentHost::current(&owner, &conn, &run, None));
+        assert_eq!(
+            AgentHost::capture(&owner, &conn, &run).unwrap_err(),
+            mutating_error(GENERATION_OWNER_CLOSED)
+        );
+    }
+
+    #[test]
+    fn real_host_capture_shares_outer_child_effect_transaction_test() {
+        let (_temp, conn, owner, run) = source_owner_fixture();
+        let transaction = conn.unchecked_transaction().unwrap();
+        let before = AgentHost::capture(&owner, &transaction, &run).unwrap();
+        crate::repositories::project_core_repository::update(
+            &transaction,
+            json!({"globalGuidance":"事务内合成效应"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        let after = AgentHost::capture(&owner, &transaction, &run).unwrap();
+        assert_ne!(before.fingerprint, after.fingerprint);
+        assert!(!conn.is_autocommit(), "源读取不得提交调用方事务");
+        transaction.rollback().unwrap();
+        assert_eq!(AgentHost::capture(&owner, &conn, &run).unwrap(), before);
+    }
+
+    #[test]
+    fn draft_preparation_binding_freezes_real_six_chapter_sources_without_opening_run_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        for chapter in 1..=6 {
+            let blueprint = serde_json::from_value(
+                json!({"chapterNumber":chapter, "title":format!("合成蓝图{chapter}")}),
+            )
+            .unwrap();
+            crate::repositories::blueprint_repository::upsert(&conn, &blueprint).unwrap();
+        }
+        let request = json!({"chapterNumber":1, "modelId":"fixture", "promptKeys":["edit_selected_text"],
+            "skillStages":[], "selectedDraftIds":[], "query":"合成查询"});
+        let binding = owner
+            .draft_preparation_binding(&conn, &request, None)
+            .unwrap();
+        assert_eq!(
+            binding
+                .source_manifest
+                .get("selectedBlueprintChapterNumbers")
+                .unwrap(),
+            &json!([1, 2, 3, 4, 5, 6])
+        );
+        assert_eq!(
+            binding.source_manifest.get("outputContract").unwrap(),
+            &json!("visible-text")
+        );
+        assert_eq!(owner.rebuild_binding(&conn, &binding).unwrap(), binding);
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM generation_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "准备不得新建运行");
+        let changed =
+            serde_json::from_value(json!({"chapterNumber":1, "title":"更新后的合成蓝图"})).unwrap();
+        crate::repositories::blueprint_repository::upsert(&conn, &changed).unwrap();
+        let next = owner
+            .draft_preparation_binding(&conn, &request, None)
+            .unwrap();
+        assert_ne!(binding.fingerprint, next.fingerprint);
+        assert!(!preparation_matches(&binding, &next, true));
+    }
+
+    #[test]
+    fn draft_preparation_binding_rejects_query_shape_and_missing_model_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let request = json!({"chapterNumber":1, "modelId":"missing", "promptKeys":["edit_selected_text"],
+            "skillStages":[], "selectedDraftIds":[], "query":"合成查询"});
+        assert_eq!(
+            owner
+                .draft_preparation_binding(&conn, &request, Some(&json!({"query":"不同查询"})))
+                .unwrap_err(),
+            mutating_error("GENERATION_DRAFT_PREPARATION_INVALID")
+        );
+        assert_eq!(
+            owner
+                .draft_preparation_binding(&conn, &request, None)
+                .unwrap_err(),
+            mutating_error("GENERATION_MODEL_MISSING")
+        );
+    }
 
     fn session(project_id: &str, lease_id: &str) -> ProjectSessionContext {
         ProjectSessionContext {

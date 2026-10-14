@@ -86,7 +86,7 @@ pub async fn agent_generation_begin(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_begin(conn, &request)))
@@ -104,7 +104,7 @@ pub async fn agent_generation_read(
     // 基线 handler 取 request.handle（controller:218）。
     let handle = request.get("handle").cloned().unwrap_or(Value::Null);
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_read(conn, &handle)))
@@ -125,7 +125,7 @@ pub async fn agent_generation_resume(
 ) -> Result<Value, String> {
     let handle = request.get("handle").cloned().unwrap_or(Value::Null);
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_resume(conn, &handle)))
@@ -145,7 +145,7 @@ pub async fn agent_generation_round(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_round(conn, &request)))
@@ -162,7 +162,7 @@ pub async fn agent_generation_claim_tool(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_claim_tool(conn, &request)))
@@ -178,7 +178,7 @@ pub async fn agent_generation_finish_tool(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_finish_tool(conn, &request)))
@@ -198,7 +198,7 @@ pub async fn agent_generation_register_workflow(
     // register-workflow 项）。
     let ref_ = request.get("ref").cloned().unwrap_or(Value::Null);
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_register_workflow(conn, &ref_)))
@@ -218,7 +218,7 @@ pub async fn agent_generation_commit_domain_tool(
     // commit-domain-tool 项）。
     let ref_ = request.get("ref").cloned().unwrap_or(Value::Null);
     let state = state.inner();
-    let cache = MainGenerationOwnerCache::new();
+    let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
     state.with_project_db(|conn| domain_result(owner.agent_commit_domain_tool(conn, &ref_)))

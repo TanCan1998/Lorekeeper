@@ -48,7 +48,9 @@ pub struct AppState {
     /// 批次 B：项目文件操作串行锁（骨架阶段全局互斥，安全语义同基线 per-path 队列）
     pub(crate) fs_lock: Mutex<()>,
     /// 批次 D2：模型执行租约注册表（进程内存态，重启即失效）
-    pub(crate) llm_leases: Mutex<crate::llm::lease::LlmLeaseStore>,
+    pub(crate) llm_leases: std::sync::Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
+    /// 主生成 owner 缓存跨 IPC 保留；项目关闭前挂起并逐出。
+    pub(crate) generation_owners: crate::services::main_generation_owner::MainGenerationOwnerCache,
     /// 批次 D2-b：活跃流式生成任务（`requestId` → 取消句柄）。
     /// 进程内存态；重启即失效（对齐基线 `activeStreams`）。
     pub(crate) llm_streams:
@@ -76,6 +78,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        let llm_leases = std::sync::Arc::new(Mutex::new(crate::llm::lease::LlmLeaseStore::new()));
         AppState {
             started_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -87,7 +90,11 @@ impl AppState {
             project_db: Mutex::new(None),
             latest_open_token: Mutex::new(None),
             fs_lock: Mutex::new(()),
-            llm_leases: Mutex::new(crate::llm::lease::LlmLeaseStore::new()),
+            llm_leases: std::sync::Arc::clone(&llm_leases),
+            generation_owners:
+                crate::services::main_generation_owner::MainGenerationOwnerCache::with_lease_store(
+                    llm_leases,
+                ),
             llm_streams: Mutex::new(std::collections::HashMap::new()),
             external_grants: Mutex::new(crate::external_grant::ExternalGrantRegistry::default()),
             kb_vectors: Mutex::new(crate::db::kb::vectors::KbVectorManager::default()),
@@ -165,7 +172,7 @@ impl AppState {
     /// 先关闭旧连接再打开新库，避免半切换状态；任一步失败都不会留下「有会话无库」
     /// 或「有库无会话」的组合。
     pub(crate) fn activate_project(&self, lease: ActiveProject) -> Result<(), String> {
-        self.close_project_database();
+        self.close_project_database()?;
         let database = crate::db::ProjectDatabase::open(std::path::Path::new(&lease.root_path))?;
         {
             let mut guard = self
@@ -183,18 +190,35 @@ impl AppState {
     }
 
     /// 关闭项目数据库（连接随所有权释放而关闭）
-    pub(crate) fn close_project_database(&self) {
-        if let Ok(mut guard) = self.project_db.lock() {
-            *guard = None;
-        }
+    pub(crate) fn close_project_database(&self) -> Result<(), String> {
+        let active = self.active_project_snapshot();
+        self.generation_owners.before_database_close(
+            active.as_ref().map(|active| active.root_path.as_str()),
+            |owner| {
+                let mut database = self
+                    .project_db
+                    .lock()
+                    .map_err(|_| "项目数据库状态被污染".to_string())?;
+                let mut session = self
+                    .active_project
+                    .lock()
+                    .map_err(|_| "项目会话状态被污染".to_string())?;
+                if let Some(owner) = owner {
+                    let connection = database
+                        .as_ref()
+                        .ok_or_else(|| "Error: GENERATION_DATABASE_NOT_READY".to_string())?;
+                    owner.suspend_with_database(connection.connection())?;
+                }
+                *database = None;
+                *session = None;
+                Ok(())
+            },
+        )
     }
 
     /// 使当前会话失效（关闭数据库 + 清空租约）
-    pub(crate) fn invalidate_current_session(&self) {
-        self.close_project_database();
-        if let Ok(mut guard) = self.active_project.lock() {
-            *guard = None;
-        }
+    pub(crate) fn invalidate_current_session(&self) -> Result<(), String> {
+        self.close_project_database()
     }
 
     /// 项目数据库是否已打开（用于 `project:get-runtime-context` 的中立态语义）
@@ -357,6 +381,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn generation_owner_cache_persists_and_closes_shared_model_leases_test() {
+        let (_temp, _conn, _binding, global, project) =
+            crate::services::main_generation_sources::tests::fixture("zh-CN");
+        let state = AppState::new();
+        let active = ActiveProject {
+            project_id: "project-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            root_path: project.to_string_lossy().into_owned(),
+        };
+        state.activate_project(active.clone()).unwrap();
+        let session = crate::security::ProjectSessionContext {
+            project_id: active.project_id.clone(),
+            lease_id: active.lease_id.clone(),
+            project_path: active.root_path.clone(),
+        };
+        for id in ["first", "replacement"] {
+            state
+                .llm_leases
+                .lock()
+                .unwrap()
+                .begin_at(
+                    &crate::app_paths::models_config_path_at(&global),
+                    "fixture",
+                    id.to_string(),
+                    state.started_at_ms,
+                )
+                .unwrap();
+            let mut guard = state
+                .generation_owners
+                .authorized_owner(&session, Some(&active))
+                .unwrap();
+            guard
+                .owner()
+                .record_run_lease("cache-run".to_string(), id.to_string());
+        }
+        // 后续门禁命中了同一个 owner，才会回收同一运行的旧租约。
+        assert_eq!(state.generation_owners.len(), 1);
+        assert_eq!(state.llm_leases.lock().unwrap().live_lease_count(), 1);
+        state.invalidate_current_session().unwrap();
+        assert!(state.generation_owners.is_empty());
+        assert_eq!(state.llm_leases.lock().unwrap().live_lease_count(), 0);
+        assert!(state.active_project_snapshot().is_none());
+        assert!(!state.project_database_open());
+    }
+
+    #[test]
+    fn failed_database_close_preserves_project_and_owner_until_retry_test() {
+        let (_temp, _conn, _binding, _global, project) =
+            crate::services::main_generation_sources::tests::fixture("zh-CN");
+        let state = AppState::new();
+        let active = ActiveProject {
+            project_id: "project-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            root_path: project.to_string_lossy().into_owned(),
+        };
+        state.activate_project(active.clone()).unwrap();
+        let session = crate::security::ProjectSessionContext {
+            project_id: active.project_id.clone(),
+            lease_id: active.lease_id.clone(),
+            project_path: active.root_path.clone(),
+        };
+        state
+            .generation_owners
+            .authorized_owner(&session, Some(&active))
+            .unwrap();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.project_db.lock().unwrap();
+            panic!("合成项目库锁故障");
+        }));
+        assert!(state.invalidate_current_session().is_err());
+        assert_eq!(
+            state.active_project_snapshot().unwrap().lease_id,
+            active.lease_id
+        );
+        assert_eq!(state.generation_owners.len(), 1);
+        state
+            .generation_owners
+            .authorized_owner(&session, Some(&active))
+            .unwrap()
+            .owner()
+            .assert_current()
+            .unwrap();
+        state.project_db.clear_poison();
+        state.invalidate_current_session().unwrap();
+        assert!(state.generation_owners.is_empty());
+        assert!(state.active_project_snapshot().is_none());
+    }
+
+    #[test]
     fn app_state_new_records_started_at_test() {
         let state = AppState::new();
         assert!(state.started_at_ms > 0, "启动时间戳必须大于 0");
@@ -409,7 +522,7 @@ mod tests {
             })
             .unwrap();
 
-        state.invalidate_current_session();
+        state.invalidate_current_session().unwrap();
         assert!(state.current_project_path().is_none());
         assert!(state.with_project_db(|_| Ok(())).is_err());
 
