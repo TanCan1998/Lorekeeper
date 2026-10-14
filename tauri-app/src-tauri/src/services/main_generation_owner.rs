@@ -441,6 +441,70 @@ struct PreparationEntry {
     knowledge_snapshot: Value,
 }
 
+struct PendingOwnerInvocation {
+    request_hash: String,
+    holders: usize,
+}
+
+struct PendingOwnerInvocationGuard {
+    pending: Arc<Mutex<HashMap<String, PendingOwnerInvocation>>>,
+    key: String,
+    request_hash: String,
+}
+
+impl Drop for PendingOwnerInvocationGuard {
+    fn drop(&mut self) {
+        // 析构不抛错；只清理自身哈希的登记，不能撤销其他准备对象。
+        if let Ok(mut pending) = self.pending.lock() {
+            if let Some(entry) = pending.get_mut(&self.key) {
+                if entry.request_hash == self.request_hash {
+                    entry.holders -= 1;
+                    if entry.holders == 0 {
+                        pending.remove(&self.key);
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum PreparedExecutionPlan {
+    Replay(Value),
+    Dispatch(Box<crate::services::generation_run_service::ExecuteGenerationRequest>),
+}
+
+/// 准备阶段冻结任务、模型请求与服务；不借用 owner 或数据库连接。
+/// 本切片的兼容执行仍用直接连接，生产短回调接线另行推进。
+pub(crate) struct PreparedMainGenerationExecution {
+    task: Value,
+    plan: PreparedExecutionPlan,
+    service: Arc<crate::services::generation_run_service::GenerationRunService>,
+    _pending: PendingOwnerInvocationGuard,
+}
+
+pub(crate) enum PreparedMainGenerationResult {
+    Replay(Value),
+    Receipt(Box<GenerationExecutionReceipt>),
+}
+
+impl PreparedMainGenerationExecution {
+    pub(crate) fn execute_blocking(
+        &self,
+        conn: &Connection,
+    ) -> Result<PreparedMainGenerationResult, String> {
+        match &self.plan {
+            PreparedExecutionPlan::Replay(outcome) => {
+                Ok(PreparedMainGenerationResult::Replay(outcome.clone()))
+            }
+            PreparedExecutionPlan::Dispatch(request) => self
+                .service
+                .execute_blocking(conn, request.as_ref().clone())
+                .map(|receipt| PreparedMainGenerationResult::Receipt(Box::new(receipt)))
+                .map_err(|error| mutating_error(map_generation_error(&error))),
+        }
+    }
+}
+
 /// 主生成 owner（对齐基线 `createMainGenerationOwner` 的闭包状态，
 /// main-generation-owner.ts:108-1399）。
 ///
@@ -462,12 +526,9 @@ pub struct MainGenerationOwner {
     /// 基线 `runLeases: Map<string, string>`（attemptId → leaseId，
     /// main-generation-owner.ts:112）。挂起时逐 lease 关闭并清空。
     run_leases: Mutex<HashMap<String, String>>,
-    /// 基线 `pending: Map<string, { hash, promise }>`（在途调用登记，
-    /// main-generation-owner.ts:--）——Tauri 侧同一 owner 的 execute 是
-    /// 同步阻塞的（命令层 `block_in_place`），故这里只需保存**在途请求
-    /// 哈希**用于 `GENERATION_INVOCATION_CONFLICT` 判定；等待语义由项目
-    /// 库连接锁与 `find_invocation` 幂等读回给出。
-    pending_invocations: Mutex<HashMap<String, String>>,
+    /// owner 在途哈希登记；共享所有权使准备对象脱离 owner 守卫后仍有效。
+    /// 同键同哈希允许服务层合并重放，最后一个准备守卫退出时才撤销登记。
+    pending_invocations: Arc<Mutex<HashMap<String, PendingOwnerInvocation>>>,
     /// 与 owner 同寿命的服务与执行租约，不能在每次 IPC 中重建。
     lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
     run_service: Arc<crate::services::generation_run_service::GenerationRunService>,
@@ -562,7 +623,7 @@ impl MainGenerationOwner {
             session,
             repository,
             run_leases: Mutex::new(HashMap::new()),
-            pending_invocations: Mutex::new(HashMap::new()),
+            pending_invocations: Arc::new(Mutex::new(HashMap::new())),
             preparations: Vec::new(),
             closed: false,
         }
@@ -1789,31 +1850,11 @@ impl MainGenerationOwner {
         agent.commit_domain_tool(ref_)
     }
 
-    /// 基线 `execute`（分发 → 流式回执，main-generation-owner.ts:501-623）。
+    /// 普通 IPC 执行：准备、分发与回执投影共用原业务合同。
     ///
-    /// 本波次就位**准入校验面**（错误码逐字对齐基线）：
-    /// - 运行身份与可写性（`require_run`，execution 语义）；
-    /// - 子生成器执行准入（:512-521）→ 六个 `*_ADMISSION_REQUIRED`
-    ///   （IPC 边界执行标志恒为 false，对齐 generation-controller.ts:231-236
-    ///   注册形态）；
-    /// - 材料决策必需性（:532-537）→ `GENERATION_MATERIAL_DECISION_REQUIRED`；
-    /// - 输出合同一致性（:585-590）→ `GENERATION_OUTPUT_CONTRACT_CHANGED`；
-    /// - 大纲请求断言（`repository.assert_plot_outline_request`，:568）。
-    ///
-    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :522-531 的任务形状断言
-    /// （`assertSemanticGenerationTask`）与规划目标单位指令注入、
-    /// :538-590 的材料决策提示哈希逐字校验（`GENERATION_MATERIAL_PROMPT_MISMATCH`
-    /// 系，依赖 `runAttempts` / `shortOutlineContext` / 短细纲块编解码
-    /// 等共享模块）、:591-623 的调用重放（pending 映射 / `findInvocation`
-    /// 幂等）与短细纲重试校验、:577-581 的子生成器登记册可变性断言，
-    /// 以及分发核心（`rebuildBinding` 已就位、模型执行租约经
-    /// `AppState::llm_leases` 可接线、`buildMainGenerationPlan` 计划构造
-    /// 与 `service.execute` 的 LLM 分发循环未迁移——含
-    /// `generation:snapshot` / `generation:reasoning` 事件发射点，
-    /// 发射器已就位于命令层，见
-    /// [`crate::commands::generation::emit_generation_snapshot`]）
-    /// 尚未迁移。fail-closed 于分发入口（命令层收敛为
-    /// `GENERATION_REQUEST_FAILED`）。
+    /// 准备阶段已覆盖身份、子域准入、语义任务、输出合同、任务哈希、
+    /// 幂等读回、源重建与冻结计划。材料提示哈希、短细纲重试和特殊域仍
+    /// fail-closed；快照/推理事件及生产短锁接线尚未完成。
     pub fn execute(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
         // IPC 边界执行标志恒 false（基线 :501 默认参数）。
         self.execute_inner(conn, request, false)
@@ -1827,13 +1868,26 @@ impl MainGenerationOwner {
     /// [`Self::execute_agent_round`]）——豁免 agent-round 的
     /// IPC 准入拒绝（:504），其余准入校验面逐字不变。
     ///
-    /// ⚠️ 诚实化占位（B3 波次说明）：见 [`Self::execute`] 头注。
+    /// 兼容原 owner/内部 Agent 调用，保持准备守卫到回执投影完成。
     fn execute_inner(
         &self,
         conn: &Connection,
         request: &Value,
         agent_execution: bool,
     ) -> Result<Value, String> {
+        let prepared = self.prepare_execution(conn, request, agent_execution)?;
+        let result = prepared.execute_blocking(conn)?;
+        self.finish_prepared_execution(conn, &prepared, &result)
+    }
+
+    /// 同步短准备阶段；无网络分发、无预算预留，返回值不借用本方法参数。
+    /// agent_execution 仅供既有内部 Agent 路径，IPC 始终传 false。
+    pub(crate) fn prepare_execution(
+        &self,
+        conn: &Connection,
+        request: &Value,
+        agent_execution: bool,
+    ) -> Result<PreparedMainGenerationExecution, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
         let run = self.require_run(conn, &handle, true)?;
         // 基线 :512-521 子生成器执行准入（IPC 边界执行标志恒为
@@ -1981,21 +2035,9 @@ impl MainGenerationOwner {
             .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?,
         );
         let in_flight_key = json!([run.run_id, invocation_nonce]).to_string();
-        // 基线 :600-606 在途登记：同键不同哈希 → `GENERATION_INVOCATION_CONFLICT`。
-        {
-            let mut pending = self
-                .pending_invocations
-                .lock()
-                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
-            if let Some(existing) = pending.get(&in_flight_key) {
-                if existing != &request_hash {
-                    return Err(mutating_error("GENERATION_INVOCATION_CONFLICT"));
-                }
-            } else {
-                pending.insert(in_flight_key.clone(), request_hash.clone());
-            }
-        }
-        let result = self.dispatch_execution(
+        let pending = self.register_pending_invocation(&in_flight_key, &request_hash)?;
+        // 构造失败也由局部守卫回收；成功则随准备对象持有到最终投影退出。
+        let plan = self.prepare_execution_plan(
             conn,
             &run,
             &task,
@@ -2008,27 +2050,70 @@ impl MainGenerationOwner {
             },
             &invocation_nonce,
             &request_hash,
-        );
-        self.pending_invocations
-            .lock()
-            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?
-            .remove(&in_flight_key);
-        result
+        )?;
+        Ok(PreparedMainGenerationExecution {
+            task,
+            plan,
+            service: self.run_service.clone(),
+            _pending: pending,
+        })
     }
 
-    /// 基线 operation async IIFE（main-generation-owner.ts:625-）主体：
-    /// 幂等读回 → 短细纲准入 → 真实模型证据重建源比对 → 运行租约 →
-    /// 创作策略 / 冻结策略 / 预算 / 能力证据 → 主生成计划 → 进程内
-    /// provider 请求 → `service.execute`（真实 LLM 分发 + 流式 flush/settle
-    /// + 终态/取消）→ 回执投影。
+    fn register_pending_invocation(
+        &self,
+        key: &str,
+        request_hash: &str,
+    ) -> Result<PendingOwnerInvocationGuard, String> {
+        let mut pending = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        if let Some(existing) = pending.get_mut(key) {
+            if existing.request_hash != request_hash {
+                return Err(mutating_error("GENERATION_INVOCATION_CONFLICT"));
+            }
+            existing.holders += 1;
+        } else {
+            pending.insert(
+                key.to_string(),
+                PendingOwnerInvocation {
+                    request_hash: request_hash.to_string(),
+                    holders: 1,
+                },
+            );
+        }
+        Ok(PendingOwnerInvocationGuard {
+            pending: self.pending_invocations.clone(),
+            key: key.to_string(),
+            request_hash: request_hash.to_string(),
+        })
+    }
+
+    /// 调用方在生产短锁接线时必须先重新认证 owner/项目/连接身份。
+    pub(crate) fn finish_prepared_execution(
+        &self,
+        conn: &Connection,
+        prepared: &PreparedMainGenerationExecution,
+        result: &PreparedMainGenerationResult,
+    ) -> Result<Value, String> {
+        match result {
+            PreparedMainGenerationResult::Replay(outcome) => Ok(outcome.clone()),
+            PreparedMainGenerationResult::Receipt(receipt) => {
+                self.outcome_of(conn, receipt, &prepared.task)
+            }
+        }
+    }
+
+    /// 准备阶段：幂等读回 → 短细纲准入 → 源重建比对 → 运行租约 →
+    /// 策略 / 预算 / 能力证据 → 冻结计划与 provider 请求；不执行网络 Future。
     ///
     /// ⚠️ 诚实化边界（B3-3e 切片）：材料决策提示哈希族未迁移（已在
-    /// [`Self::execute_inner`] fail-closed），短细纲重试准入在此显式拒绝；
+    /// [`Self::prepare_execution`] fail-closed），短细纲重试准入在此显式拒绝；
     /// 子生成器可变性断言所属域（`reviewRevisions` / `imports` /
     /// `finalizations` / `graphs` / `legacyRosters`）的 `begin` 准入仍未
     /// 开放，运行不可能到达此处。快照 / 推理事件发射随依赖注入波次接线。
     #[allow(clippy::too_many_arguments)]
-    fn dispatch_execution(
+    fn prepare_execution_plan(
         &self,
         conn: &Connection,
         run: &DurableGenerationRun,
@@ -2038,7 +2123,7 @@ impl MainGenerationOwner {
         agent_tool_names: Option<Vec<String>>,
         invocation_nonce: &str,
         request_hash: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<PreparedExecutionPlan, String> {
         // 基线 :607-610——幂等读回（`findInvocation`）：已结算且不处于
         // 在途状态（`dispatch-marked` / `reserved`）的调用重放既有收据。
         if let Some(existing) = self
@@ -2048,7 +2133,9 @@ impl MainGenerationOwner {
         {
             if existing.attempt.status != "dispatch-marked" && existing.attempt.status != "reserved"
             {
-                return self.outcome_of(conn, &existing, task);
+                return self
+                    .outcome_of(conn, &existing, task)
+                    .map(PreparedExecutionPlan::Replay);
             }
         }
         // 基线 :611-616——短细纲重试准入（`assertShortOutlineRetryAvailable`
@@ -2150,13 +2237,7 @@ impl MainGenerationOwner {
             replay_task: replay_task.then(|| task.clone()),
             reconciliation_injected: false,
         };
-        // ⑥ 真实分发（网络流式 + 持久化 + 结算）：命令层已让出 tokio
-        //    worker，这里由服务自持 runtime 执行。
-        let receipt = self
-            .run_service
-            .execute_blocking(conn, execution_request)
-            .map_err(|error| mutating_error(map_generation_error(&error)))?;
-        self.outcome_of(conn, &receipt, task)
+        Ok(PreparedExecutionPlan::Dispatch(Box::new(execution_request)))
     }
 
     /// 基线 `outcomeOf(receipt, task)`（main-generation-owner.ts:440-500）：
@@ -6501,6 +6582,210 @@ mod tests {
             .begin(&conn, &selection, false, false)
             .expect_err("agent-round 必须拒绝");
         assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+    }
+
+    fn prepared_owner_fixture() -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        Value,
+    ) {
+        let (temp, conn, owner, run) = source_owner_fixture();
+        owner
+            .repository
+            .pause(&conn, &run.root_action_id, false)
+            .unwrap();
+        owner.resume(&conn, &handle_of(&run)).unwrap();
+        let run = owner.repository.get(&conn, &run.run_id).unwrap();
+        let request = json!({
+            "handle": handle_of(&run),
+            "invocationNonce": "prepared-test",
+            "task": {
+                "purpose": "brainstorm",
+                "output": "visible-text",
+                "messages": [{"role": "user", "content": "合成构思请求"}]
+            }
+        });
+        (temp, conn, owner, request)
+    }
+
+    #[test]
+    fn prepared_execution_owns_frozen_inputs_without_owner_or_database_borrow() {
+        let (_temp, conn, owner, mut request) = prepared_owner_fixture();
+        let prepared = owner.prepare_execution(&conn, &request, false).unwrap();
+        let original_task = request["task"].clone();
+        request["task"]["messages"][0]["content"] = json!("准备后修改原请求");
+        let pending = owner.pending_invocations.clone();
+        assert_eq!(pending.lock().unwrap().len(), 1);
+        let run_id = request["handle"]["runId"].as_str().unwrap();
+        let run = owner.repository.get(&conn, run_id).unwrap();
+        assert!(owner
+            .repository
+            .budget(&conn, &run.root_action_id)
+            .unwrap()
+            .attempts
+            .is_empty());
+        assert!(Arc::ptr_eq(&prepared.service, &owner.run_service));
+        drop(owner);
+        drop(conn);
+        // 编译和跨线程移动共同验证准备值没有 owner/连接生命周期借用。
+        std::thread::spawn(move || {
+            assert_eq!(prepared.task, original_task);
+            match &prepared.plan {
+                PreparedExecutionPlan::Dispatch(execution) => {
+                    assert_eq!(execution.invocation_nonce, "prepared-test");
+                    assert!(execution.reserved_tokens > 0);
+                    assert!(!execution.provider_request.is_null());
+                }
+                PreparedExecutionPlan::Replay(_) => panic!("首次准备不能重放"),
+            }
+            drop(prepared);
+        })
+        .join()
+        .unwrap();
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepared_execution_plan_failure_cleans_pending_without_reserving_attempt() {
+        let (_temp, conn, owner, request) = prepared_owner_fixture();
+        // 保留其他证据，只撤销运行租约，使登记后的计划准备失败。
+        owner.run_leases.lock().unwrap().clear();
+        let error = owner
+            .prepare_execution(&conn, &request, false)
+            .err()
+            .unwrap();
+        assert_eq!(error, mutating_error("GENERATION_RESUME_REQUIRED"));
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        let run = owner
+            .repository
+            .get(&conn, request["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        assert!(owner
+            .repository
+            .budget(&conn, &run.root_action_id)
+            .unwrap()
+            .attempts
+            .is_empty());
+    }
+
+    #[test]
+    fn prepared_execution_duplicate_guard_preserves_conflict_until_last_drop() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let owner = owner_with(&conn);
+        let first = owner.register_pending_invocation("key", "hash-1").unwrap();
+        let second = owner.register_pending_invocation("key", "hash-1").unwrap();
+        drop(first);
+        assert_eq!(owner.pending_invocations.lock().unwrap()["key"].holders, 1);
+        assert_eq!(
+            owner
+                .register_pending_invocation("key", "hash-2")
+                .err()
+                .unwrap(),
+            mutating_error("GENERATION_INVOCATION_CONFLICT")
+        );
+        drop(second);
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        let replacement = owner.register_pending_invocation("key", "hash-2").unwrap();
+        drop(replacement);
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepared_execution_unwind_reclaims_pending_guard() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let owner = owner_with(&conn);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = owner.register_pending_invocation("key", "hash").unwrap();
+            panic!("合成准备中断");
+        }));
+        assert!(result.is_err());
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepared_execution_compatibility_and_terminal_replay_keep_single_attempt() {
+        use crate::services::generation_run_service::{
+            create_generation_run_service, DispatchOptions, GenerationDispatchResult,
+            GenerationDispatcher, GenerationRunServiceDependencies,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct PreparedDispatcher {
+            calls: Arc<AtomicUsize>,
+            pending: Arc<Mutex<HashMap<String, PendingOwnerInvocation>>>,
+        }
+        impl GenerationDispatcher for PreparedDispatcher {
+            fn dispatch<'a>(
+                &'a self,
+                _request: &'a Value,
+                _options: DispatchOptions<'a>,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<GenerationDispatchResult, String>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    assert_eq!(self.pending.lock().unwrap().len(), 1);
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(GenerationDispatchResult {
+                        usage: None,
+                        finish_reason: Some("stop".into()),
+                    })
+                })
+            }
+        }
+
+        let (_temp, conn, mut owner, request) = prepared_owner_fixture();
+        let calls = Arc::new(AtomicUsize::new(0));
+        owner.run_service = Arc::new(create_generation_run_service(
+            GenerationRunServiceDependencies {
+                repository: GenerationRunRepository::default(),
+                dispatch: Arc::new(PreparedDispatcher {
+                    calls: calls.clone(),
+                    pending: owner.pending_invocations.clone(),
+                }),
+                on_reasoning: None,
+                on_snapshot: None,
+                validate_recovery: None,
+            },
+        ));
+        let first = owner.execute(&conn, &request).unwrap();
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        // 已结算重放不能再次分发，也不需要重新获得运行模型租约。
+        owner.run_leases.lock().unwrap().clear();
+        let replay = owner.execute(&conn, &request).unwrap();
+        let mut first_outcome = first["outcome"].clone();
+        let mut replay_outcome = replay["outcome"].clone();
+        // deadlineAt 是预算读回时按剩余活跃时间投影的时钟值，不是重放身份。
+        for outcome in [&mut first_outcome, &mut replay_outcome] {
+            let deadline = outcome["receipt"]["budget"]
+                .as_object_mut()
+                .unwrap()
+                .remove("deadlineAt")
+                .unwrap();
+            assert!(deadline.as_i64().is_some_and(|value| value > 0));
+        }
+        assert_eq!(first_outcome, replay_outcome);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        let run = owner
+            .repository
+            .get(&conn, request["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .attempts
+                .len(),
+            1
+        );
     }
 
     #[test]
