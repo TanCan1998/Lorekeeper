@@ -1405,6 +1405,15 @@ impl GenerationRunService {
         self.repository.open(conn, request)
     }
 
+    /// owner 创建与准入共用事务，由调用方负责提交或回滚。
+    pub(crate) fn open_in_transaction(
+        &self,
+        conn: &Connection,
+        request: &OpenGenerationRunRequest,
+    ) -> Result<DurableGenerationRun, String> {
+        self.repository.open_in_existing_transaction(conn, request)
+    }
+
     /// 基线 `suspendForProjectClose`（:322-333）——项目关闭
     /// 挂起：句柄仍打开时同步 flush 全部 controller，持久未知
     /// 记账后逐个 suspend；`unsavedTails` 非空拒绝挂起。

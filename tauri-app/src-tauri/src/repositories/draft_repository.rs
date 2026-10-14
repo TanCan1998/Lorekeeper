@@ -648,6 +648,23 @@ pub fn get_max_finalized_chapter(conn: &Connection) -> Result<i64, String> {
 
 /// 创建草稿（事务内原子分配 version + 校验来源依赖），返回新建 ID
 pub fn create(conn: &Connection, params: &DraftCreateParams) -> Result<i64, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|error| format!("开启事务失败：{error}"))?;
+    let id = create_in_transaction(&tx, params)?;
+    tx.commit()
+        .map_err(|error| format!("提交草稿失败：{error}"))?;
+    Ok(id)
+}
+
+/// 复用调用方事务，草稿与生成回执必须共同提交或回滚。
+pub(crate) fn create_in_transaction(
+    conn: &Connection,
+    params: &DraftCreateParams,
+) -> Result<i64, String> {
+    if conn.is_autocommit() {
+        return Err("草稿创建需要调用方事务".to_string());
+    }
     let dependencies = params.source_dependencies.clone().unwrap_or_default();
     let serialized = serialize_dependencies(&dependencies)?;
     let parsed = parse_dependencies(Some(&serialized));
@@ -655,21 +672,17 @@ pub fn create(conn: &Connection, params: &DraftCreateParams) -> Result<i64, Stri
         return Err("草稿来源依赖无效".to_string());
     }
 
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|error| format!("开启事务失败：{error}"))?;
-
     let dependency_ids: Vec<i64> = parsed
         .dependencies
         .iter()
         .map(|dependency| dependency.draft_id)
         .collect();
-    let states = dependency_states(&tx, &dependency_ids)?;
+    let states = dependency_states(conn, &dependency_ids)?;
     if !dependencies_are_current(&parsed.dependencies, &states, &mut HashMap::new()) {
         return Err("草稿来源依赖已变化或不再是当前定稿，已拒绝保存".to_string());
     }
 
-    let max_version: Option<i64> = tx
+    let max_version: Option<i64> = conn
         .query_row(
             "SELECT MAX(version) FROM drafts WHERE chapter_number = ?1",
             [params.chapter_number],
@@ -678,8 +691,8 @@ pub fn create(conn: &Connection, params: &DraftCreateParams) -> Result<i64, Stri
         .map_err(|error| format!("读取草稿版本失败：{error}"))?;
     let version = max_version.unwrap_or(0) + 1;
 
-    let content_id = contents::create(&tx, &params.content)?;
-    tx.execute(
+    let content_id = contents::create(conn, &params.content)?;
+    conn.execute(
         "INSERT INTO drafts (chapter_number, version, source, content_id, word_count, source_dependencies)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
@@ -692,10 +705,7 @@ pub fn create(conn: &Connection, params: &DraftCreateParams) -> Result<i64, Stri
         ],
     )
     .map_err(|error| format!("写入草稿失败：{error}"))?;
-    let id = tx.last_insert_rowid();
-
-    tx.commit()
-        .map_err(|error| format!("提交草稿失败：{error}"))?;
+    let id = conn.last_insert_rowid();
     Ok(id)
 }
 

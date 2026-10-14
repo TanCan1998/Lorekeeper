@@ -128,7 +128,25 @@ fn safe_integer_value(value: &Value) -> Option<i64> {
 /// 基线 `Number(text)` 的字符串形式（非数值 → `None`，下游按
 /// NaN 域拒绝）。
 fn js_number_text(text: &str) -> Option<f64> {
-    text.trim().parse::<f64>().ok()
+    let text = text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    for (lower, upper, radix) in [("0x", "0X", 16), ("0b", "0B", 2), ("0o", "0O", 8)] {
+        if let Some(digits) = text
+            .strip_prefix(lower)
+            .or_else(|| text.strip_prefix(upper))
+        {
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                return None;
+            }
+            return u64::from_str_radix(digits, radix)
+                .ok()
+                .map(|number| number as f64);
+        }
+    }
+    if text.is_empty() {
+        Some(0.0)
+    } else {
+        text.parse::<f64>().ok()
+    }
 }
 
 /// 基线 `Number(value)` 的 `Value` 形式（数字原样、字符串解析、
@@ -524,6 +542,22 @@ fn parse_planning_target_units_f64(value: Option<f64>) -> Result<i64, String> {
     parse_planning_target_units(text.as_deref())
 }
 
+/// begin 与策略构造共用的目标单位校验，缺省值只用于未提供目标时。
+pub(crate) fn planning_target_units(selection: &Value) -> Result<i64, String> {
+    let targets: Vec<&Value> = author_inputs(selection)
+        .filter(|input| input.get("id").and_then(Value::as_str) == Some("planning:target-units"))
+        .collect();
+    if targets.len() > 1 {
+        return Err(GENERATION_PLANNING_TARGET_INVALID.to_string());
+    }
+    let Some(target) = targets.first() else {
+        return parse_planning_target_units_f64(None);
+    };
+    let number = js_number_value(target.get("text").unwrap_or(&Value::Null))
+        .ok_or_else(|| GENERATION_PLANNING_TARGET_INVALID.to_string())?;
+    parse_planning_target_units_f64(Some(number))
+}
+
 /// 基线 `authorInputs` 迭代（缺失时为空）。
 fn author_inputs(selection: &Value) -> impl Iterator<Item = &Value> {
     selection
@@ -863,18 +897,7 @@ pub fn new_main_generation_policy(
 ) -> Result<MainGenerationPolicy, String> {
     let planning = planning_generation_scope(selection)?;
     if planning.is_some() {
-        let targets: Vec<&Value> = author_inputs(selection)
-            .filter(|input| {
-                input.get("id").and_then(Value::as_str) == Some("planning:target-units")
-            })
-            .collect();
-        if targets.len() > 1 {
-            return Err(GENERATION_PLANNING_TARGET_INVALID.to_string());
-        }
-        let units = targets
-            .first()
-            .and_then(|input| js_number_value(input.get("text").unwrap_or(&Value::Null)));
-        parse_planning_target_units_f64(units)?;
+        planning_target_units(selection)?;
     }
     let limits = resolve_generation_capability_constraints(&LeaseModelProfile::from_value(model));
     let user_max_output_tokens = limits

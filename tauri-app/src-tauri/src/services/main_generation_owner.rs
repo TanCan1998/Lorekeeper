@@ -1282,19 +1282,9 @@ impl MainGenerationOwner {
     /// - 批量意图主进程独占（:387）→ `GENERATION_BATCH_INTENT_MAIN_ONLY`
     ///   （`batch_initialization = false` 的 IPC 边界语义；主进程
     ///   内部批量初始化调用传 `true` 豁免该检查）。
-    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :395-443 的 run 创建核心——
-    /// `newMainGenerationPolicy` 策略构造器（electron/services/
-    /// main-generation-plan.ts 写面，含 `planningGenerationScope` /
-    /// `resolveGenerationCapabilityConstraints` / `scaledRootBudget` 等
-    /// 容量规划数学）、`deps.leases.begin` 模型执行租约、`buildBinding`
-    /// 源绑定（逻辑层 G4-6a 已就位：`generation_source_binding`）、
-    /// `service.open` 运行持久化编排与子生成器登记册（imports / agents /
-    /// finalizations / graphs / legacyRosters）的 admit 联动，以及
-    /// `generationOutputContract` 输出合同校验——依赖的策略规划器与
-    /// 生成运行服务尚未迁移。校验面之后按基线顺序在策略构造点
-    /// fail-closed（方法末段；命令层收敛为 `GENERATION_REQUEST_FAILED`）。
-    /// 影响面：合法选择当前收到「尚未迁移」拒绝而非运行视图；非法
-    /// 选择的错误码与基线逐字一致。
+    /// 普通根运行已接入真实策略、模型租约、源绑定和 immediate 写入。
+    /// 导入、Agent 初始化/新子代、批量、目录续接及审阅修订准入仍关闭；
+    /// 不能因为普通创建接线而绕过特殊域的登记册与生命周期合同。
     pub fn begin(
         &self,
         conn: &Connection,
@@ -1408,12 +1398,175 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_BATCH_INTENT_MAIN_ONLY"));
         }
-        // ⚠️ B3 占位：基线 :395-443 创建核心（策略构造器 / 模型租约 /
-        // buildBinding / service.open / 子生成器登记册 admit）未迁移——
-        // 策略构造点 fail-closed（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
-        Err(mutating_error(
-            "主生成运行创建尚未迁移：主生成策略规划器（newMainGenerationPolicy）与生成运行服务（generation-run-service）待后续批次移植",
-        ))
+        let output_contract =
+            generation_output_contract(selection).map_err(|error| mutating_error(&error))?;
+        // 专属准入尚未接入；只开放普通根运行，已有 Agent 子代仍可在前面幂等读回。
+        if agent_initialization {
+            return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+        }
+        if ["importSlot", "importExecution"]
+            .iter()
+            .any(|key| selection.get(*key).is_some_and(|value| !value.is_null()))
+            || matches!(operation, "import-global-facts" | "import-blueprints")
+        {
+            return Err(mutating_error("GENERATION_IMPORT_SLOT_REQUIRED"));
+        }
+        if selection
+            .get("finalizedCharacterContextId")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err(mutating_error("GENERATION_CHARACTER_CONTEXT_INVALID"));
+        }
+        if crate::services::review_revision_context::REVIEW_REVISION_OPERATIONS.contains(&operation)
+            || selection
+                .get("reviewRevisionContextId")
+                .is_some_and(|value| !value.is_null())
+            || [
+                "parentRootActionId",
+                "continueDirectoryOperationId",
+                "batchId",
+                "batchIntent",
+                "agentWorkflowRegistrationId",
+            ]
+            .iter()
+            .any(|key| selection.get(*key).is_some_and(|value| !value.is_null()))
+        {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        // 此切片只由普通 IPC 创建自己的事务；外层事务的租约移交须随特殊域再接入。
+        if !conn.is_autocommit() {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        let model_id = selection
+            .get("modelId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        let lease = self.acquire_model_lease(model_id)?;
+        let model = {
+            let mut store = lease
+                .store
+                .lock()
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+            store.resolve_model_at(&lease.receipt.lease_id, owner_now_ms())
+        }
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let receipt = crate::services::main_generation_sources::safe_model_receipt(&lease.receipt);
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let mut frozen_selection = selection.clone();
+        let scope = crate::services::main_generation_plan::planning_generation_scope(selection)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if let Some(scope) = &scope {
+            use crate::services::main_generation_plan::PlanningGenerationScope;
+            let range_end = match scope {
+                PlanningGenerationScope::Directory { requested_range } => {
+                    Some(requested_range.end_chapter)
+                }
+                PlanningGenerationScope::ArchitectureLegacyRange { intent }
+                | PlanningGenerationScope::ArchitectureOutline { intent } => {
+                    intent.synopsis_range.map(|range| range.to)
+                }
+            };
+            let total = crate::repositories::project_core_repository::get(&tx)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .map_or(0, |core| core.total_chapters);
+            if range_end.is_some_and(|end| end > total) {
+                return Err(mutating_error("GENERATION_PLANNING_RANGE_INVALID"));
+            }
+            let units = crate::services::main_generation_plan::planning_target_units(selection)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+            let mut inputs = match selection.get("authorInputs") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(inputs)) => inputs.clone(),
+                _ => return Err(mutating_error("GENERATION_SOURCE_BINDING_INVALID")),
+            };
+            inputs.retain(|input| {
+                input.get("id").and_then(Value::as_str) != Some("planning:target-units")
+            });
+            inputs.push(json!({"id":"planning:target-units", "text":units.to_string()}));
+            frozen_selection["authorInputs"] = json!(inputs);
+        }
+        let policy = crate::services::main_generation_plan::new_main_generation_policy(
+            &frozen_selection,
+            &model,
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let prepared = match selection.get("preparationId") {
+            None => None,
+            Some(id) => Some(
+                self.preparations
+                    .iter()
+                    .find(|(key, _)| Some(key.as_str()) == id.as_str())
+                    .filter(|_| operation == "chapter-draft")
+                    .map(|(_, entry)| entry)
+                    .ok_or_else(|| mutating_error("GENERATION_DRAFT_PREPARATION_REQUIRED"))?,
+            ),
+        };
+        if let Some(prepared) = prepared {
+            if selection.get("materialDecision").is_none_or(Value::is_null) {
+                return Err(mutating_error("GENERATION_MATERIAL_DECISION_REQUIRED"));
+            }
+            frozen_selection["knowledgeSnapshot"] = prepared.knowledge_snapshot.clone();
+        }
+        let policy_value = policy.to_value();
+        let binding = self.build_binding(
+            &tx,
+            &frozen_selection,
+            &receipt,
+            &policy_value,
+            &output_contract,
+        )?;
+        if binding.source_manifest.get("policy") != Some(&policy_value) {
+            return Err(mutating_error("GENERATION_POLICY_BINDING_MISMATCH"));
+        }
+        if prepared.is_some_and(|prepared| !preparation_matches(&prepared.binding, &binding, false))
+        {
+            return Err(mutating_error("GENERATION_DRAFT_PREPARATION_CHANGED"));
+        }
+        if binding.project_id != self.session.project_id || binding.epoch != self.session.lease_id {
+            return Err(mutating_error("GENERATION_BINDING_INVALID"));
+        }
+        let frozen_input_hash = text_hash(
+            &json!([
+                binding.fingerprint,
+                binding.context_snapshot_id,
+                selection["output"]
+            ])
+            .to_string(),
+        );
+        let run = self
+            .run_service
+            .open_in_transaction(
+                &tx,
+                &crate::repositories::generation_run_repository::OpenGenerationRunRequest {
+                    project_id: binding.project_id,
+                    epoch: binding.epoch,
+                    fingerprint: binding.fingerprint,
+                    context_snapshot_id: binding.context_snapshot_id,
+                    source_manifest: binding.source_manifest,
+                    source_refs: binding.source_refs,
+                    operation: operation.to_string(),
+                    ui_action_nonce: selection["uiActionNonce"].as_str().unwrap().to_string(),
+                    frozen_input_hash,
+                    budget: policy.budget,
+                    parent_root_action_id: None,
+                },
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let view = self.view_of(&tx, &run)?;
+        tx.commit()
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let should_attach = run.binding.epoch == self.session.lease_id
+            && !self
+                .run_leases
+                .lock()
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?
+                .contains_key(&run.run_id);
+        if should_attach {
+            lease.attach(self, &run.run_id);
+        }
+        Ok(view)
     }
 
     /// 基线 owner 闭包内 `agents.admitWorkflow(selection)` 的等价
@@ -2123,21 +2276,8 @@ impl MainGenerationOwner {
     /// `{ success, id, version, content, contentHash }`；不一致 →
     /// `GENERATION_DRAFT_COMMIT_CONFLICT`）。
     ///
-    /// ⚠️ B3 占位：基线 :139-174 的新提交写入路径未迁移——
-    /// `assertSourcesCurrent` 源一致性重建（:700-717，依赖
-    /// `rebuildBinding`）、可见合成 / 目标单位 / 批次进度校验
-    /// （:140-160）、`DraftRepository.create` 草稿行写入与
-    /// `generation_attempts` usage 回执写回（:161-171），以及
-    /// 外层 `deps.database.transaction(...).immediate()` 事务包装
-    /// （generation-draft-effects.ts 头注：`commit` 写面刻意不平移，
-    /// 随 G4-6/G4-7 迁移）。G4-10d 接线：基线 :1297 新提交路径
-    /// 经 `agents.withChildEffect(request.handle, …)` 包装活化
-    /// （见 [`MainGenerationOwner::with_agent_child_effect`]）——
-    /// 门禁链（运行身份 / 服务层 registration / 源一致性）先行
-    /// 校验，效应写入路径保持 fail-closed 占位（写入面与
-    /// `assertSourcesCurrent` 写入时源断言回调属未迁移写入路径
-    /// 的一部分，本波不实现）——新提交入口 fail-closed（命令层
-    /// 收敛为 `GENERATION_REQUEST_FAILED`）。
+    /// 新提交在同一 immediate 事务内校验真实源、创建草稿、写回收据
+    /// 并记录代理子效应；任一步失败全部回滚。已提交重放不重新断言源。
     pub fn commit_draft(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
         let run = self.require_run(conn, &handle, false)?;
@@ -2162,9 +2302,7 @@ impl MainGenerationOwner {
             // 回执一致时返回原回执子集（GenerationDraftCommitReceipt
             // 形状，契约 generation-owner-contract.ts:111-117），
             // 不一致 → GENERATION_DRAFT_COMMIT_CONFLICT。
-            // 注：`read_commit` 回执序列化为 snake_case 键
-            // （StoredDraftCommit 无 rename_all）。
-            if previous.get("content_hash").and_then(Value::as_str)
+            if previous.get("contentHash").and_then(Value::as_str)
                 != request
                     .get("expectedCompositionHash")
                     .and_then(Value::as_str)
@@ -2175,40 +2313,52 @@ impl MainGenerationOwner {
                 "success": true,
                 "id": previous.get("id").cloned().unwrap_or(Value::Null),
                 "version": previous.get("version").cloned().unwrap_or(Value::Null),
-                "contentHash": previous.get("content_hash").cloned().unwrap_or(Value::Null),
+                "contentHash": previous.get("contentHash").cloned().unwrap_or(Value::Null),
                 "content": previous.get("content").cloned().unwrap_or(Value::Null),
             }));
         }
-        // 基线 :1297 新提交路径 `agents.withChildEffect(request.handle,
-        // () => draftEffects.commit(request, () => assertSourcesCurrent(
-        // request.handle)))`——G4-10d 接线：门禁链（require_run 运行
-        // 身份 / 服务层 registration / 源一致性）先行校验，效应
-        // 写入路径保持 B3 fail-closed 占位（基线 draftEffects.commit
-        // 写入面与 assertSourcesCurrent 写入时源断言回调未迁移——
-        // 见方法头注）。
-        let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )
-        .map_err(|error| mutating_error(&error))?;
-        agent
-            .with_child_effect(&handle, |_conn| {
-                Err(mutating_error(
-                    "主生成草稿提交尚未迁移：草稿写入路径（generation-draft-effects.commit 的 DraftRepository.create 与 generation_attempts usage 回执写回）与 assertSourcesCurrent 写入时源断言回调待后续批次移植",
-                ))
-            })
-            .map_err(|error| {
-                if error.starts_with("Error: ") {
-                    error
-                } else {
-                    mutating_error(&error)
-                }
-            })
+        // 事务覆盖服务构造、效应前后源投影与草稿/收据写入，不能提前提交草稿。
+        let commit = |conn: &Connection| {
+            let assert_current = || self.assert_current();
+            let agent = AgentGeneration::new(
+                conn,
+                self.repository.clone(),
+                &self.session.project_id,
+                &self.session.lease_id,
+                &assert_current,
+                self,
+            )
+            .map_err(|error| mutating_error(&error))?;
+            agent
+                .with_child_effect(&handle, |conn| {
+                    GenerationDraftEffects.commit_in_transaction(
+                        conn,
+                        &self.repository,
+                        request,
+                        || self.assert_sources_current(conn, &handle, None),
+                    )
+                })
+                .map_err(|error| {
+                    if error.starts_with("Error: ") {
+                        error
+                    } else {
+                        mutating_error(map_generation_error(&error))
+                    }
+                })
+        };
+        if !conn.is_autocommit() {
+            let savepoint = DraftCommitSavepoint::new(conn)?;
+            let receipt = commit(conn)?;
+            savepoint.commit()?;
+            return Ok(receipt);
+        }
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let receipt = commit(&tx)?;
+        tx.commit()
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        Ok(receipt)
     }
 
     /// 基线 `retryDraftShortOutline`（main-generation-owner.ts:619-624）：
@@ -3407,6 +3557,53 @@ fn without_keys(row: &Map<String, Value>, excluded: &[&str]) -> Map<String, Valu
         .collect()
 }
 
+/// 基线 generationOutputContract：只允许可见文本/结构化数据和唯一用途覆盖。
+fn generation_output_contract(selection: &Value) -> Result<Value, String> {
+    let output = selection
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|output| matches!(*output, "visible-text" | "structured-data"))
+        .ok_or_else(|| "GENERATION_OUTPUT_CONTRACT_INVALID".to_string())?;
+    let Some(overrides) = selection.get("outputOverrides") else {
+        return Ok(json!(output));
+    };
+    let overrides = overrides
+        .as_array()
+        .filter(|items| !items.is_empty() && items.len() <= 8)
+        .ok_or_else(|| "GENERATION_OUTPUT_CONTRACT_INVALID".to_string())?;
+    let mut purposes = HashSet::new();
+    for item in overrides {
+        let purpose = item
+            .get("purpose")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let valid_purpose = !purpose.is_empty()
+            && purpose.len() <= 128
+            && purpose
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && purpose.chars().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, ':' | '_' | '-')
+            });
+        if !valid_purpose
+            || !purposes.insert(purpose)
+            || !item.as_object().is_some_and(|object| {
+                object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "purpose" | "output"))
+            })
+            || !matches!(
+                item.get("output").and_then(Value::as_str),
+                Some("visible-text" | "structured-data")
+            )
+        {
+            return Err("GENERATION_OUTPUT_CONTRACT_INVALID".to_string());
+        }
+    }
+    Ok(json!({"primary": output, "overrides": overrides}))
+}
+
 /// 基线 `textHash`（`createHash('sha256').update(text)
 /// .digest('hex')`；形态对齐 `generation_source_binding::hash`，
 /// G4-6a——未修改 UTF-8 字节的 SHA-256 hex）。
@@ -3530,6 +3727,38 @@ impl Drop for OwnerModelLease {
             if let Ok(mut store) = self.store.lock() {
                 store.close(&self.receipt.lease_id, owner_now_ms());
             }
+        }
+    }
+}
+
+/// 借用不可变连接的嵌套事务守卫；失败或异常退出时撤销本次草稿效应。
+struct DraftCommitSavepoint<'a> {
+    conn: &'a Connection,
+    committed: bool,
+}
+impl<'a> DraftCommitSavepoint<'a> {
+    fn new(conn: &'a Connection) -> Result<Self, String> {
+        conn.execute_batch("SAVEPOINT lorekeeper_draft_commit")
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        Ok(Self {
+            conn,
+            committed: false,
+        })
+    }
+    fn commit(mut self) -> Result<(), String> {
+        self.conn
+            .execute_batch("RELEASE lorekeeper_draft_commit")
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        self.committed = true;
+        Ok(())
+    }
+}
+impl Drop for DraftCommitSavepoint<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.conn.execute_batch(
+                "ROLLBACK TO lorekeeper_draft_commit; RELEASE lorekeeper_draft_commit",
+            );
         }
     }
 }
@@ -3787,6 +4016,747 @@ pub struct MainGenerationReasoningEventProjection {
 mod tests {
     use super::*;
     use crate::repositories::generation_run_repository::OpenGenerationRunRequest;
+
+    fn draft_commit_fixture(
+        text: &str,
+        finish: &str,
+        target: i64,
+    ) -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        Value,
+    ) {
+        draft_commit_source_fixture(text, finish, target, false)
+    }
+
+    fn draft_commit_source_fixture(
+        text: &str,
+        finish: &str,
+        target: i64,
+        with_source: bool,
+    ) -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        Value,
+    ) {
+        let (temp, conn, mut owner, _) = source_owner_fixture();
+        let chapter = if with_source { 2 } else { 1 };
+        let sources = if with_source {
+            let id = crate::repositories::draft_repository::create(
+                &conn,
+                &crate::repositories::draft_repository::DraftCreateParams {
+                    chapter_number: 1,
+                    version: None,
+                    source: "write".to_string(),
+                    content: "合成前章".to_string(),
+                    word_count: 4,
+                    source_dependencies: None,
+                },
+            )
+            .unwrap();
+            vec![id]
+        } else {
+            vec![]
+        };
+        conn.execute(
+            "INSERT INTO blueprints (chapter_number,title) VALUES (?,'合成蓝图')",
+            [chapter],
+        )
+        .unwrap();
+        let selection = json!({"operation":"chapter-draft","uiActionNonce":"draft-fixture",
+            "modelId":"fixture","chapterNumber":chapter,"selectedDraftIds":sources,
+            "selectedFinalizedDraftIds":[],"selectedBlueprintChapterNumbers":[],
+            "promptKeys":["edit_selected_text"],"skillStages":[],"output":"visible-text",
+            "authorInputs":[{"id":"draft:target-units","text":target.to_string()}]});
+        let policy = crate::services::main_generation_plan::new_main_generation_policy(
+            &selection,
+            &crate::services::main_generation_sources::tests::model(),
+        )
+        .unwrap();
+        let model_receipt = crate::services::main_generation_sources::read_only_model_receipt(
+            &owner.global_data_root,
+            "fixture",
+        )
+        .unwrap();
+        let binding = owner
+            .build_binding(
+                &conn,
+                &selection,
+                &model_receipt,
+                &policy.to_value(),
+                &json!("visible-text"),
+            )
+            .unwrap();
+        let run = owner
+            .repository
+            .open(
+                &conn,
+                &OpenGenerationRunRequest {
+                    project_id: binding.project_id,
+                    epoch: binding.epoch,
+                    fingerprint: binding.fingerprint,
+                    context_snapshot_id: binding.context_snapshot_id,
+                    source_manifest: binding.source_manifest,
+                    source_refs: binding.source_refs,
+                    operation: "chapter-draft".to_string(),
+                    ui_action_nonce: "draft-fixture".to_string(),
+                    frozen_input_hash: fake_content_hash(),
+                    budget: policy.budget,
+                    parent_root_action_id: None,
+                },
+            )
+            .unwrap();
+        let receipt = owner
+            .repository
+            .reserve(
+                &conn,
+                &run.run_id,
+                "draft-invocation",
+                &fake_content_hash(),
+                100,
+                10,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        owner
+            .repository
+            .mark_dispatched(&conn, &receipt.attempt.attempt_id)
+            .unwrap();
+        let prior = receipt.artifact.unwrap();
+        let artifact = owner
+            .repository
+            .snapshot(&conn, &receipt.attempt.attempt_id, prior.revision, text)
+            .unwrap();
+        owner
+            .repository
+            .settle(
+                &conn,
+                &receipt.attempt.attempt_id,
+                None,
+                Some(finish.to_string()),
+                None,
+                None,
+            )
+            .unwrap();
+        let composition = owner
+            .repository
+            .compose_visible(
+                &conn,
+                &run.run_id,
+                &[artifact.artifact_id],
+                None,
+                "draft-visible-v2",
+            )
+            .unwrap();
+        let request = json!({"handle":handle_of(&run),"source":"write","chapterNumber":chapter,
+            "expectedCompositionHash":composition.text_hash});
+        // 此测试只走本地账本，不进行网络调用或真实模型租约分发。
+        owner.preparations.clear();
+        (temp, conn, owner, request)
+    }
+
+    fn draft_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM drafts", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn draft_commit_creates_receipt_and_replays_after_source_change_test() {
+        let (_temp, conn, owner, request) =
+            draft_commit_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10);
+        let receipt = owner.commit_draft(&conn, &request).unwrap();
+        assert_eq!(receipt["success"], true);
+        assert_eq!(receipt["version"], 1);
+        assert_eq!(draft_count(&conn), 1);
+        assert_eq!(
+            GenerationDraftEffects
+                .read_recovery(
+                    &conn,
+                    &owner.repository,
+                    request["handle"]["runId"].as_str().unwrap()
+                )
+                .unwrap()["kind"],
+            "current"
+        );
+        let usage: String = conn
+            .query_row(
+                "SELECT usage_receipt_json FROM generation_attempts WHERE run_id=?",
+                [request["handle"]["runId"].as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let usage: Value = serde_json::from_str(&usage).unwrap();
+        assert_eq!(usage["draftCommit"]["contentHash"], receipt["contentHash"]);
+        assert!(usage["draftCommit"].get("content_hash").is_none());
+        assert!(usage["draftCommit"].get("batchId").is_none());
+        conn.execute(
+            "UPDATE blueprints SET title='合成变化' WHERE chapter_number=1",
+            [],
+        )
+        .unwrap();
+        assert_eq!(owner.commit_draft(&conn, &request).unwrap(), receipt);
+        let mut conflict = request.clone();
+        conflict["expectedCompositionHash"] = json!("0".repeat(64));
+        assert_eq!(
+            owner.commit_draft(&conn, &conflict).unwrap_err(),
+            "Error: GENERATION_DRAFT_COMMIT_CONFLICT"
+        );
+        assert_eq!(draft_count(&conn), 1);
+    }
+
+    #[test]
+    fn draft_commit_rejects_target_and_composition_mismatch_test() {
+        let (_temp, conn, owner, request) =
+            draft_commit_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10);
+        for key in ["source", "chapterNumber", "batchId"] {
+            let mut invalid = request.clone();
+            invalid[key] = if key == "chapterNumber" {
+                json!(2)
+            } else {
+                json!("invalid")
+            };
+            assert_eq!(
+                owner.commit_draft(&conn, &invalid).unwrap_err(),
+                "Error: GENERATION_DRAFT_TARGET_INVALID"
+            );
+        }
+        let mut invalid = request;
+        invalid["expectedCompositionHash"] = json!("0".repeat(64));
+        assert_eq!(
+            owner.commit_draft(&conn, &invalid).unwrap_err(),
+            "Error: GENERATION_DRAFT_COMPOSITION_REQUIRED"
+        );
+        assert_eq!(draft_count(&conn), 0);
+    }
+
+    #[test]
+    fn draft_commit_rejects_truncated_and_insufficient_text_test() {
+        for (text, finish, target) in [("甲乙丙丁戊己庚辛壬癸", "length", 10), ("甲乙", "stop", 10)]
+        {
+            let (_temp, conn, owner, request) = draft_commit_fixture(text, finish, target);
+            assert_eq!(
+                owner.commit_draft(&conn, &request).unwrap_err(),
+                "Error: GENERATION_DRAFT_INCOMPLETE"
+            );
+            assert_eq!(draft_count(&conn), 0);
+        }
+    }
+
+    #[test]
+    fn draft_commit_rejects_source_drift_before_writing_test() {
+        let (_temp, conn, owner, request) =
+            draft_commit_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10);
+        conn.execute(
+            "UPDATE blueprints SET title='合成变化' WHERE chapter_number=1",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            owner.commit_draft(&conn, &request).unwrap_err(),
+            "Error: GENERATION_SOURCE_CHANGED"
+        );
+        assert_eq!(draft_count(&conn), 0);
+    }
+
+    #[test]
+    fn draft_commit_receipt_write_failure_rolls_back_body_test() {
+        let (_temp, conn, owner, request) =
+            draft_commit_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10);
+        let contents_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
+            .unwrap();
+        conn.execute_batch("CREATE TEMP TRIGGER reject_draft_receipt BEFORE UPDATE OF usage_receipt_json ON generation_attempts
+            WHEN json_extract(NEW.usage_receipt_json,'$.draftCommit') IS NOT NULL
+            BEGIN SELECT RAISE(ABORT,'合成收据写入失败'); END;").unwrap();
+        assert_eq!(
+            owner.commit_draft(&conn, &request).unwrap_err(),
+            "Error: GENERATION_REQUEST_FAILED"
+        );
+        assert!(conn.is_autocommit());
+        assert_eq!(draft_count(&conn), 0);
+        let contents_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contents", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(contents_after, contents_before);
+        conn.execute_batch("DROP TRIGGER reject_draft_receipt")
+            .unwrap();
+        assert_eq!(
+            owner.commit_draft(&conn, &request).unwrap()["success"],
+            true
+        );
+    }
+
+    #[test]
+    fn draft_commit_shares_caller_transaction_and_edited_body_invalidates_replay_test() {
+        let (_temp, conn, owner, request) =
+            draft_commit_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10);
+        {
+            let tx = rusqlite::Transaction::new_unchecked(
+                &conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )
+            .unwrap();
+            owner.commit_draft(&tx, &request).unwrap();
+            assert!(!tx.is_autocommit());
+            assert_eq!(draft_count(&tx), 1);
+            // 守卫释放后整笔效应回滚，不能提前提交。
+        }
+        assert_eq!(draft_count(&conn), 0);
+        let receipt = owner.commit_draft(&conn, &request).unwrap();
+        conn.execute("UPDATE contents SET body='人工合成修改' WHERE id=(SELECT content_id FROM drafts WHERE id=?)",
+            [receipt["id"].as_i64().unwrap()]).unwrap();
+        assert_eq!(
+            owner.commit_draft(&conn, &request).unwrap_err(),
+            "Error: GENERATION_DRAFT_RECEIPT_INVALID"
+        );
+    }
+
+    #[test]
+    fn draft_commit_nested_failure_rolls_back_even_when_caller_commits_test() {
+        let (_temp, conn, owner, request) =
+            draft_commit_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10);
+        conn.execute_batch("CREATE TEMP TRIGGER reject_nested_receipt BEFORE UPDATE OF usage_receipt_json ON generation_attempts
+            WHEN json_extract(NEW.usage_receipt_json,'$.draftCommit') IS NOT NULL
+            BEGIN SELECT RAISE(ABORT,'合成失败'); END;").unwrap();
+        let tx =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+        assert!(owner.commit_draft(&tx, &request).is_err());
+        assert_eq!(draft_count(&tx), 0);
+        tx.commit().unwrap();
+        assert_eq!(draft_count(&conn), 0);
+    }
+
+    #[test]
+    fn draft_commit_rejects_cancelled_action_and_wrong_epoch_test() {
+        let (_temp, conn, mut owner, request) =
+            draft_commit_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10);
+        owner.session.lease_id = "new-epoch".to_string();
+        assert_eq!(
+            owner.commit_draft(&conn, &request).unwrap_err(),
+            "Error: GENERATION_EPOCH_STALE"
+        );
+        owner.session.lease_id = "lease-1".to_string();
+        owner
+            .repository
+            .pause(
+                &conn,
+                request["handle"]["rootActionId"].as_str().unwrap(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            owner.commit_draft(&conn, &request).unwrap_err(),
+            "Error: GENERATION_ACTION_CANCELLED"
+        );
+        assert_eq!(draft_count(&conn), 0);
+    }
+
+    #[test]
+    fn draft_commit_preserves_candidate_dependencies_and_rejects_drift_test() {
+        let (_temp, conn, owner, request) =
+            draft_commit_source_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10, true);
+        let receipt = owner.commit_draft(&conn, &request).unwrap();
+        let dependencies: String = conn
+            .query_row(
+                "SELECT source_dependencies FROM drafts WHERE id=?",
+                [receipt["id"].as_i64().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let dependencies: Value = serde_json::from_str(&dependencies).unwrap();
+        assert_eq!(dependencies.as_array().unwrap().len(), 1);
+        assert_eq!(dependencies[0]["kind"], "candidate");
+        assert_eq!(dependencies[0]["draftId"], 1);
+        assert_eq!(dependencies[0]["contentHash"], text_hash("合成前章"));
+        let (_temp, conn, owner, request) =
+            draft_commit_source_fixture("甲乙丙丁戊己庚辛壬癸", "stop", 10, true);
+        conn.execute("UPDATE contents SET body='合成前章变化' WHERE id=(SELECT content_id FROM drafts WHERE id=1)", []).unwrap();
+        assert_eq!(
+            owner.commit_draft(&conn, &request).unwrap_err(),
+            "Error: GENERATION_SOURCE_CHANGED"
+        );
+        assert_eq!(draft_count(&conn), 1);
+    }
+
+    fn begin_root_selection() -> Value {
+        json!({"operation":"brainstorm","uiActionNonce":"begin-root","modelId":"fixture",
+            "selectedDraftIds":[],"selectedFinalizedDraftIds":[],"selectedBlueprintChapterNumbers":[],
+            "promptKeys":["edit_selected_text"],"skillStages":[],"output":"visible-text"})
+    }
+
+    fn begin_run_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM generation_runs", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn begin_root_creates_real_binding_safe_receipt_and_preserves_lease_on_replay_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let selection = begin_root_selection();
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let handle = &view["handle"];
+        let run = owner
+            .repository
+            .get(&conn, handle["runId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(run.binding.project_id, "project-1");
+        assert_eq!(run.binding.epoch, "lease-1");
+        assert_eq!(run.binding.source_manifest["operation"], "brainstorm");
+        assert_eq!(
+            run.binding.source_manifest["outputContract"],
+            "visible-text"
+        );
+        assert_eq!(
+            owner.rebuild_binding(&conn, &run.binding).unwrap(),
+            run.binding
+        );
+        for private in [
+            "synthetic-only",
+            "apiKey",
+            "leaseId",
+            "baseUrl",
+            "createdAt",
+            "expiresAt",
+        ] {
+            assert!(!view.to_string().contains(private), "不得泄漏 {private}");
+        }
+        let lease = owner.run_leases.lock().unwrap()[&run.run_id].clone();
+        let repeated = owner.begin(&conn, &selection, false, false).unwrap();
+        assert_eq!(repeated["handle"], view["handle"]);
+        assert_eq!(owner.run_leases.lock().unwrap()[&run.run_id], lease);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert_eq!(begin_run_count(&conn), 2);
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn begin_root_output_contract_validates_and_freezes_overrides_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let mut selection = begin_root_selection();
+        for invalid in [
+            json!(null),
+            json!([]),
+            json!([{"purpose":"bad purpose","output":"visible-text"}]),
+            json!([{"purpose":"review","output":"structured-data","extra":true}]),
+            json!([{"purpose":"review","output":"visible-text"},{"purpose":"review","output":"structured-data"}]),
+            json!([{"purpose":"review","output":"unknown"}]),
+        ] {
+            selection["outputOverrides"] = invalid;
+            assert_eq!(
+                owner.begin(&conn, &selection, false, false).unwrap_err(),
+                mutating_error("GENERATION_OUTPUT_CONTRACT_INVALID")
+            );
+        }
+        let overrides = json!([{"purpose":"review","output":"structured-data"}]);
+        selection["outputOverrides"] = overrides.clone();
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let run = owner
+            .repository
+            .get(&conn, view["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            run.binding.source_manifest["outputContract"],
+            json!({"primary":"visible-text","overrides":overrides})
+        );
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+    }
+
+    #[test]
+    fn begin_root_write_failure_rolls_back_root_and_releases_lease_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER reject_begin_run BEFORE INSERT ON generation_runs
+            BEGIN SELECT RAISE(ABORT,'合成运行写入失败'); END;",
+        )
+        .unwrap();
+        assert_eq!(
+            owner
+                .begin(&conn, &begin_root_selection(), false, false)
+                .unwrap_err(),
+            mutating_error(GENERATION_REQUEST_FAILED)
+        );
+        assert_eq!(begin_run_count(&conn), 1);
+        let roots: i64 = conn
+            .query_row("SELECT COUNT(*) FROM generation_roots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(roots, 1);
+        assert!(owner.run_leases.lock().unwrap().is_empty());
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn begin_root_source_and_preparation_failures_release_new_lease_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let mut selection = begin_root_selection();
+        selection["promptKeys"] = json!(["synthetic-missing-prompt"]);
+        assert!(owner.begin(&conn, &selection, false, false).is_err());
+        selection = begin_root_selection();
+        selection["preparationId"] = json!("missing");
+        assert_eq!(
+            owner.begin(&conn, &selection, false, false).unwrap_err(),
+            mutating_error("GENERATION_DRAFT_PREPARATION_REQUIRED")
+        );
+        assert_eq!(begin_run_count(&conn), 1);
+        assert!(owner.run_leases.lock().unwrap().is_empty());
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+        assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn begin_root_rejects_unmigrated_admission_without_creating_budget_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        for (field, value) in [
+            ("batchId", json!("batch")),
+            ("continueDirectoryOperationId", json!("directory")),
+            ("reviewRevisionContextId", json!("review")),
+            ("finalizedCharacterContextId", json!("finalized")),
+            ("importSlot", json!({})),
+            ("importExecution", json!({})),
+        ] {
+            let mut selection = begin_root_selection();
+            selection[field] = value;
+            assert!(
+                owner.begin(&conn, &selection, false, false).is_err(),
+                "{field}"
+            );
+        }
+        for operation in [
+            "review-chapter",
+            "refine-draft",
+            "refine-from-review",
+            "import-global-facts",
+            "import-blueprints",
+            "editor-inline",
+            "finalized-character-state",
+            "plot-tree-snapshot",
+            "legacy-character-roster-repair",
+            "agent-round",
+        ] {
+            let mut selection = begin_root_selection();
+            selection["operation"] = json!(operation);
+            assert!(
+                owner.begin(&conn, &selection, false, false).is_err(),
+                "{operation}"
+            );
+        }
+        let tx =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+        assert!(owner
+            .begin(&tx, &begin_root_selection(), false, false)
+            .is_err());
+        tx.commit().unwrap();
+        assert_eq!(begin_run_count(&conn), 1);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+    }
+
+    #[test]
+    fn begin_root_nonce_conflict_releases_temporary_lease_and_retains_original_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let selection = begin_root_selection();
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let id = view["handle"]["runId"].as_str().unwrap();
+        let original = owner.run_leases.lock().unwrap()[id].clone();
+        conn.execute("UPDATE generation_runs SET binding_json=json_set(binding_json,'$.sourceManifest.syntheticConflict',1) WHERE run_id=?", [id]).unwrap();
+        assert_eq!(
+            owner.begin(&conn, &selection, false, false).unwrap_err(),
+            mutating_error("GENERATION_NONCE_CONFLICT")
+        );
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(owner.run_leases.lock().unwrap()[id], original);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+    }
+
+    #[test]
+    fn begin_root_planning_normalizes_target_and_rejects_invalid_target_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let mut selection = begin_root_selection();
+        selection["operation"] = json!("generate-core-seed");
+        selection["output"] = json!("structured-data");
+        selection["authorInputs"] = json!([{"id":"architecture:author-config","text":"{\"totalChapters\":100}"},
+            {"id":"planning:target-units","text":"0x258"}]);
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let run = owner
+            .repository
+            .get(&conn, view["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        let inputs = run.binding.source_manifest["authorInputs"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            inputs
+                .iter()
+                .find(|input| input["id"] == "planning:target-units")
+                .unwrap()["text"],
+            "600"
+        );
+        for text in ["invalid", "0x+258", "0", "1001", "1.5"] {
+            selection["uiActionNonce"] = json!(format!("invalid-{text}"));
+            selection["authorInputs"][1]["text"] = json!(text);
+            assert_eq!(
+                owner.begin(&conn, &selection, false, false).unwrap_err(),
+                mutating_error("GENERATION_PLANNING_TARGET_INVALID")
+            );
+        }
+        selection["authorInputs"][1]["text"] = json!("600");
+        selection["authorInputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"planning:target-units","text":"600"}));
+        assert_eq!(
+            owner.begin(&conn, &selection, false, false).unwrap_err(),
+            mutating_error("GENERATION_PLANNING_TARGET_INVALID")
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert_eq!(begin_run_count(&conn), 2);
+    }
+
+    #[test]
+    fn begin_root_prepared_draft_checks_material_and_source_drift_test() {
+        let (_temp, conn, mut owner, _) = source_owner_fixture();
+        for chapter in 1..=6 {
+            conn.execute(
+                "INSERT INTO blueprints(chapter_number,title) VALUES (?,'合成蓝图')",
+                [chapter],
+            )
+            .unwrap();
+        }
+        let request = json!({"chapterNumber":1,"modelId":"fixture","promptKeys":["edit_selected_text"],
+            "skillStages":[],"selectedDraftIds":[],"query":"合成查询"});
+        let snapshot = json!({"version":1,"state":"empty","storageState":"absent","query":"合成查询",
+            "topK":3,"canonicalRevision":null,"documentsRevision":null,"items":[]});
+        let prepared = owner
+            .prepare_draft_context(&conn, &request, &snapshot, None)
+            .unwrap();
+        let mut selection = begin_root_selection();
+        selection["operation"] = json!("chapter-draft");
+        selection["chapterNumber"] = json!(1);
+        selection["selectedBlueprintChapterNumbers"] = json!([1, 2, 3, 4, 5, 6]);
+        selection["preparationId"] = prepared["preparationId"].clone();
+        assert_eq!(
+            owner.begin(&conn, &selection, false, false).unwrap_err(),
+            mutating_error("GENERATION_MATERIAL_DECISION_REQUIRED")
+        );
+        selection["materialDecision"] = json!({"version":1,"verdict":"admitted","promptHash":text_hash("合成提示"),
+            "capacity":{"maxInputUnits":1000,"methodVersion":"utf8-bytes-v1","admittedUnits":12},
+            "coverage":{"required":1,"included":1,"complete":true},
+            "included":[{"sourceId":"author:required","revision":1,"contentHash":text_hash("合成作者"),
+                "category":"author","required":true,"units":12}],"omitted":[]});
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let run = owner
+            .repository
+            .get(&conn, view["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(run.binding.source_manifest["knowledgeSnapshot"], snapshot);
+        conn.execute(
+            "UPDATE blueprints SET title='漂移合成蓝图' WHERE chapter_number=1",
+            [],
+        )
+        .unwrap();
+        selection["uiActionNonce"] = json!("prepared-drift");
+        assert_eq!(
+            owner.begin(&conn, &selection, false, false).unwrap_err(),
+            mutating_error("GENERATION_DRAFT_PREPARATION_CHANGED")
+        );
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+    }
+
+    #[test]
+    fn begin_root_planning_defaults_and_authoritative_range_guard_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let mut selection = begin_root_selection();
+        selection["operation"] = json!("generate-core-seed");
+        selection["output"] = json!("structured-data");
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let run = owner
+            .repository
+            .get(&conn, view["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            run.binding.source_manifest["authorInputs"],
+            json!([{"id":"planning:target-units","text":"600"}])
+        );
+        conn.execute("UPDATE project_core SET total_chapters=2", [])
+            .unwrap();
+        selection["operation"] = json!("generate-plot-outline");
+        selection["authorInputs"] = json!([
+            {"id":"architecture:author-config","text":"{\"totalChapters\":100}"},
+            {"id":"architecture:planning-intent","text":"{\"version\":\"architecture-action-v1\",\"priorSteps\":[],\"synopsisRange\":{\"from\":1,\"to\":3}}"}]);
+        assert_eq!(
+            owner.begin(&conn, &selection, false, false).unwrap_err(),
+            mutating_error("GENERATION_PLANNING_RANGE_INVALID")
+        );
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+    }
+
+    #[test]
+    fn begin_root_transaction_entry_preserves_caller_rollback_test() {
+        let (_temp, conn, owner, prior) = source_owner_fixture();
+        let request = OpenGenerationRunRequest {
+            project_id: prior.binding.project_id,
+            epoch: prior.binding.epoch,
+            fingerprint: prior.binding.fingerprint,
+            context_snapshot_id: prior.binding.context_snapshot_id,
+            source_manifest: prior.binding.source_manifest,
+            source_refs: prior.binding.source_refs,
+            operation: "brainstorm".to_string(),
+            ui_action_nonce: "outer-open".to_string(),
+            frozen_input_hash: fake_content_hash(),
+            budget: crate::services::main_generation_plan::main_generation_policy().budget,
+            parent_root_action_id: None,
+        };
+        assert!(owner
+            .run_service
+            .open_in_transaction(&conn, &request)
+            .is_err());
+        let tx =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+        owner
+            .run_service
+            .open_in_transaction(&tx, &request)
+            .unwrap();
+        assert_eq!(begin_run_count(&tx), 2);
+        tx.rollback().unwrap();
+        assert_eq!(begin_run_count(&conn), 1);
+    }
+
+    #[test]
+    fn begin_root_reopen_replays_old_epoch_without_allocating_another_root_or_lease_test() {
+        let (_temp, conn, mut owner, _) = source_owner_fixture();
+        let selection = begin_root_selection();
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        owner.pause(&conn, &view["handle"]).unwrap();
+        owner.suspend_with_database(&conn).unwrap();
+        let mut reopened = MainGenerationOwner::new(ProjectSessionContext {
+            project_id: "project-1".to_string(),
+            lease_id: "lease-2".to_string(),
+            project_path: owner.session.project_path.clone(),
+        });
+        reopened.global_data_root = owner.global_data_root.clone();
+        let repeated = reopened.begin(&conn, &selection, false, false).unwrap();
+        assert_eq!(repeated["handle"], view["handle"]);
+        assert_eq!(begin_run_count(&conn), 2);
+        assert!(reopened.run_leases.lock().unwrap().is_empty());
+        assert_eq!(reopened.lease_store.lock().unwrap().live_lease_count(), 0);
+        let resumed = reopened.resume(&conn, &repeated["handle"]).unwrap();
+        assert_eq!(resumed["handle"]["epoch"], "lease-2");
+        assert_eq!(reopened.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert_eq!(begin_run_count(&conn), 2);
+    }
 
     fn source_owner_fixture() -> (
         crate::services::main_generation_sources::tests::TempRoot,
@@ -4359,7 +5329,7 @@ mod tests {
     fn begin_agent_initialization_allows_agent_keys() {
         // 基线 :357——agentInitialization 时 agentInput /
         // agentSession 条件键放行（形状校验通过后落到
-        // B3 占位「主生成运行创建尚未迁移」）。
+        // 专属 Agent 初始化尚未接入，形状校验通过后仍保守拒绝。
         let conn = Connection::open_in_memory().expect("memory db");
         crate::db::schema::create_tables(&conn).expect("schema");
         let owner = owner_with(&conn);
@@ -4368,18 +5338,14 @@ mod tests {
             "uiActionNonce": "nonce-1",
             "modelId": "model-1",
             "promptKeys": ["key-1"],
+            "output": "visible-text",
             "agentInput": "代理输入",
             "agentSession": { "key": "session-key", "roundIndex": 0 },
         });
         let error = owner
             .begin(&conn, &selection, false, true)
-            .expect_err("B3 占位 fail-closed");
-        assert_eq!(
-            error,
-            mutating_error(
-                "主生成运行创建尚未迁移：主生成策略规划器（newMainGenerationPolicy）与生成运行服务（generation-run-service）待后续批次移植"
-            )
-        );
+            .expect_err("Agent 准入保持关闭");
+        assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
     }
 
     #[test]

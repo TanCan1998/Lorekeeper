@@ -2737,6 +2737,18 @@ impl GenerationRunRepository {
         conn: &Connection,
         request: &OpenGenerationRunRequest,
     ) -> Result<DurableGenerationRun, String> {
+        in_transaction(conn, |tx| self.open_in_existing_transaction(tx, request))
+    }
+
+    /// 调用方已持有事务时复用其写入边界，不嵌套 BEGIN 或提前提交。
+    pub(crate) fn open_in_existing_transaction(
+        &self,
+        conn: &Connection,
+        request: &OpenGenerationRunRequest,
+    ) -> Result<DurableGenerationRun, String> {
+        if conn.is_autocommit() {
+            return Err(GENERATION_BINDING_INVALID.to_string());
+        }
         let frozen = Self::binding(&RunBinding {
             project_id: request.project_id.clone(),
             epoch: request.epoch.clone(),
@@ -2746,12 +2758,12 @@ impl GenerationRunRepository {
             source_refs: request.source_refs.clone(),
             extra: Map::new(),
         })?;
-        in_transaction(conn, |tx| self.open_in_transaction(tx, request, &frozen))
+        self.open_in_transaction(conn, request, &frozen)
     }
 
     fn open_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         request: &OpenGenerationRunRequest,
         frozen: &RunBinding,
     ) -> Result<DurableGenerationRun, String> {

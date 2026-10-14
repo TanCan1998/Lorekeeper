@@ -1,4 +1,4 @@
-//! generation_draft_effects —— 批量草稿效应读面（批次 G4-5）。
+//! generation_draft_effects —— 草稿提交与批量进度账本。
 //!
 //! 事实源（上游 Electron 基线）：
 //! `electron/services/generation-draft-effects.ts`（176 行）——
@@ -16,9 +16,8 @@
 //! - 私有助手 `attempts` / `verifiedCommit` / `readSaveState`
 //!   与模块级 `assertGenerationBatchIntent` / `handleOf`。
 //!
-//! 写面方法（`commit`）与 outbox / postProcess 的写面派生随
-//! G4-6/G4-7 迁移，本文件**刻意不平移**（基线 `commit` 是唯一
-//! 写面入口，依赖 `assertSources` 闭包与 DraftRepository）。
+//! `commit` 在调用方事务内校验源、可见合成与批次进度，创建草稿并
+//! 写回既有 attempt usage 收据；与代理子效应共享提交/回滚边界。
 //!
 //! # 刻意偏离（均有上游语义理由）
 //! - **构造器捕获**：基线 `new GenerationDraftEffects(db, runs)`
@@ -79,14 +78,23 @@ fn attempt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttemptRow> {
 /// 基线 `StoredDraftCommit`（attempt usage 载荷里持久化的草稿提交，
 /// generation-draft-effects.ts:9-13）。
 #[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StoredDraftCommit {
     success: bool,
     id: i64,
     version: i64,
+    #[serde(rename = "contentHash", alias = "content_hash")]
     content_hash: String,
     content: String,
+    #[serde(rename = "chapterNumber", alias = "chapter_number")]
     chapter_number: i64,
     handle: MainGenerationRunHandle,
+    #[serde(
+        rename = "batchId",
+        alias = "batch_id",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     batch_id: Option<String>,
 }
 
@@ -184,11 +192,241 @@ pub fn assert_generation_batch_intent(intent: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// 基线 `GenerationDraftEffects` 的读面（`commit` 写面随 G4-6/G4-7
-/// 迁移，不在本结构体内）。
+/// 与基线 Number(text) 一致，支持十进制/指数及无符号进制前缀。
+fn draft_target_number(text: &str) -> Option<f64> {
+    let text = text.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    for (lower, upper, radix) in [("0x", "0X", 16), ("0b", "0B", 2), ("0o", "0O", 8)] {
+        if let Some(digits) = text
+            .strip_prefix(lower)
+            .or_else(|| text.strip_prefix(upper))
+        {
+            return u64::from_str_radix(digits, radix)
+                .ok()
+                .map(|value| value as f64);
+        }
+    }
+    if text.is_empty() {
+        Some(0.0)
+    } else {
+        text.parse::<f64>().ok()
+    }
+}
+
+/// 草稿提交与批量进度；既有生成 attempt 收据是唯一账本。
 pub struct GenerationDraftEffects;
 
 impl GenerationDraftEffects {
+    /// 新提交复用外层 immediate 事务，避免草稿先提交而收据或代理效应失败。
+    pub(crate) fn commit_in_transaction(
+        &self,
+        conn: &Connection,
+        runs: &GenerationRunRepository,
+        request: &Value,
+        assert_sources: impl FnOnce() -> Result<(), String>,
+    ) -> Result<Value, String> {
+        if conn.is_autocommit() {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        let handle: MainGenerationRunHandle =
+            serde_json::from_value(request.get("handle").cloned().unwrap_or(Value::Null))
+                .map_err(|_| mutating_error("GENERATION_DRAFT_TARGET_INVALID"))?;
+        let run = runs
+            .get(conn, &handle.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let previous = self.read_commit(conn, runs, &run.run_id)?;
+        let manifest = &run.binding.source_manifest;
+        let chapter = request.get("chapterNumber").and_then(Value::as_i64);
+        let batch = request.get("batchId").and_then(Value::as_str);
+        if request.get("source").and_then(Value::as_str) != Some("write")
+            || chapter != manifest.get("chapterNumber").and_then(Value::as_i64)
+            || manifest.get("operation").and_then(Value::as_str) != Some("chapter-draft")
+            || batch != manifest.get("batchId").and_then(Value::as_str)
+        {
+            return Err(mutating_error("GENERATION_DRAFT_TARGET_INVALID"));
+        }
+        if let Some(previous) = previous {
+            if previous.get("contentHash") != request.get("expectedCompositionHash") {
+                return Err(mutating_error("GENERATION_DRAFT_COMMIT_CONFLICT"));
+            }
+            return Ok(
+                json!({"success":true, "id":previous["id"], "version":previous["version"],
+                "content":previous["content"], "contentHash":previous["contentHash"]}),
+            );
+        }
+        assert_sources()?;
+        let composition = runs
+            .read_visible_composition(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .filter(|item| {
+                is_draft_visible_text_version(&item.algorithm)
+                    && Some(item.text_hash.as_str())
+                        == request
+                            .get("expectedCompositionHash")
+                            .and_then(Value::as_str)
+            })
+            .ok_or_else(|| mutating_error("GENERATION_DRAFT_COMPOSITION_REQUIRED"))?;
+        let last = composition
+            .artifact_ids
+            .last()
+            .ok_or_else(|| mutating_error("GENERATION_DRAFT_COMPOSITION_REQUIRED"))?;
+        let attempt: String = conn
+            .query_row(
+                "SELECT attempt_id FROM generation_artifacts WHERE artifact_id=?",
+                [last],
+                |row| row.get(0),
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let receipt = runs
+            .receipt(conn, &attempt, None)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if receipt
+            .result
+            .as_ref()
+            .and_then(|result| result.finish_reason.as_deref())
+            != Some("stop")
+        {
+            return Err(mutating_error("GENERATION_DRAFT_INCOMPLETE"));
+        }
+        let target = manifest
+            .get("authorInputs")
+            .and_then(Value::as_array)
+            .and_then(|inputs| {
+                inputs.iter().find(|input| {
+                    input.get("id").and_then(Value::as_str) == Some("draft:target-units")
+                })
+            })
+            .and_then(|input| input.get("text"))
+            .and_then(Value::as_str)
+            .and_then(draft_target_number)
+            .filter(|target| {
+                target.is_finite()
+                    && target.fract() == 0.0
+                    && *target >= 1.0
+                    && *target <= 9_007_199_254_740_991.0
+            })
+            .ok_or_else(|| mutating_error("GENERATION_DRAFT_INCOMPLETE"))?;
+        let units = crate::draft_units::count_draft_units(&composition.text);
+        if (units as f64) < (target * 0.7).floor() {
+            return Err(mutating_error("GENERATION_DRAFT_INCOMPLETE"));
+        }
+        if let Some(batch) = batch.filter(|batch| !batch.is_empty()) {
+            let progress = self.read_batch(conn, runs, batch, &handle.project_id)?;
+            if progress["rootHandle"]["rootActionId"].as_str() != Some(run.root_action_id.as_str())
+                || progress["nextChapterNumber"].as_i64() != chapter
+                || progress["targetUnits"].as_f64() != Some(target)
+                || progress["completedChapters"]
+                    .as_array()
+                    .is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|item| item["chapterNumber"].as_i64() == chapter)
+                    })
+            {
+                return Err(mutating_error("GENERATION_BATCH_PROGRESS_CONFLICT"));
+            }
+        }
+        use crate::repositories::draft_repository::{
+            self, DraftCreateParams, DraftSourceDependency, DraftSourceDependencyKind,
+        };
+        let candidate_pattern = regex::Regex::new(r"^draft:([0-9]+)$").expect("固定正则有效");
+        let finalized_pattern =
+            regex::Regex::new(r"^finalized:([0-9]+):(.+)$").expect("固定正则有效");
+        let mut dependencies = Vec::new();
+        for reference in &run.binding.source_refs {
+            if let Some(captures) = candidate_pattern.captures(&reference.source_id) {
+                dependencies.push(DraftSourceDependency {
+                    kind: Some(DraftSourceDependencyKind::Candidate),
+                    draft_id: captures[1]
+                        .parse()
+                        .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?,
+                    content_hash: reference.content_hash.clone(),
+                    chapter_number: None,
+                    finalization_id: None,
+                });
+            }
+        }
+        for reference in &run.binding.source_refs {
+            if let Some(captures) = finalized_pattern.captures(&reference.source_id) {
+                let id: i64 = captures[1]
+                    .parse()
+                    .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+                let chapter_number = conn
+                    .query_row(
+                        "SELECT chapter_number FROM drafts WHERE id=?",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+                dependencies.push(DraftSourceDependency {
+                    kind: Some(DraftSourceDependencyKind::Finalized),
+                    draft_id: id,
+                    content_hash: reference.content_hash.clone(),
+                    chapter_number: Some(chapter_number),
+                    finalization_id: Some(captures[2].to_string()),
+                });
+            }
+        }
+        let id = draft_repository::create_in_transaction(
+            conn,
+            &DraftCreateParams {
+                chapter_number: chapter
+                    .ok_or_else(|| mutating_error("GENERATION_DRAFT_TARGET_INVALID"))?,
+                version: None,
+                source: "write".to_string(),
+                content: composition.text.clone(),
+                word_count: units,
+                source_dependencies: Some(dependencies),
+            },
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let version: i64 = conn
+            .query_row("SELECT version FROM drafts WHERE id=?", [id], |row| {
+                row.get(0)
+            })
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        let row = Self::attempts(conn, Some(&run.run_id))?
+            .into_iter()
+            .find(|row| row.attempt_id == attempt)
+            .ok_or_else(|| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let mut usage: Value = serde_json::from_str(&row.usage_receipt_json)
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let epoch = usage
+            .get("artifactIdentity")
+            .and_then(|identity| identity.get("epoch"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_DRAFT_RECEIPT_INVALID"))?;
+        let stored = StoredDraftCommit {
+            success: true,
+            id,
+            version,
+            content_hash: composition.text_hash.clone(),
+            content: composition.text.clone(),
+            chapter_number: chapter.unwrap(),
+            handle: MainGenerationRunHandle {
+                epoch: epoch.to_string(),
+                ..handle.clone()
+            },
+            batch_id: batch.filter(|batch| !batch.is_empty()).map(str::to_string),
+        };
+        usage
+            .as_object_mut()
+            .ok_or_else(|| mutating_error(GENERATION_REQUEST_FAILED))?
+            .insert(
+                "draftCommit".to_string(),
+                serde_json::to_value(stored).expect("草稿收据可序列化"),
+            );
+        conn.execute(
+            "UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?",
+            rusqlite::params![usage.to_string(), attempt],
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        if let Some(batch) = batch.filter(|batch| !batch.is_empty()) {
+            self.read_batch(conn, runs, batch, &handle.project_id)?;
+        }
+        Ok(json!({"success":true, "id":id, "version":version,
+            "content":composition.text, "contentHash":composition.text_hash}))
+    }
+
     /// 基线私有 `attempts(runId?)`（:21-24）：`runId` 缺省时扫描
     /// 全表（`readBatchSnapshot` 的批次归集依赖全表扫描）。
     fn attempts(conn: &Connection, run_id: Option<&str>) -> Result<Vec<AttemptRow>, String> {
@@ -731,5 +969,35 @@ impl GenerationDraftEffects {
             .unwrap_or_else(|| json!([]));
         progress.insert("authorInputs".to_string(), author_inputs);
         Ok((Value::Object(progress), source_conflict))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_target_number_follows_number_contract_test() {
+        for input in ["10", " 10 ", "1e1", "0xA", "0b1010", "0o12", "\u{feff}10"] {
+            assert_eq!(draft_target_number(input), Some(10.0), "{input}");
+        }
+        assert_eq!(draft_target_number(""), Some(0.0));
+        assert!(draft_target_number("0x").is_none());
+        assert!(draft_target_number("+0xA").is_none());
+        assert!(draft_target_number("invalid").is_none());
+    }
+
+    #[test]
+    fn draft_commit_receipt_uses_camel_case_and_reads_prior_rust_shape_test() {
+        let receipt = json!({"success":true,"id":1,"version":1,"content_hash":"hash",
+            "content":"合成内容","chapter_number":1,
+            "handle":{"projectId":"p","epoch":"e","rootActionId":"r","runId":"run"},"batch_id":"batch"});
+        let parsed: StoredDraftCommit = serde_json::from_value(receipt).unwrap();
+        let canonical = serde_json::to_value(parsed).unwrap();
+        assert_eq!(canonical["contentHash"], "hash");
+        assert_eq!(canonical["chapterNumber"], 1);
+        assert_eq!(canonical["batchId"], "batch");
+        assert!(canonical.get("content_hash").is_none());
+        let _: StoredDraftCommit = serde_json::from_value(canonical).unwrap();
     }
 }
