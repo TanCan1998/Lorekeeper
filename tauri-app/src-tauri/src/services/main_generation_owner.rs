@@ -542,6 +542,8 @@ pub struct MainGenerationOwner {
     /// 与 owner 同寿命的服务与执行租约，不能在每次 IPC 中重建。
     lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
     run_service: Arc<crate::services::generation_run_service::GenerationRunService>,
+    /// 启动恢复只在本 owner 成功的独立事务中执行一次。
+    agent_recovery_done: AtomicBool,
     /// 基线 `preparations: Map<string, { binding: RunBinding;
     /// knowledgeSnapshot: GenerationKnowledgeSnapshot }>`
     /// （main-generation-owner.ts:115）——草稿上下文准备
@@ -691,6 +693,7 @@ impl MainGenerationOwner {
             global_data_root,
             lease_store,
             run_service,
+            agent_recovery_done: AtomicBool::new(false),
             events,
             session,
             repository,
@@ -1757,45 +1760,53 @@ impl MainGenerationOwner {
         Ok(view)
     }
 
-    /// 基线 owner 闭包内 `agents.admitWorkflow(selection)` 的等价
-    /// 辅助（main-generation-owner.ts:367 调用点 / :897 构造注入
-    /// 点）——方法级构造 `AgentGeneration`，对齐基线 owner 闭包内
-    /// `new AgentGeneration(deps.database, repository, { projectId,
-    /// epoch }, assertCurrent, host)`（host 即 owner 自身，经
-    /// [`impl AgentHost for MainGenerationOwner`] 注入）。
-    ///
-    /// 已知偏差：基线 `agents` 实例在 owner 创建时构造一次
-    /// （恢复扫描执行一次）；本辅助按方法级构造，构造期恢复扫描
-    /// 在每次 `begin` 调用时执行一次——扫描幂等（仅修复悬空
-    /// `running` 认领，见 `AgentGeneration::new` 头注），行为等价。
-    ///
-    /// 错误码（`GENERATION_AGENT_*`）经调用方折叠为
-    /// `mutating_error`。
+    /// 方法级借用视图共享 owner 的启动恢复标记，不重复修复当前活跃认领。
+    fn agent_service<'a>(
+        &'a self,
+        conn: &'a Connection,
+        assert_current: &'a dyn Fn() -> Result<(), String>,
+    ) -> Result<AgentGeneration<'a>, String> {
+        self.assert_current()?;
+        if self.agent_recovery_done.load(Ordering::Acquire) {
+            return Ok(AgentGeneration::without_recovery(
+                conn,
+                self.repository.clone(),
+                &self.session.project_id,
+                &self.session.lease_id,
+                assert_current,
+                self,
+            ));
+        }
+        let agent = AgentGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.session.lease_id,
+            assert_current,
+            self,
+        )?;
+        // 借用外层事务时不能记住成功；其后回滚必须仍可重做启动恢复。
+        if conn.is_autocommit() {
+            self.agent_recovery_done.store(true, Ordering::Release);
+        }
+        Ok(agent)
+    }
+
+    /// 基线 agents.admitWorkflow 子代准入；恢复由 owner 生命周期控制。
+    /// 错误码由调用方按修改类信封包装。
     fn admit_workflow(
         &self,
         conn: &Connection,
         selection: &Value,
     ) -> Result<Option<AdmittedWorkflow>, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.admit_workflow(selection)
     }
 
     // ── 批次 G4-10c：agent-generation 域 8 频道 owner 委托 ──
     // （基线 generation-controller.ts:217-230 的
-    // `owner.agents.*` 调用点。方法级构造
-    // `AgentGeneration`，对齐基线 owner 闭包内
-    // `new AgentGeneration(deps.database, repository,
-    // { projectId, epoch }, assertCurrent, host)` 与
-    // [`Self::admit_workflow`] 先例——构造期恢复扫描
-    // 幂等（仅修复悬空 `running` 认领），行为等价。
+    // 方法级重建借用视图，但启动恢复由 owner 生命周期控制，只执行一次。
     // 错误码（`GENERATION_AGENT_*`）经命令层折叠为
     // `mutating_error`（基线 register catch 错误映射）。
 
@@ -1809,14 +1820,7 @@ impl MainGenerationOwner {
         request: &Value,
     ) -> Result<AgentGenerationRecovery, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.begin(request)
     }
 
@@ -1829,14 +1833,7 @@ impl MainGenerationOwner {
         handle: &Value,
     ) -> Result<AgentGenerationRecovery, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.read(handle)
     }
 
@@ -1853,14 +1850,7 @@ impl MainGenerationOwner {
         handle: &Value,
     ) -> Result<AgentGenerationRecovery, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.resume(handle)
     }
 
@@ -1877,14 +1867,7 @@ impl MainGenerationOwner {
         request: &Value,
     ) -> Result<AgentGenerationRecovery, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.execute_round(request)
     }
 
@@ -1898,14 +1881,7 @@ impl MainGenerationOwner {
         request: &Value,
     ) -> Result<AgentToolClaim, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.claim_tool(request)
     }
 
@@ -1918,14 +1894,7 @@ impl MainGenerationOwner {
         request: &Value,
     ) -> Result<AgentToolAction, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.finish_tool(request)
     }
 
@@ -1938,14 +1907,7 @@ impl MainGenerationOwner {
         ref_: &Value,
     ) -> Result<AgentWorkflowRegistration, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.register_workflow(ref_)
     }
 
@@ -1959,14 +1921,7 @@ impl MainGenerationOwner {
         ref_: &Value,
     ) -> Result<AgentDomainToolReceipt, String> {
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )?;
+        let agent = self.agent_service(conn, &assert_current)?;
         agent.commit_domain_tool(ref_)
     }
 
@@ -3009,15 +2964,9 @@ impl MainGenerationOwner {
         // 事务覆盖服务构造、效应前后源投影与草稿/收据写入，不能提前提交草稿。
         let commit = |conn: &Connection| {
             let assert_current = || self.assert_current();
-            let agent = AgentGeneration::new(
-                conn,
-                self.repository.clone(),
-                &self.session.project_id,
-                &self.session.lease_id,
-                &assert_current,
-                self,
-            )
-            .map_err(|error| mutating_error(&error))?;
+            let agent = self
+                .agent_service(conn, &assert_current)
+                .map_err(|error| mutating_error(&error))?;
             agent
                 .with_child_effect(&handle, |conn| {
                     GenerationDraftEffects.commit_in_transaction(
@@ -3934,18 +3883,11 @@ impl MainGenerationOwner {
         // 错误已是 MUTATING 信封形态，经 `?` 原样透传）。
         self.require_run(conn, handle, false)?;
         // 基线 :1301 `agents.withChildEffect(handle, effect)`——
-        // 方法级构造 `AgentGeneration`（对齐 [`Self::admit_workflow`]
-        // 先例；构造期恢复扫描幂等，见该方法头注的已知偏差）。
+        // 方法级借用视图共用 owner 的恢复标记，不重分类当前活跃认领。
         let assert_current = || self.assert_current();
-        let agent = AgentGeneration::new(
-            conn,
-            self.repository.clone(),
-            &self.session.project_id,
-            &self.session.lease_id,
-            &assert_current,
-            self,
-        )
-        .map_err(|error| mutating_error(&error))?;
+        let agent = self
+            .agent_service(conn, &assert_current)
+            .map_err(|error| mutating_error(&error))?;
         // 效应委托服务层。错误经前缀感知折叠为 MUTATING 信封
         // （对齐 `commands::db::blueprint_commit_range_result`
         // :818 先例：已带 "Error: " 前缀的错误——如效应闭包内
@@ -8081,6 +8023,102 @@ mod tests {
             })
             .unwrap();
         fixture.state.close_project_database().unwrap();
+    }
+
+    fn agent_recovery_fixture() -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        DurableGenerationRun,
+    ) {
+        let (temp, conn, owner, run) = source_owner_fixture();
+        let mut binding = serde_json::to_value(&run.binding).unwrap();
+        binding["sourceManifest"]["operation"] = json!("agent-round");
+        conn.execute(
+            "UPDATE generation_runs SET binding_json=?1 WHERE run_id=?2",
+            rusqlite::params![binding.to_string(), run.run_id],
+        )
+        .unwrap();
+        (temp, conn, owner, run)
+    }
+
+    fn seed_recovery_claim(conn: &Connection, run: &DurableGenerationRun, effect: bool) {
+        let mut action = json!({"status":"running"});
+        if effect {
+            action["domainEffect"] = json!({"kind":"synthetic-effect"});
+        }
+        let usage = json!({"agentActions":{"synthetic-claim":action}});
+        conn.execute(
+            "INSERT INTO generation_attempts (attempt_id,reservation_id,run_id,root_action_id,attempt_json,usage_receipt_json,invocation_nonce) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params!["synthetic-recovery-attempt","synthetic-reservation",run.run_id,run.root_action_id,
+                "{}" ,usage.to_string(),"synthetic-nonce"],
+        ).unwrap();
+    }
+
+    fn recovery_claim_status(conn: &Connection) -> String {
+        conn.query_row(
+            "SELECT json_extract(usage_receipt_json,'$.agentActions.synthetic-claim.status') FROM generation_attempts WHERE attempt_id='synthetic-recovery-attempt'",
+            [], |row|row.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn agent_owner_recovery_does_not_reclassify_current_claim_and_reopen_recovers_it_test() {
+        let (_temp, conn, owner, run) = agent_recovery_fixture();
+        assert!(owner.agent_read(&conn, &Value::Null).is_err());
+        assert!(owner.agent_recovery_done.load(Ordering::Acquire));
+        seed_recovery_claim(&conn, &run, false);
+        for _ in 0..3 {
+            assert!(owner.agent_read(&conn, &Value::Null).is_err());
+            assert_eq!(recovery_claim_status(&conn), "running");
+        }
+        let reopened = MainGenerationOwner::new(owner.session.clone());
+        assert!(reopened.agent_read(&conn, &Value::Null).is_err());
+        assert_eq!(recovery_claim_status(&conn), "unknown");
+    }
+
+    #[test]
+    fn agent_owner_recovery_preserves_committed_effect_as_completed_test() {
+        let (_temp, conn, owner, run) = agent_recovery_fixture();
+        seed_recovery_claim(&conn, &run, true);
+        assert!(owner.agent_read(&conn, &Value::Null).is_err());
+        assert_eq!(recovery_claim_status(&conn), "completed");
+        assert!(owner.agent_recovery_done.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn agent_owner_recovery_nested_rollback_does_not_remember_initialization_test() {
+        let (_temp, conn, owner, run) = agent_recovery_fixture();
+        seed_recovery_claim(&conn, &run, false);
+        let transaction = conn.unchecked_transaction().unwrap();
+        assert!(owner.agent_read(&transaction, &Value::Null).is_err());
+        assert_eq!(recovery_claim_status(&transaction), "unknown");
+        assert!(!owner.agent_recovery_done.load(Ordering::Acquire));
+        transaction.rollback().unwrap();
+        assert_eq!(recovery_claim_status(&conn), "running");
+        assert!(owner.agent_read(&conn, &Value::Null).is_err());
+        assert_eq!(recovery_claim_status(&conn), "unknown");
+        assert!(owner.agent_recovery_done.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn agent_owner_recovery_failure_is_retryable_and_closed_owner_never_writes_test() {
+        let (_temp, conn, mut owner, run) = agent_recovery_fixture();
+        seed_recovery_claim(&conn, &run, false);
+        conn.execute_batch("CREATE TEMP TRIGGER reject_agent_recovery BEFORE UPDATE OF usage_receipt_json ON generation_attempts
+            BEGIN SELECT RAISE(ABORT,'synthetic-recovery-failure'); END;").unwrap();
+        assert!(owner.agent_read(&conn, &Value::Null).is_err());
+        assert!(!owner.agent_recovery_done.load(Ordering::Acquire));
+        assert_eq!(recovery_claim_status(&conn), "running");
+        conn.execute_batch("DROP TRIGGER reject_agent_recovery;")
+            .unwrap();
+        assert!(owner.agent_read(&conn, &Value::Null).is_err());
+        assert_eq!(recovery_claim_status(&conn), "unknown");
+        conn.execute("UPDATE generation_attempts SET usage_receipt_json=?1 WHERE attempt_id='synthetic-recovery-attempt'",
+            [json!({"agentActions":{"synthetic-claim":{"status":"running"}}}).to_string()]).unwrap();
+        owner.suspend_for_project_close();
+        assert!(owner.agent_read(&conn, &Value::Null).is_err());
+        assert_eq!(recovery_claim_status(&conn), "running");
     }
 
     fn prepared_owner_fixture() -> (

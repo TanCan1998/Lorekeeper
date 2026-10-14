@@ -487,16 +487,28 @@ impl<'a> AgentGeneration<'a> {
         assert_current: &'a dyn Fn() -> Result<(), String>,
         host: &'a dyn AgentHost,
     ) -> Result<Self, String> {
-        let agent = Self {
+        let agent = Self::without_recovery(conn, runs, project_id, epoch, assert_current, host);
+        agent.recover_dangling_claims()?;
+        Ok(agent)
+    }
+
+    /// owner 已完成启动恢复时只重建借用视图，不触碰当前仍在运行的工具认领。
+    pub(crate) fn without_recovery(
+        conn: &'a Connection,
+        runs: GenerationRunRepository,
+        project_id: &'a str,
+        epoch: &'a str,
+        assert_current: &'a dyn Fn() -> Result<(), String>,
+        host: &'a dyn AgentHost,
+    ) -> Self {
+        Self {
             conn,
             runs,
             project_id,
             epoch,
             assert_current,
             host,
-        };
-        agent.recover_dangling_claims()?;
-        Ok(agent)
+        }
     }
 
     /// 构造期恢复扫描（基线 :31-43）。
