@@ -11,35 +11,34 @@
 
 ---
 
-## 快照（最后更新：2026-10-14 · 第 49 次）
+## 快照（最后更新：2026-10-14 · 第 50 次）
 
-> 已验证代码提交：`a1884ac96d1b1c7c7342b6d07a71b47096fdf815`；核验截至 2026-10-14 21:55 +08:00。主会话直接实施，没有派发代理。快照文档随后独立提交；最终 HEAD 以 Git 和本机 pipeline 为准。
+> 本轮定向验证代码：`4f48161e67f7a401fb3753449a1520a3223433e8`，核验截至 2026-10-14 22:21 +08:00。主会话直接实施，没有派发代理。代码与交接文档一并推送 origin/master；最终 HEAD 以 Git 和本机 pipeline 为准。
 
 | 项 | 值 |
 |---|---|
-| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；关闭切片 `cf23c0ba` 已推送；短数据库访问代码 `a1884ac9` 已提交，与本快照一起推送 origin/master |
+| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；前序关闭及服务短回调切片已推送，本轮 owner 拆分代码 `4f48161e` 已提交 |
 | 产品身份 | Lorekeeper（设定司）/ `com.tancan1998.lorekeeper` |
-| 命令 / invoke 覆盖 / 未迁移 | check:channels exit 0：243 / 242 / 48；契约 invoke 290、事件 7；本轮无命令注册 |
-| `cargo test` | 1267 passed / 0 failed（55.32s）；bin/doc-test 无失败；本次新增 5 项短数据库访问与重放测试 |
-| `cargo check --all-targets` | exit 0，零告警 |
-| `pnpm typecheck` / `pnpm run lint` | 均 exit 0 |
-| 前端测试 | 本次定向 generation runtime/renderer/harness：3 文件 / 43 项通过；既存扩展前端与 Agent store 失败未复验，不能宣称全绿 |
-| 格式 / 差异检查 | 修改 Rust 的定向 rustfmt --check、git diff --check 均 exit 0 |
-| 当前范围 | 运行服务支持按阶段的同步数据库访问回调；旧直接连接接口仍兼容。生产 owner/IPC 尚未切换，网络长锁完整拆解与事件接线未完成 |
-| 隔离 / 依赖 | Electron、根 src、docs/、根配置和锁文件无改动；无新依赖/schema/权限/CI；本机 AGENTS 的提交授权已按用户确认更新，不入库 |
-| GUI 冒烟 | 未做 |
+| 命令 / invoke 覆盖 / 未迁移 | 沿用 `a1884ac9` 21:55 检查：243 / 242 / 48，契约 invoke 290、事件 7；本轮无注册/契约改动，未重跑频道检查 |
+| 本轮定向 Rust | owner 69 + commands::generation 3 + generation_run_service 32，共 104 passed / 0 failed；含新增 5 项准备/登记/兼容重放测试 |
+| 最近全量 Rust | 代码 `a1884ac9`，2026-10-14 21:55：1267 passed / 0 failed（55.32s）；不是本轮代码全量结果 |
+| `cargo check --all-targets` | 本轮 exit 0，零告警 |
+| 格式 / 差异检查 | 修改文件定向 rustfmt --check、git diff --check 均 exit 0 |
+| TS / 前端 / GUI | 无 TS 改动，本轮未重跑；最近 `a1884ac9` typecheck/lint 通过、定向前端 43 项通过；既存扩展前端失败未复验，GUI 未做 |
+| 当前范围 | owner 准备/分发/投影已拆分；准备对象冻结任务和请求，不借用 owner/连接。在途登记由共享引用计数守卫清理。生产 IPC 仍持原业务长锁 |
+| 隔离 / 依赖 | 仅 owner Rust 和 fork 交接文档变更；无 Electron/根 src/docs/根配置锁改动，无新依赖/schema/权限/CI |
 
-## 本次更新（第 49 次：关闭切片推送与短数据库访问基础）
+## 本次更新（第 50 次：owner 准备与分发拆分）
 
-- 用户确认当前关闭切片已人工核验，并明确授权后续普通迁移切片在自动检查通过后直接提交、推送，免逐次人工审核。授权不恢复代理派发，不放宽新依赖/schema/权限/CI/ADR/旧 Electron 清理等先确认边界。关闭切片 `cf23c0ba` 已推送 origin/master。
-- generation_run_service 增加 GenerationDatabaseAccess 同步短回调入口：幂等读取、预算预留、标记分发、预算时钟、周期/增量 flush、终态成功/失败结算和终态读取均经该入口。网络 Future 不保存回调中取得的连接/守卫；原 execute/execute_blocking 通过直接连接适配共用逻辑，兼容现有 owner/内部调用。
-- 回调因连接/身份不可用而拒绝时，不回写旧库；根级内存围栏、取消信号和 unsaved tail 保留未落盘正文。新增测试在分发后撤销回调授权，验证原库正文和结算字段未被修改。
-- 并发在途登记改成短锁原子 get-or-insert，同键不同哈希先拒绝，防止两线程都读到空状态后重复启动；等待在途操作之前释放 pending 锁。watch 完成通知改为保留完成值，即使先完成、后订阅也不会丢失结果。
-- 新增五项回归：跨线程网络等待时可读取同一连接、取消正文持久化；在途重放不持 pending/连接锁且只产生一条 attempt；分发后撤销授权不写旧库；迟到订阅立即取得完成值；预留前同键哈希冲突拒绝且不分配 attempt。均为本地合成 provider，不是 HTTP 假服务器或真实模型验收。
-- 完整 Rust 1267 passed / 0 failed；check 零告警；定向 rustfmt、typecheck、lint、check:channels 和定向前端三文件 43 项通过。证据 `.pi/tmp/b33-scoped-{target,test,check,rustfmt,typecheck,lint,channels,vitest}.log` 与 `b33-scoped-reviewed.diff`，均不入库。Rust diff SHA256：`6336c02a9b0c9de57059797251b653d7a983e821e851324ddd094cfcaf234a59`。
-- **关键边界**：当前生产 IPC 仍由 owner 持库调用直接连接适配，故普通读取仍可能等待。本切片完成服务层短锁基础与测试，不代表生产网络长锁已消除；无新增数据库连接、schema 或依赖。
-- **下一步**：把 owner 准备/分发/回执投影拆开，冻结 provider 请求与在途守卫；生产回调每次按 owner → 数据库锁序重新认证项目路径、epoch、会话和连接。关闭钩子还需在不持业务锁时等待执行控制退出，避免短锁化后过早关闭库；补真实 AppState 并发读取/暂停/关闭/切换及本地 HTTP 假服务器测试后自动提交推送。
-- 快照/推理事件、材料提示哈希、短细纲重试、知识采集、特殊域准入、内部 Agent/子代生命周期、B3-M4/M5、既存扩展前端失败和 GUI 专项仍待续。当前任务/占用只维护 `.pi/tmp/pipeline-state.md`。
+- 按用户授权采用开发指南 §7 分层验证：本轮是生产短锁接线之前的普通内部重构切片，不改变会话/身份准入合同；相关测试通过后自动提交推送，不逐次人工审核、不派发代理。未触发全量，最近全量代码版本和结果单独保留。
+- owner 增加同步 prepare_execution、PreparedMainGenerationExecution 和 finish_prepared_execution，将原准入、幂等读回、源重建、租约解析和计划构造保留在准备阶段；网络分发移到准备对象，投影仍复用原 outcome_of。原 execute/内部 Agent 执行通过兼容接口共用逻辑，不新增 IPC。
+- 准备对象拥有任务、内部 provider 请求及原服务 Arc，不借用 owner、请求或数据库连接；准备阶段不进行网络分发和预算预留。后续生产命令层可在准备结束后释放业务守卫，再按阶段短回调访问库；目前尚未接线。
+- owner pending 登记改为共享哈希条目与引用计数守卫：同键不同哈希保持拒绝，同键同哈希可交给运行服务合并等待；最后一个准备对象退出才清理。计划准备失败、执行错误、正常退出和栈展开均自动回收，避免较早退出的重放撤销仍在执行的登记。
+- 新增五项回归：冻结值可在销毁 owner/连接后跨线程移动；登记后的租约缺失失败不留 pending/attempt；重复守卫直到最后退出才解除哈希冲突；栈展开回收；兼容 execute 与已结算重放只分发一次/生成一个 attempt。重放比较排除按读回时间投影的 deadlineAt，同时保留其合法性断言；其他 outcome 字段一致。
+- 定向 owner 69 项包含既有真实 AppState 关闭/重试、失效身份等回归，命令 3 项和运行服务 32 项通过。check 零告警；定向 rustfmt 与 diff 检查通过。证据 `.pi/tmp/b33-prepared-{owner,commands,service,check,rustfmt}.log`、`b33-prepared-reviewed.diff`，不入库。Rust diff SHA256：`9ecf9c663eb4c32265836e64b99e692b9761daa8652bb06984b70adba8e01a5a`。
+- **未解除边界**：生产 IPC 仍持 owner/数据库锁调用兼容直接连接接口；普通读取仍可能等待，不能宣称长锁已消除。本轮没有新增 HTTP 假服务器/真实模型/GUI 或全量前端验收。
+- **下一步**：为准备对象增加短数据库回调分发入口，生产 IPC 准备后释放守卫，flush/settle/投影每次按 owner → 数据库锁序重认证项目、会话、epoch 和连接。关闭钩子须在不持业务锁时等待执行控制退出后再挂起/关库，补读写、暂停、关闭、项目切换及本地 HTTP 并发测试；整个接线阶段收口再全量验证。
+- 快照/推理事件、材料提示哈希、短细纲重试、知识采集、特殊域准入、其他子代/内部 Agent/排队生命周期、B3-M4/M5、既存前端失败与 GUI 专项待续；当前任务和全量后累计数仅在 `.pi/tmp/pipeline-state.md`。
 
 ---
 
