@@ -522,6 +522,7 @@ struct SharedDiagnostics {
 /// 承载完成值；第二个同键调用者等待完成值而非重复执行）。
 struct PendingOperation {
     state: watch::Sender<PendingState>,
+    request_hash: String,
 }
 
 #[derive(Clone, Default)]
@@ -532,13 +533,17 @@ enum PendingState {
 }
 
 impl PendingOperation {
-    fn new() -> Self {
+    fn new(request_hash: &str) -> Self {
         let (sender, _) = watch::channel(PendingState::Waiting);
-        Self { state: sender }
+        Self {
+            state: sender,
+            request_hash: request_hash.to_string(),
+        }
     }
 
     fn complete(&self, result: Result<GenerationExecutionReceipt, String>) {
-        let _ = self.state.send(PendingState::Done(result));
+        // 即使等待方尚未订阅，也必须保留完成值，避免迟到订阅永远等待。
+        self.state.send_replace(PendingState::Done(result));
     }
 }
 
@@ -576,6 +581,25 @@ enum DispatchOutcome {
 enum AbortCause {
     Cancelled,
     ProjectClosed,
+}
+
+/// 数据库短临界区入口。实现必须在每次调用时验证连接归属与会话身份，
+/// 且连接/业务锁不得逃出同步回调；服务不在网络 await 期间保存连接。
+pub(crate) trait GenerationDatabaseAccess {
+    fn with_connection<T>(
+        &self,
+        action: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String>;
+}
+
+/// 保留既有仓储/内部调用的直接连接接口；生产短锁实现由命令层注入。
+impl GenerationDatabaseAccess for Connection {
+    fn with_connection<T>(
+        &self,
+        action: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        action(self)
+    }
 }
 
 /// 生成运行服务——基线 `createGenerationRunService` 的工厂产物。
@@ -691,6 +715,43 @@ impl GenerationRunService {
         self.flush_attempt(conn, record);
         let state = record.state.lock().unwrap();
         self.notify_snapshot(&state, &record.attempt_id, &record.diagnostics);
+    }
+
+    /// 连接/身份已不可用时禁止回写；尾部仅保留在进程内并围住根。
+    fn fence_database_access_failure(&self, record: &ControllerRecord) {
+        let mut state = record.state.lock().unwrap();
+        state.storage_failed = true;
+        self.unsaved_tails.lock().unwrap().insert(
+            record.attempt_id.clone(),
+            GenerationUnsavedTail {
+                attempt_id: record.attempt_id.clone(),
+                artifact_id: state.artifact_id.clone(),
+                durable_revision: state.revision,
+                text: state.text[state.durable.len()..].to_string(),
+                failure_code: "GENERATION_STORAGE_FAILED".to_string(),
+            },
+        );
+        self.failed_roots
+            .lock()
+            .unwrap()
+            .insert(record.root_id.clone());
+        record.token.cancel();
+    }
+
+    fn flush_with_database<D: GenerationDatabaseAccess>(
+        &self,
+        database: &D,
+        record: &ControllerRecord,
+    ) {
+        if database
+            .with_connection(|conn| {
+                self.flush_and_notify(conn, record);
+                Ok(())
+            })
+            .is_err()
+        {
+            self.fence_database_access_failure(record);
+        }
     }
 
     /// 基线 `retainInterruptedAgentText`（:177-181）——终端
@@ -956,7 +1017,7 @@ impl GenerationRunService {
             .enable_all()
             .build()
             .map_err(|_| "GENERATION_RUNTIME_UNAVAILABLE".to_string())?;
-        runtime.block_on(self.execute(conn, request))
+        runtime.block_on(self.execute_with_database(conn, request))
     }
 
     // -------------------------------------------------------------------------
@@ -975,6 +1036,15 @@ impl GenerationRunService {
         conn: &Connection,
         request: ExecuteGenerationRequest,
     ) -> Result<GenerationExecutionReceipt, String> {
+        self.execute_with_database(conn, request).await
+    }
+
+    /// 与直接连接接口共用幂等/预算/控制器逻辑；仅同步回调可访问数据库。
+    pub(crate) async fn execute_with_database<D: GenerationDatabaseAccess>(
+        &self,
+        database: &D,
+        request: ExecuteGenerationRequest,
+    ) -> Result<GenerationExecutionReceipt, String> {
         // ① 基线 :111-113——请求哈希校验。
         if !is_valid_request_hash(&request.request_hash) {
             return Err("GENERATION_REQUEST_HASH_INVALID".to_string());
@@ -984,42 +1054,52 @@ impl GenerationRunService {
             .to_string();
         // ② 基线 :115-117——幂等重放（已结算 invocation 优先返回
         // 在途 promise，其次返回既有收据）。
-        if let Some(existing) = self.repository.find_invocation(
-            conn,
-            &request.run_id,
-            &request.invocation_nonce,
-            &request.request_hash,
-        )? {
-            if let Some(pending) = self.pending.lock().unwrap().get(&key).cloned() {
+        if let Some(existing) = database.with_connection(|conn| {
+            self.repository.find_invocation(
+                conn,
+                &request.run_id,
+                &request.invocation_nonce,
+                &request.request_hash,
+            )
+        })? {
+            let pending = { self.pending.lock().unwrap().get(&key).cloned() };
+            if let Some(pending) = pending {
                 return wait_pending(pending).await;
             }
             return Ok(existing);
         }
-        // ③ 基线 :118-120——在途去重。
-        if let Some(pending) = self.pending.lock().unwrap().get(&key).cloned() {
-            return wait_pending(pending).await;
+        // 原子登记：不同线程同时读到无 invocation，也只能有一个分发拥有者。
+        // 等待已有操作之前必须释放 pending 短锁，不能把锁带入 await。
+        let (pending_op, owns_operation) = {
+            let mut pending = self.pending.lock().unwrap();
+            if let Some(existing) = pending.get(&key) {
+                if existing.request_hash != request.request_hash {
+                    return Err("GENERATION_INVOCATION_CONFLICT".to_string());
+                }
+                (Arc::clone(existing), false)
+            } else {
+                let operation = Arc::new(PendingOperation::new(&request.request_hash));
+                pending.insert(key.clone(), Arc::clone(&operation));
+                (operation, true)
+            }
+        };
+        if !owns_operation {
+            return wait_pending(pending_op).await;
         }
-        // ④-⑳ 基线 :121-320——启动 operation 并在 finally 中
-        // 清除在途登记。
-        let pending_op = Arc::new(PendingOperation::new());
-        self.pending
-            .lock()
-            .unwrap()
-            .insert(key.clone(), pending_op.clone());
-        let result = self.execute_operation(conn, request).await;
+        let result = self.execute_operation(database, request).await;
         pending_op.complete(result.clone());
         self.pending.lock().unwrap().remove(&key);
         result
     }
 
     /// 基线 operation async IIFE（:122-320）主体。
-    async fn execute_operation(
+    async fn execute_operation<D: GenerationDatabaseAccess>(
         &self,
-        conn: &Connection,
+        database: &D,
         request: ExecuteGenerationRequest,
     ) -> Result<GenerationExecutionReceipt, String> {
         // ④ 基线 :123-125——failedRoots 围栏。
-        let run = self.repository.get(conn, &request.run_id)?;
+        let run = database.with_connection(|conn| self.repository.get(conn, &request.run_id))?;
         if self
             .failed_roots
             .lock()
@@ -1045,19 +1125,21 @@ impl GenerationRunService {
         }
         // ⑥ 基线 :136-152——reserve。预算/预留类失败可重试，
         // 不触发围栏；其余存储失败置围栏并 block。
-        let receipt = match self.repository.reserve(
-            conn,
-            &request.run_id,
-            &request.invocation_nonce,
-            &request.request_hash,
-            request.reserved_tokens,
-            request.requested_output_tokens,
-            Some(&request.usage_policy),
-            request.purpose.as_deref(),
-            request.replay_task.as_ref(),
-            request.budget_decision.as_ref(),
-            request.reconciliation_injected,
-        ) {
+        let receipt = match database.with_connection(|conn| {
+            self.repository.reserve(
+                conn,
+                &request.run_id,
+                &request.invocation_nonce,
+                &request.request_hash,
+                request.reserved_tokens,
+                request.requested_output_tokens,
+                Some(&request.usage_policy),
+                request.purpose.as_deref(),
+                request.replay_task.as_ref(),
+                request.budget_decision.as_ref(),
+                request.reconciliation_injected,
+            )
+        }) {
             Ok(receipt) => receipt,
             Err(error) => {
                 if !is_budget_class_error(&error) {
@@ -1065,11 +1147,13 @@ impl GenerationRunService {
                         .lock()
                         .unwrap()
                         .insert(run.root_action_id.clone());
-                    let _ = self.repository.block(
-                        conn,
-                        &run.root_action_id,
-                        "GENERATION_STORAGE_FAILED",
-                    );
+                    let _ = database.with_connection(|conn| {
+                        self.repository.block(
+                            conn,
+                            &run.root_action_id,
+                            "GENERATION_STORAGE_FAILED",
+                        )
+                    });
                 }
                 return Err(error);
             }
@@ -1123,7 +1207,9 @@ impl GenerationRunService {
 
         // ⑫ 基线 :196-204——markDispatched。失败置围栏并
         // block，随后进入 catch 路径（storageFailed 收据）。
-        let mut caught: Option<String> = match self.repository.mark_dispatched(conn, &attempt_id) {
+        let mut caught: Option<String> = match database
+            .with_connection(|conn| self.repository.mark_dispatched(conn, &attempt_id))
+        {
             Ok(()) => None,
             Err(error) => {
                 {
@@ -1134,9 +1220,10 @@ impl GenerationRunService {
                     .lock()
                     .unwrap()
                     .insert(run.root_action_id.clone());
-                let _ =
+                let _ = database.with_connection(|conn| {
                     self.repository
-                        .block(conn, &run.root_action_id, "GENERATION_STORAGE_FAILED");
+                        .block(conn, &run.root_action_id, "GENERATION_STORAGE_FAILED")
+                });
                 Some(error)
             }
         };
@@ -1148,7 +1235,9 @@ impl GenerationRunService {
             // interval 首个 tick 立即完成——消费之以对齐基线时序。
             let _ = flush_timer.tick().await;
             // ⑭ 基线 :206-213——active-elapsed 剩余 deadline。
-            let remaining = match self.repository.budget(conn, &run.root_action_id) {
+            let remaining = match database
+                .with_connection(|conn| self.repository.budget(conn, &run.root_action_id))
+            {
                 Ok(budget) => {
                     (receipt.budget.policy.max_active_elapsed_ms - budget.active_elapsed_ms).max(0)
                 }
@@ -1321,19 +1410,19 @@ impl GenerationRunService {
                     }
                     tokio::select! {
                         _ = flush_timer.tick() => {
-                            self.flush_and_notify(conn, &record);
+                            self.flush_with_database(database, &record);
                         }
                         _ = flush_rx.recv() => {
-                            self.flush_and_notify(conn, &record);
+                            self.flush_with_database(database, &record);
                         }
                         _ = deadline.as_mut() => {
                             {
                                 let mut state = state.lock().unwrap();
                                 state.timed_out = true;
                             }
-                            if self
+                            if database.with_connection(|conn| self
                                 .repository
-                                .block(conn, &record.root_id, "ROOT_BUDGET_EXHAUSTED")
+                                .block(conn, &record.root_id, "ROOT_BUDGET_EXHAUSTED"))
                                 .is_err()
                             {
                                 let mut state = state.lock().unwrap();
@@ -1375,16 +1464,18 @@ impl GenerationRunService {
                             } else {
                                 let agent_protocol_text =
                                     state.lock().unwrap().agent_protocol_text.clone();
-                                match self.settle_success(
-                                    conn,
-                                    &record,
-                                    &state,
-                                    &request,
-                                    policy,
-                                    &result,
-                                    &agent_protocol_text,
-                                    &record.diagnostics,
-                                ) {
+                                match database.with_connection(|conn| {
+                                    self.settle_success(
+                                        conn,
+                                        &record,
+                                        &state,
+                                        &request,
+                                        policy,
+                                        &result,
+                                        &agent_protocol_text,
+                                        &record.diagnostics,
+                                    )
+                                }) {
                                     Ok(settled) => {
                                         let mut state = state.lock().unwrap();
                                         state.receipt = settled;
@@ -1404,7 +1495,15 @@ impl GenerationRunService {
 
         // catch 块（基线 :277-301）。
         if let Some(error) = caught {
-            self.catch_dispatch_failure(conn, &record, &state, &signal, &error);
+            if database
+                .with_connection(|conn| {
+                    self.catch_dispatch_failure(conn, &record, &state, &signal, &error);
+                    Ok(())
+                })
+                .is_err()
+            {
+                self.fence_database_access_failure(&record);
+            }
         }
         // finally 块（基线 :304-311）。
         self.finalize_attempt(&attempt_id);
@@ -1418,7 +1517,8 @@ impl GenerationRunService {
                 return Ok(out);
             }
         }
-        let final_receipt = self.repository.receipt(conn, &attempt_id, None)?;
+        let final_receipt =
+            database.with_connection(|conn| self.repository.receipt(conn, &attempt_id, None))?;
         if signal.is_cancelled() {
             let mut out = final_receipt;
             if out.failure_code.is_none() {
@@ -1982,6 +2082,248 @@ mod tests {
         crate::db::schema::create_tables(&conn).expect("schema");
         let run = open_run(&conn, "project-1", "lease-1");
         (conn, run)
+    }
+
+    #[tokio::test]
+    async fn scoped_database_late_pending_subscriber_receives_stored_completion_test() {
+        let pending = Arc::new(PendingOperation::new(&"a".repeat(64)));
+        pending.complete(Err("GENERATION_CANCELLED".to_string()));
+        let result = tokio::time::timeout(Duration::from_secs(1), wait_pending(pending))
+            .await
+            .expect("完成先于订阅时也必须立即返回");
+        assert!(matches!(result, Err(code) if code == "GENERATION_CANCELLED"));
+    }
+
+    #[tokio::test]
+    async fn scoped_database_pending_hash_conflict_before_reserve_is_rejected_test() {
+        let (conn, run) = test_setup();
+        let database = ScopedDatabase {
+            connection: Mutex::new(conn),
+            allowed: std::sync::atomic::AtomicBool::new(true),
+        };
+        let (started, _) = std::sync::mpsc::channel();
+        let svc = service(Arc::new(WaitingDispatcher { started }));
+        let key = json!([run.run_id, "nonce-1"]).to_string();
+        svc.pending.lock().unwrap().insert(
+            key.clone(),
+            Arc::new(PendingOperation::new(&"a".repeat(64))),
+        );
+        let result = svc
+            .execute_with_database(
+                &database,
+                execute_request(
+                    &run,
+                    &"b".repeat(64),
+                    usage_policy("included-in-completion"),
+                ),
+            )
+            .await;
+        assert!(matches!(result, Err(code) if code == "GENERATION_INVOCATION_CONFLICT"));
+        let conn = database.connection.lock().unwrap();
+        assert!(svc
+            .repository
+            .read_run_view(&conn, &run.run_id)
+            .unwrap()
+            .attempts
+            .is_empty());
+        svc.pending.lock().unwrap().remove(&key);
+    }
+
+    struct ScopedDatabase {
+        connection: Mutex<Connection>,
+        allowed: std::sync::atomic::AtomicBool,
+    }
+
+    impl GenerationDatabaseAccess for ScopedDatabase {
+        fn with_connection<T>(
+            &self,
+            action: impl FnOnce(&Connection) -> Result<T, String>,
+        ) -> Result<T, String> {
+            let connection = self.connection.lock().unwrap();
+            if !self.allowed.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("GENERATION_EPOCH_STALE".to_string());
+            }
+            action(&connection)
+        }
+    }
+
+    #[test]
+    fn scoped_database_network_wait_releases_connection_and_preserves_abort_text_test() {
+        let (conn, run) = test_setup();
+        let database = Arc::new(ScopedDatabase {
+            connection: Mutex::new(conn),
+            allowed: std::sync::atomic::AtomicBool::new(true),
+        });
+        let (started, received) = std::sync::mpsc::channel();
+        let svc = Arc::new(service(Arc::new(WaitingDispatcher { started })));
+        let execution_database = Arc::clone(&database);
+        let execution_service = Arc::clone(&svc);
+        let request = execute_request(
+            &run,
+            &"a".repeat(64),
+            usage_policy("included-in-completion"),
+        );
+        let (done, completed) = std::sync::mpsc::channel();
+        let execution = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            done.send(runtime.block_on(
+                execution_service.execute_with_database(execution_database.as_ref(), request),
+            ))
+            .unwrap();
+        });
+        received
+            .recv_timeout(Duration::from_secs(3))
+            .expect("分发已开始");
+        {
+            let conn = database
+                .connection
+                .try_lock()
+                .expect("网络等待期间连接必须可用");
+            let view = svc.repository.read_run_view(&conn, &run.run_id).unwrap();
+            assert_eq!(view.attempts.len(), 1);
+            assert_eq!(view.attempts[0].receipt.attempt.status, "dispatch-marked");
+        }
+        svc.request_abort_root(&run.root_action_id);
+        let receipt = completed
+            .recv_timeout(Duration::from_secs(3))
+            .expect("中止完成")
+            .unwrap();
+        execution.join().unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_CANCELLED")
+        );
+        assert_eq!(receipt.artifact.as_ref().unwrap().text, "中止前正文");
+        assert_eq!(receipt.attempt.status, "unknown");
+        assert!(svc.controllers.lock().unwrap().is_empty());
+        assert!(svc.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoped_database_pending_replay_does_not_hold_pending_or_connection_lock_test() {
+        let (conn, run) = test_setup();
+        let database = ScopedDatabase {
+            connection: Mutex::new(conn),
+            allowed: std::sync::atomic::AtomicBool::new(true),
+        };
+        let (started, received) = std::sync::mpsc::channel();
+        let svc = service(Arc::new(WaitingDispatcher { started }));
+        let request = execute_request(
+            &run,
+            &"b".repeat(64),
+            usage_policy("included-in-completion"),
+        );
+        let duplicate = request.clone();
+        let joined = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                svc.execute_with_database(&database, request),
+                async {
+                    while received.try_recv().is_err() {
+                        tokio::task::yield_now().await;
+                    }
+                    svc.execute_with_database(&database, duplicate).await
+                },
+                async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    assert!(
+                        svc.pending.try_lock().is_ok(),
+                        "重放等待不能持有 pending 锁"
+                    );
+                    assert!(
+                        database.connection.try_lock().is_ok(),
+                        "重放等待不能持有连接"
+                    );
+                    svc.request_abort_root(&run.root_action_id);
+                },
+            )
+        })
+        .await
+        .expect("原调用与在途重放必须共同完成");
+        let first = joined.0.unwrap();
+        let second = joined.1.unwrap();
+        assert_eq!(first.attempt.attempt_id, second.attempt.attempt_id);
+        assert_eq!(first.failure_code, second.failure_code);
+        assert!(svc.pending.lock().unwrap().is_empty());
+        let conn = database.connection.lock().unwrap();
+        assert_eq!(
+            svc.repository
+                .read_run_view(&conn, &run.run_id)
+                .unwrap()
+                .attempts
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_database_revoked_before_settle_never_writes_old_connection_test() {
+        struct RevokingDispatcher(Arc<ScopedDatabase>);
+        impl GenerationDispatcher for RevokingDispatcher {
+            fn dispatch<'a>(
+                &'a self,
+                _request: &'a Value,
+                options: DispatchOptions<'a>,
+            ) -> Pin<Box<dyn Future<Output = Result<GenerationDispatchResult, String>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    (options.on_visible)(VisibleGenerationEvent {
+                        kind: VisibleEventKind::Delta,
+                        text: "仅内存尾部".to_string(),
+                        event_id: None,
+                    });
+                    self.0
+                        .allowed
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    Ok(GenerationDispatchResult {
+                        usage: Some(trusted_usage()),
+                        finish_reason: Some("stop".to_string()),
+                    })
+                })
+            }
+        }
+        let (conn, run) = test_setup();
+        let database = Arc::new(ScopedDatabase {
+            connection: Mutex::new(conn),
+            allowed: std::sync::atomic::AtomicBool::new(true),
+        });
+        let svc = service(Arc::new(RevokingDispatcher(Arc::clone(&database))));
+        let receipt = svc
+            .execute_with_database(
+                database.as_ref(),
+                execute_request(
+                    &run,
+                    &"c".repeat(64),
+                    usage_policy("included-in-completion"),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_STORAGE_FAILED")
+        );
+        assert_eq!(receipt.unsaved_tail.as_deref(), Some("仅内存尾部"));
+        let conn = database.connection.lock().unwrap();
+        let stored = svc
+            .repository
+            .receipt(&conn, &receipt.attempt.attempt_id, None)
+            .unwrap();
+        assert_eq!(stored.attempt.status, "dispatch-marked");
+        assert_eq!(stored.artifact.as_ref().unwrap().text, "");
+        assert!(stored.failure_code.is_none());
+        assert!(svc
+            .failed_roots
+            .lock()
+            .unwrap()
+            .contains(&run.root_action_id));
+        assert!(svc.controllers.lock().unwrap().is_empty());
+        assert_eq!(
+            svc.unsaved_tails.lock().unwrap()[&receipt.attempt.attempt_id].text,
+            "仅内存尾部"
+        );
     }
 
     #[tokio::test]
