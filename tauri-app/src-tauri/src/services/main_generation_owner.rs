@@ -4259,6 +4259,8 @@ pub struct MainGenerationOwnerCache {
     entries: Mutex<HashMap<String, OwnerCacheEntry>>,
     /// 独立短锁，网络等待时仍可访问；只保存身份和中止服务，不保存正文/模型配置。
     execution_controls: Mutex<HashMap<String, ExecutionControlEntry>>,
+    /// 关闭登记的引用计数：并发关闭请求全部退出后才重新开放执行登记。
+    closing_projects: Mutex<HashMap<String, usize>>,
     lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
 }
 
@@ -4282,6 +4284,25 @@ impl Drop for ExecutionControlGuard<'_> {
                 entry
                     .service
                     .clear_abort_request(&entry.handle.root_action_id);
+            }
+        }
+    }
+}
+
+/// 关闭事务的易失准入围栏，失败/提前返回时也必须撤销。
+struct ProjectCloseGuard<'a> {
+    cache: &'a MainGenerationOwnerCache,
+    key: String,
+}
+
+impl Drop for ProjectCloseGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut closing) = self.cache.closing_projects.lock() {
+            if let Some(count) = closing.get_mut(&self.key) {
+                *count -= 1;
+                if *count == 0 {
+                    closing.remove(&self.key);
+                }
             }
         }
     }
@@ -4341,6 +4362,7 @@ impl MainGenerationOwnerCache {
         Self {
             entries: Mutex::new(HashMap::new()),
             execution_controls: Mutex::new(HashMap::new()),
+            closing_projects: Mutex::new(HashMap::new()),
             lease_store,
         }
     }
@@ -4356,6 +4378,14 @@ impl MainGenerationOwnerCache {
         let handle: MainGenerationRunHandle = serde_json::from_value(handle.clone())
             .map_err(|_| mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"))?;
         let key = security::normalized_project_path(&owner.session.project_path);
+        // 此短锁保留到控制登记完成，与关闭围栏的发布形成单一准入顺序。
+        let closing = self
+            .closing_projects
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        if closing.contains_key(&key) {
+            return Err(mutating_error("GENERATION_PROJECT_CLOSED"));
+        }
         let mut controls = self
             .execution_controls
             .lock()
@@ -4406,6 +4436,33 @@ impl MainGenerationOwnerCache {
         Ok(())
     }
 
+    /// 只用于内部数据库关闭钩子。先阻止新执行登记，再唤醒已登记执行；
+    /// 不持 owner/数据库锁，不提前关闭会话或连接。
+    fn register_project_close(&self, project_root: &str) -> Result<ProjectCloseGuard<'_>, String> {
+        let key = security::normalized_project_path(project_root);
+        {
+            let mut closing = self
+                .closing_projects
+                .lock()
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+            *closing.entry(key.clone()).or_default() += 1;
+        }
+        let guard = ProjectCloseGuard {
+            cache: self,
+            key: key.clone(),
+        };
+        let controls = self
+            .execution_controls
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+        if let Some(entry) = controls.get(&key) {
+            entry
+                .service
+                .request_project_close_root(&entry.handle.root_action_id);
+        }
+        Ok(guard)
+    }
+
     /// 同时持有 owner 缓存锁与关闭临界区，锁序始终为 owner → 项目库。
     /// 回调必须在关闭连接前挂起 owner；失败时条目仍留在缓存，不能丢失可重试状态。
     pub(crate) fn before_database_close<T>(
@@ -4413,6 +4470,9 @@ impl MainGenerationOwnerCache {
         project_root: Option<&str>,
         close: impl FnOnce(Option<&mut MainGenerationOwner>) -> Result<T, String>,
     ) -> Result<T, String> {
+        let _closing = project_root
+            .map(|root| self.register_project_close(root))
+            .transpose()?;
         let mut entries = self
             .entries
             .lock()
@@ -5729,6 +5789,70 @@ mod tests {
     }
 
     #[test]
+    fn project_close_fence_counts_overlapping_requests_and_reopens_on_exit_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let owner = owner_with(&conn);
+        let cache = MainGenerationOwnerCache::new();
+        let first = cache
+            .register_project_close(&owner.session.project_path)
+            .unwrap();
+        let second = cache
+            .register_project_close(&owner.session.project_path)
+            .unwrap();
+        assert_eq!(
+            cache
+                .register_execution_control(&owner, &conn, &handle_of(&run))
+                .err(),
+            Some(mutating_error("GENERATION_PROJECT_CLOSED"))
+        );
+        drop(first);
+        assert!(cache
+            .register_execution_control(&owner, &conn, &handle_of(&run))
+            .is_err());
+        drop(second);
+        let execution = cache
+            .register_execution_control(&owner, &conn, &handle_of(&run))
+            .unwrap();
+        drop(execution);
+        assert!(cache.closing_projects.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_close_fence_does_not_block_other_project_test() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").unwrap();
+        let owner = owner_with(&conn);
+        let cache = MainGenerationOwnerCache::new();
+        let _closing = cache.register_project_close(r"F:\novel\other").unwrap();
+        let _execution = cache
+            .register_execution_control(&owner, &conn, &handle_of(&run))
+            .unwrap();
+        assert!(!owner.run_service.has_abort_request(&run.root_action_id));
+    }
+
+    #[test]
+    fn project_close_callback_failure_keeps_owner_and_releases_fence_test() {
+        let cache = MainGenerationOwnerCache::new();
+        let active = active();
+        cache
+            .authorized_owner(&session("project-1", "lease-1"), Some(&active))
+            .unwrap();
+        let result = cache.before_database_close(Some(&active.root_path), |_| {
+            Err::<(), _>("合成关闭失败".to_string())
+        });
+        assert_eq!(result, Err("合成关闭失败".to_string()));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.closing_projects.lock().unwrap().is_empty());
+        let mut guard = cache
+            .authorized_owner(&session("project-1", "lease-1"), Some(&active))
+            .unwrap();
+        assert!(!guard.owner().closed);
+    }
+
+    #[test]
     fn execution_control_registration_rejects_invalid_identity_without_entry_test() {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::create_tables(&conn).unwrap();
@@ -5856,6 +5980,211 @@ mod tests {
         let view = guard.owner().cancel(&conn, &handle_of(&run)).unwrap();
         assert_eq!(view["status"], json!("cancelled"));
         assert!(cache.execution_controls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_close_unblocks_locked_execution_and_reopens_durable_receipt_test() {
+        assert_locked_project_close(false);
+    }
+
+    #[test]
+    fn project_close_failure_preserves_session_database_and_retryable_owner_test() {
+        assert_locked_project_close(true);
+    }
+
+    /// 真实 AppState/磁盘项目库关闭链路；provider 是本地合成挂起 Future，不访问网络。
+    fn assert_locked_project_close(fail_close: bool) {
+        use crate::services::generation_run_service::{
+            create_generation_run_service, DispatchOptions, ExecuteGenerationRequest,
+            GenerationDispatchResult, GenerationDispatcher, GenerationRunServiceDependencies,
+            VisibleEventKind, VisibleGenerationEvent,
+        };
+        struct WaitingProvider(std::sync::mpsc::Sender<()>);
+        impl GenerationDispatcher for WaitingProvider {
+            fn dispatch<'a>(
+                &'a self,
+                _request: &'a Value,
+                options: DispatchOptions<'a>,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<GenerationDispatchResult, String>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    (options.on_visible)(VisibleGenerationEvent {
+                        kind: VisibleEventKind::Delta,
+                        text: "关闭前正文".to_string(),
+                        event_id: None,
+                    });
+                    self.0.send(()).unwrap();
+                    std::future::pending().await
+                })
+            }
+        }
+        let (_temp, _fixture_conn, fixture_owner, _) = source_owner_fixture();
+        let session = fixture_owner.session.clone();
+        let active = ActiveProject {
+            project_id: session.project_id.clone(),
+            lease_id: session.lease_id.clone(),
+            root_path: session.project_path.clone(),
+        };
+        let state = Arc::new(crate::state::AppState::new());
+        state.activate_project(active.clone()).unwrap();
+        let run = state.with_project_db(|conn| {
+            let run = open_run(conn, &session.project_id, &session.lease_id, "chapter-draft")?;
+            if fail_close {
+                // 仅阻止关闭阶段的持久暂停，不阻止网络中止的 flush/settle。
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_project_close BEFORE UPDATE OF status ON generation_runs
+                     WHEN NEW.status='paused' BEGIN SELECT RAISE(ABORT, 'synthetic-close-failure'); END;"
+                ).unwrap();
+            }
+            Ok(run)
+        }).unwrap();
+        let (started, wait_started) = std::sync::mpsc::channel();
+        {
+            let mut guard = state
+                .generation_owners
+                .authorized_owner(&session, Some(&active))
+                .unwrap();
+            guard.owner().run_service = Arc::new(create_generation_run_service(
+                GenerationRunServiceDependencies {
+                    repository: GenerationRunRepository::default(),
+                    dispatch: Arc::new(WaitingProvider(started)),
+                    on_snapshot: None,
+                    on_reasoning: None,
+                    validate_recovery: None,
+                },
+            ));
+        }
+        let execution_state = Arc::clone(&state);
+        let execution_session = session.clone();
+        let execution_active = active.clone();
+        let execution_run = run.clone();
+        let (done, wait_done) = std::sync::mpsc::channel();
+        let execution =
+            std::thread::spawn(move || {
+                let mut owner_guard = execution_state
+                    .generation_owners
+                    .authorized_owner(&execution_session, Some(&execution_active))
+                    .unwrap();
+                let owner = owner_guard.owner();
+                let database = execution_state.project_db.lock().unwrap();
+                let conn = database.as_ref().unwrap().connection();
+                let _control = execution_state
+                    .generation_owners
+                    .register_execution_control(owner, conn, &handle_of(&execution_run))
+                    .unwrap();
+                let receipt = owner.run_service.execute_blocking(conn, ExecuteGenerationRequest {
+                run_id: execution_run.run_id,
+                invocation_nonce: "project-close-lock-test".to_string(),
+                request_hash: "f".repeat(64),
+                provider_request: Value::Null,
+                reserved_tokens: 1024,
+                requested_output_tokens: 256,
+                input_upper_bound_tokens: 128,
+                reasoning_upper_bound_tokens: 0,
+                usage_policy: crate::repositories::generation_run_repository::ProviderUsagePolicy {
+                    estimator_version: "fixture".to_string(),
+                    safety_margin_tokens: 512,
+                    reasoning: "included-in-completion".to_string(),
+                    can_bound_total_liability: true,
+                },
+                purpose: None,
+                budget_decision: None,
+                agent_tool_names: None,
+                replay_task: None,
+                reconciliation_injected: false,
+            }).unwrap();
+                done.send(receipt).unwrap();
+            });
+        wait_started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("分发开始");
+        assert!(state.generation_owners.entries.try_lock().is_err());
+        assert!(state.project_db.try_lock().is_err());
+        let close_state = Arc::clone(&state);
+        let (closed, wait_closed) = std::sync::mpsc::channel();
+        let closing = std::thread::spawn(move || {
+            closed.send(close_state.close_project_database()).unwrap();
+        });
+        let receipt = wait_done
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("关闭必须先中止网络，不等待业务锁");
+        let result = wait_closed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("结算后必须完成关闭或返回可重试失败");
+        execution.join().unwrap();
+        closing.join().unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_PROJECT_CLOSED")
+        );
+        assert_eq!(receipt.artifact.as_ref().unwrap().text, "关闭前正文");
+        assert!(state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(state
+            .generation_owners
+            .closing_projects
+            .lock()
+            .unwrap()
+            .is_empty());
+        if fail_close {
+            assert!(result.is_err());
+            assert_eq!(
+                state.active_project_snapshot().unwrap().lease_id,
+                session.lease_id
+            );
+            assert!(state.project_db.lock().unwrap().is_some());
+            assert_eq!(state.generation_owners.len(), 1);
+            {
+                let mut guard = state
+                    .generation_owners
+                    .authorized_owner(&session, Some(&active))
+                    .unwrap();
+                let database = state.project_db.lock().unwrap();
+                let conn = database.as_ref().unwrap().connection();
+                let owner = guard.owner();
+                assert!(!owner.closed);
+                assert!(!owner.run_service.has_abort_request(&run.root_action_id));
+                // 关闭失败撤销准入围栏；后续受认证控制登记不继承旧中止。
+                let _control = state
+                    .generation_owners
+                    .register_execution_control(owner, conn, &handle_of(&run))
+                    .unwrap();
+                conn.execute_batch("DROP TRIGGER reject_project_close;")
+                    .unwrap();
+            }
+            state.close_project_database().unwrap();
+        } else {
+            result.unwrap();
+        }
+        assert!(state.active_project_snapshot().is_none());
+        assert!(state.project_db.lock().unwrap().is_none());
+        assert!(state.generation_owners.is_empty());
+        let mut reopened = active;
+        reopened.lease_id = "lease-2".to_string();
+        state.activate_project(reopened).unwrap();
+        state
+            .with_project_db(|conn| {
+                let repo = GenerationRunRepository::default();
+                let stored = repo.receipt(conn, &receipt.attempt.attempt_id, None)?;
+                assert_eq!(
+                    stored.failure_code.as_deref(),
+                    Some("GENERATION_PROJECT_CLOSED")
+                );
+                assert_eq!(stored.artifact.as_ref().unwrap().text, "关闭前正文");
+                assert_eq!(repo.get(conn, &run.run_id)?.status, "paused");
+                Ok(())
+            })
+            .unwrap();
+        state.close_project_database().unwrap();
     }
 
     #[test]

@@ -571,6 +571,13 @@ enum DispatchOutcome {
 // 服务本体
 // ============================================================================
 
+/// 易失中止原因；项目关闭优先于用户取消，避免并发请求降级关闭收据。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AbortCause {
+    Cancelled,
+    ProjectClosed,
+}
+
 /// 生成运行服务——基线 `createGenerationRunService` 的工厂产物。
 pub struct GenerationRunService {
     repository: GenerationRunRepository,
@@ -581,7 +588,7 @@ pub struct GenerationRunService {
     /// 基线 `controllers: Map<attemptId, …>`。
     controllers: Mutex<HashMap<String, ControllerRecord>>,
     /// 独立中止通道的根级意图，覆盖 controller 尚未登记的短窗口。
-    abort_requested_roots: Mutex<HashSet<String>>,
+    abort_requested_roots: Mutex<HashMap<String, AbortCause>>,
     /// 基线 `pending: Map<key, Promise>`。
     pending: Mutex<HashMap<String, Arc<PendingOperation>>>,
     /// 基线 `failedRoots: Set<rootId>`——存储失败围栏。
@@ -601,7 +608,7 @@ pub fn create_generation_run_service(
         on_snapshot: deps.on_snapshot,
         validate_recovery: deps.validate_recovery,
         controllers: Mutex::new(HashMap::new()),
-        abort_requested_roots: Mutex::new(HashSet::new()),
+        abort_requested_roots: Mutex::new(HashMap::new()),
         pending: Mutex::new(HashMap::new()),
         failed_roots: Mutex::new(HashSet::new()),
         unsaved_tails: Mutex::new(HashMap::new()),
@@ -893,7 +900,7 @@ impl GenerationRunService {
             } else if state.stream_failed {
                 "GENERATION_STREAM_INVALID".to_string()
             } else if signal.is_cancelled() {
-                "GENERATION_CANCELLED".to_string()
+                self.abort_failure_code(&record.root_id).to_string()
             } else {
                 known.to_string()
             }
@@ -1109,7 +1116,7 @@ impl GenerationRunService {
             .abort_requested_roots
             .lock()
             .unwrap()
-            .contains(&run.root_action_id)
+            .contains_key(&run.root_action_id)
         {
             token.cancel();
         }
@@ -1419,7 +1426,7 @@ impl GenerationRunService {
                     if state.lock().unwrap().timed_out {
                         "ROOT_BUDGET_EXHAUSTED"
                     } else {
-                        "GENERATION_CANCELLED"
+                        self.abort_failure_code(&record.root_id)
                     }
                     .to_string(),
                 );
@@ -1536,13 +1543,36 @@ impl GenerationRunService {
         self.abort_requested_roots
             .lock()
             .unwrap()
-            .insert(root_id.to_string());
+            .entry(root_id.to_string())
+            .or_insert(AbortCause::Cancelled);
         self.abort_root_controllers(root_id);
+    }
+
+    /// 内部关闭钩子在等待业务锁前调用；连接仍保留给执行线程 flush/settle。
+    pub(crate) fn request_project_close_root(&self, root_id: &str) {
+        self.abort_requested_roots
+            .lock()
+            .unwrap()
+            .insert(root_id.to_string(), AbortCause::ProjectClosed);
+        self.abort_root_controllers(root_id);
+    }
+
+    fn abort_failure_code(&self, root_id: &str) -> &'static str {
+        if self.abort_requested_roots.lock().unwrap().get(root_id)
+            == Some(&AbortCause::ProjectClosed)
+        {
+            "GENERATION_PROJECT_CLOSED"
+        } else {
+            "GENERATION_CANCELLED"
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn has_abort_request(&self, root_id: &str) -> bool {
-        self.abort_requested_roots.lock().unwrap().contains(root_id)
+        self.abort_requested_roots
+            .lock()
+            .unwrap()
+            .contains_key(root_id)
     }
 
     /// 执行控制登记退出时清理意图，后续恢复不得继承旧中止。
@@ -1952,6 +1982,68 @@ mod tests {
         crate::db::schema::create_tables(&conn).expect("schema");
         let run = open_run(&conn, "project-1", "lease-1");
         (conn, run)
+    }
+
+    #[tokio::test]
+    async fn project_close_before_controller_registration_persists_close_reason_test() {
+        let (conn, run) = test_setup();
+        let (started, received) = std::sync::mpsc::channel();
+        let svc = service(Arc::new(WaitingDispatcher { started }));
+        svc.request_project_close_root(&run.root_action_id);
+        // 并发用户取消不能把已登记的关闭原因降级。
+        svc.request_abort_root(&run.root_action_id);
+        let receipt = tokio::time::timeout(
+            Duration::from_secs(3),
+            svc.execute(
+                &conn,
+                execute_request(
+                    &run,
+                    &"e".repeat(64),
+                    usage_policy("included-in-completion"),
+                ),
+            ),
+        )
+        .await
+        .expect("关闭中止不得等待网络")
+        .unwrap();
+        assert_eq!(
+            receipt.failure_code.as_deref(),
+            Some("GENERATION_PROJECT_CLOSED")
+        );
+        assert!(received.try_recv().is_err());
+        let stored = svc
+            .repository
+            .receipt(&conn, &receipt.attempt.attempt_id, None)
+            .unwrap();
+        assert_eq!(
+            stored.failure_code.as_deref(),
+            Some("GENERATION_PROJECT_CLOSED")
+        );
+        assert!(svc.controllers.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_close_abort_reason_is_root_scoped_and_cleared_test() {
+        let (started, _) = std::sync::mpsc::channel();
+        let svc = service(Arc::new(WaitingDispatcher { started }));
+        svc.request_abort_root("cancel-root");
+        svc.request_project_close_root("close-root");
+        assert_eq!(
+            svc.abort_failure_code("cancel-root"),
+            "GENERATION_CANCELLED"
+        );
+        assert_eq!(
+            svc.abort_failure_code("close-root"),
+            "GENERATION_PROJECT_CLOSED"
+        );
+        svc.request_abort_root("close-root");
+        assert_eq!(
+            svc.abort_failure_code("close-root"),
+            "GENERATION_PROJECT_CLOSED"
+        );
+        svc.clear_abort_request("close-root");
+        assert!(!svc.has_abort_request("close-root"));
+        assert_eq!(svc.abort_failure_code("close-root"), "GENERATION_CANCELLED");
     }
 
     /// 永不主动结束的合成 provider，用于跨线程中止验证，不访问外部网络。

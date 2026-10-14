@@ -11,34 +11,34 @@
 
 ---
 
-## 快照（最后更新：2026-10-14 · 第 47 次）
+## 快照（最后更新：2026-10-14 · 第 48 次）
 
-> 验证版本：HEAD `8f5f0b36` + 本轮三份 Rust diff；核验截至 2026-10-14 21:11 +08:00。主会话直接实施，没有派发代理。
+> 验证版本：HEAD `2895c6db` + 本轮两份 Rust diff；核验截至 2026-10-14 21:33 +08:00。主会话直接实施，没有派发代理。
 
 | 项 | 值 |
 |---|---|
-| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；普通 execute 切片已提交 `8f5f0b36`，后续中止通道及交接改动未提交、未推送 |
+| 仓库 / 分支 | `F:\workplace\pi\ai-novel-writer` / `master`；中止通道切片 `2895c6db` 已推送到 origin/master；后续关闭切片及交接文档未提交 |
 | 产品身份 | Lorekeeper（设定司）/ `com.tancan1998.lorekeeper` |
 | 命令 / invoke 覆盖 / 未迁移 | check:channels exit 0：243 / 242 / 48；契约 invoke 290、事件 7；本轮无命令注册 |
-| `cargo test` | 1255 passed / 0 failed（51.33s）；bin/doc-test 无失败；本次新增 7 项中止与身份/锁生命周期测试 |
+| `cargo test` | 1262 passed / 0 failed（57.42s）；bin/doc-test 无失败；本次新增 7 项关闭/准入/持久收据测试 |
 | `cargo check --all-targets` | exit 0，零告警 |
 | `pnpm typecheck` / `pnpm run lint` | 均 exit 0 |
-| 前端测试 | 本次定向 generation runtime/renderer/harness：3 文件 / 43 项通过；第 45 次扩展检查仍有 4 项及 Agent store 9 项失败，未重新验收，不能宣称全绿 |
-| `git diff --check` | exit 0 |
-| 当前范围 | 普通 begin、草稿提交与普通 execute 切片已接通；暂停/取消的独立认证中止通道已验证；网络长锁完整拆解、关闭及事件接线未完成 |
+| 前端测试 | 本次定向 generation runtime/renderer/harness：3 文件 / 43 项通过；第 45 次扩展检查的频道/参数/review 与 Agent store 失败未复验，不能宣称全绿 |
+| 格式 / 差异检查 | 两份修改 Rust 的定向 rustfmt --check、git diff --check 均 exit 0；撤销全仓 cargo fmt 对四份非本轮文件的格式漂移后重新验证 |
+| 当前范围 | 普通 begin、草稿提交、普通 execute 与认证暂停/取消已接通；关闭可提前中止已登记 IPC execute，保留正文并持久暂停；网络长锁完整拆解与事件接线未完成 |
 | 隔离 / 依赖 | Electron、根 src、docs/、根配置和锁文件无改动；无新依赖/schema/权限/CI |
 | GUI 冒烟 | 未做 |
 
-## 本次更新（第 47 次：普通 execute 提交与取消解阻）
+## 本次更新（第 48 次：中止通道推送与项目关闭解阻）
 
-- 经用户确认已人工逐项核验后提交普通 execute 切片：`8f5f0b36`，提交消息检查与暂存秘密扫描通过，未推送。原先记录的 `efb96e0d` HEAD 和未提交清单已过期；此前 begin/草稿提交已在 `a54c8c13` 入库。
-- 新增独立 execution_controls 短锁：在 owner → 数据库临界区内验证运行身份再登记；暂停/取消先认证当前项目会话，只有与在途完整句柄逐字段一致时发送中止信号，再取得原业务锁完成持久化。旧会话、跨项目路径和篡改句柄不能提前中止执行。
-- 服务保存易失根级中止意图，覆盖 controller 尚未登记的窗口；已中止时不轮询 provider future。登记守卫在成功、错误和退出时清理意图，后续恢复不继承旧中止。未改变数据库结构、IPC 契约或权限。
-- 命令 execute/pause/cancel 的业务锁等待移入 block_in_place；没有释放数据库连接后继续写旧项目的路径。持久化暂停/取消在网络退出并结算后完成；提前中止信号本身不是最终收据。
-- 七项新测试：登记前中止不轮询 provider、跨线程中止保留正文前缀、根级隔离与清理、持有 owner 锁仍可中止、失效会话/路径/完整句柄保护、非法登记无残留、同时持有 owner/数据库锁时中止并持久取消。合成 provider 永不主动结束，未调用真实外部模型。
-- 完整 Rust：1255 passed / 0 failed，cargo check --all-targets exit 0、零告警；typecheck、lint、check:channels exit 0；前端三文件 43 passed。日志 `.pi/tmp/b33-abort-{target,lock-test,test,check,typecheck,lint,channels,vitest}.log`；Rust diff SHA256 `3582fac5554b21249a4b04c10ba3f97e303aaae11b9bd090eb4f275202a024d0`（含最后注释纠正，生产逻辑与全量验证一致）。
-- **未完成**：网络等待仍持 owner/数据库锁，普通读取和项目关闭仍可能等待；独立中止只覆盖已登记且完整句柄一致的 IPC 执行。子代/其他句柄、内部 Agent 调用、执行排队窗口及关闭钩子的完整生命周期仍需专项。快照/推理事件、材料提示哈希、短细纲重试、特殊域准入与前端既存失败复验待续，不能宣称端到端或完整运行控制完成。
-- 接续优先：拆分网络与短数据库临界区、保持 epoch/连接身份认证，补关闭/暂停及真实本地假服务器并发验证，再接事件。三份 Rust 和 fork 文档尚未提交；当前工作区需另行逐项核验，上一切片确认不自动延伸到新改动。状态只维护 `.pi/tmp/pipeline-state.md`。
+- 用户确认已逐项人工核验此前中止通道及交接文档，并同意提交、推送当前分支后，提交 `2895c6db29024c8b61c45dfbc721797ef589c1d0`：`🐛 fix(tauri): 接通独立认证中止通道以解除生成取消等待`。秘密扫描、提交消息校验通过；origin/master 从 `8f5f0b36` 更新至 `2895c6db`，未推送 upstream。
+- 提交后继续修改 generation_run_service 和 main_generation_owner：before_database_close 在等待 owner/数据库锁前发布按规范项目路径隔离的关闭准入围栏，并向已登记执行发送关闭信号。新执行控制登记与围栏发布使用统一短锁顺序；重叠关闭请求用引用计数，成功或失败退出均撤销围栏。
+- 根级中止意图增加原因：关闭优先于用户取消，controller 登记前也生效；关闭退出收据持久记录 `GENERATION_PROJECT_CLOSED`。执行线程仍持原库完成 flush/settle，再按 owner → 数据库原锁序持久暂停、关闭租约并释放库/会话；未引入旧库回写或跨 epoch 继续写入。
+- 新增七项测试：登记前关闭不轮询 provider 且持久关闭原因、原因隔离/清理与取消不降级、并发关闭计数/重新开放、跨项目围栏隔离、关闭回调失败保留 owner、真实 AppState/磁盘项目库在双业务锁占用时中止并重开读取正文/收据、持久暂停故障保留会话/库/owner 后成功重试。provider 是本地合成挂起 Future，非 HTTP 假服务器或真实外部模型。
+- 最新完整 Rust 1262 passed / 0 failed；check 零告警；定向 rustfmt、typecheck、lint、check:channels 和前端三文件 43 项通过。证据 `.pi/tmp/b33-close-{test,test-full,check,rustfmt,typecheck,lint,channels,vitest}.log` 与 `b33-close-reviewed.diff`，均不入库。Rust diff SHA256：`14203c38606ab32638f40248b514d3d44c7501a03f0f03cc22a6c2e835a8291c`。
+- **未完成**：网络 await 仍持 owner/数据库长锁，普通读取仍可能等待；关闭中止只覆盖已登记 IPC execute，其他子代句柄、内部 Agent、通用排队/项目切换竞争和关窗 GUI 仍待专项。关闭围栏解决发布后至退出间的新控制登记，不代表所有排队命令生命周期完成。
+- 接续优先拆分网络与短数据库临界区，在 flush/settle 重新认证 epoch、连接及项目身份，补暂停、内部 Agent 与本地 HTTP 假服务器并发测试，再接快照/推理事件。材料提示哈希、短细纲重试、知识采集、特殊域准入、B3-M4/M5 和前端既存失败仍待续。
+- 两份 Rust 与三份 fork 文档未提交，需独立人工逐项核验；此前提交/推送确认不自动覆盖新改动。当前任务/占用事实只维护 `.pi/tmp/pipeline-state.md`。
 
 ---
 
