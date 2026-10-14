@@ -1929,6 +1929,12 @@ pub struct GenerationExecutionReceipt {
     pub failure_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_decision: Option<Value>,
+    /// 基线 `unsavedTail?: string`（generation-run-repository.ts:63）：
+    /// 存储失败时主进程保留的可复制尾文本（纯运行时投影，
+    /// 不落库）。B3-2b 起由 `generation_run_service` 在
+    /// storageFailed 路径附加。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsaved_tail: Option<String>,
 }
 
 /// `receiptSelect` 投影的 usage 形状（`{purpose, artifactIdentity, result, budgetDecision}`）。
@@ -3091,6 +3097,7 @@ impl GenerationRunRepository {
                 .as_ref()
                 .and_then(|result| result.failure_code.clone()),
             budget_decision: usage.budget_decision.clone(),
+            unsaved_tail: None,
         })
     }
 

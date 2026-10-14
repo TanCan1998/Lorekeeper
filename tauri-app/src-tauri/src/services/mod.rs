@@ -69,3 +69,14 @@ pub mod task_budget_planner;
 // 本波不接 owner 调用点。
 pub mod blueprint_batch_policy;
 pub mod main_generation_plan;
+
+// ── 批次 G4-B3-2b：Agent 响应协议解析（1:1 移植自
+// src/shared/agent-response-protocol.ts）+ 生成运行服务
+// （1:1 移植自 electron/services/generation-run-service.ts）──
+// 依赖关系：agent_response_protocol 为纯函数解析器；
+// generation_run_service 依赖前者（agentToolNames 路径）
+// 与 generation_run_repository，dispatch 经
+// GenerationDispatcher trait 依赖注入（B3-3 经
+// llm::openai/gemini 进程内流式核心实现）。
+pub mod agent_response_protocol;
+pub mod generation_run_service;
