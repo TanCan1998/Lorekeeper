@@ -11,7 +11,7 @@
 
 ---
 
-## 快照（最后更新：2026-10-14 · 第 38 次）
+## 快照（最后更新：2026-10-14 · 第 39 次）
 
 > **本表只填最新一次自检的实测值。**
 
@@ -23,16 +23,53 @@
 | 覆盖 invoke 频道 | 242（不变） |
 | 未迁移 invoke 频道 | 48（不变——本波无命令注册） |
 | orphan | 无 |
-| `cargo test --lib` | 1033 passed / 0 failed（计数不变：db.rs 两处占位断言改语义断言，无新增测试） |
+| `cargo test --lib` | 1184 passed / 0 failed（1152+32 新测试：agent_response_protocol 12 + generation_run_service 20） |
 | `cargo check --all-targets` | 0 错误 0 告警（exit 0） |
 | `pnpm typecheck` / `lint` | 未跑（本波纯 Rust 改动，无 TS 改动面） |
 | 定向 `vitest` | 未跑（本波无前端逻辑改动） |
-| 已完成批次 | G4-1 / G4-2 / G4-3a / G4-3b / G4-5 / G4-6a / G4-6b-1~4 / G4-6c-1~2 / G4-7 / G4-8a / G4-8b / G4-9a / G4-9b / G4-10a / G4-10b / G4-10c / **G4-10d**（2026-10-14 新增） |
-| 当前阶段 | G4-10d agent-generation 子波次 D 收口（占位活化：with_agent_child_effect 主体 + commit_draft 接线 + 调用点测试断言）；agent-generation 域命令层全量就位（8 频道注册 + 6 频道功能 + 2 频道 fail-closed 占位）；下一波 = **B3 创建核心与 LLM 双阶段执行循环迁移**（begin 主体 / execute 分发核心 / resume / execute_round 主体活化）或 **currentModelReceipt 迁移**（host capture 真实化） |
-| 依赖 | 无新增（rusqlite 0.40.2 [bundled] / reqwest 0.13 / hnsw_rs / jieba 等不变） |
+| 已完成批次 | G4-1 / G4-2 / G4-3a / G4-3b / G4-5 / G4-6a / G4-6b-1~4 / G4-6c-1~2 / G4-7 / G4-8a / G4-8b / G4-9a / G4-9b / G4-10a / G4-10b / G4-10c / G4-10d / **B3-1a / B3-1b / B3-1c / B3-2a / B3-2b**（2026-10-14 新增） |
+| 当前阶段 | B3-2b 生成运行服务本体收口（generation_run_service + agent_response_protocol 1:1 平移，dispatch 经 GenerationDispatcher trait 依赖注入）；B3-2 剩余（llm_generation.rs 流式核心抽取 + 事件发射活化）随 B3-3；下一波 = **推理机器对齐专波**（B3-M1 + B3-M2 + B3-M3 合并）→ B3-3 → B3-4 |
+| 依赖 | 无新增 crate（Cargo.toml 启用 tokio "time" feature——tokio 依赖已有，Cargo.lock 不变；rusqlite 0.40.2 [bundled] / reqwest 0.13 / hnsw_rs / jieba 等不变） |
 | GUI 冒烟 | 未做 |
 | 双栈隔离 | 维持（Tauri 用 `AI_NOVEL_LOREKEEPER_HOME` / `~/.lorekeeper`；项目库 `<root>/.lore/lorekeeper.db`） |
 | Rust 工具链 | rustc/cargo 1.99.0 stable-msvc（`D:\Environment\rust`） |
+
+---
+
+## 本次更新（第 39 次：B3-2b —— 生成运行服务本体，generation_run_service + agent_response_protocol 1:1 平移）
+
+### 1. 新增（本轮，5 写面 +2851/−2）
+
+| 项 | 内容 |
+|---|---|
+| `services/agent_response_protocol.rs`（新建） | 基线 `src/shared/agent-response-protocol.ts` 1:1 平移：`parseAgentResponseProtocol` 三形态（原始调用 `名称\n{...}` / 信封 `{"name","arguments"}` / 标记块 `<tool_call>...</tool_call>` 内 `<name>…</name><arguments>…</arguments>` + 空工具 `<name></name>` 特例）；隐藏标签栈式配对扫描（think/thinking/analysis/reasoning）；中断投影（未闭合 tool_call 的 name 前缀扣留）；多空行压缩；12 单测 |
+| `services/generation_run_service.rs`（新建） | 基线 `electron/services/generation-run-service.ts`（355 行）1:1 平移：`execute` 幂等重放（findInvocation）+ 在途去重（pending 映射）+ failedRoots 围栏 + `select!` 分发循环（1s flush 定时器 / deadline / 取消 watch 令牌）+ `settle_provider_usage` 三态记账（trusted / unknown 仅算术自洽 / untrusted 保守）+ catch 失败码分类（NETWORK_ERROR / GENERATION_PROVIDER_FAILED / GENERATION_AGENT_ACTION_LIMIT / GENERATION_CANCELLED）+ 增量 flush 经 mpsc 通道（4096 字节阈值 / 8MB agent 协议上限 / 64 工具调用上限）+ 公共 API（open/resume/pause/cancel/restart/suspend_for_project_close）+ 20 单测（含 MockDispatcher） |
+| `repositories/generation_run_repository.rs` | `GenerationExecutionReceipt` 补 `unsaved_tail: Option<String>`（serde default——对齐基线 unsavedTails 记录） |
+| `Cargo.toml` | 启用 tokio `"time"` feature（定时器 select! 需要；tokio 依赖已有，Cargo.lock 不变） |
+| `services/mod.rs` | 登记 2 模块（agent_response_protocol / generation_run_service） |
+
+**行为对照（Electron ↔ Tauri）**：
+- `execute` 与基线 :545-613 逐行对照：requestHash 校验（`GENERATION_REQUEST_HASH_INVALID`）→ pending 幂等 → failedRoots 围栏（`GENERATION_RESERVATION_INVALID`）→ reserve → markDispatched → 分发循环（flush 1s / deadline / cancel）→ settle（usage 三态 + 收据写回）→ catch 分类——顺序与错误码逐字一致
+- `settle_provider_usage` 与基线 :73-96 对照：`Number.isSafeInteger` 校验、unknown 策略仅信任算术自洽 total、accounting 须等于 policy.reasoning、included-in-completion 拒绝 r>c、separately-billed 要求 r!==null 且 actual=p+c+r——全部一致
+- 取消语义：基线 abort → `GENERATION_CANCELLED`；Rust 侧 watch-channel 令牌 `token.cancel()` → select! 分支 → `GENERATION_CANCELLED`——时序对齐（失败分支立即 abort，不设延迟标志位）
+
+**⚠️ 偏差登记**（均经规则批准）：
+- 正则 look-ahead `(?=[\s>])` 以捕获组 `([^<>]*)` + `marker_tag_boundary_valid` 函数等价（regex crate 不支持 look-around——官方文档确认「lacks look-around and backreferences」）；tagged-empty-tool 基线反向引用 `\1` 以双捕获组比较替代
+- 取消句柄为进程内 watch-channel 令牌（`GenerationCancelToken`），不经 IPC `llm_streams` 注册表（B3 裁决项③）
+- 增量 flush 经 mpsc 通道交付（`&Connection` 非 `Send`，回调不能直接持 conn）
+- trait `GenerationDispatcher::dispatch` 显式统一生命周期 `'a`（`'_` 隐式绑定 `&self` 生命周期，但 future 实际借用 `options`）
+- 发射器活化（去 dead_code + 接线）随 B3-3——execute_inner 仍 fail-closed，B3-2b 期间无服务构造点可接线（B3-2b 范围调整，编排者裁定）
+
+### 2. 前端登记
+
+- 无（本波无命令注册、无 TS 改动面）
+
+### 3. 提交清单
+
+| Commit | 说明 |
+|---|---|
+| `fe33fcd6` | ✨ feat(tauri): G4-B3-2b 生成运行服务本体——generation_run_service + agent_response_protocol 1:1 平移（5 files +2851/−2） |
+| `b1d72e92` | ✨ feat(tauri): G4-B3-2a 流式传输层扩展——reasoning/usage evidence 回调 + 带内推理抽取（IPC 路径行为不变）（前置依赖） |
 
 ---
 
@@ -155,12 +192,12 @@
 ### 1. 当前工作区状态
 
 - `git status --porcelain`：空（快照提交前）
-- HEAD：`b3d9eb78 ✨ feat(tauri): G4-10d agent-generation 子波次 D——占位活化（with_agent_child_effect 与调用点接线）`
+- HEAD：`fe33fcd6 ✨ feat(tauri): G4-B3-2b 生成运行服务本体——generation_run_service + agent_response_protocol 1:1 平移`
 - ⚠️ 上一份快照（第 35 次）中「下一波 = agent-generation 域（4 子波次 A→B→C→D）」：A（G4-10a）、B（G4-10b）、C（G4-10c）与 D（G4-10d）**已收口**；「安全项优先：Rust begin 的 agentWorkflowRegistrationId 键无 admitWorkflow 等价校验」**已闭合**（G4-10b）
 
 ### 2. 下一步（1-2-3）
 
-1. **B3 创建核心与 LLM 双阶段执行循环迁移**：begin 主体（策略构造器 newMainGenerationPolicy / generation-run-service）/ execute 分发核心 / resume 主体 / execute_round 主体活化——agent-generation 域剩余 fail-closed 面（begin/execute/resume/round）与 commit_draft 新写入路径、agent-round 完整 LLM 循环均依赖此波次；研究入口 `.pi/tmp/research/agent-generation-domain.md` §4 依赖矩阵
+1. **推理机器对齐专波**（B3-M1 + B3-M2 + B3-M3 合并，均涉及既有文件/在役命令行为，一次复验）：B3-M1 resolve_generation_parameters 双实现合并（IPC 命令 maxTokens 钳制语义）、B3-M2 ReasoningAdapter 扩 siliconflow-v4-thinking / openai-thinking-budget 2 变体 + SiliconFlow 目录补全、B3-M3 私有依赖合并（main_generation_plan.rs 本地平移副本提为 pub）→ **B3-3**（owner 主体接线：begin/execute_inner/resume 主体 + currentModelReceipt + rebuildBinding 真实化 + B3-2 剩余②llm_generation.rs 流式核心抽取为 pub 服务函数 + ③事件发射活化，dispatch 经 GenerationDispatcher trait 由 llm::openai/llm::gemini 实现）→ **B3-4**（commit_draft 写入路径）；研究入口 `.pi/tmp/research/agent-generation-b3.md`
 2. **currentModelReceipt 迁移**（host capture 真实化）：基线 main-generation-owner.ts:251-256（模型注册表 loadModel + 只读租据收据构造）——迁移后 `impl AgentHost for MainGenerationOwner` 的 `current`/`capture` 保守占位可替换为 `rebuild_generation_source_binding`（已迁移，generation_source_binding.rs:3636）真实重建，agentSourceTransition 退化形态与源已变场景检测缺口随之补齐
 3. **后续候选**：legacy-roster begin/execute 活化、上游合并独立波次、import-novel-resume 单项修复评估、agent-generation 域效应端到端测试覆盖（随 B3 波次补齐）（不作为已授权新增依赖/schema/CI 工作）
 
@@ -193,7 +230,7 @@
 | 命令 | 工作目录 | 实测输出 |
 |---|---|---|
 | `pnpm run check:channels` | `tauri-app/` | 契约 invoke 频道 290（事件频道 7）；已注册命令 243 → 覆盖 invoke 频道 242；未迁移 invoke 频道 48；命令名与契约频道一一对应 ✅（exit 0；编排者独立复验，HEAD b3d9eb78 工作区——本波无命令注册，计数较第 37 次不变） |
-| `cargo test --lib` | `tauri-app/src-tauri/` | test result: ok. 1033 passed; 0 failed; 0 ignored; finished in 52.80s（exit 0；编排者独立复验，HEAD b3d9eb78 工作区） |
-| `cargo check --all-targets` | `tauri-app/src-tauri/` | Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.91s（exit 0；编排者独立复验） |
+| `cargo test --lib` | `tauri-app/src-tauri/` | test result: ok. 1184 passed; 0 failed; 0 ignored; finished in 53.75s（exit 0；编排者独立复验，HEAD fe33fcd6 工作区） |
+| `cargo check --all-targets` | `tauri-app/src-tauri/` | Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.12s（exit 0；编排者独立复验，0 错误 0 警告） |
 | `git status --porcelain` | 仓库根 | 空 |
-| `git log -1` | 仓库根 | `b3d9eb78 ✨ feat(tauri): G4-10d agent-generation 子波次 D——占位活化（with_agent_child_effect 与调用点接线）` |
+| `git log -1` | 仓库根 | `fe33fcd6 ✨ feat(tauri): G4-B3-2b 生成运行服务本体——generation_run_service + agent_response_protocol 1:1 平移` |
