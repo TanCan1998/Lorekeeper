@@ -54,12 +54,12 @@ pnpm test                    # vitest run（⚠️ 全量暂超时，见进度�
 pnpm run lint                # eslint 零告警
 pnpm build                   # tsc && vite build → tauri-app/dist
 cargo build                  # 在 tauri-app/src-tauri/ 下（Rust 工具链已装：见环境规则第 3/4 条，脚本内须显式设 RUSTUP_HOME/CARGO_HOME）
-cargo test                   # Rust 单元测试
+cargo test <模块或过滤词>      # 日常 Rust 相关回归；全量 cargo test 仅阶段/累计/风险触发，见开发指南 §7
 pnpm tauri dev               # 本地开发（Vite 5190 + Rust 联动）
 pnpm tauri build             # 打包
 ```
 
-改代码最小自检顺序：`pnpm typecheck` → `pnpm test`（相关）→ `pnpm run lint`；改动 Rust 时追加 `cargo test`。
+改 TS 代码最小自检顺序：`pnpm typecheck` → `pnpm test`（相关）→ `pnpm run lint`。改 Rust 默认相关 `cargo test <模块或过滤词>` + 定向 rustfmt + diff 检查；需要时扩大到 `cargo check --all-targets`。全量在领域阶段收口、累计 5 个 Rust 代码切片、最终验收、异常跨域回归或关键安全规则变更时执行，详见 [开发指南 §7](pi-development.md#7-测试约定)。纯文档不重跑代码测试。
 
 > **⚠️ 本地已知既存失败（2026-10-08 决定：维持现状，不改上游测试）**
 > 根目录 `pnpm test` 全量跑时，`scripts/__tests__/public-repository-hygiene.test.ts` 必失败——它断言 `AGENTS.md` **不存在**，而本机 `AGENTS.md` 是 pi 指引文件、被 `.gitignore:62` 忽略、**不入库**；CI 的 checkout 不含它，故 **CI 不受影响**。判断回归时把这一条排除，勿当成自己引入的失败。
@@ -146,7 +146,7 @@ fn chapter_finalize(chapter_id: String, body: String) -> Result<FinalizedReceipt
 
 ### 三层边界
 
-- ✅ **Always**：改 `tauri-app` TS 过 typecheck + lint（在 `tauri-app/` 下跑）；改 Rust 加 `cargo test`；共享类型放 `tauri-app/src/shared/`；遵循领域术语。
+- ✅ **Always**：改 `tauri-app` TS 过 typecheck + lint 及相关测试（在 `tauri-app/` 下跑）；改 Rust 跑相关定向测试，全量按开发指南 §7 分层触发，非逐切片必跑；共享类型放 `tauri-app/src/shared/`；遵循领域术语。
 - ⚠️ **Ask first**：改数据库 schema/迁移、新增依赖（尤其原生模块或 Rust crate）、改 CI/发布配置、动定稿与外部文件权限、更新 ADR、删除/清理任何 Electron 旧代码（默认保留，它是 `upstream` 同步锚点）。
   - 「改 CI/发布配置」依然适用：Gitleaks CI（`.github/workflows/gitleaks.yml`）已于本次配置（用户授权）并作为例外记录；后续任何改动（调扫描策略、升级 Gitleaks 版本等）仍需 Ask first。
 - 🚫 **Never**：提交 API Key/Token/模型凭据/用户数据/小说正文（Gitleaks CI 会扫描泄露，命中即 CI 失败）；编辑 `node_modules/`、`dist*/`、`.release/`、`target/` 产物；提交构建产物。

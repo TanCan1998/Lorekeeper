@@ -151,7 +151,7 @@ fn config_get(state: State<AppState>) -> Result<GlobalConfig, String> {
 **阶段 2 — 按 controller 迁移（核心）**
 6. 每批迁移 1–2 个 controller：
    - `config` → `project` → `db` → `skin` → `window` → `llm` → `finalization` → `chapter-lifecycle` → `kb` → `import` …（参考 `electron/ipc-handlers.ts` 注册顺序，先易后难）。
-7. 每个命令迁移后：前端对应功能跑通 + Rust 单元测试 + `cargo test` + `pnpm typecheck`/`pnpm test`（相关）。
+7. 每个命令迁移后：前端对应功能跑通 + Rust 相关定向测试 + `pnpm typecheck`/`pnpm test`（相关）；Rust 全量按 §7 的阶段/风险触发，不逐命令重复执行。
 8. 数据库层同步迁移对应 `*_repository.rs`，跑同域 `*.test.ts` 逻辑的 Rust 等价测试。
 
 **阶段 3 — 原生绑定收尾**
@@ -191,7 +191,13 @@ pub async fn chapter_finalize(
 ## 7. 测试约定
 
 - **前端/TS**：vitest，`*.test.ts` 与源同目录；必跑 `pnpm typecheck` + 相关 `pnpm test` + `pnpm run lint`（零告警）。
-- **Rust**：`cargo test`（`src-tauri/`），覆盖最终化不可变、数据库迁移 barrier、外部文件授权边界（平移自现有 `electron/**/*.test.ts` 意图）。
+- **Rust（2026-10-14 用户授权降频）**：在 `tauri-app/src-tauri/` 按以下分层验证执行，不再把全量 `cargo test` 作为每个普通切片提交/推送的固定前置：
+  1. **日常切片**：完成一组有语义关联的修改后，运行 `cargo test <模块路径或测试过滤词>`，覆盖修改模块、直接调用方及相关回归；对修改文件做定向 `rustfmt --edition 2021 --check <文件>`，并运行 `git diff --check`。不对每次小编辑重复编译，不用过窄过滤词漏掉既有同域回归；摘要须列明实际测试范围及数量。
+  2. **扩大编译检查**：公共签名、命令注册/接线、跨模块、feature 或构建目标改变，或定向测试未覆盖受影响目标时，追加 `cargo check --all-targets`；纯内部改动已由相关测试完成编译时不机械重复 check。
+  3. **全量触发**：完成一个 controller/领域阶段收口、距上次全量累计 **5 个 Rust 代码切片提交**、发布/交付最终验收、出现原因不明的跨域回归，任一条件成立即运行一次全量 `cargo test`。第 5 个切片在提交/推送前按预计累计数触发，不先推送再补全量。同一版本的一次全量可覆盖多个切片，不因补文档或提交动作再次运行。
+  4. **安全例外**：数据库 schema/迁移、定稿不可逆约束、外部文件权限、会话/epoch/项目访问准入规则发生语义变更时，在该切片提交/推送前追加全量；仍须先获得相关修改授权。普通并发/锁拆分必须定向覆盖读取、暂停/取消、关闭和失效身份保护，整体接线阶段收口再跑全量，不能以降频省略关键回归。
+  5. **仅文档/注释/无语义格式**：检查差异、格式及必要链接，不重跑 Rust/前端测试；如改变语义或影响范围则回到上述相应层级。此策略不修改 CI，也不把定向通过宣称为全量通过。
+  6. **证据与计数**：pipeline 保留上次全量的代码提交/工作区指纹、时间、结果和证据，以及其后 Rust 代码切片累计数；纯文档/注释/无语义格式提交不计数，仅实际全量通过后清零。交接分别标注「本轮定向」与「最近全量」，不能把历史全量结果归给新代码。最终化不可变、迁移 barrier 与外部授权等回归仍按影响范围纳入。
 - 迁移验收：每迁移一个 controller，用现有 Electron 版本作对照，验证 Tauri 对应功能行为一致（可用现有 smoke/`renderer-surface:e2e` 辅助核对）；验收通过仅代表该模块新增 Tauri 支持，不删除 Electron 版本。
 - 勿把小说正文、模型 Key 写入测试 fixture/日志。
 

@@ -2,8 +2,9 @@
 
 - 最新快照：[2026-10-14-tauri-migration-status.md](./2026-10-14-tauri-migration-status.md)，第 49 次。
 - 已验证代码提交：`a1884ac96d1b1c7c7342b6d07a71b47096fdf815` / master；关闭切片 `cf23c0ba` 已推送。短数据库访问代码与本快照一起推送 origin/master；最终 HEAD 以 Git 和本机 pipeline 为准。
-- 完整 Rust 1267 passed / 0 failed，check/typecheck/lint/check:channels/定向 rustfmt 通过；定向前端三文件 43 项通过，不代表全量前端或 GUI 验收。
+- 最近完整验证（代码 `a1884ac9`，2026-10-14 21:55）：Rust 1267 passed / 0 failed，check/typecheck/lint/check:channels/定向 rustfmt 通过；定向前端三文件 43 项通过，不代表全量前端或 GUI 验收。本次验证频率文档更新没有重跑代码测试。
 - 用户已明确授权后续普通迁移切片自检通过后直接提交、推送，免逐次人工审核；先确认边界及禁止派发代理仍保留。
+- Rust 改为分层验证：[开发指南 §7](../agents/pi-development.md#7-测试约定)。普通切片默认相关测试；阶段收口、累计 5 个 Rust 代码切片、最终验收、异常跨域回归或关键安全规则变更才跑全量。全量基线/累计数仅见本机 pipeline；纯文档不计数。
 - 频道实测：243 注册命令 / 242 invoke 覆盖 / 48 未迁移；契约 invoke 290、事件 7。
 - 活动任务和运行占用只见 [.pi/tmp/pipeline-state.md](../../.pi/tmp/pipeline-state.md)。主会话直接执行，不派发代理。
 
