@@ -1,4 +1,6 @@
 # 当前交接入口
+> 最新接续：[普通 execute 切片验证](./2026-10-14-tauri-execute-slice.md)。实际 HEAD 为 `62f5b8e0`；完整 Rust 1248 项及定向前端 43 项通过。网络等待仍持有业务锁，取消/事件/端到端未验收；以下第 46 次记录为此前基线。
+
 
 先读本页和 [.pi/tmp/pipeline-state.md](../../.pi/tmp/pipeline-state.md)；仅按任务读取详细材料。
 

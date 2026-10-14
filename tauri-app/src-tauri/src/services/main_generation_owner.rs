@@ -462,6 +462,12 @@ pub struct MainGenerationOwner {
     /// 基线 `runLeases: Map<string, string>`（attemptId → leaseId，
     /// main-generation-owner.ts:112）。挂起时逐 lease 关闭并清空。
     run_leases: Mutex<HashMap<String, String>>,
+    /// 基线 `pending: Map<string, { hash, promise }>`（在途调用登记，
+    /// main-generation-owner.ts:--）——Tauri 侧同一 owner 的 execute 是
+    /// 同步阻塞的（命令层 `block_in_place`），故这里只需保存**在途请求
+    /// 哈希**用于 `GENERATION_INVOCATION_CONFLICT` 判定；等待语义由项目
+    /// 库连接锁与 `find_invocation` 幂等读回给出。
+    pending_invocations: Mutex<HashMap<String, String>>,
     /// 与 owner 同寿命的服务与执行租约，不能在每次 IPC 中重建。
     lease_store: Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
     run_service: Arc<crate::services::generation_run_service::GenerationRunService>,
@@ -556,6 +562,7 @@ impl MainGenerationOwner {
             session,
             repository,
             run_leases: Mutex::new(HashMap::new()),
+            pending_invocations: Mutex::new(HashMap::new()),
             preparations: Vec::new(),
             closed: false,
         }
@@ -1861,10 +1868,18 @@ impl MainGenerationOwner {
         if run_operation == "legacy-character-roster-repair" {
             return Err(mutating_error("GENERATION_LEGACY_ADMISSION_REQUIRED"));
         }
-        let task = request.get("task").cloned().unwrap_or(Value::Null);
+        // 基线 :516-517——任务形状断言（`assertSemanticGenerationTask`）：
+        // 语义任务合同在任何持久化 / 分发之前先行拒绝非法形状。
+        let requested_task = request.get("task").cloned().unwrap_or(Value::Null);
+        crate::services::main_generation_plan::assert_semantic_generation_task(&requested_task)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // 基线 :518 `structuredClone(request.task)`——Rust 值语义克隆。
+        let mut task = requested_task;
+        // 基线 :519-526 规划目标单位指令注入（`planning:target-units`）。
+        self.inject_planning_target_instruction(conn, &run, &mut task)?;
         // 基线 :532-537 材料决策必需性（审稿 / 精修类操作与带准备的
         // chapter-draft 必须已绑定材料决策收据）。
-        let material_decision = manifest.get("materialDecision");
+        let material_decision = manifest.get("materialDecision").filter(|value| !value.is_null());
         if (material_decision.is_none()
             && matches!(
                 run_operation.as_str(),
@@ -1875,6 +1890,12 @@ impl MainGenerationOwner {
                 && manifest.get("preparationId").is_some())
         {
             return Err(mutating_error("GENERATION_MATERIAL_DECISION_REQUIRED"));
+        }
+        // 基线 :538-590 的材料决策提示哈希族（短细纲块编解码、生成前
+        // 定稿对账输出重算与逐字哈希比对）尚未迁移：一旦运行绑定了材料
+        // 决策，这里必须 fail-closed，绝不带着未经校验的提示词进入分发。
+        if material_decision.is_some() {
+            return Err(mutating_error("GENERATION_MATERIAL_PROMPT_UNVERIFIED"));
         }
         // 基线 :585-590 输出合同一致性（task.output 必须与绑定输出
         // 合同——字符串主合同或 purpose 覆盖合同——逐字一致）。
@@ -1924,7 +1945,7 @@ impl MainGenerationOwner {
         // 暂无消费者——随分发核心（generation-run-service）
         // 波次接线 `service.execute` 的
         // providerRequest.agentToolNames。
-        let _agent_tool_names: Vec<String> = if agent_execution {
+        let agent_tool_names: Vec<String> = if agent_execution {
             manifest
                 .get("agentContext")
                 .and_then(|context| context.get("input"))
@@ -1942,13 +1963,466 @@ impl MainGenerationOwner {
         } else {
             Vec::new()
         };
-        // ⚠️ B3 占位：基线 :522-590 的任务形状 / 材料决策提示哈希校验
-        // 与 :591-623 的调用重放 / 短细纲重试 / 可变性断言，及分发
-        // 核心（LLM 分发循环 + 事件发射）未迁移——分发入口 fail-closed
-        // （命令层收敛为 `GENERATION_REQUEST_FAILED`）。
-        Err(mutating_error(
-            "主生成执行尚未迁移：生成运行服务（generation-run-service）的 LLM 分发循环待后续批次移植",
-        ))
+        // 基线 :591-599——`requestHash`（语义任务 + 冻结模型租约修订 +
+        // 策略哈希）与在途键 `JSON.stringify([runId, invocationNonce])`。
+        let invocation_nonce = request
+            .get("invocationNonce")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let request_hash = Self::owner_text_hash(
+            &serde_json::to_string(&json!([
+                task,
+                run.binding.fingerprint.model_lease_revision,
+                run.binding.fingerprint.policy_hash
+            ]))
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?,
+        );
+        let in_flight_key = json!([run.run_id, invocation_nonce]).to_string();
+        // 基线 :600-606 在途登记：同键不同哈希 → `GENERATION_INVOCATION_CONFLICT`。
+        {
+            let mut pending = self
+                .pending_invocations
+                .lock()
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+            if let Some(existing) = pending.get(&in_flight_key) {
+                if existing != &request_hash {
+                    return Err(mutating_error("GENERATION_INVOCATION_CONFLICT"));
+                }
+            } else {
+                pending.insert(in_flight_key.clone(), request_hash.clone());
+            }
+        }
+        let result = self.dispatch_execution(
+            conn,
+            &run,
+            &task,
+            manifest,
+            task_purpose,
+            if agent_execution { Some(agent_tool_names) } else { None },
+            &invocation_nonce,
+            &request_hash,
+        );
+        self.pending_invocations
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?
+            .remove(&in_flight_key);
+        result
+    }
+
+    /// 基线 operation async IIFE（main-generation-owner.ts:625-）主体：
+    /// 幂等读回 → 短细纲准入 → 真实模型证据重建源比对 → 运行租约 →
+    /// 创作策略 / 冻结策略 / 预算 / 能力证据 → 主生成计划 → 进程内
+    /// provider 请求 → `service.execute`（真实 LLM 分发 + 流式 flush/settle
+    /// + 终态/取消）→ 回执投影。
+    ///
+    /// ⚠️ 诚实化边界（B3-3e 切片）：材料决策提示哈希族未迁移（已在
+    /// [`Self::execute_inner`] fail-closed），短细纲重试准入在此显式拒绝；
+    /// 子生成器可变性断言所属域（`reviewRevisions` / `imports` /
+    /// `finalizations` / `graphs` / `legacyRosters`）的 `begin` 准入仍未
+    /// 开放，运行不可能到达此处。快照 / 推理事件发射随依赖注入波次接线。
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_execution(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        task: &Value,
+        manifest: &Map<String, Value>,
+        task_purpose: &str,
+        agent_tool_names: Option<Vec<String>>,
+        invocation_nonce: &str,
+        request_hash: &str,
+    ) -> Result<Value, String> {
+        // 基线 :607-610——幂等读回（`findInvocation`）：已结算且不处于
+        // 在途状态（`dispatch-marked` / `reserved`）的调用重放既有收据。
+        if let Some(existing) = self
+            .repository
+            .find_invocation(conn, &run.run_id, invocation_nonce, request_hash)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+        {
+            if existing.attempt.status != "dispatch-marked" && existing.attempt.status != "reserved" {
+                return self.outcome_of(conn, &existing, task);
+            }
+        }
+        // 基线 :611-616——短细纲重试准入（`assertShortOutlineRetryAvailable`
+        // 与任务逐字比对）随短细纲块编解码波次迁移；此前显式拒绝。
+        if task_purpose == DRAFT_SHORT_OUTLINE_PURPOSE {
+            return Err(mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_UNVERIFIED"));
+        }
+        // ① 基线 :626-630——真实模型证据重建源并逐字比对。
+        let current = self.rebuild_binding(conn, &run.binding)?;
+        if current != run.binding {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        // ② 基线 :631-633——本运行的模型执行租约。
+        let lease_id = self
+            .run_leases
+            .lock()
+            .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?
+            .get(&run.run_id)
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_RESUME_REQUIRED"))?;
+        let model = {
+            let mut store = self
+                .lease_store
+                .lock()
+                .map_err(|_| mutating_error(GENERATION_REQUEST_FAILED))?;
+            store.resolve_model_at(&lease_id, owner_now_ms())
+        }
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // ③ 基线 :634-637——创作策略、冻结策略、预算与模型能力证据。
+        let creative_strategy = crate::repositories::project_core_repository::get(conn)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .map(|core| crate::llm::reasoning::CreativeStrategy::parse(Some(&core.creative_strategy)))
+            .unwrap_or(crate::llm::reasoning::CreativeStrategy::Auto);
+        let policy: crate::services::main_generation_plan::MainGenerationPolicy =
+            crate::services::main_generation_plan::read_main_generation_policy(
+                &read_main_generation_policy(manifest.get("policy"))?,
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let budget = self
+            .repository
+            .budget(conn, &run.root_action_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // 能力证据由当前模型快照重新推导（基线 `modelReceipt(binding)` 的
+        // `capabilityEvidence` 与绑定时冻结值已由 `rebuild_binding` 逐字比对）。
+        let evidence = crate::llm::lease::resolve_model_execution_capability_evidence(
+            &crate::llm::lease::LeaseModelProfile::from_value(&model),
+        )
+        .map_err(|error| mutating_error(map_generation_error(error.message())))?;
+        // ④ 基线 :638-644——主生成计划（输入上界 / 物理责任 / 预算决策）。
+        let plan = crate::services::main_generation_plan::build_main_generation_plan(
+            &model,
+            &evidence,
+            task,
+            &budget,
+            creative_strategy,
+            &policy,
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        // ⑤ 基线 :646-... ——进程内 provider 请求与内部执行请求。
+        let semantic_task =
+            crate::services::main_generation_plan::assert_semantic_generation_task(task)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let provider_request = crate::services::main_generation_dispatcher::provider_request(
+            &model,
+            &semantic_task,
+            &plan,
+            &run.root_action_id,
+        );
+        let replay_task = manifest
+            .get("importSlot")
+            .is_some_and(|slot| !slot.is_null())
+            || manifest
+                .get("materialDecision")
+                .and_then(|decision| decision.get("shortOutlinePromptHash"))
+                .is_some()
+            || self
+                .repository
+                .read_plot_outline(conn, &run.run_id, None)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .is_some();
+        let execution_request =
+            crate::services::generation_run_service::ExecuteGenerationRequest {
+                run_id: run.run_id.clone(),
+                invocation_nonce: invocation_nonce.to_string(),
+                request_hash: request_hash.to_string(),
+                provider_request,
+                reserved_tokens: plan.reserved_tokens,
+                requested_output_tokens: plan.requested_output_tokens,
+                input_upper_bound_tokens: plan.input_upper_bound_tokens,
+                reasoning_upper_bound_tokens: plan.reasoning_upper_bound_tokens,
+                usage_policy: plan.usage_policy.clone(),
+                purpose: Some(task_purpose.to_string()),
+                budget_decision: plan
+                    .budget_decision
+                    .as_ref()
+                    .map(Self::task_budget_decision_value),
+                agent_tool_names,
+                replay_task: replay_task.then(|| task.clone()),
+                reconciliation_injected: false,
+            };
+        // ⑥ 真实分发（网络流式 + 持久化 + 结算）：命令层已让出 tokio
+        //    worker，这里由服务自持 runtime 执行。
+        let receipt = self
+            .run_service
+            .execute_blocking(conn, execution_request)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.outcome_of(conn, &receipt, task)
+    }
+
+    /// 基线 `outcomeOf(receipt, task)`（main-generation-owner.ts:440-500）：
+    /// 执行回执 → `MainGenerationExecuteReceipt`
+    /// （`{ outcome: { status, content, finishReason, receipt }, run }`）。
+    fn outcome_of(
+        &self,
+        conn: &Connection,
+        receipt: &GenerationExecutionReceipt,
+        task: &Value,
+    ) -> Result<Value, String> {
+        let frozen_model = receipt
+            .run
+            .binding
+            .source_manifest
+            .get("modelReceipt")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let capability = frozen_model
+            .get("capabilityEvidence")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let stored = receipt
+            .result
+            .as_ref()
+            .and_then(|result| result.finish_reason.clone());
+        let finish_reason = if receipt.failure_code.is_some() {
+            "error".to_string()
+        } else if matches!(
+            stored.as_deref(),
+            Some("stop" | "length" | "content_filter" | "error" | "unknown")
+        ) {
+            stored.clone().unwrap_or_default()
+        } else {
+            "unknown".to_string()
+        };
+        // 失败码只放行两个已知安全码（基线 `safeFailureCode`）。
+        let safe_failure_code = match receipt.failure_code.as_deref() {
+            Some(code @ ("GENERATION_PROVIDER_FAILED" | "NETWORK_ERROR")) => Some(code.to_string()),
+            _ => None,
+        };
+        let attempt_number = receipt
+            .budget
+            .attempts
+            .iter()
+            .position(|attempt| attempt.attempt_id == receipt.attempt.attempt_id)
+            .map(|index| index as i64 + 1)
+            .unwrap_or(0);
+        let cumulative_requested: i64 = receipt
+            .budget
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.status != "cancelled-before-dispatch")
+            .map(|attempt| attempt.requested_output_tokens)
+            .sum();
+        let mut details = Map::new();
+        details.insert(
+            "purpose".to_string(),
+            task.get("purpose").cloned().unwrap_or(Value::Null),
+        );
+        if let Some(diagnostics) = receipt.diagnostics.as_ref() {
+            details.insert(
+                "diagnostics".to_string(),
+                serde_json::to_value(diagnostics).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(code) = safe_failure_code {
+            details.insert("failureCode".to_string(), Value::String(code));
+        }
+        if let Some(artifact) = receipt.artifact.as_ref() {
+            details.insert(
+                "visibleArtifact".to_string(),
+                json!({
+                    "artifactId": artifact.artifact_id,
+                    "attemptId": artifact.attempt_id,
+                    "revision": artifact.revision,
+                    "textHash": artifact.text_hash,
+                }),
+            );
+        }
+        details.insert(
+            "model".to_string(),
+            json!({
+                "id": frozen_model.get("modelId").cloned().unwrap_or(Value::Null),
+                "configurationRevision": frozen_model.get("modelRevision").cloned().unwrap_or(Value::Null),
+                "endpointFingerprint": frozen_model.get("endpointFingerprint").cloned().unwrap_or(Value::Null),
+            }),
+        );
+        details.insert(
+            "capabilities".to_string(),
+            json!({
+                "contextWindowTokens": capability.get("contextWindowTokens").cloned().unwrap_or(Value::Null),
+                "maxOutputTokens": capability.get("maxOutputTokens").cloned().unwrap_or(Value::Null),
+                "reasoning": capability.get("reasoning").cloned().unwrap_or(Value::Null),
+                "structuredOutput": capability.get("structuredOutput").cloned().unwrap_or(Value::Null),
+                "usage": capability.get("usage").cloned().unwrap_or(Value::Null),
+                "source": capability.get("source").cloned().unwrap_or(Value::Null),
+            }),
+        );
+        details.insert(
+            "budget".to_string(),
+            json!({
+                "attempt": attempt_number,
+                "maxAttempts": receipt.budget.policy.max_physical_requests,
+                "requestedOutputTokens": receipt.attempt.requested_output_tokens,
+                "cumulativeRequestedOutputTokens": cumulative_requested,
+                "maxRequestedOutputTokens": receipt.budget.policy.max_token_liability,
+                "maxRequestedOutputTokensPerAttempt": receipt.budget.policy.max_output_per_request,
+                "deadlineAt": owner_now_ms() as i64
+                    + (receipt.budget.policy.max_active_elapsed_ms - receipt.budget.active_elapsed_ms).max(0),
+            }),
+        );
+        details.insert(
+            "finishReason".to_string(),
+            Value::String(finish_reason.clone()),
+        );
+        let content = receipt
+            .artifact
+            .as_ref()
+            .map(|artifact| artifact.text.clone())
+            .unwrap_or_default();
+        let outcome = if finish_reason == "stop" {
+            json!({ "status": "completed", "content": content, "finishReason": finish_reason, "receipt": details })
+        } else {
+            json!({ "status": "incomplete", "content": content, "finishReason": finish_reason, "receipt": details })
+        };
+        Ok(json!({ "outcome": outcome, "run": self.view_of(conn, &receipt.run)? }))
+    }
+
+    /// 基线 :519-526——规划类操作（大纲 / 蓝图目录）在语义任务末尾注入
+    /// 「目标单位」系统指令（仅当显式存在 `planning:target-units` 作者
+    /// 输入时）；指令按项目写作语言生成，且仅当任务中尚无同一 system
+    /// 消息承载该指令时追加。
+    fn inject_planning_target_instruction(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        task: &mut Value,
+    ) -> Result<(), String> {
+        let manifest = &run.binding.source_manifest;
+        let kind = match manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            "generate-plot-outline" => "outline",
+            "chapter-blueprint-directory" => "blueprint",
+            _ => return Ok(()),
+        };
+        let Some(target) = manifest
+            .get("authorInputs")
+            .and_then(Value::as_array)
+            .and_then(|inputs| {
+                inputs.iter().find(|input| {
+                    input.get("id").and_then(Value::as_str) == Some("planning:target-units")
+                })
+            })
+            .and_then(|input| input.get("text").and_then(Value::as_str))
+        else {
+            return Ok(());
+        };
+        let language = crate::repositories::project_core_repository::get(conn)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .map(|core| core.writing_language)
+            .unwrap_or_else(|| "zh-CN".to_string());
+        let language = if language == "en-US" { "en-US" } else { "zh-CN" };
+        let target_units = crate::commands::generation::parse_planning_target_units(Some(target))
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let instruction =
+            crate::commands::generation::planning_target_instruction(kind, target_units, language);
+        let messages = task
+            .get_mut("messages")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| mutating_error(GENERATION_REQUEST_FAILED))?;
+        let injected = messages.iter().any(|message| {
+            message.get("role").and_then(Value::as_str) == Some("system")
+                && message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.contains(&instruction))
+        });
+        if !injected {
+            messages.push(json!({ "role": "system", "content": instruction }));
+        }
+        Ok(())
+    }
+
+    /// 基线 `textHash`（SHA-256 小写十六进制）——owner 侧 `requestHash`
+    /// 计算（与 `generation_run_repository::text_hash` 同算法）。
+    fn owner_text_hash(text: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// 基线 `TaskBudgetDecision`（`src/services/generation/task-budget-planner.ts:110`）
+    /// 的 JSON 投影：camelCase 逐字段、`decision` / `demandKind` / 原因码按
+    /// 基线字面量联合取值。Rust 侧该类型刻意不派发 `Serialize`，投影在此
+    /// 显式书写，保证写入 attempt usage 的冻结形状与基线一致。
+    fn task_budget_decision_value(
+        decision: &crate::services::task_budget_planner::TaskBudgetDecision,
+    ) -> Value {
+        use crate::services::task_budget_planner::{
+            TaskBudgetDecisionKind, TaskBudgetDemandKind, TaskBudgetReasonCode,
+        };
+        let decision_kind = match decision.decision {
+            TaskBudgetDecisionKind::Ready => "ready",
+            TaskBudgetDecisionKind::SplitRequired => "split-required",
+            TaskBudgetDecisionKind::CapacityConflict => "capacity-conflict",
+        };
+        let demand_kind = match decision.demand_kind {
+            TaskBudgetDemandKind::DraftUnits => "draft-units",
+            TaskBudgetDemandKind::StructuredItems => "structured-items",
+        };
+        let reasons: Vec<Value> = decision
+            .reasons
+            .iter()
+            .map(|reason| {
+                let code = match reason.code {
+                    TaskBudgetReasonCode::TaskDemand => "task-demand",
+                    TaskBudgetReasonCode::OutputAllocationCeiling => "output-allocation-ceiling",
+                    TaskBudgetReasonCode::InputUpperBound => "input-upper-bound",
+                    TaskBudgetReasonCode::SafetyMargin => "safety-margin",
+                    TaskBudgetReasonCode::ModelContextCap => "model-context-cap",
+                    TaskBudgetReasonCode::ModelOutputCap => "model-output-cap",
+                    TaskBudgetReasonCode::UserContextCap => "user-context-cap",
+                    TaskBudgetReasonCode::UserOutputCap => "user-output-cap",
+                    TaskBudgetReasonCode::RootOutputCap => "root-output-cap",
+                    TaskBudgetReasonCode::RootRemainingCap => "root-remaining-cap",
+                    TaskBudgetReasonCode::ProtocolReasoningReserve => "protocol-reasoning-reserve",
+                    TaskBudgetReasonCode::ProtocolTotalBound => "protocol-total-bound",
+                    TaskBudgetReasonCode::ModelCapabilityUnknown => "model-capability-unknown",
+                    TaskBudgetReasonCode::LiabilityBoundUnknown => "liability-bound-unknown",
+                    TaskBudgetReasonCode::RequiredInputCapacityConflict => {
+                        "required-input-capacity-conflict"
+                    }
+                    TaskBudgetReasonCode::SingleItemCapacityConflict => {
+                        "single-item-capacity-conflict"
+                    }
+                    TaskBudgetReasonCode::DraftSegmentationDisabled => "draft-segmentation-disabled",
+                    TaskBudgetReasonCode::ScopeSplit => "scope-split",
+                };
+                let mut projected = Map::new();
+                projected.insert("code".to_string(), Value::String(code.to_string()));
+                if let Some(value) = reason.value_tokens {
+                    projected.insert("valueTokens".to_string(), json!(value));
+                }
+                projected.insert("selected".to_string(), json!(reason.selected));
+                Value::Object(projected)
+            })
+            .collect();
+        json!({
+            "policyVersion": decision.policy_version,
+            "outputEstimatorVersion": decision.output_estimator_version,
+            "inputEstimatorVersion": decision.input_estimator_version.clone(),
+            "decision": decision_kind,
+            "stage": serde_json::to_value(decision.stage).unwrap_or(Value::Null),
+            "writingLanguage": decision.writing_language.clone(),
+            "demandKind": demand_kind,
+            "requestedQuantity": decision.requested_quantity,
+            "selectedQuantity": decision.selected_quantity,
+            "remainingQuantity": decision.remaining_quantity,
+            "requestedOutputTokens": decision.requested_output_tokens,
+            "reservedOutputTokens": decision.reserved_output_tokens,
+            "reasoningUpperBoundTokens": decision.reasoning_upper_bound_tokens,
+            "reservationLiabilityTokens": decision.reservation_liability_tokens,
+            "inputUpperBoundTokens": decision.input_upper_bound_tokens,
+            "reasons": reasons,
+        })
     }
 
     /// 基线 owner 闭包 :899 的 host.execute 注入等价物——
@@ -5402,6 +5876,24 @@ mod tests {
             .begin(&conn, &selection, false, false)
             .expect_err("agent-round 必须拒绝");
         assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+    }
+
+    #[test]
+    fn execute_rejects_invalid_semantic_task_before_dispatch() {
+        // 非法语义任务必须在预算预留、模型租约及网络分发前被拒绝。
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("open run");
+        let owner = owner_with(&conn);
+        let before = owner.repository().budget(&conn, &run.root_action_id).expect("budget");
+        let request = json!({ "handle": handle_of_run(&run), "task": null });
+        let expected = crate::services::main_generation_plan::assert_semantic_generation_task(&Value::Null)
+            .expect_err("非法任务");
+        assert_eq!(owner.execute(&conn, &request).expect_err("拒绝执行"),
+            mutating_error(map_generation_error(&expected)));
+        let after = owner.repository().budget(&conn, &run.root_action_id).expect("budget");
+        assert_eq!(before.attempts.len(), after.attempts.len());
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
     }
 
     #[test]

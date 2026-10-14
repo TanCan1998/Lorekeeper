@@ -2096,7 +2096,13 @@ pub async fn generation_execute(
     let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let owner = guard.owner();
-    state.with_project_db(|conn| owner.execute(conn, &request))
+    // 执行链路是「同步阻塞 + 自持 current-thread runtime 承载网络 await」
+    // （`GenerationRunService::execute_blocking`）：其 future 捕获
+    // `&Connection`（`rusqlite::Connection` 非 `Sync`）与 `MutexGuard`，
+    // 无法作为 Tauri 异步命令的 `Send` future。`block_in_place` 先把本线程
+    // 让给 tokio 调度器，再在该线程上阻塞等待执行完成——命令语义与基线
+    // 的 async `execute` 一致（IPC 仍等待回执）。
+    tokio::task::block_in_place(|| state.with_project_db(|conn| owner.execute(conn, &request)))
 }
 
 /// `generation:resume` —— 运行恢复重分发

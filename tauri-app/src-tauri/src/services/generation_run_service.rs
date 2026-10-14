@@ -928,6 +928,27 @@ impl GenerationRunService {
         self.controllers.lock().unwrap().remove(attempt_id);
     }
 
+    /// 同步阻塞入口（B3-3e）：在**自建 current-thread runtime** 上执行
+    /// [`Self::execute`]。
+    ///
+    /// 存在理由：`execute` 的 future 捕获 `&Connection`（`rusqlite::Connection`
+    /// 非 `Sync`）与标准库 `MutexGuard`，因此该 future 是 `!Send`，不能直接
+    /// 作为 Tauri 异步命令的返回值（Tauri 要求 `Send`）。命令层用
+    /// `tokio::task::block_in_place` 让出 tokio worker 后调用本入口，由本
+    /// 入口自己拥有的 runtime 承载全部网络 await（reqwest 反应堆同源）；
+    /// pending 表与仓储与 [`Self::execute`] 共用，幂等/在途语义一致。
+    pub fn execute_blocking(
+        &self,
+        conn: &Connection,
+        request: ExecuteGenerationRequest,
+    ) -> Result<GenerationExecutionReceipt, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "GENERATION_RUNTIME_UNAVAILABLE".to_string())?;
+        runtime.block_on(self.execute(conn, request))
+    }
+
     // -------------------------------------------------------------------------
     // 基线 execute（:110-320）
     // -------------------------------------------------------------------------
