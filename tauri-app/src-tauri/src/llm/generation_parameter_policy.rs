@@ -1,15 +1,14 @@
 //! 基线原版生成参数策略 —— 移植自
 //! `electron/llm/generation-parameter-policy.ts`。
 //!
-//! ⚠️ 双版本共存（本波裁决，G4-B3-1b）：本模块是**基线原版**——
+//! 单一实现（G4-B3-M 裁决，B3-M1 双实现合并）：D2 IPC 调整版
+//! `crate::llm::params`（`max_tokens` 为请求→档案**回退**语义）
+//! 已整体删除，本模块是**唯一**的生成参数策略——
 //! `resolve_generation_parameters` 的 `max_tokens` 为能力约束钳制
 //! （基线 `Math.min(request ?? ∞, userMax ?? ∞, modelMax ?? ∞)`），
-//! 供计划构造路径（B3-1c `main_generation_plan` 的
-//! `buildMainGenerationPlan` / `resolvePhysicalLiability`）消费；
-//! [`crate::llm::params`] 是 D2 IPC 调整版（`max_tokens` 为
-//! 请求→档案**回退**语义、`Result` 错误模型），继续服务
-//! `llm:generate` / `llm:generate-stream` 命令。两版合并留待
-//! 专波裁决——本波不接任何调用点。
+//! 同时服务计划构造路径（`main_generation_plan` 的
+//! `buildMainGenerationPlan` / `resolvePhysicalLiability`）与
+//! `llm:generate` / `llm:generate-stream` / 模型管理探测命令。
 //!
 //! 与基线的偏差：基线 `validateKimiTemperature` 抛出异常，
 //! Rust 侧按 crate 惯例以 `Result<_, String>` 建模
@@ -20,14 +19,6 @@
 //! 复用 B3-1a 移植的
 //! [`crate::services::task_budget_planner::TaskBudgetCapabilityConstraints`]
 //! （字段 1:1，基线同源）。
-
-// 本波不接调用点（B3-1c 计划构造器消费）——模块级抑制
-// dead_code 告警（对齐 `commands/generation.rs` 既有
-// `#[allow(dead_code)]` 惯例与 lib.rs:47-49 的公开 API
-// 约定）；接线波次移除本属性，届时未消费项将重新告警。
-// 注：`crate::llm::params` 的 D2 IPC 调整版继续服务
-// `llm:generate` / `llm:generate-stream` 命令。
-#![allow(dead_code)]
 
 use crate::llm::lease::LeaseModelProfile;
 use crate::llm::presets::{ModelCapabilityProfile, MAX_SAFE_INTEGER};
@@ -203,6 +194,7 @@ pub fn resolve_generation_parameters(
             protocol: Some(model.protocol),
             base_url: Some(model.base_url),
             model_name: Some(model.model_name),
+            reasoning_mapping: model.reasoning_mapping,
         },
         model.reasoning_override,
         request.creative_strategy,
@@ -238,7 +230,6 @@ pub fn resolve_generation_parameters(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::reasoning::ReasoningEffort;
     use serde_json::json;
 
     /// 基线测试夹具 `openAIModel`（gpt-test 不在内置目录中，
@@ -265,6 +256,27 @@ mod tests {
             creative_strategy: Some("auto"),
             reasoning_stage: Some("drafting"),
         }
+    }
+
+    #[test]
+    fn request_output_limit_is_clamped_by_author_and_model_caps_test() {
+        let value = json!({
+            "provider": "custom", "protocol": "openai", "modelName": "synthetic-model",
+            "baseUrl": "https://compatible.example/v1", "maxTokens": 4096,
+            "capabilities": {
+                "contextWindowTokens": 131072, "maxOutputTokens": 32768,
+                "reasoning": false, "structuredOutput": false, "usage": false,
+            },
+        });
+        let resolved = resolve_generation_parameters(
+            &LeaseModelProfile::from_value(&value),
+            &GenerationParameterRequest {
+                max_tokens: Some(8192),
+                ..request()
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved.max_tokens, Some(4096));
     }
 
     #[test]
@@ -630,7 +642,7 @@ mod tests {
         assert_eq!(
             resolved.reasoning,
             Some(ProviderReasoningDirective::OpenAiReasoningEffort {
-                reasoning_effort: ReasoningEffort::High,
+                reasoning_effort: "high".to_string(),
             }),
             "override 'max' 必须经精确模型预设映射并封顶到 'high'"
         );

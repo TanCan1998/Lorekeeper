@@ -176,12 +176,13 @@ impl LlmResponse {
 
 /// 一次生成请求的有效参数。
 ///
-/// `temperature` 已由 [`crate::llm::params::resolve_generation_parameters`] 决议：
-/// `None` 表示**必须省略**该字段（模型自行掌管温度），不得回退到模型档案默认值。
+/// `temperature` 已由 [`crate::llm::generation_parameter_policy::resolve_generation_parameters`] 决议：
 #[derive(Debug, Clone)]
 pub struct LlmGenerateOptions {
     pub temperature: Option<f64>,
     pub max_tokens: Option<u64>,
+    /// OpenAI 官方端点使用独立的输出上限参数名；缺失时沿用兼容默认值。
+    pub output_token_parameter: Option<&'static str>,
     pub response_format: Option<Value>,
     pub reasoning: Option<ProviderReasoningDirective>,
     /// 调用方作用域的逻辑会话身份，逐字透传给要求会话粘性的网关（opencode Go）。

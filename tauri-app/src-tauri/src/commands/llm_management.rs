@@ -40,9 +40,10 @@ use crate::llm::discovery::{
     build_discovery_client, discover_models, ModelDiscoveryErrorCode, ModelDiscoveryResult,
 };
 use crate::llm::embedding::generate_embeddings;
-use crate::llm::params::{
-    resolve_generation_parameters, GenerationParameterModel, GenerationParameterRequest,
+use crate::llm::generation_parameter_policy::{
+    resolve_generation_parameters, GenerationParameterRequest,
 };
+use crate::llm::lease::LeaseModelProfile;
 use crate::llm::{gemini, openai};
 
 /// 连通性探测的输出预算（对齐 `CONNECTION_TEST_MAX_TOKENS`）。
@@ -117,12 +118,13 @@ pub fn resolve_connection_options(
     model: &Value,
     creative_strategy: &str,
 ) -> Result<LlmGenerateOptions, String> {
-    let parameter_model = GenerationParameterModel::from_value(model);
+    let parameter_model = LeaseModelProfile::from_value(model);
     let parameter_request = connection_test_parameter_request(creative_strategy);
     resolve_generation_parameters(&parameter_model, &parameter_request)
         .map(|resolved| LlmGenerateOptions {
             temperature: resolved.temperature,
             max_tokens: resolved.max_tokens,
+            output_token_parameter: None,
             response_format: resolved.response_format,
             reasoning: resolved.reasoning,
             // 探测不是创作会话：不得共享会话粘性。
@@ -309,7 +311,7 @@ mod tests {
         // `general` 阶段与生成链共用同一推理策略缝（不是第二份映射表）。
         let probe = resolve_connection_options(&deepseek, "auto").unwrap();
         let review = resolve_generation_parameters(
-            &GenerationParameterModel::from_value(&deepseek),
+            &LeaseModelProfile::from_value(&deepseek),
             &GenerationParameterRequest {
                 max_tokens: None,
                 response_format: None,

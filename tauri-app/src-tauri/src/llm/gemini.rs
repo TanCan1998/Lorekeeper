@@ -537,6 +537,7 @@ mod tests {
             &LlmGenerateOptions {
                 temperature: None,
                 max_tokens: None,
+                output_token_parameter: None,
                 response_format: Some(json!({"type": "json_object"})),
                 reasoning: Some(ProviderReasoningDirective::GeminiThinkingBudget {
                     thinking_budget: 4096,
@@ -566,9 +567,10 @@ mod tests {
             &LlmGenerateOptions {
                 temperature: None,
                 max_tokens: None,
+                output_token_parameter: None,
                 response_format: None,
                 reasoning: Some(ProviderReasoningDirective::OpenAiReasoningEffort {
-                    reasoning_effort: crate::llm::reasoning::ReasoningEffort::Low,
+                    reasoning_effort: "low".to_string(),
                 }),
                 conversation_id: None,
             },

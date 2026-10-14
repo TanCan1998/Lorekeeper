@@ -175,7 +175,7 @@ static SKILL_ID: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(builtin|user|project):[A-Za-z0-9][A-Za-z0-9._-]{0,127}$").unwrap()
 });
 
-const PLOT_OUTLINE_PROTOCOL: &str = "chapter-outline-v3";
+pub const PLOT_OUTLINE_PROTOCOL: &str = "chapter-outline-v3";
 const PLOT_OUTLINE_MAX_ATTEMPTS_PER_CHAPTER: i64 = 2;
 
 /// 基线 `CHINESE_DIGITS`（plot-outline-contract 标题数字解析）。

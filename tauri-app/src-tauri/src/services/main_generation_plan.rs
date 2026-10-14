@@ -26,13 +26,9 @@
 //!    `DirectoryRequestedRange` / `PlanningStep` 在本模块 1:1 建模**
 //!    （基线来自 `src/shared/generation-owner-contract`，Rust 侧
 //!    无等价类型）。
-//! 3. **`MainGenerationOptions` 为基线 `LLMGenerateOptions`
-//!    （`electron/llm/provider.interface.ts`）的最小投影**：Rust
-//!    既有等价物 `crate::llm::chat::LlmGenerateOptions` 缺少
-//!    `outputTokenParameter` 字段（基线在 OpenAI 官方端点设置
-//!    `'max_completion_tokens'`），按裁决在本模块内建模投影并
-//!    登记偏差，不改既有文件；`conversationId` 基线可选、计划
-//!    构造路径从不设置，保留字段以对齐形状。
+//! 3. **`MainGenerationOptions` 保留计划的最小序列化投影**：共享
+//!    `LlmGenerateOptions` 已具备 `output_token_parameter`，B3-3
+//!    接线时透传；`conversationId` 在计划构造路径从不设置。
 //! 4. **`task_budget_policy` 以全保真 `Value` 携带**：
 //!    `TaskBudgetPolicy`（B3-1a）无 serde derive（该波裁决），
 //!    `readMainGenerationPolicy` 的 deep-equal 门禁需要其 JSON
@@ -40,37 +36,13 @@
 //! 5. **`MAIN_GENERATION_POLICY` 冻结常量以构造函数
 //!    `main_generation_policy()` 等价提供**：`Value` 字段不可常量
 //!    构造；每次调用返回等价副本，语义与冻结常量一致。
-//! 6. **私有依赖本地 1:1 平移**（等价物为模块私有，无法导入）：
-//!    `token_liability`（`src/shared/generation-contract.ts`，仓储
-//!    等价物私有）、`parse_planning_target_units` /
-//!    `DEFAULT_PLANNING_TARGET_UNITS` / `PLANNING_TARGET_UNITS_LIMIT`
-//!    （`src/shared/plot-outline-contract.ts`，`commands/generation.rs`
-//!    等价物私有）、`PLOT_OUTLINE_PROTOCOL` / `PLOT_OUTLINE_CONTENT`
-//!    （仓储等价物私有常量）、`DEFAULT_PLANNING_ACTION_CHAPTERS`
-//!    （`agent_generation.rs` 等价物私有常量）。
-//! 7. **继承自 B3-1b（c829b94c，非本波引入）的推理缝缺口**
-//!    （G4-B3-1c 已裁决：接受偏差；待裁决项 **B3-M2**——推理
-//!    机器对齐专波：`ReasoningAdapter` 扩 2 变体 + SiliconFlow
-//!    目录补全 + 手动 `reasoningMapping` 消费，与 B3-M1 合并
-//!    一次复验）：
-//!    - Rust `llm::reasoning::ReasoningAdapter` 仅 3 变体
-//!      （`openai-reasoning-effort` / `gemini-thinking-budget` /
-//!      `deepseek-v4-thinking`），基线为 5 形联合（缺
-//!      `siliconflow-v4-thinking` / `openai-thinking-budget`）；
-//!    - `llm::presets` 的 SiliconFlow 目录 `models` 为空 →
-//!      其模型（如 `Qwen/Qwen3.8-27B`）恒无已验证推理映射；
-//!    - 手动 `reasoningMapping`（模型档案 JSON 字段）不被指令
-//!      机器消费（仅 `canBound` 的真值检查经 `Value` 保留）。
-//!    语义影响面：① `compatible_reasoning` 恒为 `None` →
-//!    `separate_output` 的 `siliconflow-v4-thinking` 项恒
-//!    `false`；② `Qwen/Qwen3.8-27B` + `reasoningOverride` 时
-//!    基线 `separateOutput=true` → demand 分支
-//!    `outputAllocation='semantic-estimate'`，Rust 恒 `false`
-//!    → `'available-ceiling'`（`reservedOutputTokens` 分歧）；
-//!    ③ 含手动映射档案的 `options.reasoning` 指令不解析、
-//!    `thinkingDisabled` 恒 `false`。多数容量数值路径
-//!    （无 `reasoningOverride` / 已覆盖 adapter 的 provider）
-//!    与基线一致。已移植测试避开这些断言并逐条注释标记。
+//! 6. **共享依赖已统一**：`token_liability` / 规划单位校验来自
+//!    `commands/generation.rs`，章节默认值与协议常量来自既有服务。
+//!    f64 输入仅做字符串薄适配；`PLOT_OUTLINE_CONTENT` 因 Value
+//!    不可常量构造而保留构造函数。
+//! 7. **B3-M2 推理机器已对齐**：五种指令、SiliconFlow 目录与
+//!    手动映射均由共享解析层消费；历史未移植断言仍保留说明，
+//!    不将其计入本波已测覆盖。
 //! 8. **`TaskBudgetPreflightError` 携带 `TaskBudgetDecision`**（基线
 //!    语义），但按 crate 惯例以 `String`（`Display`，前缀逐字）
 //!    传播；决策载荷由公开类型携带，B3-3 接线时可按需提升为
@@ -88,7 +60,9 @@
 
 #![allow(dead_code)] // 本波不接调用点（B3-3 接线时消费；对齐 generation_parameter_policy.rs 惯例）
 
-use crate::commands::generation::assert_planning_action_range;
+use crate::commands::generation::{
+    assert_planning_action_range, parse_planning_target_units, token_liability,
+};
 use crate::llm::generation_parameter_policy::{
     resolve_generation_capability_constraints, resolve_generation_parameters,
     GenerationParameterRequest, ResolvedGenerationParameters,
@@ -96,14 +70,17 @@ use crate::llm::generation_parameter_policy::{
 use crate::llm::lease::{LeaseModelProfile, ModelExecutionCapabilityEvidence};
 use crate::llm::presets::MAX_SAFE_INTEGER;
 use crate::llm::reasoning::{
-    CreativeStrategy, GenerationReasoningStage, ProviderReasoningDirective, ReasoningEffort,
-    ThinkingState,
+    CreativeStrategy, GenerationReasoningStage, ProviderReasoningDirective, ThinkingState,
 };
+#[cfg(test)]
+use crate::repositories::generation_run_repository::PhysicalAttempt;
 use crate::repositories::generation_run_repository::{
-    GenerationBudgetReceipt, PhysicalAttempt, PlotOutlineRange, ProviderUsagePolicy, RootBudget,
+    GenerationBudgetReceipt, PlotOutlineRange, ProviderUsagePolicy, RootBudget,
 };
 use crate::repositories::project_core_repository::CREATIVE_STRATEGIES;
+use crate::services::agent_generation::DEFAULT_PLANNING_ACTION_CHAPTERS;
 use crate::services::blueprint_batch_policy::plan_blueprint_generation_cost;
+use crate::services::generation_source_binding::PLOT_OUTLINE_PROTOCOL;
 use crate::services::generation_task::{
     GenerationMessageRole, GenerationOutput, GenerationReasoningStage as TaskReasoningStage,
     GenerationTask,
@@ -131,17 +108,6 @@ const GENERATION_BATCH_INTENT_INVALID: &str = "GENERATION_BATCH_INTENT_INVALID";
 const GENERATION_SEMANTIC_TASK_INVALID: &str = "GENERATION_SEMANTIC_TASK_INVALID";
 const GENERATION_INPUT_CAPACITY_EXCEEDED: &str = "GENERATION_INPUT_CAPACITY_EXCEEDED";
 const ROOT_BUDGET_EXHAUSTED: &str = "ROOT_BUDGET_EXHAUSTED";
-
-// ── 本地平移的基线常量（见模块头注第 6 条）──
-
-/// 基线 `PLOT_OUTLINE_PROTOCOL`（`src/shared/plot-outline-contract.ts`）。
-const PLOT_OUTLINE_PROTOCOL: &str = "chapter-outline-v3";
-/// 基线 `DEFAULT_PLANNING_ACTION_CHAPTERS`。
-const DEFAULT_PLANNING_ACTION_CHAPTERS: i64 = 5;
-/// 基线 `DEFAULT_PLANNING_TARGET_UNITS`。
-const DEFAULT_PLANNING_TARGET_UNITS: i64 = 600;
-/// 基线 `PLANNING_TARGET_UNITS_LIMIT`。
-const PLANNING_TARGET_UNITS_LIMIT: i64 = 1000;
 
 /// 基线 `PLOT_OUTLINE_CONTENT`（`{ maxAttemptsPerChapter: 2 }`）。
 fn plot_outline_content_value() -> Value {
@@ -526,19 +492,10 @@ fn architecture_intent(value: &Value) -> Result<ArchitecturePlanningIntent, Stri
     })
 }
 
-/// 基线 `parsePlanningTargetUnits`（`src/shared/plot-outline-contract.ts`；
-/// `commands/generation.rs` 等价物为模块私有，本地 1:1 平移）。
-///
-/// 入参为基线 `Number(text)` 的结果（`Option<f64>`，`None` 即
-/// `undefined` → 默认 600）。
-fn parse_planning_target_units(value: Option<f64>) -> Result<i64, String> {
-    let Some(number) = value else {
-        return Ok(DEFAULT_PLANNING_TARGET_UNITS);
-    };
-    if !is_safe_integer(number) || number < 1.0 || number > PLANNING_TARGET_UNITS_LIMIT as f64 {
-        return Err(GENERATION_PLANNING_TARGET_INVALID.to_string());
-    }
-    Ok(number as i64)
+/// 已解析数值的薄适配，单位范围统一由共享校验器判断。
+fn parse_planning_target_units_f64(value: Option<f64>) -> Result<i64, String> {
+    let text = value.map(|number| number.to_string());
+    parse_planning_target_units(text.as_deref())
 }
 
 /// 基线 `authorInputs` 迭代（缺失时为空）。
@@ -802,10 +759,15 @@ fn resolve_physical_liability(
         }
         _ => None,
     };
-    // 基线 `openai-thinking-budget` adapter 的 `thinkingBudget`：
-    // B3-1b 推理缝未移植该 adapter 变体，恒为 `None`（偏差登记见
-    // 模块头注第 7 条）。
-    let compatible_reasoning: Option<i64> = None;
+    // 基线 `openai-thinking-budget` adapter 的 `thinkingBudget`
+    // （G4-B3-M 裁决，B3-M2 推理机器对齐：adapter 变体已移植，
+    // 手动映射与 Qwen 目录映射均经指令机器解析）。
+    let compatible_reasoning = match parameters.reasoning {
+        Some(ProviderReasoningDirective::OpenAiThinkingBudget { thinking_budget }) => {
+            Some(thinking_budget)
+        }
+        _ => None,
+    };
     // Qwen 的可用容量保持 256K。在 provider 截断策略下保守预留模型
     // 卡声明的扩容 1M 包络：
     // https://docs.siliconflow.cn/docs/userguide/capabilities/reasoning
@@ -886,7 +848,7 @@ pub fn new_main_generation_policy(
         let units = targets
             .first()
             .and_then(|input| js_number_value(input.get("text").unwrap_or(&Value::Null)));
-        parse_planning_target_units(units)?;
+        parse_planning_target_units_f64(units)?;
     }
     let limits = resolve_generation_capability_constraints(&LeaseModelProfile::from_value(model));
     let user_max_output_tokens = limits
@@ -1377,18 +1339,6 @@ impl std::error::Error for TaskBudgetPreflightError {}
 
 // ── 物理预留计划（基线 buildMainGenerationPlan）──
 
-/// 基线 `tokenLiability`（`src/shared/generation-contract.ts`）——
-/// 仓储等价物为模块私有，本地 1:1 平移。
-fn token_liability(attempt: &PhysicalAttempt) -> i64 {
-    if attempt.status == "cancelled-before-dispatch" {
-        0
-    } else if attempt.status == "settled" && attempt.actual_tokens.is_some() {
-        attempt.actual_tokens.unwrap_or_default()
-    } else {
-        attempt.reserved_tokens
-    }
-}
-
 fn message_role_name(role: GenerationMessageRole) -> &'static str {
     match role {
         GenerationMessageRole::System => "system",
@@ -1490,19 +1440,19 @@ pub fn build_main_generation_plan(
             || model.get("protocol").and_then(Value::as_str) == Some("gemini")
             || gemini_reasoning.is_some()
             || compatible_reasoning.is_some()
-        // 基线 `parameters.reasoning?.adapter === 'siliconflow-v4-thinking'`：
-        // B3-1b 推理缝未移植该 adapter 变体，该项恒为 false（偏差
-        // 登记见模块头注第 7 条）。
-        ;
-        let thinking_disabled = match parameters.reasoning {
+        // 基线 `parameters.reasoning?.adapter ===
+        // 'siliconflow-v4-thinking'`（G4-B3-M 裁决，B3-M2 推理
+        // 机器对齐：adapter 变体已移植）。
+        || matches!(
+            parameters.reasoning,
+            Some(ProviderReasoningDirective::SiliconFlowV4Thinking { .. })
+        );
+        let thinking_disabled = match parameters.reasoning.as_ref() {
             Some(ProviderReasoningDirective::DeepSeekV4Thinking { thinking, .. }) => {
-                thinking == ThinkingState::Disabled
+                *thinking == ThinkingState::Disabled
             }
-            // 基线 `['off', 'none', 'disabled'].includes(reasoningEffort)`：
-            // `ReasoningEffort` 枚举无 'none'/'disabled' 取值，仅
-            // 'off' 可命中。
             Some(ProviderReasoningDirective::OpenAiReasoningEffort { reasoning_effort }) => {
-                reasoning_effort == ReasoningEffort::Off
+                matches!(reasoning_effort.as_str(), "off" | "none" | "disabled")
             }
             _ => false,
         };
@@ -1864,6 +1814,10 @@ mod tests {
             1_500_000
         };
         let mut overrides = json!({
+            // 基线 numeric() 继承 unknown()，不能误用已验证的 gpt-4.1 容量。
+            "baseUrl": "https://compatible.example/v1",
+            "modelName": "custom-model",
+            "maxTokens": 65536,
             "reasoningOverride": "high",
             "reasoningMapping": {
                 "adapter": "openai-thinking-budget",

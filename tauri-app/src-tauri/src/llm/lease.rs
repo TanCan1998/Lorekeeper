@@ -111,10 +111,17 @@ pub struct LeaseModelProfile<'a> {
     ///
     /// **刻意保留**：租约快照必须与基线 `ModelProfile` 字段集一致（快照是冻结的
     /// 作者事实，不得因当前调用面未消费就删字段）。推理覆盖的**消费点**是
-    /// [`crate::llm::params::GenerationParameterModel::from_value`]，它直接读快照
-    /// JSON；[`Self::capability_profile`] 按基线语义只透传四项端点身份。
-    #[allow(dead_code)]
+    /// [`crate::llm::generation_parameter_policy::resolve_generation_parameters`]
+    /// （经 [`Self::capability_profile`] 透传给推理策略缝）。
     pub reasoning_override: Option<&'a str>,
+    /// 基线 `ModelProfile.reasoningMapping` 的逐字镜像（手动
+    /// 推理映射）。
+    ///
+    /// 手动映射是指令机器的**一等输入**：经
+    /// [`Self::capability_profile`] 透传给
+    /// [`crate::llm::presets::resolve_model_profile_reasoning_mapping`]
+    /// 的手动优先分支（验证通过即消费，不回落内置目录）。
+    pub reasoning_mapping: Option<&'a serde_json::Value>,
 }
 
 impl<'a> LeaseModelProfile<'a> {
@@ -152,6 +159,7 @@ impl<'a> LeaseModelProfile<'a> {
             reasoning_override: model
                 .get("reasoningOverride")
                 .and_then(|value| value.as_str()),
+            reasoning_mapping: model.get("reasoningMapping"),
         }
     }
 
@@ -161,6 +169,7 @@ impl<'a> LeaseModelProfile<'a> {
             protocol: Some(self.protocol),
             base_url: Some(self.base_url),
             model_name: Some(self.model_name),
+            reasoning_mapping: self.reasoning_mapping,
         }
     }
 }

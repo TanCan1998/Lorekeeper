@@ -80,6 +80,20 @@ pub fn normalize_finish_reason(reason: Option<&str>) -> LlmFinishReason {
     }
 }
 
+/// 基线 `resolveModelProfileReasoningMapping(model)?.adapter
+/// === adapter` 门禁（`openai-provider.ts` 各推理载荷分支
+/// 共用）：档案 JSON 经 [`ModelCapabilityProfile::from_value`]
+/// 构造后解析**已验证**推理映射（手动映射优先 + 内置目录），
+/// 比对 adapter 家族。
+fn reasoning_mapping_adapter_is(
+    model: &Value,
+    adapter: crate::llm::reasoning::ReasoningAdapter,
+) -> bool {
+    crate::llm::presets::resolve_model_profile_reasoning_mapping(
+        &crate::llm::presets::ModelCapabilityProfile::from_value(model),
+    )
+    .map_or(false, |mapping| mapping.adapter == adapter)
+}
 /// 对齐基线 `buildRequestBody()`。
 ///
 /// 注意 `JSON.stringify` 会**丢弃**值为 `undefined` 的键，因此 `max_tokens` 在两侧
@@ -113,7 +127,12 @@ pub fn build_request_body(
         .max_tokens
         .or_else(|| model.get("maxTokens").and_then(Value::as_u64))
     {
-        body.insert("max_tokens".to_string(), json!(max_tokens));
+        body.insert(
+            opts.output_token_parameter
+                .unwrap_or("max_tokens")
+                .to_string(),
+            json!(max_tokens),
+        );
     }
     body.insert("stream".to_string(), json!(stream));
 
@@ -151,7 +170,40 @@ pub fn build_request_body(
             }
         }
         // Gemini 专属指令绝不进入 OpenAI 载荷。
-        Some(ProviderReasoningDirective::GeminiThinkingBudget { .. }) | None => {}
+        Some(ProviderReasoningDirective::GeminiThinkingBudget { .. }) => {}
+        // 基线 openai-provider.ts:72-77：openai-thinking-budget
+        // 指令以映射 adapter 一致性为门禁（基线另有
+        // !isNovelAI 条件）；`enable_thinking` 恒发送，正预算
+        // 才发送数值（禁用的 0 无需是合法 provider 预算）。
+        Some(ProviderReasoningDirective::OpenAiThinkingBudget { thinking_budget }) => {
+            if !is_novel_ai
+                && reasoning_mapping_adapter_is(
+                    model,
+                    crate::llm::reasoning::ReasoningAdapter::OpenAiThinkingBudget,
+                )
+            {
+                body.insert("enable_thinking".to_string(), json!(*thinking_budget > 0));
+                if *thinking_budget > 0 {
+                    body.insert("thinking_budget".to_string(), json!(*thinking_budget));
+                }
+            }
+        }
+        // 基线 openai-provider.ts:79-83：siliconflow-v4-thinking
+        // 指令以映射 adapter 一致性为门禁（基线无 !isNovelAI
+        // 条件，与 openai-reasoning-effort 分支区别）。
+        Some(ProviderReasoningDirective::SiliconFlowV4Thinking { reasoning_effort }) => {
+            if reasoning_mapping_adapter_is(
+                model,
+                crate::llm::reasoning::ReasoningAdapter::SiliconFlowV4Thinking,
+            ) {
+                body.insert("enable_thinking".to_string(), json!(true));
+                body.insert(
+                    "reasoning_effort".to_string(),
+                    serde_json::to_value(reasoning_effort).unwrap_or(Value::Null),
+                );
+            }
+        }
+        None => {}
     }
 
     if let Some(response_format) = opts.response_format.as_ref() {
@@ -812,6 +864,7 @@ mod tests {
             &LlmGenerateOptions {
                 temperature: None,
                 max_tokens: None,
+                output_token_parameter: None,
                 response_format: None,
                 reasoning: None,
                 conversation_id: None,
@@ -832,6 +885,7 @@ mod tests {
             &LlmGenerateOptions {
                 temperature: Some(0.2),
                 max_tokens: Some(64),
+                output_token_parameter: None,
                 response_format: None,
                 reasoning: None,
                 conversation_id: None,
@@ -847,6 +901,33 @@ mod tests {
     }
 
     #[test]
+    fn request_body_uses_selected_output_token_parameter_test() {
+        let profile = model(json!({ "maxTokens": 4096 }));
+        for stream in [false, true] {
+            for max_tokens in [None, Some(8192)] {
+                let body = build_request_body(
+                    &profile,
+                    &[],
+                    &LlmGenerateOptions {
+                        temperature: None,
+                        max_tokens,
+                        output_token_parameter: Some("max_completion_tokens"),
+                        response_format: None,
+                        reasoning: None,
+                        conversation_id: None,
+                    },
+                    stream,
+                );
+                assert_eq!(
+                    body["max_completion_tokens"],
+                    json!(max_tokens.unwrap_or(4096))
+                );
+                assert!(body.get("max_tokens").is_none());
+            }
+        }
+    }
+
+    #[test]
     fn request_body_novelai_keeps_narrow_compatibility_payload_test() {
         let profile = model(json!({
             "provider": "novelai",
@@ -859,9 +940,10 @@ mod tests {
             &LlmGenerateOptions {
                 temperature: Some(0.5),
                 max_tokens: None,
+                output_token_parameter: None,
                 response_format: Some(json!({"type": "json_object"})),
                 reasoning: Some(ProviderReasoningDirective::OpenAiReasoningEffort {
-                    reasoning_effort: crate::llm::reasoning::ReasoningEffort::High,
+                    reasoning_effort: "high".to_string(),
                 }),
                 conversation_id: None,
             },
@@ -885,6 +967,7 @@ mod tests {
             &LlmGenerateOptions {
                 temperature: None,
                 max_tokens: None,
+                output_token_parameter: None,
                 response_format: None,
                 reasoning: directive.clone(),
                 conversation_id: None,
@@ -900,6 +983,7 @@ mod tests {
             &LlmGenerateOptions {
                 temperature: None,
                 max_tokens: None,
+                output_token_parameter: None,
                 response_format: None,
                 reasoning: directive,
                 conversation_id: None,
@@ -908,6 +992,128 @@ mod tests {
         );
         assert!(other.get("thinking").is_none());
         assert!(other.get("reasoning_effort").is_none());
+    }
+    #[test]
+    fn request_body_translates_openai_thinking_budget_for_qwen_test() {
+        // 基线 'fixed Qwen native admission'：Qwen/Qwen3.8-27B
+        // 的 openai-thinking-budget 映射（medium → 16_384）。
+        let qwen = model(json!({
+            "provider": "siliconflow",
+            "protocol": "openai",
+            "baseUrl": "https://api.siliconflow.cn/v1",
+            "modelName": "Qwen/Qwen3.8-27B",
+            "maxTokens": 16384,
+        }));
+        let messages = vec![];
+        let body = build_request_body(
+            &qwen,
+            &messages,
+            &LlmGenerateOptions {
+                temperature: None,
+                max_tokens: Some(16_384),
+                output_token_parameter: None,
+                response_format: None,
+                reasoning: Some(ProviderReasoningDirective::OpenAiThinkingBudget {
+                    thinking_budget: 16_384,
+                }),
+                conversation_id: None,
+            },
+            false,
+        );
+        assert_eq!(body.get("enable_thinking"), Some(&json!(true)));
+        assert_eq!(body.get("thinking_budget"), Some(&json!(16_384)));
+        assert!(body.get("reasoning_effort").is_none());
+
+        // 禁用预算（0）→ enable_thinking=false 且无数值字段
+        // （基线：禁用的 0 无需是合法 provider 预算）。
+        let body = build_request_body(
+            &qwen,
+            &messages,
+            &LlmGenerateOptions {
+                temperature: None,
+                max_tokens: Some(16_384),
+                output_token_parameter: None,
+                response_format: None,
+                reasoning: Some(ProviderReasoningDirective::OpenAiThinkingBudget {
+                    thinking_budget: 0,
+                }),
+                conversation_id: None,
+            },
+            false,
+        );
+        assert_eq!(body.get("enable_thinking"), Some(&json!(false)));
+        assert!(body.get("thinking_budget").is_none());
+    }
+
+    #[test]
+    fn request_body_translates_siliconflow_v4_thinking_for_deepseek_v4_test() {
+        // 基线 'keeps SiliconFlow output and liability unchanged
+        // for explicit high/max'：DeepSeek-V4-Flash 的
+        // siliconflow-v4-thinking 映射（high/max）。
+        let flash = model(json!({
+            "provider": "siliconflow",
+            "protocol": "openai",
+            "baseUrl": "https://api.siliconflow.cn/v1",
+            "modelName": "deepseek-ai/DeepSeek-V4-Flash",
+            "maxTokens": 16384,
+        }));
+        let body = build_request_body(
+            &flash,
+            &[],
+            &LlmGenerateOptions {
+                temperature: None,
+                max_tokens: Some(16_384),
+                output_token_parameter: None,
+                response_format: None,
+                reasoning: Some(ProviderReasoningDirective::SiliconFlowV4Thinking {
+                    reasoning_effort: crate::llm::reasoning::ReasoningEffort::High,
+                }),
+                conversation_id: None,
+            },
+            false,
+        );
+        assert_eq!(body.get("enable_thinking"), Some(&json!(true)));
+        assert_eq!(body.get("reasoning_effort"), Some(&json!("high")));
+        assert!(body.get("thinking_budget").is_none());
+    }
+
+    #[test]
+    fn request_body_reasoning_gate_requires_matching_verified_mapping_test() {
+        // 映射门禁不匹配（自建端点无已验证映射）→
+        // 推理字段不进载荷。
+        let relay = model(json!({
+            "provider": "siliconflow",
+            "protocol": "openai",
+            "baseUrl": "https://relay.example.com/v1",
+            "modelName": "deepseek-ai/DeepSeek-V4-Flash",
+            "maxTokens": 16384,
+        }));
+        let directives = [
+            ProviderReasoningDirective::SiliconFlowV4Thinking {
+                reasoning_effort: crate::llm::reasoning::ReasoningEffort::High,
+            },
+            ProviderReasoningDirective::OpenAiThinkingBudget {
+                thinking_budget: 16_384,
+            },
+        ];
+        for directive in directives {
+            let body = build_request_body(
+                &relay,
+                &[],
+                &LlmGenerateOptions {
+                    temperature: None,
+                    max_tokens: Some(16_384),
+                    output_token_parameter: None,
+                    response_format: None,
+                    reasoning: Some(directive),
+                    conversation_id: None,
+                },
+                false,
+            );
+            assert!(body.get("enable_thinking").is_none());
+            assert!(body.get("thinking_budget").is_none());
+            assert!(body.get("reasoning_effort").is_none());
+        }
     }
 
     /// 用一段合成的 OpenAI SSE 流驱动解码器：验证分片（含 CRLF 切断）、

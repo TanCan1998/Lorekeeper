@@ -6,12 +6,11 @@
 //! |---|---|---|
 //! | [`presets`] | `src/shared/provider-presets.ts` | 内置服务商目录 + **已验证能力 / 推理映射** 解析 |
 //! | [`reasoning`] | `src/shared/reasoning-policy.ts` | 单一推理策略缝：产品意图 → provider 指令 |
-//! | [`params`] | `electron/llm/generation-parameter-policy.ts` | 模型档案 → 有效请求参数（含 Kimi 特例） |
 //! | [`lease`] | `electron/services/model-execution-lease.ts` | 不可变模型快照 + 能力证据指纹 + 租约注册表 |
 //! | [`chat`] | `electron/llm/provider.interface.ts` + `llm-controller.ts` | 生成链共享类型 / `<think>` 剥离 / HTTP 客户端装配 |
 //! | [`openai`] | `electron/llm/openai-provider.ts` + `openai-compatible-endpoint.ts` | OpenAI 兼容协议 + 手写 SSE 行解析 |
 //! | [`gemini`] | `electron/llm/gemini-provider.ts` | Gemini 协议（宽松 SSE，不剥离推理块） |
-//! | [`generation_parameter_policy`] | `electron/llm/generation-parameter-policy.ts` | 基线原版生成参数策略（能力约束钳制；计划构造路径消费，与 [`params`] 的 D2 IPC 调整版共存） |
+//! | [`generation_parameter_policy`] | `electron/llm/generation-parameter-policy.ts` | 模型档案 → 有效请求参数（含 Kimi 特例；能力约束钳制，G4-B3-M 起为唯一实现） |
 //! | [`discovery`] | `electron/services/model-discovery-service.ts` | 供应商模型列表发现（凭据回显守卫 + 严格载荷解析） |
 //! | [`embedding`] | `electron/embedding.ts`（调用面） | 远程 Embedding 调用与响应校验 |
 //! | [`provider_presets`] | `src/shared/provider-presets.ts`（预算能力子集） | 预算规划用容量证据（`budgetCapabilities` / `capabilities` 数值字段） |
@@ -29,7 +28,6 @@ pub mod gemini;
 pub mod generation_parameter_policy;
 pub mod lease;
 pub mod openai;
-pub mod params;
 pub mod presets;
 pub mod provider_presets;
 pub mod reasoning;

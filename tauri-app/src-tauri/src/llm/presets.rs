@@ -78,6 +78,166 @@ pub struct ModelPreset {
     pub max_tokens: u64,
 }
 
+/// 基线 `REASONING_EFFORTS` 的长度上限
+/// （`src/shared/reasoning-types.ts`：`off` / `low` / `medium` /
+/// `high` / `xhigh` / `max`）。
+const REASONING_EFFORTS_LIMIT: usize = 6;
+
+/// 基线 `Number.isSafeInteger`（±2^53-1）。
+fn is_safe_json_integer(value: f64) -> bool {
+    value.is_finite() && value.fract() == 0.0 && value.abs() <= MAX_SAFE_INTEGER as f64
+}
+
+/// 基线 `isReasoningMapping`（`src/shared/reasoning-types.ts:55-99`）——
+/// 手动 `reasoningMapping` 的完整验证器（含 5 值 adapter 白名单 /
+/// `supportedEfforts` 非空无重复且 ≤ 基线努力枚举长度 / `providerValues`
+/// 键 ⊆ `supportedEfforts` / 各 adapter wire 格式 / `requestAliases`
+/// 约束 / 仅允许 4 个键）。验证失败返回 `None`。
+fn is_reasoning_mapping(value: &serde_json::Value) -> Option<VerifiedReasoningMapping> {
+    let mapping = value.as_object()?;
+    // 基线：仅允许 4 个键。
+    if mapping.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "adapter" | "supportedEfforts" | "providerValues" | "requestAliases"
+        )
+    }) {
+        return None;
+    }
+    let adapter = match mapping.get("adapter")?.as_str()? {
+        "openai-reasoning-effort" => ReasoningAdapter::OpenAiReasoningEffort,
+        "openai-thinking-budget" => ReasoningAdapter::OpenAiThinkingBudget,
+        "deepseek-v4-thinking" => ReasoningAdapter::DeepSeekV4Thinking,
+        "siliconflow-v4-thinking" => ReasoningAdapter::SiliconFlowV4Thinking,
+        "gemini-thinking-budget" => ReasoningAdapter::GeminiThinkingBudget,
+        _ => return None,
+    };
+    // supportedEfforts：非空、无重复、长度不超过基线努力枚举。
+    let supported_efforts: Vec<ReasoningEffort> = mapping
+        .get("supportedEfforts")?
+        .as_array()?
+        .iter()
+        .map(|value| value.as_str().and_then(ReasoningEffort::parse))
+        .collect::<Option<Vec<_>>>()?;
+    if supported_efforts.is_empty() || supported_efforts.len() > REASONING_EFFORTS_LIMIT {
+        return None;
+    }
+    if supported_efforts
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != supported_efforts.len()
+    {
+        return None;
+    }
+    // providerValues：必须是对象（基线拒绝数组）。
+    let provider_values = mapping.get("providerValues")?.as_object()?;
+    // 基线：providerValues 的键 ⊆ supportedEfforts。
+    if provider_values.keys().any(|key| {
+        !supported_efforts
+            .iter()
+            .any(|effort| effort.as_str() == key.as_str())
+    }) {
+        return None;
+    }
+    let mut wire_values = Vec::with_capacity(supported_efforts.len());
+    for effort in &supported_efforts {
+        // 基线：每个 supportedEfforts 条目都必须有 provider 取值
+        // （缺失 → `undefined` → wire 格式检查失败）。
+        let wire = provider_values.get(effort.as_str())?;
+        match adapter {
+            ReasoningAdapter::OpenAiReasoningEffort => {
+                let text = wire.as_str()?;
+                // 基线 `/^[A-Za-z][A-Za-z0-9_-]{0,63}$/`。
+                let mut characters = text.chars();
+                if !characters
+                    .next()
+                    .is_some_and(|first| first.is_ascii_alphabetic())
+                    || !characters.all(|character| {
+                        character.is_ascii_alphanumeric() || character == '_' || character == '-'
+                    })
+                    || text.len() > 64
+                {
+                    return None;
+                }
+                // 基线：`off` 的取值必须是文档化的停用别名。
+                if *effort == ReasoningEffort::Off && !matches!(text, "off" | "none" | "disabled") {
+                    return None;
+                }
+                wire_values.push((*effort, PresetValue::Text(text.to_string())));
+            }
+            ReasoningAdapter::GeminiThinkingBudget | ReasoningAdapter::OpenAiThinkingBudget => {
+                let number = wire.as_f64()?;
+                // 基线：安全整数且 ≥ 0；`off` 必须为 0。
+                if !is_safe_json_integer(number)
+                    || number < 0.0
+                    || (*effort == ReasoningEffort::Off && number != 0.0)
+                {
+                    return None;
+                }
+                // 基线：openai-thinking-budget 的非 `off` 取值不得为 0
+                // （0 是「禁用」哨兵，不是合法预算）。
+                if adapter == ReasoningAdapter::OpenAiThinkingBudget
+                    && *effort != ReasoningEffort::Off
+                    && number == 0.0
+                {
+                    return None;
+                }
+                wire_values.push((*effort, PresetValue::Number(number as i64)));
+            }
+            ReasoningAdapter::DeepSeekV4Thinking => {
+                let text = wire.as_str()?;
+                // 基线：`off` 必须为 `disabled`；其余为文档化取值。
+                if (*effort == ReasoningEffort::Off && text != "disabled")
+                    || (*effort != ReasoningEffort::Off
+                        && !matches!(text, "enabled" | "low" | "high" | "max"))
+                {
+                    return None;
+                }
+                wire_values.push((*effort, PresetValue::Text(text.to_string())));
+            }
+            // 基线 siliconflow-v4-thinking：仅 `high` / `max`，且
+            // provider 取值与强度同名。
+            ReasoningAdapter::SiliconFlowV4Thinking => {
+                if !matches!(*effort, ReasoningEffort::High | ReasoningEffort::Max)
+                    || wire.as_str() != Some(effort.as_str())
+                {
+                    return None;
+                }
+                wire_values.push((*effort, PresetValue::Text(effort.as_str().to_string())));
+            }
+        }
+    }
+    // requestAliases：基线 `undefined` 缺省；出现时必须为对象
+    // （`null` / 数组都拒绝）。
+    let request_aliases = match mapping.get("requestAliases") {
+        None => Vec::new(),
+        Some(aliases) => {
+            let aliases = aliases.as_object()?;
+            let mut pairs = Vec::with_capacity(aliases.len());
+            for (request, effective) in aliases {
+                let request = ReasoningEffort::parse(request)?;
+                let effective = supported_efforts
+                    .iter()
+                    .copied()
+                    .find(|effort| Some(effort.as_str()) == effective.as_str())?;
+                // 基线：`off` 的别名只能是 `off`。
+                if request == ReasoningEffort::Off && effective != ReasoningEffort::Off {
+                    return None;
+                }
+                pairs.push((request, effective));
+            }
+            pairs
+        }
+    };
+    Some(VerifiedReasoningMapping {
+        adapter,
+        supported_efforts,
+        provider_values: wire_values,
+        request_aliases,
+    })
+}
+
 /// 单个服务商预设。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderPreset {
@@ -97,20 +257,31 @@ pub struct ModelCapabilityProfile<'a> {
     pub protocol: Option<&'a str>,
     pub base_url: Option<&'a str>,
     pub model_name: Option<&'a str>,
+    /// 原始 JSON 手动推理映射（基线 `ModelProfile.reasoningMapping`）。
+    ///
+    /// 手动映射是指令机器的**一等输入**（基线
+    /// `resolveModelProfileReasoningMapping` 的手动优先分支）：
+    /// [`is_reasoning_mapping`] 验证通过即被消费，**不再回落**
+    /// 内置目录。`None` = 档案未携带手动映射。
+    pub reasoning_mapping: Option<&'a serde_json::Value>,
 }
 
 impl<'a> ModelCapabilityProfile<'a> {
     /// 从模型 JSON 条目读取（非字符串字段按缺失处理，对齐基线的 `typeof x !== 'string'`）。
     ///
-    /// 仅测试使用：生产路径由 [`crate::llm::lease::LeaseModelProfile::capability_profile`]
-    /// 直接从冻结快照构造，避免为「能力证据」再解析一次 JSON。
-    #[cfg(test)]
+    /// 生产与测试共用：`llm/openai.rs` 的推理载荷门禁经此
+    /// 构造档案并解析已验证推理映射（基线
+    /// `resolveModelProfileReasoningMapping` 同样是「手动映射
+    /// 优先 + 内置目录」）；租约路径由
+    /// [`crate::llm::lease::LeaseModelProfile::capability_profile`]
+    /// 直接从冻结快照构造，避免再解析一次 JSON。
     pub fn from_value(model: &'a serde_json::Value) -> Self {
         ModelCapabilityProfile {
             provider: model.get("provider").and_then(|value| value.as_str()),
             protocol: model.get("protocol").and_then(|value| value.as_str()),
             base_url: model.get("baseUrl").and_then(|value| value.as_str()),
             model_name: model.get("modelName").and_then(|value| value.as_str()),
+            reasoning_mapping: model.get("reasoningMapping"),
         }
     }
 }
@@ -219,7 +390,34 @@ pub fn builtin_presets() -> Vec<ProviderPreset> {
             display_name: Some("SiliconFlow".to_string()),
             base_url: "https://api.siliconflow.cn/v1".to_string(),
             protocol: "openai".to_string(),
-            models: vec![],
+            models: vec![
+                // JSON mode: https://docs.siliconflow.cn/docs/api/chat-completions-post
+                ModelPreset {
+                    name: "deepseek-ai/DeepSeek-V4-Flash".to_string(),
+                    // 基线无 `capabilities` 字段（预算能力证据由
+                    // `llm/provider_presets.rs` 的 budgetCapabilities 承载）。
+                    capabilities: None,
+                    reasoning_mapping: Some(siliconflow_v4_thinking_mapping()),
+                    // 保留既有运营默认值。单独验证的容量是规划
+                    // 证据，不扩大用户设置。
+                    max_tokens: 16_384,
+                },
+                ModelPreset {
+                    name: "deepseek-ai/DeepSeek-V4-Pro".to_string(),
+                    capabilities: None,
+                    reasoning_mapping: Some(siliconflow_v4_thinking_mapping()),
+                    max_tokens: 16_384,
+                },
+                // Application-selected budget, not a provider-defined
+                // medium effort.
+                // https://docs.siliconflow.cn/docs/userguide/capabilities/reasoning
+                ModelPreset {
+                    name: "Qwen/Qwen3.8-27B".to_string(),
+                    capabilities: None,
+                    reasoning_mapping: Some(openai_thinking_budget_mapping()),
+                    max_tokens: 16_384,
+                },
+            ],
             embedding_models: vec!["BAAI/bge-m3".to_string()],
             embedding_model_capabilities: vec![(
                 "BAAI/bge-m3".to_string(),
@@ -364,6 +562,34 @@ fn deepseek_thinking_mapping() -> VerifiedReasoningMapping {
     }
 }
 
+/// SiliconFlow DeepSeek-V4 思考映射（Flash / Pro 共用）。
+fn siliconflow_v4_thinking_mapping() -> VerifiedReasoningMapping {
+    // https://docs.siliconflow.cn/docs/api/chat-completions-post
+    VerifiedReasoningMapping {
+        adapter: ReasoningAdapter::SiliconFlowV4Thinking,
+        supported_efforts: vec![ReasoningEffort::High, ReasoningEffort::Max],
+        provider_values: values(&[
+            (ReasoningEffort::High, text("high")),
+            (ReasoningEffort::Max, text("max")),
+        ]),
+        request_aliases: vec![],
+    }
+}
+
+/// Qwen/Qwen3.8-27B 应用预算映射（显式 off / medium）。
+fn openai_thinking_budget_mapping() -> VerifiedReasoningMapping {
+    // https://docs.siliconflow.cn/docs/userguide/capabilities/reasoning
+    VerifiedReasoningMapping {
+        adapter: ReasoningAdapter::OpenAiThinkingBudget,
+        supported_efforts: vec![ReasoningEffort::Off, ReasoningEffort::Medium],
+        provider_values: values(&[
+            (ReasoningEffort::Off, PresetValue::Number(0)),
+            (ReasoningEffort::Medium, PresetValue::Number(16_384)),
+        ]),
+        request_aliases: vec![],
+    }
+}
+
 /// 端点规范化（对齐基线 `normalizedOfficialBaseUrl`）：
 /// 仅接受 http/https、无凭据、无查询、无片段；尾斜杠归一。
 fn normalized_official_base_url(value: Option<&str>) -> Option<String> {
@@ -448,10 +674,21 @@ pub fn resolve_model_profile_capabilities(
 
 /// 解析模型档案的**已验证**推理映射。
 ///
-/// 与能力解析同样的守卫：端点与精确模型 slug 必须命中内置目录。
+/// 手动 `reasoningMapping`（档案字段）优先：验证通过
+/// 即返回，不回落内置目录；否则查内置目录（要求端点
+/// 与精确模型 slug 命中）。
 pub fn resolve_model_profile_reasoning_mapping(
     profile: &ModelCapabilityProfile<'_>,
 ) -> Option<VerifiedReasoningMapping> {
+    // 基线手动优先分支（provider-presets.ts:594-601）：档案携带
+    // 手动 `reasoningMapping` 时，验证通过即返回，**不回落**内置
+    // 目录；验证失败或协议一致性检查不通过则整体无证据。
+    if let Some(raw_mapping) = profile.reasoning_mapping {
+        let mapping = is_reasoning_mapping(raw_mapping)?;
+        let gemini_consistent = (profile.protocol == Some("gemini"))
+            == (mapping.adapter == ReasoningAdapter::GeminiThinkingBudget);
+        return gemini_consistent.then_some(mapping);
+    }
     let presets = builtin_presets();
     let preset = matching_preset(&presets, profile)?;
     let model_name = profile.model_name?.trim();
@@ -478,6 +715,7 @@ mod tests {
             protocol: Some(protocol),
             base_url: Some(base_url),
             model_name: Some(model_name),
+            reasoning_mapping: None,
         }
     }
 
@@ -676,5 +914,224 @@ mod tests {
         let proxy = profile("custom", "openai", "https://relay.example.com/v1", "gpt-4o");
         let resolution = resolve_reasoning_policy(&proxy, None, Some("auto"), Some("review"));
         assert!(resolution.provider_directive.is_none());
+    }
+
+    #[test]
+    fn siliconflow_catalog_carries_verified_reasoning_mappings_test() {
+        // 基线 SiliconFlow 目录：DeepSeek-V4 Flash/Pro 与
+        // Qwen/Qwen3.8-27B 的已验证推理映射。
+        let flash = profile(
+            "siliconflow",
+            "openai",
+            "https://api.siliconflow.cn/v1",
+            "deepseek-ai/DeepSeek-V4-Flash",
+        );
+        let mapping = resolve_model_profile_reasoning_mapping(&flash).unwrap();
+        assert_eq!(mapping.adapter, ReasoningAdapter::SiliconFlowV4Thinking);
+        assert_eq!(
+            mapping.supported_efforts,
+            vec![ReasoningEffort::High, ReasoningEffort::Max]
+        );
+        assert_eq!(
+            mapping.provider_value(ReasoningEffort::High),
+            Some(&PresetValue::Text("high".to_string()))
+        );
+        assert_eq!(
+            mapping.provider_value(ReasoningEffort::Max),
+            Some(&PresetValue::Text("max".to_string()))
+        );
+
+        let qwen = profile(
+            "siliconflow",
+            "openai",
+            "https://api.siliconflow.cn/v1",
+            "Qwen/Qwen3.8-27B",
+        );
+        let mapping = resolve_model_profile_reasoning_mapping(&qwen).unwrap();
+        assert_eq!(mapping.adapter, ReasoningAdapter::OpenAiThinkingBudget);
+        assert_eq!(
+            mapping.provider_value(ReasoningEffort::Off),
+            Some(&PresetValue::Number(0))
+        );
+        assert_eq!(
+            mapping.provider_value(ReasoningEffort::Medium),
+            Some(&PresetValue::Number(16_384))
+        );
+
+        // SiliconFlow 模型无能力元数据（基线无 capabilities 字段）。
+        assert!(resolve_model_profile_capabilities(&flash).is_none());
+        assert!(resolve_model_profile_capabilities(&qwen).is_none());
+
+        // 端点不符（自建代理）→ 无映射。
+        let proxy = profile(
+            "siliconflow",
+            "openai",
+            "https://my-proxy.example.com/v1",
+            "deepseek-ai/DeepSeek-V4-Flash",
+        );
+        assert!(resolve_model_profile_reasoning_mapping(&proxy).is_none());
+    }
+
+    #[test]
+    fn is_reasoning_mapping_validates_the_full_baseline_contract_test() {
+        // 合法手动映射（含 requestAliases）。
+        let valid = serde_json::json!({
+            "adapter": "deepseek-v4-thinking",
+            "supportedEfforts": ["off", "high"],
+            "providerValues": { "off": "disabled", "high": "high" },
+            "requestAliases": { "medium": "high" },
+        });
+        let mapping = is_reasoning_mapping(&valid).unwrap();
+        assert_eq!(mapping.adapter, ReasoningAdapter::DeepSeekV4Thinking);
+        assert_eq!(
+            mapping.request_aliases,
+            vec![(ReasoningEffort::Medium, ReasoningEffort::High)]
+        );
+
+        // 基线允许非 off 强度的 enabled wire；不能因错误夹具缩窄合同。
+        let mut enabled = valid.clone();
+        enabled["providerValues"]["high"] = serde_json::json!("enabled");
+        assert!(is_reasoning_mapping(&enabled).is_some());
+
+        // 基线拒绝面（逐条对齐 isReasoningMapping）。
+        let rejections = [
+            // 非对象 / 数组
+            serde_json::json!(null),
+            serde_json::json!([]),
+            // 未知 adapter
+            serde_json::json!({
+                "adapter": "unknown-adapter",
+                "supportedEfforts": ["off"],
+                "providerValues": { "off": "disabled" },
+            }),
+            // supportedEfforts 为空
+            serde_json::json!({
+                "adapter": "openai-thinking-budget",
+                "supportedEfforts": [],
+                "providerValues": {},
+            }),
+            // supportedEfforts 重复
+            serde_json::json!({
+                "adapter": "openai-thinking-budget",
+                "supportedEfforts": ["off", "off"],
+                "providerValues": { "off": 0 },
+            }),
+            // 多余键
+            serde_json::json!({
+                "adapter": "openai-thinking-budget",
+                "supportedEfforts": ["off"],
+                "providerValues": { "off": 0 },
+                "extra": 1,
+            }),
+            // providerValues 键不在 supportedEfforts 内
+            serde_json::json!({
+                "adapter": "openai-thinking-budget",
+                "supportedEfforts": ["off"],
+                "providerValues": { "off": 0, "medium": 4096 },
+            }),
+            // supportedEfforts 条目缺少 provider 取值
+            serde_json::json!({
+                "adapter": "openai-thinking-budget",
+                "supportedEfforts": ["off", "medium"],
+                "providerValues": { "off": 0 },
+            }),
+            // openai-reasoning-effort：wire 非字符串
+            serde_json::json!({
+                "adapter": "openai-reasoning-effort",
+                "supportedEfforts": ["high"],
+                "providerValues": { "high": 1 },
+            }),
+            // openai-reasoning-effort：wire 不匹配基线正则
+            serde_json::json!({
+                "adapter": "openai-reasoning-effort",
+                "supportedEfforts": ["high"],
+                "providerValues": { "high": "1high" },
+            }),
+            // openai-reasoning-effort：off 的非法别名
+            serde_json::json!({
+                "adapter": "openai-reasoning-effort",
+                "supportedEfforts": ["off"],
+                "providerValues": { "off": "maybe" },
+            }),
+            // gemini-thinking-budget：off 必须为 0
+            serde_json::json!({
+                "adapter": "gemini-thinking-budget",
+                "supportedEfforts": ["off"],
+                "providerValues": { "off": 8 },
+            }),
+            // gemini-thinking-budget：负数预算
+            serde_json::json!({
+                "adapter": "gemini-thinking-budget",
+                "supportedEfforts": ["low"],
+                "providerValues": { "low": -1 },
+            }),
+            // gemini-thinking-budget：非整数
+            serde_json::json!({
+                "adapter": "gemini-thinking-budget",
+                "supportedEfforts": ["low"],
+                "providerValues": { "low": 1.5 },
+            }),
+            // openai-thinking-budget：非 off 取值为 0
+            serde_json::json!({
+                "adapter": "openai-thinking-budget",
+                "supportedEfforts": ["off", "medium"],
+                "providerValues": { "off": 0, "medium": 0 },
+            }),
+            // deepseek-v4-thinking：off 必须为 disabled
+            serde_json::json!({
+                "adapter": "deepseek-v4-thinking",
+                "supportedEfforts": ["off"],
+                "providerValues": { "off": "enabled" },
+            }),
+            // deepseek-v4-thinking：非法取值
+            serde_json::json!({
+                "adapter": "deepseek-v4-thinking",
+                "supportedEfforts": ["high"],
+                "providerValues": { "high": "invalid" },
+            }),
+            // siliconflow-v4-thinking：仅 high/max
+            serde_json::json!({
+                "adapter": "siliconflow-v4-thinking",
+                "supportedEfforts": ["low"],
+                "providerValues": { "low": "low" },
+            }),
+            // siliconflow-v4-thinking：取值必须与强度同名
+            serde_json::json!({
+                "adapter": "siliconflow-v4-thinking",
+                "supportedEfforts": ["high"],
+                "providerValues": { "high": "max" },
+            }),
+            // requestAliases：请求强度非法
+            serde_json::json!({
+                "adapter": "deepseek-v4-thinking",
+                "supportedEfforts": ["off", "high"],
+                "providerValues": { "off": "disabled", "high": "high" },
+                "requestAliases": { "ultra": "high" },
+            }),
+            // requestAliases：目标不在 supportedEfforts 内
+            serde_json::json!({
+                "adapter": "deepseek-v4-thinking",
+                "supportedEfforts": ["off", "high"],
+                "providerValues": { "off": "disabled", "high": "high" },
+                "requestAliases": { "medium": "low" },
+            }),
+            // requestAliases：off 的别名必须是 off
+            serde_json::json!({
+                "adapter": "deepseek-v4-thinking",
+                "supportedEfforts": ["off", "high"],
+                "providerValues": { "off": "disabled", "high": "high" },
+                "requestAliases": { "off": "high" },
+            }),
+            // requestAliases：null 拒绝
+            serde_json::json!({
+                "adapter": "deepseek-v4-thinking",
+                "supportedEfforts": ["off", "high"],
+                "providerValues": { "off": "disabled", "high": "high" },
+                "requestAliases": null,
+            }),
+        ];
+        for value in rejections {
+            assert!(is_reasoning_mapping(&value).is_none(), "必须拒绝：{value}");
+        }
     }
 }

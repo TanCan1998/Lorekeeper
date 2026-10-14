@@ -147,7 +147,7 @@ pub const GENERATION_PLANNING_TARGET_INVALID: &str = "GENERATION_PLANNING_TARGET
 // ── 规划归一化（平移 src/shared/agent-generation.ts:6-19 + plot-outline-contract）──
 
 /// 基线 `DEFAULT_PLANNING_ACTION_CHAPTERS`（src/shared/plot-outline-contract.ts:9）。
-const DEFAULT_PLANNING_ACTION_CHAPTERS: i64 = 5;
+pub const DEFAULT_PLANNING_ACTION_CHAPTERS: i64 = 5;
 /// 基线 `PLANNING_ACTION_CHAPTER_LIMIT`（src/shared/plot-outline-contract.ts:10）。
 const PLANNING_ACTION_CHAPTER_LIMIT: i64 = 10;
 /// 基线 `DEFAULT_PLANNING_TARGET_UNITS`（src/shared/plot-outline-contract.ts:12 区段）。

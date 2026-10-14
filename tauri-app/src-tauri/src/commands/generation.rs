@@ -89,10 +89,10 @@ const DRAFT_RECONCILE_PURPOSE: &str = "chapter-draft-reconcile";
 const DRAFT_SHORT_OUTLINE_PURPOSE: &str = "chapter-draft-short-outline";
 /// 基线 `DEFAULT_PLANNING_TARGET_UNITS`
 /// （src/shared/plot-outline-contract.ts:9）。
-const DEFAULT_PLANNING_TARGET_UNITS: i64 = 600;
+pub const DEFAULT_PLANNING_TARGET_UNITS: i64 = 600;
 /// 基线 `PLANNING_TARGET_UNITS_LIMIT`
 /// （src/shared/plot-outline-contract.ts:10）。
-const PLANNING_TARGET_UNITS_LIMIT: i64 = 1000;
+pub const PLANNING_TARGET_UNITS_LIMIT: i64 = 1000;
 /// 基线 `GENERATION_PLOT_OUTLINE_PREFIX_INVALID`
 /// （src/shared/plot-outline-contract.ts 抛错码）。
 const GENERATION_PLOT_OUTLINE_PREFIX_INVALID: &str = "GENERATION_PLOT_OUTLINE_PREFIX_INVALID";
@@ -1387,7 +1387,7 @@ fn project_generation_in_flight(conn: &Connection) -> Result<bool, String> {
 
 /// 基线 `tokenLiability`（src/shared/generation-contract.ts:66-68，
 /// Rust 侧另有 `services/main_generation_owner.rs` 的同型私有 fn）。
-fn token_liability(attempt: &PhysicalAttempt) -> i64 {
+pub fn token_liability(attempt: &PhysicalAttempt) -> i64 {
     if attempt.status == "cancelled-before-dispatch" {
         0
     } else if attempt.status == "settled" && attempt.actual_tokens.is_some() {
@@ -1408,7 +1408,7 @@ fn candidate_draft_id(source_id: &str) -> Option<i64> {
 }
 
 /// 基线 `parsePlanningTargetUnits`（src/shared/plot-outline-contract.ts:12）。
-fn parse_planning_target_units(value: Option<&str>) -> Result<i64, String> {
+pub fn parse_planning_target_units(value: Option<&str>) -> Result<i64, String> {
     let Some(text) = value else {
         return Ok(DEFAULT_PLANNING_TARGET_UNITS);
     };

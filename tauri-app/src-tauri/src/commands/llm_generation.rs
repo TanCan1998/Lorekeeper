@@ -40,9 +40,10 @@ use crate::llm::chat::{
     LlmFinishReason, LlmGenerateOptions, LlmResponse, LlmStreamOptions, StreamCallbacks,
     StreamFailure, TokenUsage,
 };
-use crate::llm::params::{
-    resolve_generation_parameters, GenerationParameterModel, GenerationParameterRequest,
+use crate::llm::generation_parameter_policy::{
+    resolve_generation_parameters, GenerationParameterRequest,
 };
+use crate::llm::lease::LeaseModelProfile;
 use crate::security::ProjectSessionContext;
 use crate::state::AppState;
 
@@ -355,7 +356,7 @@ fn prepare_request(state: &AppState, request: &Value) -> Result<PreparedRequest,
     };
 
     let options = {
-        let parameter_model = GenerationParameterModel::from_value(&model);
+        let parameter_model = LeaseModelProfile::from_value(&model);
         let parameter_request = GenerationParameterRequest {
             max_tokens: request.get("maxTokens").and_then(Value::as_u64),
             // `null` 在基线是「未提供」，不得当成 `{type: null}` 下发。
@@ -374,6 +375,7 @@ fn prepare_request(state: &AppState, request: &Value) -> Result<PreparedRequest,
         LlmGenerateOptions {
             temperature: resolved.temperature,
             max_tokens: resolved.max_tokens,
+            output_token_parameter: None,
             response_format: resolved.response_format,
             reasoning: resolved.reasoning,
             conversation_id: request
@@ -920,7 +922,7 @@ mod tests {
         // `prepare_request` 需要真实 HOME 与 HTTP 客户端，故此处只验证与其
         // 路径无关的派生规则（生成参数 / 消息 / 日志文案）。
         let snapshot = model_snapshot();
-        let parameter_model = GenerationParameterModel::from_value(&snapshot);
+        let parameter_model = LeaseModelProfile::from_value(&snapshot);
         let resolved = resolve_generation_parameters(
             &parameter_model,
             &GenerationParameterRequest {
