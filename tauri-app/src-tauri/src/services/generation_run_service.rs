@@ -550,6 +550,47 @@ impl PendingOperation {
     }
 }
 
+/// 在途拥有者的退出守卫；取消或异常不得遗留永远等待的订阅。
+/// 清理只访问易失登记，不在 Drop 中借用连接或尝试跨会话写库。
+struct PendingOperationGuard<'a> {
+    service: &'a GenerationRunService,
+    key: String,
+    operation: Arc<PendingOperation>,
+    root_action_id: Option<String>,
+    completed: bool,
+}
+
+impl PendingOperationGuard<'_> {
+    fn complete(&mut self, result: Result<GenerationExecutionReceipt, String>) {
+        self.operation.complete(result);
+        self.completed = true;
+    }
+}
+
+impl Drop for PendingOperationGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            // 无法确认结算的根只读围栏；控制器仍供原有关闭恢复流程落盘尾部。
+            if let Some(root_id) = &self.root_action_id {
+                if let Ok(mut failed) = self.service.failed_roots.lock() {
+                    failed.insert(root_id.clone());
+                }
+            }
+            self.operation
+                .complete(Err("GENERATION_STORAGE_FAILED".to_string()));
+        }
+        if let Ok(mut pending) = self.service.pending.lock() {
+            // 迟到的旧守卫不得撤销已经替换的新在途实例。
+            if pending
+                .get(&self.key)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.operation))
+            {
+                pending.remove(&self.key);
+            }
+        }
+    }
+}
+
 /// 等待在途 operation 完成（基线 `pending.get(key)` 返回的
 /// 在途 promise 的等价物）。
 async fn wait_pending(
@@ -1051,6 +1092,16 @@ impl GenerationRunService {
     // 基线 execute（:110-320）
     // -------------------------------------------------------------------------
 
+    #[cfg(test)]
+    pub(crate) fn pending_waiter_count(&self) -> usize {
+        self.pending
+            .lock()
+            .unwrap()
+            .values()
+            .map(|operation| operation.state.receiver_count())
+            .sum()
+    }
+
     /// 基线 `execute` 闭包——幂等重放 + 在途去重 + 分发执行。
     ///
     /// 返回 `Err` 仅对应基线 `throw` 出口（requestHash 校验、
@@ -1113,9 +1164,17 @@ impl GenerationRunService {
         if !owns_operation {
             return wait_pending(pending_op).await;
         }
-        let result = self.execute_operation(database, request).await;
-        pending_op.complete(result.clone());
-        self.pending.lock().unwrap().remove(&key);
+        let mut operation = PendingOperationGuard {
+            service: self,
+            key,
+            operation: pending_op,
+            root_action_id: None,
+            completed: false,
+        };
+        let result = self
+            .execute_operation(database, request, &mut operation)
+            .await;
+        operation.complete(result.clone());
         result
     }
 
@@ -1124,9 +1183,11 @@ impl GenerationRunService {
         &self,
         database: &D,
         request: ExecuteGenerationRequest,
+        operation: &mut PendingOperationGuard<'_>,
     ) -> Result<GenerationExecutionReceipt, String> {
         // ④ 基线 :123-125——failedRoots 围栏。
         let run = database.with_connection(|conn| self.repository.get(conn, &request.run_id))?;
+        operation.root_action_id = Some(run.root_action_id.clone());
         if self
             .failed_roots
             .lock()
@@ -2120,6 +2181,187 @@ mod tests {
             .await
             .expect("完成先于订阅时也必须立即返回");
         assert!(matches!(result, Err(code) if code == "GENERATION_CANCELLED"));
+    }
+
+    #[tokio::test]
+    async fn scoped_database_dropped_operation_releases_pending_and_wakes_waiters_test() {
+        let (conn, run) = test_setup();
+        let database = ScopedDatabase {
+            connection: Mutex::new(conn),
+            allowed: std::sync::atomic::AtomicBool::new(true),
+        };
+        let (started, received) = std::sync::mpsc::channel();
+        let svc = service(Arc::new(WaitingDispatcher { started }));
+        let request = execute_request(
+            &run,
+            &"d".repeat(64),
+            usage_policy("included-in-completion"),
+        );
+        let mut execution = Box::pin(svc.execute_with_database(&database, request.clone()));
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            std::future::poll_fn(|cx| {
+                assert!(std::future::Future::poll(execution.as_mut(), cx).is_pending());
+                if received.try_recv().is_ok() {
+                    std::task::Poll::Ready(())
+                } else {
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+            }),
+        )
+        .await
+        .expect("分发必须进入等待");
+        let pending = svc.pending.lock().unwrap().values().next().unwrap().clone();
+        let mut duplicate = Box::pin(svc.execute_with_database(&database, request.clone()));
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(duplicate.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(svc.pending_waiter_count(), 1);
+        drop(execution);
+        assert!(
+            svc.pending.lock().unwrap().is_empty(),
+            "拥有者退出必须撤销在途登记"
+        );
+        let result = tokio::time::timeout(Duration::from_secs(1), duplicate)
+            .await
+            .expect("重复请求必须被唤醒");
+        assert!(matches!(result,Err(code) if code=="GENERATION_STORAGE_FAILED"));
+        let late = tokio::time::timeout(Duration::from_secs(1), wait_pending(pending))
+            .await
+            .expect("迟到订阅也不能悬挂");
+        assert!(matches!(late,Err(code) if code=="GENERATION_STORAGE_FAILED"));
+        // 未能结算的物理调用保守围栏，不允许新 nonce 继续消耗预算。
+        let mut another = request;
+        another.invocation_nonce = "after-dropped-operation".to_string();
+        let result = svc.execute_with_database(&database, another).await;
+        assert!(matches!(result,Err(code) if code=="GENERATION_STORAGE_FAILED"));
+        let conn = database.connection.lock().unwrap();
+        assert_eq!(
+            svc.repository
+                .read_run_view(&conn, &run.run_id)
+                .unwrap()
+                .attempts
+                .len(),
+            1
+        );
+        // 控制器保留给既有关闭修复路径：仍能落盘可见尾、把派发中记账转为未知。
+        svc.suspend_for_project_close(&conn).unwrap();
+        let view = svc.repository.read_run_view(&conn, &run.run_id).unwrap();
+        assert_eq!(view.attempts[0].receipt.attempt.status, "unknown");
+        assert_eq!(
+            view.attempts[0].receipt.artifact.as_ref().unwrap().text,
+            "中止前正文"
+        );
+    }
+
+    #[test]
+    fn scoped_database_panicked_dispatch_releases_pending_and_preserves_close_tail_test() {
+        struct PanickingDispatcher;
+        impl GenerationDispatcher for PanickingDispatcher {
+            fn dispatch<'a>(
+                &'a self,
+                _request: &'a Value,
+                options: DispatchOptions<'a>,
+            ) -> Pin<Box<dyn Future<Output = Result<GenerationDispatchResult, String>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    (options.on_visible)(VisibleGenerationEvent {
+                        kind: VisibleEventKind::Delta,
+                        text: "异常前正文".to_string(),
+                        event_id: None,
+                    });
+                    panic!("合成供应商异常");
+                })
+            }
+        }
+        let (conn, run) = test_setup();
+        let svc = service(Arc::new(PanickingDispatcher));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let request = execute_request(
+            &run,
+            &"e".repeat(64),
+            usage_policy("included-in-completion"),
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(svc.execute(&conn, request.clone()))
+        }));
+        assert!(result.is_err());
+        assert!(svc.pending.lock().unwrap().is_empty());
+        assert!(svc
+            .failed_roots
+            .lock()
+            .unwrap()
+            .contains(&run.root_action_id));
+        let mut retry = request;
+        retry.invocation_nonce = "after-panicked-dispatch".to_string();
+        let result = runtime.block_on(svc.execute(&conn, retry));
+        assert!(matches!(result,Err(code) if code=="GENERATION_STORAGE_FAILED"));
+        svc.suspend_for_project_close(&conn).unwrap();
+        let view = svc.repository.read_run_view(&conn, &run.run_id).unwrap();
+        assert_eq!(view.attempts.len(), 1);
+        assert_eq!(view.attempts[0].receipt.attempt.status, "unknown");
+        assert_eq!(
+            view.attempts[0].receipt.artifact.as_ref().unwrap().text,
+            "异常前正文"
+        );
+    }
+
+    async fn assert_pending_guard_replacement(completed: bool) {
+        let (started, _) = std::sync::mpsc::channel();
+        let svc = service(Arc::new(WaitingDispatcher { started }));
+        let old = Arc::new(PendingOperation::new(&"a".repeat(64)));
+        let replacement = Arc::new(PendingOperation::new(&"b".repeat(64)));
+        let key = "replacement-key".to_string();
+        svc.pending.lock().unwrap().insert(key.clone(), old.clone());
+        let mut guard = PendingOperationGuard {
+            service: &svc,
+            key: key.clone(),
+            operation: old.clone(),
+            root_action_id: Some("replacement-root".to_string()),
+            completed: false,
+        };
+        svc.pending
+            .lock()
+            .unwrap()
+            .insert(key.clone(), replacement.clone());
+        if completed {
+            guard.complete(Err("GENERATION_CANCELLED".to_string()));
+        }
+        drop(guard);
+        assert!(Arc::ptr_eq(
+            svc.pending.lock().unwrap().get(&key).unwrap(),
+            &replacement
+        ));
+        assert_eq!(
+            svc.failed_roots
+                .lock()
+                .unwrap()
+                .contains("replacement-root"),
+            !completed
+        );
+        let result = tokio::time::timeout(Duration::from_secs(1), wait_pending(old))
+            .await
+            .expect("旧实例迟到订阅必须收到终态");
+        assert!(
+            matches!(result,Err(code) if code==if completed { "GENERATION_CANCELLED" } else { "GENERATION_STORAGE_FAILED" })
+        );
+        assert!(matches!(*replacement.state.borrow(), PendingState::Waiting));
+    }
+
+    #[tokio::test]
+    async fn scoped_database_completed_guard_keeps_replacement_without_failure_fence_test() {
+        assert_pending_guard_replacement(true).await;
+    }
+
+    #[tokio::test]
+    async fn scoped_database_dropped_guard_keeps_replacement_and_fences_interrupted_root_test() {
+        assert_pending_guard_replacement(false).await;
     }
 
     #[tokio::test]

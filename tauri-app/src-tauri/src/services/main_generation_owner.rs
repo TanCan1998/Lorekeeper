@@ -7147,6 +7147,10 @@ mod tests {
 
     impl ProductionExecutionFixture {
         fn new(late_visible: bool) -> Self {
+            Self::with_provider_panic(late_visible, false)
+        }
+
+        fn with_provider_panic(late_visible: bool, panic_after_release: bool) -> Self {
             use crate::services::generation_run_service::{
                 create_generation_run_service, DispatchOptions, GenerationDispatchResult,
                 GenerationDispatcher, VisibleEventKind, VisibleGenerationEvent,
@@ -7155,6 +7159,7 @@ mod tests {
                 started: std::sync::mpsc::Sender<()>,
                 release: Arc<tokio::sync::Notify>,
                 late_visible: bool,
+                panic_after_release: bool,
             }
             impl GenerationDispatcher for WaitingProvider {
                 fn dispatch<'a>(
@@ -7184,6 +7189,7 @@ mod tests {
                         }
                         self.started.send(()).unwrap();
                         self.release.notified().await;
+                        assert!(!self.panic_after_release, "合成供应商执行异常");
                         if self.late_visible {
                             visible();
                         }
@@ -7227,6 +7233,7 @@ mod tests {
                             started,
                             release: release.clone(),
                             late_visible,
+                            panic_after_release,
                         }),
                     ),
                 ));
@@ -7362,6 +7369,8 @@ mod tests {
                         Err(error) => panic!("接收本地 Agent 请求失败：{error}"),
                     }
                 };
+                // Windows 接受的套接字可能继承监听器的非阻塞模式；读取前显式恢复。
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();
@@ -8637,8 +8646,111 @@ mod tests {
         fixture.state.close_project_database().unwrap();
     }
 
+    #[test]
+    fn production_short_lock_panicked_owner_wakes_real_waiter_and_closes_durable_tail_test() {
+        let fixture = ProductionExecutionFixture::with_provider_panic(false, true);
+        let (service, leases) = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            (owner.run_service.clone(), owner.lease_store.clone())
+        };
+        let (execution, result) = fixture.start();
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let request = fixture.request.clone();
+        let (duplicate_done, duplicate_result) = std::sync::mpsc::channel();
+        let duplicate = std::thread::spawn(move || {
+            duplicate_done
+                .send(crate::commands::generation::execute_generation_for_state(
+                    &state,
+                    &request,
+                    Some(&session),
+                ))
+                .unwrap()
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while service.pending_waiter_count() != 1 {
+            if std::time::Instant::now() >= deadline {
+                fixture.release.notify_one();
+                panic!("重复调用必须真正订阅在途完成值");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        fixture.release.notify_one();
+        assert!(result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_err());
+        assert!(execution.join().is_err());
+        let error = duplicate_result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.ends_with("GENERATION_STORAGE_FAILED"));
+        duplicate.join().unwrap();
+        assert_eq!(service.pending_waiter_count(), 0);
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            assert!(guard.owner().pending_invocations.lock().unwrap().is_empty());
+        }
+        // 两个准备/投影守卫退出后，实际关闭仍可修复并落盘异常前的可见尾。
+        fixture.state.close_project_database().unwrap();
+        assert_eq!(leases.lock().unwrap().live_lease_count(), 0);
+        fixture
+            .state
+            .activate_project(ActiveProject {
+                project_id: fixture.session.project_id.clone(),
+                lease_id: "panic-reopened".into(),
+                root_path: fixture.session.project_path.clone(),
+            })
+            .unwrap();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let view =
+                    GenerationRunRepository::default().read_run_view(conn, &fixture.run.run_id)?;
+                assert_eq!(view.attempts.len(), 1);
+                assert_eq!(view.attempts[0].receipt.attempt.status, "unknown");
+                assert_eq!(
+                    view.attempts[0].receipt.artifact.as_ref().unwrap().text,
+                    "短锁合成正文"
+                );
+                Ok(())
+            })
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
     fn assert_production_shared_waiters_stop(mode: &str) {
         let fixture = ProductionExecutionFixture::new(false);
+        let service = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            guard.owner().run_service.clone()
+        };
         if mode == "failed-close" {
             fixture.state.with_project_db(|conn| conn.execute_batch(
                 "CREATE TRIGGER reject_waiters_close BEFORE UPDATE OF status ON generation_runs
@@ -8661,14 +8773,15 @@ mod tests {
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if fixture
-                .state
-                .generation_owners
-                .execution_controls
-                .lock()
-                .unwrap()
-                .values()
-                .any(|entry| entry.users == 2)
+            if service.pending_waiter_count() == 1
+                && fixture
+                    .state
+                    .generation_owners
+                    .execution_controls
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .any(|entry| entry.users == 2)
             {
                 break;
             }
