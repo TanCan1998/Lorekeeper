@@ -6070,6 +6070,23 @@ mod tests {
         Value,
         std::thread::JoinHandle<Vec<Value>>,
     ) {
+        registered_workflow_with_responses(
+            followup.map(str::to_string).into_iter().collect(),
+            workflow,
+            &json!([]),
+        )
+    }
+
+    fn registered_workflow_with_responses(
+        followups: Vec<String>,
+        workflow: &str,
+        author_inputs: &Value,
+    ) -> (
+        ProductionExecutionFixture,
+        Value,
+        Value,
+        std::thread::JoinHandle<Vec<Value>>,
+    ) {
         use crate::services::generation_run_service::create_generation_run_service;
         use crate::services::main_generation_dispatcher::MainGenerationDispatcher;
         let fixture = ProductionExecutionFixture::new(false);
@@ -6082,7 +6099,7 @@ mod tests {
             "<tool_call><name>start_workflow</name><arguments>{args}</arguments></tool_call>"
         );
         let mut responses = vec![protocol.to_string()];
-        responses.extend(followup.map(str::to_string));
+        responses.extend(followups);
         let (url, server) = agent_round_http_server(responses);
         let handle = {
             let mut guard = fixture
@@ -6142,7 +6159,7 @@ mod tests {
                 let snapshot=json!({"version":1,"state":"empty","storageState":"absent","query":"合成查询",
                     "topK":5,"canonicalRevision":null,"documentsRevision":null,"items":[]});
                 let prepared=owner.prepare_draft_context(conn,&json!({"chapterNumber":1,"modelId":"fixture",
-                    "promptKeys":["edit_selected_text"],"skillStages":[],"selectedDraftIds":[],"query":"合成查询"}),&snapshot,None)?;
+                    "promptKeys":["edit_selected_text"],"skillStages":[],"selectedDraftIds":[],"query":"合成查询","authorInputs":author_inputs}),&snapshot,None)?;
                 let mut selection=begin_root_selection();
                 selection["uiActionNonce"]=json!("registered-draft-child");
                 selection["operation"]=json!("chapter-draft");
@@ -6151,6 +6168,7 @@ mod tests {
                 selection["parentRootActionId"]=handle["rootActionId"].clone();
                 selection["agentWorkflowRegistrationId"]=json!(registration.registration_id);
                 selection["preparationId"]=prepared["preparationId"].clone();
+                selection["authorInputs"]=author_inputs.clone();
                 let mut material=material_binding_receipt();material["promptHash"]=json!(text_hash("合成工作流正文提示"));
                 material["capacity"]["admittedUnits"]=json!(12);
                 material["coverage"]=json!({"required":1,"included":1,"complete":true});
@@ -6784,6 +6802,256 @@ mod tests {
                     Ok(())
                 })
                 .unwrap();
+            drop(guard);
+            fixture.state.close_project_database().unwrap();
+        }
+    }
+
+    fn generated_registered_workflow_draft_fixture(
+        next_round: bool,
+    ) -> (
+        ProductionExecutionFixture,
+        Value,
+        Value,
+        Value,
+        std::thread::JoinHandle<Vec<Value>>,
+    ) {
+        let mut responses = vec!["合成草稿正文样本".to_string()];
+        if next_round {
+            responses.push("合成工作流完成结论".to_string());
+        }
+        let (fixture, ref_, selection, server) = registered_workflow_with_responses(
+            responses,
+            "generate_draft",
+            &json!([{"id":"draft:target-units","text":"10"}]),
+        );
+        let child = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            fixture
+                .state
+                .with_project_db(|conn| guard.owner().begin(conn, &selection, false, false))
+                .unwrap()["handle"]
+                .clone()
+        };
+        let result = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &json!({"handle":child,"invocationNonce":"workflow-draft-to-commit",
+                "task":{"purpose":"chapter-draft","output":"visible-text",
+                    "messages":[{"role":"user","content":"合成工作流正文提示"}]}}),
+            Some(&fixture.session),
+        )
+        .unwrap();
+        let request = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            fixture.state.with_project_db(|conn|{
+                let artifact=result["outcome"]["receipt"]["visibleArtifact"]["artifactId"].as_str().unwrap().to_string();
+                let composition=guard.owner().compose_visible(conn,&child,&[artifact],None,Some("draft-visible-v2"))?;
+                Ok(json!({"handle":child,"source":"write","chapterNumber":1,"expectedCompositionHash":composition["textHash"]}))
+            }).unwrap()
+        };
+        (fixture, ref_, selection, request, server)
+    }
+
+    #[test]
+    fn registered_workflow_draft_commit_real_http_parent_next_round_uses_transition_and_shared_budget_test(
+    ) {
+        let (fixture, ref_, selection, request, server) =
+            generated_registered_workflow_draft_fixture(true);
+        let (parent, committed) = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let registration = owner.agent_register_workflow(conn, &ref_)?;
+                    let parent = serde_json::to_value(registration.parent_handle).unwrap();
+                    let before = owner
+                        .repository
+                        .get(conn, parent["runId"].as_str().unwrap())?
+                        .binding;
+                    let parent_run = owner
+                        .repository
+                        .get(conn, parent["runId"].as_str().unwrap())?;
+                    let captured_before = AgentHost::capture(owner, conn, &parent_run)?;
+                    let committed = owner.commit_draft(conn, &request)?;
+                    let captured_after = AgentHost::capture(owner, conn, &parent_run)?;
+                    assert_eq!(committed["content"], "合成草稿正文样本");
+                    assert_eq!(draft_count(conn), 1);
+                    let usage: String = conn
+                        .query_row(
+                            "SELECT usage_receipt_json FROM generation_attempts WHERE run_id=?",
+                            [parent["runId"].as_str().unwrap()],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let usage: Value = serde_json::from_str(&usage).unwrap();
+                    let transition = &usage["agentSourceTransition"];
+                    assert!(transition["beforeHash"].is_string());
+                    assert!(transition["afterHash"].is_string());
+                    // 新草稿未被原轮次选作来源时两侧可以相同；以真实捕获值核对，不伪造来源变化。
+                    assert_eq!(
+                        transition["beforeHash"],
+                        json!(text_hash(
+                            &serde_json::to_string(
+                                &serde_json::to_value(&captured_before).unwrap()
+                            )
+                            .unwrap()
+                        ))
+                    );
+                    assert_eq!(
+                        transition["afterHash"],
+                        json!(text_hash(
+                            &serde_json::to_string(&serde_json::to_value(&captured_after).unwrap())
+                                .unwrap()
+                        ))
+                    );
+                    assert_eq!(
+                        transition["binding"],
+                        serde_json::to_value(captured_after).unwrap()
+                    );
+                    assert_eq!(
+                        transition["actionId"],
+                        json!(format!(
+                            "{}:{}",
+                            ref_["toolCallId"].as_str().unwrap(),
+                            request["handle"]["runId"].as_str().unwrap()
+                        ))
+                    );
+                    assert_eq!(
+                        serde_json::to_value(
+                            owner
+                                .repository
+                                .get(conn, parent["runId"].as_str().unwrap())?
+                                .binding
+                        )
+                        .unwrap(),
+                        serde_json::to_value(before).unwrap()
+                    );
+                    assert_eq!(owner.agent_read(conn, &parent)?.source_status, "current");
+                    assert_eq!(owner.commit_draft(conn, &request)?, committed);
+                    assert_eq!(draft_count(conn), 1);
+                    owner.agent_finish_tool(
+                        conn,
+                        &json!({"ref":ref_,"status":"completed","observation":"合成草稿已保存"}),
+                    )?;
+                    assert_eq!(owner.agent_read(conn, &parent)?.next_round, Some(1));
+                    Ok((parent, committed))
+                })
+                .unwrap()
+        };
+        let recovery = crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &json!({"handle":parent,"index":1}),
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert_eq!(recovery["rounds"][1]["visibleText"], "合成工作流完成结论");
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        let messages = requests[2]["messages"].to_string();
+        assert!(messages.contains("合成草稿已保存"));
+        assert!(messages.contains("tool_result"));
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let budget = owner
+                    .repository
+                    .budget(conn, selection["parentRootActionId"].as_str().unwrap())?;
+                assert_eq!(budget.attempts.len(), 3);
+                assert!(budget
+                    .attempts
+                    .iter()
+                    .all(|attempt| attempt.status == "settled"));
+                assert_eq!(owner.commit_draft(conn, &request)?, committed);
+                assert_eq!(draft_count(conn), 1);
+                assert_eq!(begin_run_count(conn), 4);
+                assert!(owner.agent_read(conn, &recovery["handle"])?.source_status == "current");
+                Ok(())
+            })
+            .unwrap();
+        drop(guard);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_workflow_draft_commit_transition_failure_outer_rollback_and_source_drift_are_atomic_test(
+    ) {
+        for mode in ["transition-failure", "outer-rollback", "source-drift"] {
+            let (fixture, ref_, selection, request, server) =
+                generated_registered_workflow_draft_fixture(false);
+            assert_eq!(server.join().unwrap().len(), 2);
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            fixture.state.with_project_db(|conn|{
+                let parent=serde_json::to_value(owner.agent_register_workflow(conn,&ref_)?.parent_handle).unwrap();
+                let read_usage=|conn:&Connection| -> Result<Vec<(String,String)>,String> {
+                    conn.prepare("SELECT attempt_id,usage_receipt_json FROM generation_attempts ORDER BY rowid")
+                        .map_err(|error|error.to_string())?.query_map([],|row|Ok((row.get(0)?,row.get(1)?)))
+                        .map_err(|error|error.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())
+                };
+                let before=read_usage(conn)?;
+                let contents:i64=conn.query_row("SELECT COUNT(*) FROM contents",[],|row|row.get(0)).map_err(|error|error.to_string())?;
+                match mode {
+                    "transition-failure"=>{
+                        conn.execute_batch("CREATE TEMP TRIGGER reject_workflow_transition BEFORE UPDATE OF usage_receipt_json ON generation_attempts
+                            WHEN json_type(NEW.usage_receipt_json,'$.agentSourceTransition') IS NOT NULL
+                            BEGIN SELECT RAISE(ABORT,'synthetic-workflow-transition-failure'); END;").map_err(|error|error.to_string())?;
+                        assert!(owner.commit_draft(conn,&request).is_err());
+                        conn.execute_batch("DROP TRIGGER reject_workflow_transition;").map_err(|error|error.to_string())?;
+                    }
+                    "outer-rollback"=>{
+                        let tx=conn.unchecked_transaction().map_err(|error|error.to_string())?;
+                        assert_eq!(owner.commit_draft(&tx,&request)?["success"],true);
+                        assert_eq!(draft_count(&tx),1);
+                        drop(tx);
+                    }
+                    "source-drift"=>{
+                        let old:String=conn.query_row("SELECT genre FROM project_core WHERE id='main'",[],|row|row.get(0)).map_err(|error|error.to_string())?;
+                        conn.execute("UPDATE project_core SET genre='合成无关作者修改' WHERE id='main'",[]).map_err(|error|error.to_string())?;
+                        assert_eq!(owner.commit_draft(conn,&request).unwrap_err(),mutating_error("GENERATION_AGENT_SOURCE_CHANGED"));
+                        conn.execute("UPDATE project_core SET genre=? WHERE id='main'",[old]).map_err(|error|error.to_string())?;
+                    }
+                    _=>unreachable!()
+                }
+                assert_eq!(draft_count(conn),0,"{mode}");
+                assert_eq!(conn.query_row("SELECT COUNT(*) FROM contents",[],|row|row.get::<_,i64>(0)).map_err(|error|error.to_string())?,contents);
+                assert_eq!(read_usage(conn)?,before,"{mode}");
+                assert_eq!(owner.agent_read(conn,&parent)?.source_status,"current");
+                assert_eq!(owner.commit_draft(conn,&request)?["success"],true);
+                assert_eq!(draft_count(conn),1);
+                assert_eq!(owner.repository.budget(conn,selection["parentRootActionId"].as_str().unwrap())?.attempts.len(),2);
+                Ok(())
+            }).unwrap();
             drop(guard);
             fixture.state.close_project_database().unwrap();
         }

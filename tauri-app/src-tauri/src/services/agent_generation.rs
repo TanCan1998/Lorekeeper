@@ -1929,6 +1929,9 @@ impl<'a> AgentGeneration<'a> {
                 .map_err(|error| error.to_string())?;
             let mut usage: Value =
                 serde_json::from_str(&usage_json).map_err(|error| error.to_string())?;
+            // 哈希必须覆盖实际落库的 JSON 值；结构体字段顺序与 Value 对象顺序并不相同。
+            let before = serde_json::to_value(&before).map_err(|error| error.to_string())?;
+            let binding = serde_json::to_value(&binding).map_err(|error| error.to_string())?;
             let before_string =
                 serde_json::to_string(&before).map_err(|error| error.to_string())?;
             let binding_string =
@@ -1937,7 +1940,7 @@ impl<'a> AgentGeneration<'a> {
                 "actionId": format!("{}:{}", action.ref_.tool_call_id, child.run_id),
                 "beforeHash": text_hash(&before_string),
                 "afterHash": text_hash(&binding_string),
-                "binding": serde_json::to_value(&binding).map_err(|error| error.to_string())?,
+                "binding": binding,
             });
             if let Some(usage_object) = usage.as_object_mut() {
                 usage_object.insert("agentSourceTransition".to_string(), transition);
@@ -2512,6 +2515,9 @@ impl<'a> AgentGeneration<'a> {
                     .map_err(|error| error.to_string())?;
                 serde_json::from_str(&target_json).map_err(|error| error.to_string())?
             };
+            // 哈希必须覆盖实际落库的 JSON 值；结构体字段顺序与 Value 对象顺序并不相同。
+            let before = serde_json::to_value(&before).map_err(|error| error.to_string())?;
+            let binding = serde_json::to_value(&binding).map_err(|error| error.to_string())?;
             let before_string =
                 serde_json::to_string(&before).map_err(|error| error.to_string())?;
             let binding_string =
@@ -2520,7 +2526,7 @@ impl<'a> AgentGeneration<'a> {
                 "actionId": tool_call_id,
                 "beforeHash": text_hash(&before_string),
                 "afterHash": text_hash(&binding_string),
-                "binding": serde_json::to_value(&binding).map_err(|error| error.to_string())?,
+                "binding": binding,
             });
             if let Some(object) = target_usage.as_object_mut() {
                 object.insert("agentSourceTransition".to_string(), transition);
@@ -4180,6 +4186,24 @@ mod tests {
         assert_eq!(before_hash.len(), 64);
         assert_eq!(after_hash.len(), 64);
         assert!(transition.get("binding").is_some());
+        assert_eq!(
+            after_hash,
+            text_hash(&serde_json::to_string(&transition["binding"]).unwrap())
+        );
+        let parent = agent.runs.get(&conn, "run-0").unwrap();
+        assert!(agent.sources_current(&parent).is_ok());
+        // 保留损坏收据围栏，不能为了兼容结构体序列化而跳过哈希校验。
+        let mut corrupted = stored.clone();
+        corrupted["agentSourceTransition"]["afterHash"] = json!("0".repeat(64));
+        conn.execute(
+            "UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id='attempt-0'",
+            [serde_json::to_string(&corrupted).unwrap()],
+        )
+        .unwrap();
+        assert_eq!(
+            agent.sources_current(&parent).unwrap_err(),
+            GENERATION_AGENT_EFFECT_BINDING_INVALID
+        );
         // registrationId 校验：childHandles 不含该子代时 SOURCE_CHANGED。
         let conn = test_connection();
         let (handle, registration_id, _child) = seed_registered_session(&conn);
