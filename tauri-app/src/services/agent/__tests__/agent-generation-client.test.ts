@@ -69,4 +69,50 @@ describe('助手恢复客户端身份约束', () => {
     await expect(client.finishTool({ ref, status: 'completed', observation: '合成完成回执' })).resolves.toMatchObject({ ref, status: 'completed' })
   })
 
+  it.each(['read', 'resume'] as const)('%s 在途时调用方改写句柄也不能认领另一父根的回执', async method => {
+    const accepted = vi.fn()
+    const client = new AgentGenerationClient(session, accepted)
+    const requested = { ...fixture.recovery.handle, rootActionId: 'requested-original-root' }
+    const original = fixture.invoke.getMockImplementation()!
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    fixture.invoke.mockImplementation(async (command, args) => {
+      const result = await original(command, args)
+      await pending
+      return result
+    })
+    const request = client[method](requested)
+    requested.rootActionId = fixture.recovery.handle.rootActionId
+    release()
+    await expect(request).rejects.toThrow('GENERATION_AGENT_IDENTITY_MISMATCH')
+    expect(accepted).not.toHaveBeenCalled()
+    expect(() => client.recovery).toThrow('GENERATION_AGENT_HANDLE_REQUIRED')
+  })
+
+  describe.each(['claim', 'finish'] as const)('%s 在途身份冻结', method => {
+    it.each(['projectId', 'epoch', 'rootActionId', 'runId', 'attemptId', 'toolCallId'] as const)('调用方突变 %s 不得让错配回执通过', async field => {
+      const client = new AgentGenerationClient(session)
+      const ref = { handle: { ...fixture.recovery.handle }, attemptId: 'synthetic-attempt', toolCallId: 'synthetic-tool' }
+      fixture.recovery.rounds[0].actions = [{ ref: structuredClone(ref), name: 'synthetic-probe', arguments: {}, status: 'running' }]
+      await client.read(fixture.recovery.handle)
+      const original = fixture.invoke.getMockImplementation()!
+      let release!: () => void
+      const pending = new Promise<void>(resolve => { release = resolve })
+      fixture.invoke.mockImplementation(async (command, args) => {
+        const result = structuredClone(await original(command, args)) as { ref?: typeof ref; action?: { ref: typeof ref } }
+        const target = method === 'claim' ? result.action!.ref : result.ref!
+        if (field === 'attemptId' || field === 'toolCallId') target[field] = 'different-action'
+        else target.handle[field] = 'different-handle'
+        await pending
+        return result
+      })
+      const request = method === 'claim' ? client.claimTool(ref, true)
+        : client.finishTool({ ref, status: 'completed', observation: '合成完成回执' })
+      if (field === 'attemptId' || field === 'toolCallId') ref[field] = 'different-action'
+      else ref.handle[field] = 'different-handle'
+      release()
+      await expect(request).rejects.toThrow('GENERATION_AGENT_TOOL_IDENTITY_MISMATCH')
+    })
+  })
+
 })

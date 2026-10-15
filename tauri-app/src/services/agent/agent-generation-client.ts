@@ -7,6 +7,11 @@ import type { AgentTool } from './tool-registry'
 type ClaimRequest = AgentGenerationChannels['agent-generation:claim-tool']['args'][0]
 type FinishRequest = AgentGenerationChannels['agent-generation:finish-tool']['args'][0]
 
+// 在首次 await 前复制身份，调用方后续改写对象不能改变已发送请求的校验目标。
+function snapshotActionRef(ref: AgentToolActionRef): AgentToolActionRef {
+  return { ...ref, handle: { ...ref.handle } }
+}
+
 // 工具回执不能借用同父根的另一轮次、尝试或动作身份。
 function assertSameActionRef(expected: AgentToolActionRef, actual: AgentToolActionRef): void {
   if (expected.attemptId !== actual.attemptId || expected.toolCallId !== actual.toolCallId
@@ -49,11 +54,13 @@ export class AgentGenerationClient {
   }
 
   async read(handle: MainGenerationRunHandle = this.recovery.handle) {
-    return this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:read', { handle }), handle.rootActionId)
+    const requested = { ...handle }
+    return this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:read', { handle: requested }), requested.rootActionId)
   }
 
   async resume(handle: MainGenerationRunHandle) {
-    const recovery = this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:resume', { handle }), handle.rootActionId)
+    const requested = { ...handle }
+    const recovery = this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:resume', { handle: requested }), requested.rootActionId)
     if (this.cancelRequested) { await this.cancel(); throw new Error('GENERATION_AGENT_CANCELLED') }
     return recovery
   }
@@ -86,16 +93,18 @@ export class AgentGenerationClient {
 
   async claimTool(ref: AgentToolActionRef, confirmed: boolean, authorBlueprintProposals?: Readonly<NonNullable<ClaimRequest['authorBlueprintProposals']>>) {
     this.assertActive()
+    const expected = snapshotActionRef(ref)
     const result = await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:claim-tool', {
-      ref, confirmed, ...(authorBlueprintProposals?.length ? { authorBlueprintProposals: [...authorBlueprintProposals] } : {}),
+      ref: expected, confirmed, ...(authorBlueprintProposals?.length ? { authorBlueprintProposals: [...authorBlueprintProposals] } : {}),
     })
-    assertSameActionRef(ref, result.action.ref)
+    assertSameActionRef(expected, result.action.ref)
     return result
   }
 
   async finishTool(request: FinishRequest) {
-    const result = await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:finish-tool', request)
-    assertSameActionRef(request.ref, result.ref)
+    const expected = snapshotActionRef(request.ref)
+    const result = await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:finish-tool', { ...request, ref: expected })
+    assertSameActionRef(expected, result.ref)
     return result
   }
 
