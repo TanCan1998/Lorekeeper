@@ -8637,6 +8637,207 @@ mod tests {
         fixture.state.close_project_database().unwrap();
     }
 
+    fn assert_production_shared_waiters_stop(mode: &str) {
+        let fixture = ProductionExecutionFixture::new(false);
+        if mode == "failed-close" {
+            fixture.state.with_project_db(|conn| conn.execute_batch(
+                "CREATE TRIGGER reject_waiters_close BEFORE UPDATE OF status ON generation_runs
+                 WHEN NEW.status='paused' BEGIN SELECT RAISE(ABORT,'synthetic-waiters-close'); END;")
+                .map_err(|error|error.to_string())).unwrap();
+        }
+        let (execution, result) = fixture.start();
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let request = fixture.request.clone();
+        let (duplicate_done, duplicate_result) = std::sync::mpsc::channel();
+        let duplicate = std::thread::spawn(move || {
+            duplicate_done
+                .send(crate::commands::generation::execute_generation_for_state(
+                    &state,
+                    &request,
+                    Some(&session),
+                ))
+                .unwrap()
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if fixture
+                .state
+                .generation_owners
+                .execution_controls
+                .lock()
+                .unwrap()
+                .values()
+                .any(|entry| entry.users == 2)
+            {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                fixture.release.notify_one();
+                execution.join().unwrap();
+                duplicate.join().unwrap();
+                panic!("重复调用必须登记为同一在途执行的等待者");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // 等待者不占业务锁，仍可读取；停止/关闭必须等两份投影退出。
+        fixture
+            .state
+            .with_project_db(|conn| {
+                assert_eq!(
+                    GenerationRunRepository::default()
+                        .budget(conn, &fixture.run.root_action_id)?
+                        .attempts
+                        .len(),
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let handle = handle_of(&fixture.run);
+        let mode_owned = mode.to_string();
+        let (stopped, stopped_result) = std::sync::mpsc::channel();
+        let stopping = std::thread::spawn(move || {
+            let result = if mode_owned.ends_with("close") {
+                state.close_project_database()
+            } else {
+                crate::commands::generation::stop_generation_for_state(
+                    &state,
+                    &serde_json::from_value(handle).unwrap(),
+                    Some(&session),
+                    mode_owned == "cancel",
+                )
+                .map(|_| ())
+            };
+            stopped.send(result).unwrap();
+        });
+        let first = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let second = duplicate_result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let stop_result = stopped_result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        execution.join().unwrap();
+        duplicate.join().unwrap();
+        stopping.join().unwrap();
+        assert_eq!(first["outcome"]["content"], "短锁合成正文");
+        // 截止时间由投影时刻换算；只排除这一实时字段，其他执行收据必须一致。
+        let mut outcomes = [first["outcome"].clone(), second["outcome"].clone()];
+        for outcome in &mut outcomes {
+            assert!(outcome["receipt"]["budget"]
+                .as_object_mut()
+                .unwrap()
+                .remove("deadlineAt")
+                .is_some());
+        }
+        assert_eq!(outcomes[0], outcomes[1]);
+        assert_eq!(first["run"]["handle"], handle_of(&fixture.run));
+        assert_eq!(second["run"]["handle"], handle_of(&fixture.run));
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(fixture
+            .state
+            .generation_owners
+            .stopping_projects
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(fixture
+            .state
+            .generation_owners
+            .closing_projects
+            .lock()
+            .unwrap()
+            .is_empty());
+        if mode == "failed-close" {
+            assert!(stop_result.is_err());
+            assert!(fixture.state.project_database_open());
+            assert_eq!(
+                fixture.state.active_project_snapshot().unwrap().lease_id,
+                fixture.session.lease_id
+            );
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    conn.execute_batch("DROP TRIGGER reject_waiters_close")
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap();
+        } else {
+            stop_result.unwrap();
+        }
+        if mode == "close" {
+            assert!(!fixture.state.project_database_open());
+            fixture
+                .state
+                .activate_project(ActiveProject {
+                    project_id: fixture.session.project_id.clone(),
+                    lease_id: "waiters-reopened".into(),
+                    root_path: fixture.session.project_path.clone(),
+                })
+                .unwrap();
+        }
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let repository = GenerationRunRepository::default();
+                let budget = repository.budget(conn, &fixture.run.root_action_id)?;
+                assert_eq!(budget.attempts.len(), 1);
+                let receipt = repository.receipt(conn, &budget.attempts[0].attempt_id, None)?;
+                assert_eq!(receipt.artifact.unwrap().text, "短锁合成正文");
+                assert_eq!(
+                    receipt.failure_code.as_deref(),
+                    Some(if mode.ends_with("close") {
+                        "GENERATION_PROJECT_CLOSED"
+                    } else {
+                        "GENERATION_CANCELLED"
+                    })
+                );
+                assert_eq!(
+                    budget.root.status,
+                    if mode == "cancel" {
+                        "cancelled"
+                    } else if mode == "failed-close" {
+                        "active"
+                    } else {
+                        "paused"
+                    }
+                );
+                Ok(())
+            })
+            .unwrap();
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_short_lock_shared_waiters_pause_settles_one_attempt_test() {
+        assert_production_shared_waiters_stop("pause");
+    }
+    #[test]
+    fn production_short_lock_shared_waiters_cancel_settles_one_attempt_test() {
+        assert_production_shared_waiters_stop("cancel");
+    }
+    #[test]
+    fn production_short_lock_shared_waiters_close_settles_before_connection_drop_test() {
+        assert_production_shared_waiters_stop("close");
+    }
+    #[test]
+    fn production_short_lock_shared_waiters_failed_close_keeps_session_retryable_test() {
+        assert_production_shared_waiters_stop("failed-close");
+    }
+
     #[test]
     fn production_short_lock_conflicting_task_keeps_original_control_alive_test() {
         let fixture = ProductionExecutionFixture::new(false);
