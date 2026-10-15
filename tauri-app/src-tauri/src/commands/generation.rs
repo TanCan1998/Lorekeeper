@@ -210,6 +210,23 @@ pub(crate) fn execute_generation_for_state(
     request: &Value,
     session: Option<&ProjectSessionContext>,
 ) -> Result<Value, String> {
+    execute_generation_for_state_inner(state, request, session, false)
+}
+
+pub(crate) fn retry_short_outline_for_state(
+    state: &AppState,
+    request: &Value,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    execute_generation_for_state_inner(state, request, session, true)
+}
+
+fn execute_generation_for_state_inner(
+    state: &AppState,
+    request: &Value,
+    session: Option<&ProjectSessionContext>,
+    retry: bool,
+) -> Result<Value, String> {
     let session = session.ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
     let database = GenerationExecutionDatabase {
         state,
@@ -221,7 +238,11 @@ pub(crate) fn execute_generation_for_state(
             state
                 .generation_owners
                 .register_execution_control(owner, conn, &database.handle)?;
-        let prepared = owner.prepare_execution(conn, request, false)?;
+        let prepared = if retry {
+            owner.prepare_short_outline_retry_execution(conn, request)?
+        } else {
+            owner.prepare_execution(conn, request, false)?
+        };
         Ok(ControlledGenerationExecution {
             prepared,
             _control: control,
@@ -504,6 +525,7 @@ struct PlotOutlineRecoveryProjection {
 /// 基线 `shortOutlineContext(run)` 的返回投影
 /// （`GenerationRecoveryContext['draftShortOutline']`）。
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ShortOutlineContextProjection {
     artifact_ids: Vec<String>,
     completed_output: Option<String>,
@@ -518,7 +540,7 @@ struct ShortOutlineContextProjection {
 /// 可见合成 / 末次合成结束原因 / 尝试用途 / 草稿保存态 /
 /// 知识快照 / 批次身份 / 定稿对账 / 短大纲上下文 / 选中草稿
 /// 证据。
-fn read_recovery_context(
+pub(crate) fn read_recovery_context(
     conn: &Connection,
     owner: &crate::services::main_generation_owner::MainGenerationOwner,
     epoch: &str,
@@ -665,6 +687,7 @@ fn read_recovery_context(
     {
         Some(short_outline_context(
             conn,
+            owner,
             repository,
             &run,
             &attempt_rows,
@@ -1207,6 +1230,7 @@ fn plot_outline_recovery(
 /// 提示哈希 / 重试可用性 / 初始草稿任务。
 fn short_outline_context(
     conn: &Connection,
+    owner: &MainGenerationOwner,
     repository: &crate::repositories::generation_run_repository::GenerationRunRepository,
     run: &crate::repositories::generation_run_repository::DurableGenerationRun,
     attempt_rows: &[(String, String, String)],
@@ -1245,10 +1269,9 @@ fn short_outline_context(
                 .as_ref()
                 .and_then(|result| result.finish_reason.as_deref())
                 == Some("stop")
-            && receipt
-                .artifact
-                .as_ref()
-                .is_some_and(|artifact| !artifact.text.trim().is_empty())
+            && receipt.artifact.as_ref().is_some_and(|artifact| {
+                !crate::services::draft_short_outline::trim_js(&artifact.text).is_empty()
+            })
     });
     let first_draft = attempts
         .iter()
@@ -1290,7 +1313,7 @@ fn short_outline_context(
         artifact_ids,
         completed_output,
         prompt_hash,
-        retry: short_outline_retry(conn, repository, run, attempt_rows)?,
+        retry: short_outline_retry(conn, owner, run, attempt_rows)?,
         initial_draft_task,
     })
 }
@@ -1298,7 +1321,7 @@ fn short_outline_context(
 /// 基线 `shortOutlineRetry(run)`（main-generation-owner.ts:201-207）。
 fn short_outline_retry(
     conn: &Connection,
-    repository: &crate::repositories::generation_run_repository::GenerationRunRepository,
+    owner: &MainGenerationOwner,
     run: &crate::repositories::generation_run_repository::DurableGenerationRun,
     attempt_rows: &[(String, String, String)],
 ) -> Result<Value, String> {
@@ -1307,14 +1330,8 @@ fn short_outline_retry(
         .map(|(attempt_id, _, _)| attempt_id.clone());
     if let Some(failed_attempt_id) = failed_attempt_id {
         return Ok(
-            match assert_short_outline_retry_available(
-                conn,
-                repository,
-                run,
-                attempt_rows,
-                &failed_attempt_id,
-            ) {
-                Ok(()) => json!({
+            match owner.assert_short_outline_retry_available(conn, run, &failed_attempt_id) {
+                Ok(_) => json!({
                     "kind": "available",
                     "failedAttemptId": failed_attempt_id,
                 }),
@@ -1323,172 +1340,6 @@ fn short_outline_retry(
         );
     }
     Ok(json!({ "kind": "unavailable" }))
-}
-
-/// 基线 `assertShortOutlineRetryAvailable(run, failedAttemptId)`
-/// （main-generation-owner.ts:187-199）：重试准入——任务可
-/// 复原 + 运行 / 账本状态允许再次物理请求。
-fn assert_short_outline_retry_available(
-    conn: &Connection,
-    repository: &crate::repositories::generation_run_repository::GenerationRunRepository,
-    run: &crate::repositories::generation_run_repository::DurableGenerationRun,
-    attempt_rows: &[(String, String, String)],
-    failed_attempt_id: &str,
-) -> Result<(), String> {
-    read_failed_short_outline_task(conn, repository, run, attempt_rows, failed_attempt_id)?;
-    let budget = repository
-        .budget(conn, &run.root_action_id)
-        .map_err(|error| mutating_error(map_generation_error(&error)))?;
-    if attempt_rows.len() != 1
-        || repository
-            .read_visible_composition(conn, &run.run_id)
-            .map_err(|error| mutating_error(map_generation_error(&error)))?
-            .is_some()
-        || GenerationDraftEffects
-            .read_commit(conn, repository, &run.run_id)
-            .map_err(|error| mutating_error(map_generation_error(&error)))?
-            .is_some()
-        || !matches!(run.status.as_str(), "running" | "paused" | "failed")
-        || !matches!(budget.root.status.as_str(), "active" | "paused")
-        || budget.blocked_code.is_some()
-        || budget
-            .attempts
-            .iter()
-            .any(|attempt| matches!(attempt.status.as_str(), "reserved" | "dispatch-marked"))
-        || budget
-            .attempts
-            .iter()
-            .filter(|attempt| attempt.status != "cancelled-before-dispatch")
-            .count() as i64
-            >= budget.policy.max_physical_requests
-        || budget.attempts.iter().map(token_liability).sum::<i64>()
-            >= budget.policy.max_token_liability
-        || budget.active_elapsed_ms >= budget.policy.max_active_elapsed_ms
-    {
-        return Err(mutating_error(
-            "GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE",
-        ));
-    }
-    Ok(())
-}
-
-/// 基线 `readFailedShortOutlineTask(run, failedAttemptId)`
-/// （main-generation-owner.ts:167-185）：复原失败的短大纲
-/// 任务——校验任务身份 / 结算状态 / 提示哈希绑定。
-fn read_failed_short_outline_task(
-    conn: &Connection,
-    repository: &crate::repositories::generation_run_repository::GenerationRunRepository,
-    run: &crate::repositories::generation_run_repository::DurableGenerationRun,
-    attempt_rows: &[(String, String, String)],
-    failed_attempt_id: &str,
-) -> Result<Value, String> {
-    let decision = run
-        .binding
-        .source_manifest
-        .get("materialDecision")
-        .cloned()
-        .unwrap_or(Value::Null);
-    let prompt_hash = decision
-        .get("shortOutlinePromptHash")
-        .and_then(Value::as_str);
-    let first = attempt_rows.first();
-    if run
-        .binding
-        .source_manifest
-        .get("operation")
-        .and_then(Value::as_str)
-        != Some("chapter-draft")
-        || prompt_hash.is_none()
-        || first.is_none()
-        || first.map(|(attempt_id, _, _)| attempt_id.as_str()) != Some(failed_attempt_id)
-        || first.map(|(_, _, usage)| attempt_purpose(usage)).as_deref()
-            != Some(DRAFT_SHORT_OUTLINE_PURPOSE)
-    {
-        return Err(mutating_error(
-            "GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE",
-        ));
-    }
-    let prompt_hash = prompt_hash.expect("prompt hash is defined");
-    let receipt = repository
-        .receipt(conn, failed_attempt_id, None)
-        .map_err(|error| mutating_error(map_generation_error(&error)))?;
-    if receipt.attempt.status != "settled"
-        || receipt.failure_code.is_some()
-        || !receipt.artifact.is_some()
-        || !(receipt
-            .result
-            .as_ref()
-            .and_then(|result| result.finish_reason.as_deref())
-            == Some("length")
-            || receipt
-                .result
-                .as_ref()
-                .and_then(|result| result.finish_reason.as_deref())
-                == Some("stop")
-                && receipt
-                    .artifact
-                    .as_ref()
-                    .map(|artifact| artifact.text.trim().is_empty())
-                    .unwrap_or(true))
-    {
-        return Err(mutating_error(
-            "GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE",
-        ));
-    }
-    let usage: Value = serde_json::from_str(
-        &conn
-            .query_row(
-                "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?",
-                [failed_attempt_id],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?,
-    )
-    .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
-    let Some(task) = usage.get("replayTask").cloned() else {
-        return Err(mutating_error(
-            "GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID",
-        ));
-    };
-    // 基线 `assertSemanticGenerationTask(task)`：任务结构校验
-    // ——用途 / 输出 / 消息角色与正文字段齐备。
-    let task_purpose = task
-        .get("purpose")
-        .and_then(Value::as_str)
-        .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID"))?;
-    let task_output = task
-        .get("output")
-        .and_then(Value::as_str)
-        .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID"))?;
-    let prompts: Vec<&Value> = task
-        .get("messages")
-        .and_then(Value::as_array)
-        .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID"))?
-        .iter()
-        .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"))
-        .collect();
-    if task_purpose != DRAFT_SHORT_OUTLINE_PURPOSE
-        || task_output != "visible-text"
-        || prompts.len() != 1
-        || prompts[0]
-            .get("content")
-            .and_then(Value::as_str)
-            .map(|content| text_hash(content))
-            .as_deref()
-            != Some(prompt_hash)
-    {
-        return Err(mutating_error(
-            "GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID",
-        ));
-    }
-    // 基线末段 `requestHash` 重验与
-    // `compareGenerationSourceBindings` 探针：前者以
-    // JS 对象插入序序列化任务（`serde_json` 默认按键排序，
-    // 无法逐字节复现），后者依赖尚未迁移的
-    // `rebuildBinding`（见本文件头注「刻意偏离」）——
-    // 均按保守占位（判定为一致）注入；任务的用途 / 输出 /
-    // 提示哈希绑定已在上方精确校验。
-    Ok(task)
 }
 
 /// 基线 `completedReconciliationOutput(runId)`
@@ -2455,10 +2306,9 @@ pub async fn generation_retry_draft_short_outline(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = &state.generation_owners;
-    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
-    let owner = guard.owner();
-    state.with_project_db(|conn| owner.retry_draft_short_outline(conn, &request))
+    tokio::task::block_in_place(|| {
+        retry_short_outline_for_state(state, &request, project_session.as_ref())
+    })
 }
 
 /// `generation:begin-batch` —— 批量创作初始化

@@ -2004,6 +2004,16 @@ impl MainGenerationOwner {
         request: &Value,
         agent_execution: bool,
     ) -> Result<PreparedMainGenerationExecution, String> {
+        self.prepare_execution_with_retry(conn, request, agent_execution, None)
+    }
+
+    fn prepare_execution_with_retry(
+        &self,
+        conn: &Connection,
+        request: &Value,
+        agent_execution: bool,
+        retry_attempt_id: Option<&str>,
+    ) -> Result<PreparedMainGenerationExecution, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
         let run = self.require_run(conn, &handle, true)?;
         // 基线 :512-521 子生成器执行准入（IPC 边界执行标志恒为
@@ -2173,6 +2183,7 @@ impl MainGenerationOwner {
             },
             &invocation_nonce,
             &request_hash,
+            retry_attempt_id,
         )?;
         Ok(PreparedMainGenerationExecution {
             task,
@@ -2268,7 +2279,9 @@ impl MainGenerationOwner {
                 completed_output = receipt
                     .artifact
                     .as_ref()
-                    .filter(|artifact| !artifact.text.trim().is_empty())
+                    .filter(|artifact| {
+                        !crate::services::draft_short_outline::trim_js(&artifact.text).is_empty()
+                    })
                     .map(|artifact| artifact.text.clone());
             }
             if item.usage.purpose.as_deref() == Some("chapter-draft") && !found_first_draft {
@@ -2318,6 +2331,7 @@ impl MainGenerationOwner {
         agent_tool_names: Option<Vec<String>>,
         invocation_nonce: &str,
         request_hash: &str,
+        retry_attempt_id: Option<&str>,
     ) -> Result<PreparedExecutionPlan, String> {
         // 基线 :607-610——幂等读回（`findInvocation`）：已结算且不处于
         // 在途状态（`dispatch-marked` / `reserved`）的调用重放既有收据。
@@ -2326,14 +2340,15 @@ impl MainGenerationOwner {
             .find_invocation(conn, &run.run_id, invocation_nonce, request_hash)
             .map_err(|error| mutating_error(map_generation_error(&error)))?
         {
-            if existing.attempt.status != "dispatch-marked" && existing.attempt.status != "reserved"
+            if task_purpose == DRAFT_SHORT_OUTLINE_PURPOSE
+                || existing.attempt.status != "dispatch-marked"
+                    && existing.attempt.status != "reserved"
             {
                 return self
                     .outcome_of(conn, &existing, task)
                     .map(PreparedExecutionPlan::Replay);
             }
         }
-        // 首次短细纲可派发；再次尝试须经专属失败重试合同，目前仍保守拒绝。
         if task_purpose == DRAFT_SHORT_OUTLINE_PURPOSE
             && self
                 .repository
@@ -2341,9 +2356,17 @@ impl MainGenerationOwner {
                 .map_err(|error| mutating_error(map_generation_error(&error)))?
                 > 0
         {
-            return Err(mutating_error(
-                "GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED",
-            ));
+            let failed = retry_attempt_id.ok_or_else(|| {
+                mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED")
+            })?;
+            let original = self.assert_short_outline_retry_available(conn, run, failed)?;
+            if invocation_nonce != format!("draft-short-outline-retry:{failed}")
+                || &original != task
+            {
+                return Err(mutating_error(
+                    "GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID",
+                ));
+            }
         }
         // ① 基线 :626-630——真实模型证据重建源并逐字比对。
         let current = self.rebuild_binding(conn, &run.binding)?;
@@ -3137,36 +3160,188 @@ impl MainGenerationOwner {
         Ok(receipt)
     }
 
-    /// 基线 `retryDraftShortOutline`（main-generation-owner.ts:619-624）：
-    /// 短细纲失败重试——以 `draft-short-outline-retry:{failedAttemptId}`
-    /// 调用 nonce 重放失败的短细纲 attempt（`execute` 的重试调用形态，
-    /// 携带 `shortOutlineRetryAttemptId` 标志，契约
-    /// `generation:retry-draft-short-outline`，
-    /// generation-owner-contract.ts:279）。
-    ///
-    /// 本波次就位**运行身份前缀**（逐字对齐基线）：`require_run`
-    /// （执行语义——基线 :620 `requireRun(request.handle, true)`）。
-    ///
-    /// ⚠️ B3 占位：基线 :621 的 `readFailedShortOutlineTask`
-    /// （:157-178——失败 attempt 的任务形状 / 提示哈希 / 源一致性
-    /// 重建校验，依赖未迁移的 `volatileReceipts` 易失回执缓存、
-    /// `repository.receipt` 尝试回执投影与 `compareGenerationSourceBindings`
-    /// 绑定比对）与 :622 的 `execute` 重试分发（LLM 分发循环未迁移，
-    /// 见 [`Self::execute`]）未迁移——重试入口 fail-closed（命令层收敛为
-    /// `GENERATION_REQUEST_FAILED`）。
+    /// 只接受第一个已结算的长度截断或空白 stop；任务、哈希与真实源均重新认证。
+    fn read_failed_short_outline_task(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        failed: &str,
+    ) -> Result<Value, String> {
+        let unavailable = || mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE");
+        let invalid = || mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID");
+        let first: Option<(String,String)> = conn.query_row(
+            "SELECT attempt_id,usage_receipt_json FROM generation_attempts WHERE run_id=?1 ORDER BY rowid LIMIT 1",
+            [&run.run_id],|row|Ok((row.get(0)?,row.get(1)?))).optional()
+            .map_err(|error|mutating_error(map_generation_error(&error.to_string())))?;
+        let (first, usage) = first.ok_or_else(unavailable)?;
+        let usage: Value = serde_json::from_str(&usage).map_err(|_| invalid())?;
+        let decision = run
+            .binding
+            .source_manifest
+            .get("materialDecision")
+            .ok_or_else(unavailable)?;
+        let hash = decision
+            .get("shortOutlinePromptHash")
+            .and_then(Value::as_str)
+            .ok_or_else(unavailable)?;
+        if decision.get("reconciliationPromptHash").is_some()
+            || run
+                .binding
+                .source_manifest
+                .get("operation")
+                .and_then(Value::as_str)
+                != Some("chapter-draft")
+            || first != failed
+            || usage.get("purpose").and_then(Value::as_str) != Some(DRAFT_SHORT_OUTLINE_PURPOSE)
+        {
+            return Err(unavailable());
+        }
+        let receipt = self
+            .repository
+            .receipt(conn, failed, None)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let finish = receipt
+            .result
+            .as_ref()
+            .and_then(|result| result.finish_reason.as_deref());
+        if receipt.attempt.status != "settled"
+            || receipt.failure_code.is_some()
+            || receipt.unsaved_tail.is_some()
+            || self
+                .run_service
+                .read_unsaved_tails()
+                .iter()
+                .any(|tail| tail.attempt_id == failed)
+            || receipt.artifact.is_none()
+            || !(finish == Some("length")
+                || finish == Some("stop")
+                    && receipt.artifact.as_ref().is_some_and(|artifact| {
+                        crate::services::draft_short_outline::trim_js(&artifact.text).is_empty()
+                    }))
+        {
+            return Err(unavailable());
+        }
+        let task = usage.get("replayTask").cloned().ok_or_else(invalid)?;
+        crate::services::main_generation_plan::assert_semantic_generation_task(&task)
+            .map_err(|_| invalid())?;
+        let users: Vec<&str> = task
+            .get("messages")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?
+            .iter()
+            .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+            .filter_map(|message| message.get("content").and_then(Value::as_str))
+            .collect();
+        let expected = text_hash(
+            &serde_json::to_string(&json!([
+                task,
+                run.binding.fingerprint.model_lease_revision,
+                run.binding.fingerprint.policy_hash
+            ]))
+            .map_err(|_| invalid())?,
+        );
+        if task.get("purpose").and_then(Value::as_str) != Some(DRAFT_SHORT_OUTLINE_PURPOSE)
+            || task.get("output").and_then(Value::as_str) != Some("visible-text")
+            || users.len() != 1
+            || text_hash(users[0]) != hash
+            || usage.get("requestHash").and_then(Value::as_str) != Some(expected.as_str())
+        {
+            return Err(invalid());
+        }
+        let current = self.rebuild_binding(conn, &run.binding)?;
+        if !crate::services::generation_source_binding::compare_generation_source_bindings(
+            &run.binding,
+            &current,
+        ) {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        Ok(task)
+    }
+
+    pub(crate) fn assert_short_outline_retry_available(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        failed: &str,
+    ) -> Result<Value, String> {
+        let task = self.read_failed_short_outline_task(conn, run, failed)?;
+        let budget = self
+            .repository
+            .budget(conn, &run.root_action_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let liability: i64 = budget
+            .attempts
+            .iter()
+            .map(|attempt| {
+                if attempt.status == "cancelled-before-dispatch" {
+                    0
+                } else {
+                    attempt.actual_tokens.unwrap_or(attempt.reserved_tokens)
+                }
+            })
+            .sum();
+        if self
+            .repository
+            .attempt_count(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            != 1
+            || self
+                .repository
+                .read_visible_composition(conn, &run.run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .is_some()
+            || crate::services::generation_draft_effects::GenerationDraftEffects
+                .read_commit(conn, &self.repository, &run.run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                .is_some()
+            || !matches!(run.status.as_str(), "running" | "paused" | "failed")
+            || !matches!(budget.root.status.as_str(), "active" | "paused")
+            || budget.blocked_code.is_some()
+            || budget
+                .attempts
+                .iter()
+                .any(|attempt| matches!(attempt.status.as_str(), "reserved" | "dispatch-marked"))
+            || budget
+                .attempts
+                .iter()
+                .filter(|attempt| attempt.status != "cancelled-before-dispatch")
+                .count() as i64
+                >= budget.policy.max_physical_requests
+            || liability >= budget.policy.max_token_liability
+            || budget.active_elapsed_ms >= budget.policy.max_active_elapsed_ms
+        {
+            return Err(mutating_error(
+                "GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE",
+            ));
+        }
+        Ok(task)
+    }
+
+    pub(crate) fn prepare_short_outline_retry_execution(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<PreparedMainGenerationExecution, String> {
+        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
+        let run = self.require_run(conn, &handle, true)?;
+        let failed = request
+            .get("failedAttemptId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE"))?;
+        let task = self.read_failed_short_outline_task(conn, &run, failed)?;
+        let request = json!({"handle":handle,"invocationNonce":format!("draft-short-outline-retry:{failed}"),"task":task});
+        self.prepare_execution_with_retry(conn, &request, false, Some(failed))
+    }
+
+    /// 直接调用方的兼容入口；生产命令走独立短连接执行器，不持数据库锁等待网络。
     pub fn retry_draft_short_outline(
         &self,
         conn: &Connection,
         request: &Value,
     ) -> Result<Value, String> {
-        let handle = request.get("handle").cloned().unwrap_or(Value::Null);
-        self.require_run(conn, &handle, true)?;
-        // ⚠️ B3 占位：readFailedShortOutlineTask 与 execute 重试分发
-        // （见方法头注）未迁移——重试入口 fail-closed（命令层收敛为
-        // GENERATION_REQUEST_FAILED）。
-        Err(mutating_error(
-            "主生成短细纲重试尚未迁移：失败任务重建（readFailedShortOutlineTask）与生成运行服务（generation-run-service）的 LLM 分发循环待后续批次移植",
-        ))
+        let prepared = self.prepare_short_outline_retry_execution(conn, request)?;
+        let result = prepared.execute_blocking(conn)?;
+        self.finish_prepared_execution(conn, &prepared, &result)
     }
 
     /// 基线 `beginBatch`（main-generation-owner.ts:1279-1285）：
@@ -6116,13 +6291,33 @@ mod tests {
         output: &str,
         finish: &str,
     ) -> String {
+        record_outline_attempt_fixture(conn, owner, run, task, output, finish, "outline-seed")
+    }
+
+    fn record_outline_attempt_fixture(
+        conn: &Connection,
+        owner: &MainGenerationOwner,
+        run: &DurableGenerationRun,
+        task: &Value,
+        output: &str,
+        finish: &str,
+        nonce: &str,
+    ) -> String {
+        let hash = text_hash(
+            &serde_json::to_string(&json!([
+                task,
+                run.binding.fingerprint.model_lease_revision,
+                run.binding.fingerprint.policy_hash
+            ]))
+            .unwrap(),
+        );
         let receipt = owner
             .repository
             .reserve(
                 conn,
                 &run.run_id,
-                "outline-seed",
-                &fake_content_hash(),
+                nonce,
+                &hash,
                 100,
                 10,
                 None,
@@ -6140,9 +6335,169 @@ mod tests {
             .unwrap();
         owner
             .repository
-            .settle(conn, &id, None, Some(finish.to_string()), None, None)
+            .settle(conn, &id, Some(serde_json::from_value(json!({
+                "policy":{"estimatorVersion":"fixture","safetyMarginTokens":10,"reasoning":"included-in-completion","canBoundTotalLiability":true},
+                "inputTokens":1,"completionTokens":1,"actualTokens":2,"trusted":true
+            })).unwrap()), Some(finish.to_string()), None, None)
             .unwrap();
         id
+    }
+
+    #[test]
+    fn short_outline_retry_prepares_only_bound_settled_failure_and_cannot_be_forged_test() {
+        for (output, finish) in [
+            ("合成截断计划", "length"),
+            (" \n\t", "stop"),
+            ("\u{feff}", "stop"),
+        ] {
+            let (_temp, conn, owner, run, task) = outline_material_fixture();
+            let failed = record_outline_fixture(&conn, &owner, &run, &task, output, finish);
+            assert_eq!(
+                owner
+                    .assert_short_outline_retry_available(&conn, &run, &failed)
+                    .unwrap(),
+                task
+            );
+            let request = json!({"handle":handle_of(&run),"failedAttemptId":failed});
+            let prepared = owner
+                .prepare_short_outline_retry_execution(&conn, &request)
+                .unwrap();
+            assert_eq!(prepared.task, task);
+            drop(prepared);
+            // 普通 IPC 的任意字段不能变成内部专属重试许可，即便 nonce 完全一致。
+            let forged = json!({"handle":handle_of(&run),"invocationNonce":format!("draft-short-outline-retry:{failed}"),
+                "shortOutlineRetryAttemptId":failed,"task":task});
+            assert_eq!(
+                owner
+                    .prepare_execution(&conn, &forged, false)
+                    .err()
+                    .unwrap(),
+                mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED")
+            );
+            assert_eq!(
+                owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+                1
+            );
+            assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn short_outline_retry_rejects_invalid_receipt_task_source_and_budget_without_dispatch_test() {
+        for case in [
+            "hash", "task", "purpose", "unknown", "failure", "complete", "wrong-id", "blocked",
+            "source",
+        ] {
+            let (_temp, conn, owner, run, task) = outline_material_fixture();
+            let failed = record_outline_fixture(
+                &conn,
+                &owner,
+                &run,
+                &task,
+                "合成截断计划",
+                if case == "complete" { "stop" } else { "length" },
+            );
+            let mut receipt = owner.repository.receipt(&conn, &failed, None).unwrap();
+            if case == "unknown" {
+                receipt.attempt.status = "unknown".to_string();
+                conn.execute(
+                    "UPDATE generation_attempts SET attempt_json=?1 WHERE attempt_id=?2",
+                    rusqlite::params![serde_json::to_string(&receipt.attempt).unwrap(), failed],
+                )
+                .unwrap();
+            }
+            if ["hash", "task", "purpose", "failure"].contains(&case) {
+                let raw: String = conn
+                    .query_row(
+                        "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?1",
+                        [&failed],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let mut usage: Value = serde_json::from_str(&raw).unwrap();
+                match case {
+                    "hash" => usage["requestHash"] = json!("0".repeat(64)),
+                    "task" => usage["replayTask"]["messages"][0]["content"] = json!("替换系统合同"),
+                    "purpose" => usage["purpose"] = json!("chapter-draft"),
+                    _ => usage["result"]["failureCode"] = json!("GENERATION_REQUEST_FAILED"),
+                };
+                conn.execute(
+                    "UPDATE generation_attempts SET usage_receipt_json=?1 WHERE attempt_id=?2",
+                    rusqlite::params![serde_json::to_string(&usage).unwrap(), failed],
+                )
+                .unwrap();
+            }
+            if case == "blocked" {
+                owner
+                    .repository
+                    .block(&conn, &run.root_action_id, "fixture-blocked")
+                    .unwrap();
+            }
+            if case == "source" {
+                conn.execute(
+                    "UPDATE blueprints SET title='已经变化的合成来源' WHERE chapter_number=1",
+                    [],
+                )
+                .unwrap();
+            }
+            let id = if case == "wrong-id" {
+                "not-the-first-attempt"
+            } else {
+                failed.as_str()
+            };
+            assert!(
+                owner
+                    .assert_short_outline_retry_available(&conn, &run, id)
+                    .is_err(),
+                "必须拒绝 {case}"
+            );
+            assert!(
+                owner
+                    .prepare_short_outline_retry_execution(
+                        &conn,
+                        &json!({"handle":handle_of(&run),"failedAttemptId":id})
+                    )
+                    .is_err(),
+                "不得准备 {case}"
+            );
+            assert_eq!(
+                owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+                1
+            );
+            assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn short_outline_retry_replays_fixed_nonce_and_does_not_create_third_attempt_test() {
+        let (_temp, conn, owner, run, task) = outline_material_fixture();
+        let failed = record_outline_fixture(&conn, &owner, &run, &task, "合成截断计划", "length");
+        let request = json!({"handle":handle_of(&run),"failedAttemptId":failed});
+        drop(
+            owner
+                .prepare_short_outline_retry_execution(&conn, &request)
+                .unwrap(),
+        );
+        let second = record_outline_attempt_fixture(
+            &conn,
+            &owner,
+            &run,
+            &task,
+            "完整合成计划",
+            "stop",
+            &format!("draft-short-outline-retry:{failed}"),
+        );
+        assert!(owner
+            .assert_short_outline_retry_available(&conn, &run, &failed)
+            .is_err());
+        let replay = owner.retry_draft_short_outline(&conn, &request).unwrap();
+        assert_eq!(replay["outcome"]["content"], "完整合成计划");
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            2
+        );
+        assert_ne!(second, failed);
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -9259,6 +9614,179 @@ mod tests {
             .is_err());
         assert!(cache.stopping_projects.lock().unwrap().is_empty());
         drop(control);
+    }
+
+    #[test]
+    fn production_short_outline_retry_uses_short_locks_recovery_and_fixed_nonce_http_test() {
+        use crate::services::generation_run_service::create_generation_run_service;
+        use crate::services::main_generation_dispatcher::{
+            tests::server_with_ready, MainGenerationDispatcher,
+        };
+        let fixture = ProductionExecutionFixture::new(false);
+        let (ready, stream_ready) = tokio::sync::oneshot::channel();
+        let (url, server) = server_with_ready(concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"HTTP完整合成短细纲\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n",
+            "data: [DONE]\n\n"), std::time::Duration::from_secs(2), Some(ready));
+        let (run, request) = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            let path = crate::app_paths::models_config_path_at(&owner.global_data_root);
+            let mut profiles: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            profiles[0]["baseUrl"] = json!(url);
+            std::fs::write(&path, serde_json::to_string(&profiles).unwrap()).unwrap();
+            owner.run_service = Arc::new(create_generation_run_service(
+                MainGenerationOwner::dependencies_with_events(
+                    owner.repository.clone(),
+                    owner.events.clone(),
+                    Arc::new(MainGenerationDispatcher::new(
+                        reqwest::Client::builder().no_proxy().build().unwrap(),
+                    )),
+                ),
+            ));
+            fixture.state.with_project_db(|conn| {
+                conn.execute("INSERT INTO blueprints(chapter_number,title) VALUES (1,'合成蓝图')",[]).unwrap();
+                let mut decision=material_binding_receipt();
+                decision["promptHash"]=json!(text_hash("合成原始材料"));
+                decision["shortOutlinePromptHash"]=json!(text_hash("合成短细纲请求"));
+                decision["capacity"]["admittedUnits"]=json!(12);
+                decision["coverage"]=json!({"required":1,"included":1,"complete":true});
+                decision["included"]=json!([{"sourceId":"author:required","revision":1,"contentHash":text_hash("合成作者"),"category":"author","required":true,"units":12}]);
+                let view=owner.begin(conn,&json!({"operation":"chapter-draft","modelId":"fixture","uiActionNonce":"http-outline-retry",
+                    "promptKeys":["edit_selected_text"],"chapterNumber":1,"selectedDraftIds":[],"selectedFinalizedDraftIds":[],
+                    "selectedBlueprintChapterNumbers":[],"skillStages":[],"output":"visible-text","materialDecision":decision}),false,false)?;
+                let run=owner.repository.get(conn,view["handle"]["runId"].as_str().unwrap())?;
+                let task=json!({"purpose":DRAFT_SHORT_OUTLINE_PURPOSE,"output":"visible-text","messages":[
+                    {"role":"system","content":"合成语言与输出合同"},{"role":"user","content":"合成短细纲请求"}]});
+                let failed=record_outline_fixture(conn,owner,&run,&task,"合成截断计划","length");
+                let recovery=crate::commands::generation::read_recovery_context(conn,owner,&run.binding.epoch,&handle_of(&run))?;
+                assert_eq!(recovery["draftShortOutline"]["retry"]["kind"],"available");
+                Ok((run.clone(),json!({"handle":handle_of(&run),"failedAttemptId":failed})))
+            }).unwrap()
+        };
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let execution_request = request.clone();
+        let (done, result) = std::sync::mpsc::channel();
+        let execution = std::thread::spawn(move || {
+            done.send(crate::commands::generation::retry_short_outline_for_state(
+                &state,
+                &execution_request,
+                Some(&session),
+            ))
+            .unwrap()
+        });
+        stream_ready
+            .blocking_recv()
+            .expect("真实本地HTTP已进入等待流正文");
+        // 同一固定nonce的在途重放必须只读，不再派发；此时也必须能取得业务短锁。
+        let replay = crate::commands::generation::retry_short_outline_for_state(
+            &fixture.state,
+            &request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert!(replay.get("outcome").is_some());
+        {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    assert_eq!(
+                        guard.owner().repository.attempt_count(conn, &run.run_id)?,
+                        2
+                    );
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert!(
+            matches!(result.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+            "短锁读取完成时HTTP仍在等待正文"
+        );
+        let outcome = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        let sent = server.join().unwrap();
+        assert_eq!(sent["messages"][1]["content"], "合成短细纲请求");
+        assert_eq!(outcome["outcome"]["content"], "HTTP完整合成短细纲");
+        let completed = crate::commands::generation::retry_short_outline_for_state(
+            &fixture.state,
+            &request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        // 视图中的预算时钟可推进；重放的可见产物身份、正文与状态必须不变。
+        for key in ["content", "status", "finishReason"] {
+            assert_eq!(completed["outcome"][key], outcome["outcome"][key]);
+        }
+        assert_eq!(
+            completed["outcome"]["receipt"]["visibleArtifact"],
+            outcome["outcome"]["receipt"]["visibleArtifact"]
+        );
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let owner = guard.owner();
+                let recovery = crate::commands::generation::read_recovery_context(
+                    conn,
+                    owner,
+                    &run.binding.epoch,
+                    &handle_of(&run),
+                )?;
+                assert_eq!(
+                    recovery["draftShortOutline"]["retry"]["kind"],
+                    "unavailable"
+                );
+                assert_eq!(
+                    recovery["draftShortOutline"]["completedOutput"],
+                    "HTTP完整合成短细纲"
+                );
+                assert_eq!(
+                    recovery["draftShortOutline"]["artifactIds"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                assert_eq!(
+                    recovery["draftShortOutline"]["promptHash"],
+                    text_hash("合成短细纲请求")
+                );
+                assert!(recovery["draftShortOutline"]["initialDraftTask"].is_null());
+                assert!(recovery["draftShortOutline"]
+                    .get("completed_output")
+                    .is_none());
+                assert_eq!(owner.repository.attempt_count(conn, &run.run_id)?, 2);
+                assert!(fixture
+                    .state
+                    .generation_owners
+                    .execution_controls
+                    .lock()
+                    .unwrap()
+                    .is_empty());
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]

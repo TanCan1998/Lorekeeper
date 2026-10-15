@@ -1,6 +1,6 @@
 //! 写前短细纲的只读提示块。计划不成为作者事实，剥离必须精确匹配已完成输出。
 
-fn trim_js(text: &str) -> &str {
+pub(crate) fn trim_js(text: &str) -> &str {
     text.trim_matches(|c: char| (c.is_whitespace() && c != '\u{0085}') || c == '\u{feff}')
 }
 
