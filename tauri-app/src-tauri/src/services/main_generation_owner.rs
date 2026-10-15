@@ -3101,14 +3101,8 @@ impl MainGenerationOwner {
     /// / `GENERATION_GRAPH_ADMISSION_REQUIRED`、重启 nonce 新鲜性
     /// （:1350）→ `GENERATION_RESTART_NEW_NONCE_REQUIRED`。
     ///
-    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :1344-1345 的子生成器
-    /// 登记册可变性断言（imports / finalizations / graphs /
-    /// legacyRosters，未迁移）、:1351-1364 的规划续作面
-    /// （`planningContinuation` 推导 / `readPlanningContinuation`
-    /// 幂等重放 / `recordPlanningContinuation` 持久化）、
-    /// `begin(selection)`（主生成策略规划器，fail-closed）与
-    /// `service.cancel` 的进行中分发中止尚未迁移——重启入口
-    /// fail-closed（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
+    /// 普通根先接纳替代运行，再取消旧根；接纳失败不损害旧运行。
+    /// 规划续作和特殊领域仍保持关闭，不能借重启绕过其可变性合同。
     pub fn restart(
         &self,
         conn: &Connection,
@@ -3133,22 +3127,59 @@ impl MainGenerationOwner {
             .get("uiActionNonce")
             .cloned()
             .unwrap_or(Value::Null);
-        let root_nonce = self
+        let root = self
             .repository
             .budget(conn, &old.root_action_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?
-            .root
-            .ui_action_nonce;
-        if !parent_root_action_id.is_null() || ui_action_nonce == Value::String(root_nonce) {
+            .root;
+        if !parent_root_action_id.is_null()
+            || ui_action_nonce == Value::String(root.ui_action_nonce)
+        {
             return Err(mutating_error("GENERATION_RESTART_NEW_NONCE_REQUIRED"));
         }
-        // ⚠️ B3 占位：基线 :1344-1345 的子生成器登记册可变性断言、
-        // :1351-1364 的规划续作面、`begin(selection)` 重开与
-        // `service.cancel` 旧 run 处置未迁移——重启入口 fail-closed
-        // （命令层收敛为 `GENERATION_REQUEST_FAILED`）。
-        Err(mutating_error(
-            "主生成重启尚未迁移：主生成策略规划器（newMainGenerationPolicy）与生成运行服务（generation-run-service）待后续批次移植",
-        ))
+        let ordinary = |operation: &str| matches!(operation, "brainstorm" | "chapter-draft");
+        if !ordinary(&root.operation)
+            || !ordinary(
+                manifest
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+            || !ordinary(
+                selection
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+            || [
+                "importSlot",
+                "importExecution",
+                "agentInput",
+                "agentSession",
+                "agentAdmission",
+                "agentWorkflowRegistrationId",
+                "reviewRevisionContextId",
+                "reviewRevisionContext",
+                "finalizedCharacterContextId",
+                "batchId",
+                "batchIntent",
+                "continueDirectoryOperationId",
+            ]
+            .iter()
+            .any(|key| manifest.get(*key).is_some_and(|value| !value.is_null()))
+        {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        // begin 自建事务和租约；外层回滚不能遗留已移交的替代租约。
+        if !conn.is_autocommit() {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        let next = self.begin(conn, selection, false, false)?;
+        // 与基线一致：取消失败不回滚已接纳的新运行，同 nonce 重试命中原替代身份。
+        self.run_service
+            .cancel(conn, &old.root_action_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        Ok(next)
     }
 
     /// 基线 `discardCandidate`（候选丢弃，main-generation-owner.ts:1376-1389）：
@@ -5973,6 +6004,306 @@ mod tests {
         assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
         assert_eq!(begin_run_count(&conn), 2);
         assert!(conn.is_autocommit());
+    }
+
+    #[test]
+    fn ordinary_restart_admits_new_root_before_cancelling_and_replays_identity_test() {
+        let (_temp, conn, owner, old) = source_owner_fixture();
+        let selection = begin_root_selection();
+        let next = owner.restart(&conn, &handle_of(&old), &selection).unwrap();
+        let next_id = next["handle"]["runId"].as_str().unwrap();
+        let run = owner.repository.get(&conn, next_id).unwrap();
+        assert_ne!(run.root_action_id, old.root_action_id);
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &old.root_action_id)
+                .unwrap()
+                .root
+                .status,
+            "cancelled"
+        );
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .root
+                .status,
+            "active"
+        );
+        assert_eq!(begin_run_count(&conn), 2);
+        let lease = owner.run_leases.lock().unwrap()[next_id].clone();
+        let replay = owner.restart(&conn, &handle_of(&old), &selection).unwrap();
+        assert_eq!(replay["handle"], next["handle"]);
+        assert_eq!(owner.run_leases.lock().unwrap()[next_id], lease);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert_eq!(begin_run_count(&conn), 2);
+    }
+
+    #[test]
+    fn ordinary_draft_restart_requires_fresh_preparation_and_does_not_inherit_outline_artifacts_test(
+    ) {
+        let (_temp, conn, mut owner, old, task) = outline_material_fixture();
+        record_outline_fixture(&conn, &owner, &old, &task, "合成旧细纲", "stop");
+        let request = json!({"chapterNumber":1,"modelId":"fixture","promptKeys":["edit_selected_text"],
+            "skillStages":[],"selectedDraftIds":[],"query":"合成查询"});
+        let snapshot = json!({"version":1,"state":"empty","storageState":"absent","query":"合成查询",
+            "topK":3,"canonicalRevision":null,"documentsRevision":null,"items":[]});
+        let prepared = owner
+            .prepare_draft_context(&conn, &request, &snapshot, None)
+            .unwrap();
+        let mut selection = begin_root_selection();
+        selection["operation"] = json!("chapter-draft");
+        selection["chapterNumber"] = json!(1);
+        selection["selectedBlueprintChapterNumbers"] = json!([1, 2, 3, 4, 5, 6]);
+        selection["preparationId"] = prepared["preparationId"].clone();
+        selection["materialDecision"] = old.binding.source_manifest["materialDecision"].clone();
+        let mut expired = selection.clone();
+        expired["preparationId"] = json!("missing-preparation");
+        assert!(owner.restart(&conn, &handle_of(&old), &expired).is_err());
+        assert_ne!(
+            owner
+                .repository
+                .budget(&conn, &old.root_action_id)
+                .unwrap()
+                .root
+                .status,
+            "cancelled"
+        );
+        let next = owner.restart(&conn, &handle_of(&old), &selection).unwrap();
+        let run = owner
+            .repository
+            .get(&conn, next["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        assert_ne!(run.root_action_id, old.root_action_id);
+        assert_eq!(
+            run.binding.source_manifest["materialDecision"],
+            selection["materialDecision"]
+        );
+        assert_eq!(run.binding.source_manifest["knowledgeSnapshot"], snapshot);
+        assert!(owner
+            .repository
+            .budget(&conn, &run.root_action_id)
+            .unwrap()
+            .attempts
+            .is_empty());
+        let old_budget = owner.repository.budget(&conn, &old.root_action_id).unwrap();
+        assert_eq!(old_budget.root.status, "cancelled");
+        assert_eq!(old_budget.attempts.len(), 1);
+        assert_eq!(old_budget.attempts[0].status, "settled");
+    }
+
+    #[test]
+    fn ordinary_restart_rejected_selection_and_outer_transaction_preserve_old_root_test() {
+        let (_temp, conn, owner, old) = source_owner_fixture();
+        for (key, value) in [
+            ("uiActionNonce", json!("source-fixture")),
+            ("parentRootActionId", json!(old.root_action_id)),
+            ("modelId", json!("missing-model")),
+            ("selectedDraftIds", json!([999999])),
+            ("operation", json!("agent-round")),
+            ("reviewRevisionContextId", json!("review")),
+            ("batchId", json!("batch")),
+            ("agentWorkflowRegistrationId", json!("workflow")),
+        ] {
+            let mut selection = begin_root_selection();
+            selection[key] = value;
+            assert!(
+                owner.restart(&conn, &handle_of(&old), &selection).is_err(),
+                "{key}"
+            );
+            assert_eq!(
+                owner
+                    .repository
+                    .budget(&conn, &old.root_action_id)
+                    .unwrap()
+                    .root
+                    .status,
+                "active"
+            );
+            assert_eq!(begin_run_count(&conn), 1);
+            assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+        }
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(owner
+            .restart(&tx, &handle_of(&old), &begin_root_selection())
+            .is_err());
+        tx.commit().unwrap();
+        assert_eq!(begin_run_count(&conn), 1);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+    }
+
+    #[test]
+    fn ordinary_restart_cancel_failure_retains_replacement_for_same_nonce_retry_test() {
+        let (_temp, conn, owner, old) = source_owner_fixture();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_restart_cancel BEFORE UPDATE OF status ON generation_runs
+            WHEN NEW.status='cancelled' BEGIN SELECT RAISE(ABORT,'synthetic-restart-cancel'); END;",
+        )
+        .unwrap();
+        let selection = begin_root_selection();
+        assert!(owner.restart(&conn, &handle_of(&old), &selection).is_err());
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &old.root_action_id)
+                .unwrap()
+                .root
+                .status,
+            "active"
+        );
+        let replacement = owner.begin(&conn, &selection, false, false).unwrap();
+        let lease = owner.run_leases.lock().unwrap()
+            [replacement["handle"]["runId"].as_str().unwrap()]
+        .clone();
+        conn.execute_batch("DROP TRIGGER reject_restart_cancel;")
+            .unwrap();
+        let retried = owner.restart(&conn, &handle_of(&old), &selection).unwrap();
+        assert_eq!(retried["handle"], replacement["handle"]);
+        assert_eq!(
+            owner.run_leases.lock().unwrap()[replacement["handle"]["runId"].as_str().unwrap()],
+            lease
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &old.root_action_id)
+                .unwrap()
+                .root
+                .status,
+            "cancelled"
+        );
+    }
+
+    #[test]
+    fn production_ordinary_restart_preserves_rejected_original_then_settles_and_executes_replacement_test(
+    ) {
+        let fixture = ProductionExecutionFixture::new(false);
+        let (execution, result) = fixture.start();
+        let handle: MainGenerationRunHandle =
+            serde_json::from_value(handle_of(&fixture.run)).unwrap();
+        let selection = begin_root_selection();
+        let mut stale = fixture.session.clone();
+        stale.lease_id = "stale-restart".into();
+        assert!(crate::commands::generation::restart_generation_for_state(
+            &fixture.state,
+            handle.clone(),
+            selection.clone(),
+            Some(&stale)
+        )
+        .is_err());
+        let mut bad = selection.clone();
+        bad["selectedDraftIds"] = json!([999999]);
+        assert!(crate::commands::generation::restart_generation_for_state(
+            &fixture.state,
+            handle.clone(),
+            bad,
+            Some(&fixture.session)
+        )
+        .is_err());
+        assert!(result.try_recv().is_err(), "失败的替代请求不得中止原执行");
+        fixture
+            .state
+            .with_project_db(|conn| {
+                assert_eq!(begin_run_count(conn), 1);
+                assert_eq!(
+                    GenerationRunRepository::default()
+                        .get(conn, &fixture.run.run_id)?
+                        .status,
+                    "running"
+                );
+                Ok(())
+            })
+            .unwrap();
+        let next = crate::commands::generation::restart_generation_for_state(
+            &fixture.state,
+            handle,
+            selection,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        let old_result = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        assert_eq!(old_result["outcome"]["content"], "短锁合成正文");
+        let next_id = next["handle"]["runId"].as_str().unwrap();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let repo = GenerationRunRepository::default();
+                let old = repo.get(conn, &fixture.run.run_id)?;
+                assert_eq!(old.status, "cancelled");
+                let attempts = repo.budget(conn, &old.root_action_id)?.attempts;
+                assert_eq!(attempts.len(), 1);
+                assert_eq!(attempts[0].status, "unknown");
+                assert!(attempts[0].actual_tokens.is_none());
+                let replacement = repo.get(conn, next_id)?;
+                assert_eq!(replacement.status, "running");
+                assert_ne!(replacement.root_action_id, old.root_action_id);
+                assert!(repo
+                    .budget(conn, &replacement.root_action_id)?
+                    .attempts
+                    .is_empty());
+                Ok(())
+            })
+            .unwrap();
+        // 根已取消仍可读回已持久化的同 nonce 收据；只禁止新的物理调用。
+        let replay = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &fixture.request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert_eq!(
+            replay["outcome"]["content"],
+            old_result["outcome"]["content"]
+        );
+        assert!(fixture.started.try_recv().is_err());
+        let mut fresh = fixture.request.clone();
+        fresh["invocationNonce"] = json!("cancelled-root-fresh-attempt");
+        assert!(crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &fresh,
+            Some(&fixture.session)
+        )
+        .is_err());
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let mut request = fixture.request.clone();
+        request["handle"] = next["handle"].clone();
+        let (done, result) = std::sync::mpsc::channel();
+        let replacement = std::thread::spawn(move || {
+            done.send(crate::commands::generation::execute_generation_for_state(
+                &state,
+                &request,
+                Some(&session),
+            ))
+            .unwrap();
+        });
+        fixture
+            .started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        fixture.release.notify_one();
+        assert_eq!(
+            result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap()["outcome"]["content"],
+            "短锁合成正文"
+        );
+        replacement.join().unwrap();
+        assert!(
+            fixture.started.try_recv().is_err(),
+            "仅允许原执行和替代根各一次物理请求"
+        );
+        fixture.state.close_project_database().unwrap();
     }
 
     #[test]

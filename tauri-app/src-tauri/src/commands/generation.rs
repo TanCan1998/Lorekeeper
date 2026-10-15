@@ -2214,6 +2214,16 @@ pub async fn generation_restart(
     request: Value,
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
+    restart_generation_for_state(state.inner(), handle, request, project_session.as_ref())
+}
+
+/// 同一生产门禁供桌面命令及真实 AppState 回归共用，不扩大 IPC 合同。
+pub(crate) fn restart_generation_for_state(
+    state: &AppState,
+    handle: MainGenerationRunHandle,
+    request: Value,
+    project_session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
     let operation = request
         .get("operation")
         .and_then(Value::as_str)
@@ -2245,9 +2255,8 @@ pub async fn generation_restart(
             "GENERATION_MATERIAL_DECISION_INVALID",
         )));
     }
-    let state = state.inner();
     let cache = &state.generation_owners;
-    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let mut guard = authorized_gate(&cache, state, project_session)?;
     let handle = serde_json::to_value(&handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
     let owner = guard.owner();
