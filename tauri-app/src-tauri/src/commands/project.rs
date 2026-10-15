@@ -82,13 +82,94 @@ pub fn project_get_runtime_context(state: State<'_, AppState>) -> RuntimeContext
 
 // ===== project:recent-list / project:recent-remove =====
 
-#[tauri::command]
-pub fn project_recent_list() -> Vec<RecentProject> {
-    load_recent_projects()
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentProjectPreview {
+    #[serde(flatten)]
+    project: RecentProject,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preview_capability_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+}
+
+fn recent_previews(
+    store: &mut crate::services::project_peek::ProjectPeek,
+    projects: Vec<RecentProject>,
+) -> Vec<RecentProjectPreview> {
+    store.clear();
+    projects
+        .into_iter()
+        .map(|project| {
+            let issued = store.issue(&project.path);
+            RecentProjectPreview {
+                preview_capability_id: issued.as_ref().map(|value| value.0.clone()),
+                project_id: issued.map(|value| value.1),
+                project,
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
-pub fn project_recent_remove(project_path: String) -> SimpleResult {
+pub fn project_recent_list(state: State<'_, AppState>) -> Vec<RecentProjectPreview> {
+    let Ok(mut store) = state.project_peek.lock() else {
+        return Vec::new();
+    };
+    recent_previews(&mut store, load_recent_projects())
+}
+
+/// 只接收不透明凭证，路径本身不能请求预览。
+#[tauri::command]
+pub fn project_peek_overview(
+    state: State<'_, AppState>,
+    capability_id: String,
+) -> serde_json::Value {
+    state
+        .project_peek
+        .lock()
+        .map(|store| store.peek(&capability_id))
+        .unwrap_or_else(|_| serde_json::json!({"state":"unavailable"}))
+}
+
+#[tauri::command]
+pub fn project_overview_current(
+    state: State<'_, AppState>,
+    project_session: Option<ProjectSessionContext>,
+) -> serde_json::Value {
+    current_overview(state.inner(), project_session.as_ref())
+}
+
+fn current_overview(
+    state: &AppState,
+    session: Option<&ProjectSessionContext>,
+) -> serde_json::Value {
+    let result = (|| -> Result<serde_json::Value, String> {
+        // 与关闭路径保持同序：先数据库锁，后租约锁；不另开库、不触发迁移。
+        let db = state.project_db.lock().map_err(|_| "数据库锁已污染")?;
+        let session = session.ok_or("缺少项目会话")?;
+        crate::commands::db::guard_read(state, &session.project_path, Some(session))?;
+        let db = db.as_ref().ok_or("项目数据库未打开")?;
+        if normalized_project_path(&db.root_path().to_string_lossy())
+            != normalized_project_path(&session.project_path)
+        {
+            return Err("项目数据库归属不一致".into());
+        }
+        crate::repositories::project_overview_repository::read(
+            db.connection(),
+            &session.project_id,
+            true,
+            "",
+        )
+    })();
+    result.unwrap_or_else(|_| serde_json::json!({"state":"unavailable"}))
+}
+
+#[tauri::command]
+pub fn project_recent_remove(state: State<'_, AppState>, project_path: String) -> SimpleResult {
+    if let Ok(mut store) = state.project_peek.lock() {
+        store.revoke_path(&project_path);
+    }
     let before = load_recent_projects();
     let filtered: Vec<RecentProject> = before
         .iter()

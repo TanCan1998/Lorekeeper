@@ -92,8 +92,9 @@
 > ⚠️ 基线还有「拒绝渲染层导航替换主框架」（`preventRendererNavigation`）的等价防护尚未接入（B13）。
 `official-homepage:open`、`model-provider-resource:open(resourceId)`（主进程映射固定 HTTPS URL，不接受任意 URL）。
 
-### 4.6 ProjectChannels（10 + dialog 1）— controller: `project-controller.ts` — 批次 B
-`project:get-runtime-context`、`project:create(config, requestToken, rendererProjectPath)`、`project:open(projectPath, requestToken, rendererProjectPath)`、`project:save`★、`project:update-config`★、`project:recent-list`、`project:recent-remove`、`project:delete`★（返回含 `directoryDeleted`/`databaseRestored`，须事务性恢复）、`project:smoke-open-request`、`project:smoke-open-confirm`、`dialog:select-folder`。
+### 4.6 ProjectChannels（12 + dialog 1）— controller: `project-controller.ts` — 批次 B / B93 ✅
+`project:get-runtime-context`、`project:create(config, requestToken, rendererProjectPath)`、`project:open(projectPath, requestToken, rendererProjectPath)`、`project:save`★、`project:update-config`★、`project:recent-list`、`project:recent-remove`、`project:delete`★（返回含 `directoryDeleted`/`databaseRestored`，须事务性恢复）、`project:smoke-open-request`、`project:smoke-open-confirm`、`project:overview-current`★、`project:peek-overview(capabilityId)`、`dialog:select-folder`。
+核心语义：requestToken / rendererProjectPath 防陈旧窗口写入；`sessionLease` 由主进程签发冻结；`project:overview-current` 必须带活动会话只读投影（不触发迁移/不另开库）；`project:peek-overview` 仅凭进程内签发的不透明 `capabilityId` 做离线安全临时快照，禁止直接传路径或篡改源库。
 核心语义：requestToken / rendererProjectPath 防陈旧窗口写入；`sessionLease` 由主进程签发冻结。
 **契约要点**：`dialog:select-folder` 迁移后仍**不接收 `projectSession` 尾参**（属能力域，见 §2），返回路径仅作父目录输入，随后由 `project:create` / `project:open` 做项目根校验。
 

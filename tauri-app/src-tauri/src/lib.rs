@@ -152,6 +152,8 @@ pub fn run() {
             commands::project_save,
             commands::project_update_config,
             commands::project_recent_list,
+            commands::project_overview_current,
+            commands::project_peek_overview,
             commands::project_recent_remove,
             commands::project_delete,
             commands::project_smoke_open_request,

@@ -68,6 +68,7 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'project:save': ['projectId', 'data', 'expectedProjectPath'],
   'project:update-config': ['projectId', 'data', 'expectedProjectPath'],
   'project:recent-remove': ['projectPath'],
+  'project:peek-overview': ['capabilityId'],
   'project:delete': ['projectPath', 'projectId', 'sessionLease'],
   'project:smoke-open-confirm': ['projectPath'],
   // 批次 C：项目数据库（project_core 子域 5 频道）

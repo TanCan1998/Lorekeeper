@@ -46,6 +46,8 @@ pub struct AppState {
     pub(crate) active_project: Mutex<Option<ActiveProject>>,
     /// 批次 C：项目数据库连接，生命周期与 `active_project` 一致
     pub(crate) project_db: Mutex<Option<crate::db::ProjectDatabase>>,
+    /// 最近项目预览能力，仅进程内有效；快照操作在阻塞线程执行。
+    pub(crate) project_peek: std::sync::Arc<Mutex<crate::services::project_peek::ProjectPeek>>,
     /// 批次 C：最近一次项目打开/创建请求令牌（陈旧请求必须让位于最新请求）
     pub(crate) latest_open_token: Mutex<Option<String>>,
     /// 批次 B：项目文件操作串行锁（骨架阶段全局互斥，安全语义同基线 per-path 队列）
@@ -93,6 +95,9 @@ impl AppState {
             window_close_guard: Mutex::new(crate::commands::WindowCloseGuard::default()),
             active_project: Mutex::new(None),
             project_db: Mutex::new(None),
+            project_peek: std::sync::Arc::new(Mutex::new(
+                crate::services::project_peek::ProjectPeek::default(),
+            )),
             latest_open_token: Mutex::new(None),
             fs_lock: Mutex::new(()),
             llm_leases: std::sync::Arc::clone(&llm_leases),

@@ -224,6 +224,8 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'project:delete',
   'project:get-runtime-context',
   'project:open',
+  'project:overview-current',
+  'project:peek-overview',
   'project:recent-list',
   'project:recent-remove',
   'project:save',
