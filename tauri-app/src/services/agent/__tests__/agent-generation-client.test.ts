@@ -123,4 +123,13 @@ describe('助手恢复客户端身份约束', () => {
     expect(fixture.invoke.mock.calls.at(-1)?.[1].projectSession).toEqual(session)
   })
 
+  it.each(['read', 'resume'] as const)('首次 %s 不得把空父根当成未指定校验条件', async method => {
+    const accepted = vi.fn()
+    const client = new AgentGenerationClient(session, accepted)
+    await expect(client[method]({ ...fixture.recovery.handle, rootActionId: '' }))
+      .rejects.toThrow('GENERATION_AGENT_IDENTITY_MISMATCH')
+    expect(accepted).not.toHaveBeenCalled()
+    expect(() => client.recovery).toThrow('GENERATION_AGENT_HANDLE_REQUIRED')
+  })
+
 })

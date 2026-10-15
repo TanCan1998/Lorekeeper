@@ -38,7 +38,7 @@ export class AgentGenerationClient {
   }
 
   private accept(recovery: AgentGenerationRecovery, expectedRootActionId?: string): AgentGenerationRecovery {
-    if (expectedRootActionId && recovery.handle.rootActionId !== expectedRootActionId
+    if (expectedRootActionId !== undefined && recovery.handle.rootActionId !== expectedRootActionId
       || recovery.handle.projectId !== this.projectSession.projectId
       || this.current && recovery.handle.rootActionId !== this.current.handle.rootActionId) throw new Error('GENERATION_AGENT_IDENTITY_MISMATCH')
     this.current = recovery
