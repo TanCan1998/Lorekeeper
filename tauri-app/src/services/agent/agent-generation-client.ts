@@ -20,8 +20,9 @@ export class AgentGenerationClient {
     return this.current
   }
 
-  private accept(recovery: AgentGenerationRecovery): AgentGenerationRecovery {
-    if (recovery.handle.projectId !== this.projectSession.projectId
+  private accept(recovery: AgentGenerationRecovery, expectedRootActionId?: string): AgentGenerationRecovery {
+    if (expectedRootActionId && recovery.handle.rootActionId !== expectedRootActionId
+      || recovery.handle.projectId !== this.projectSession.projectId
       || this.current && recovery.handle.rootActionId !== this.current.handle.rootActionId) throw new Error('GENERATION_AGENT_IDENTITY_MISMATCH')
     this.current = recovery
     if (!this.closed) this.onRecovery(recovery)
@@ -40,11 +41,11 @@ export class AgentGenerationClient {
   }
 
   async read(handle: MainGenerationRunHandle = this.recovery.handle) {
-    return this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:read', { handle }))
+    return this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:read', { handle }), handle.rootActionId)
   }
 
   async resume(handle: MainGenerationRunHandle) {
-    const recovery = this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:resume', { handle }))
+    const recovery = this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:resume', { handle }), handle.rootActionId)
     if (this.cancelRequested) { await this.cancel(); throw new Error('GENERATION_AGENT_CANCELLED') }
     return recovery
   }
