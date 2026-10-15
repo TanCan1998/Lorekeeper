@@ -34,7 +34,7 @@ describe('model settings contract', () => {
 
   it('creates new embedding profiles from the SiliconFlow preset and opens only fixed provider resources through IPC', () => {
     const settingsModal = source('src/components/settings/SettingsModal.tsx')
-    const resourceController = source('electron/controllers/model-provider-resource-controller.ts')
+    const resourceController = source('src-tauri/src/commands/model_provider_resource.rs')
 
     expect(settingsModal).toContain('createModelProfileDraft')
     expect(settingsModal).toContain("openModelProviderResource('siliconflow-invite'")
@@ -45,7 +45,11 @@ describe('model settings contract', () => {
     expect(settingsModal).toContain('免费')
     expect(settingsModal).not.toContain('window.open(')
     expect(settingsModal).not.toContain('shell.openExternal')
-    expect(resourceController).toContain('MODEL_PROVIDER_RESOURCE_URLS[resource]')
+    expect(resourceController).toContain('let Some(url) = MODEL_PROVIDER_RESOURCE_URLS')
+    expect(resourceController).toContain('.find(|(id, _)| id == &resource)')
+    expect(resourceController).toContain('Unsupported model provider resource.')
+    expect(resourceController).toContain('open_external_url(&app, url)')
+    expect(source('src-tauri/src/lib.rs')).toContain('commands::model_provider_resource_open,')
   })
 
 })
