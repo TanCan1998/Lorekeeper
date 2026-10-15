@@ -4,11 +4,12 @@ import { describe, expect, it } from 'vitest'
 
 const brandingSources = [
   'src/components/settings/SettingsModal.tsx',
-  'electron/main.ts',
+  'src-tauri/src/main.rs',
+  'src-tauri/tauri.conf.json',
+  'src-tauri/Cargo.toml',
   'package.json',
   'pnpm-lock.yaml',
-  'electron-builder.json5',
-  'README.md',
+  'index.html',
 ]
 
 const visibleSettingsSources = [
@@ -55,6 +56,12 @@ const pseudoIconPattern = new RegExp([
 ].join('|'), 'u')
 
 describe('settings visible branding', () => {
+  it('keeps the Tauri product identity separate from the Electron baseline', () => {
+    const config = JSON.parse(readSources(['src-tauri/tauri.conf.json']))
+    expect(config.productName).toBe('Lorekeeper')
+    expect(config.identifier).toBe('com.tancan1998.lorekeeper')
+    expect(config.app.windows[0].title).toBe('Lorekeeper')
+  })
   it('does not expose legacy support, payment QR, or pseudo-icon branding', () => {
     for (const value of forbiddenVisibleLegacy) {
       expect(brandingSource).not.toContain(value)

@@ -277,7 +277,7 @@
     --shadow-tooltip: 0 4px 12px rgba(43, 42, 38, 0.16);
 
     /* 过渡（加入顺滑阻尼）
-       ⚠️ 这些变量内含“时长”，只能用于 `transition:`/`animation` 的完整简写占位处，
+       注意：这些变量内含“时长”，只能用于 `transition:`/`animation` 的完整简写占位处，
        不得当作“缓动函数”插到 `animation: x 0.2s var(--…)` 里 ——
        那样 0.4s 会被解析成 animation-delay（曾导致弹窗动画凭空慢 0.4s）。 */
     --transition-fast: 0.12s cubic-bezier(0.16, 1, 0.3, 1);

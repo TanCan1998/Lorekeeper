@@ -164,9 +164,12 @@ describe('relationship role semantics', () => {
   })
 })
 
-describe('Storybook token documentation', () => {
+// Storybook 留在上游根 src/；只把其文档作为静态合同，逐项核对 Tauri 的运行时 token。
+const baselineTokenStory = resolve(process.cwd(), '../src/stories/Introduction.mdx')
+
+describe('上游 Storybook 文档与 Tauri token 合同', () => {
   it('renders every theme from runtime CSS variables without a hand-copied palette', () => {
-    const story = readFileSync(resolve(process.cwd(), 'src/stories/Introduction.mdx'), 'utf8')
+    const story = readFileSync(baselineTokenStory, 'utf8')
 
     expect(story).not.toMatch(/#[0-9a-f]{6}/i)
     expect(story).toContain("['light', 'galaxy', 'paper', 'dark'].map")
@@ -185,7 +188,7 @@ describe('Storybook token documentation', () => {
   })
 
   it('documents typography and radius through runtime semantic variables only', () => {
-    const story = readFileSync(resolve(process.cwd(), 'src/stories/Introduction.mdx'), 'utf8')
+    const story = readFileSync(baselineTokenStory, 'utf8')
     const fontSection = story.match(/### Font Families([\s\S]*?)### Type Scale/)?.[1]
     const radiusSection = story.match(/## Border Radius([\s\S]*?)## Components/)?.[1]
 

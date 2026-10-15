@@ -90,7 +90,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   // 因而不具备 Radix 的 ESC 通道；写法与 `ClearProjectDataDialog` 的既有先例一致。
   // 用冒泡阶段 + 尊重 `defaultPrevented`：若上层 `ui/Dialog` 已用 capture 通道关闭自己，
   // 本次 ESC 不再连带关闭设置弹窗。
-  // ⚠️ 基线同文件无此段（上游待修）；同步上游时需保留。
+  // 注意：基线同文件无此段（上游待修）；同步上游时需保留。
   useEffect(() => {
     if (!open) return
     const handleKeyDown = (event: KeyboardEvent) => {
