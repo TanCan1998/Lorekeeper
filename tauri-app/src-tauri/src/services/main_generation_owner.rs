@@ -1591,8 +1591,8 @@ impl MainGenerationOwner {
         }
         let output_contract =
             generation_output_contract(selection).map_err(|error| mutating_error(&error))?;
-        // 专属准入尚未接入；只开放普通根运行，已有 Agent 子代仍可在前面幂等读回。
-        if agent_initialization {
+        // Agent 初始化只能由内部 AgentHost 进入；普通 IPC 的拒绝守卫保留。
+        if agent_initialization && operation != "agent-round" {
             return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
         }
         if ["importSlot", "importExecution"]
@@ -1869,6 +1869,17 @@ impl MainGenerationOwner {
         let assert_current = || self.assert_current();
         let agent = self.agent_service(conn, &assert_current)?;
         agent.execute_round(request)
+    }
+
+    /// 冻结轮次准备计划；仅 Agent 频道内部使用，普通 execute 仍拒绝 Agent 准入。
+    pub(crate) fn prepare_agent_round(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<crate::services::agent_generation::PreparedAgentRound, String> {
+        let assert_current = || self.assert_current();
+        self.agent_service(conn, &assert_current)?
+            .prepare_execute_round(request)
     }
 
     /// 基线 `owner.agents.claimTool(request)`
@@ -6737,10 +6748,8 @@ mod tests {
     // ── 子波次 B：begin agent 初始化路径 / execute 回归 ──────
 
     #[test]
-    fn begin_agent_initialization_allows_agent_keys() {
-        // 基线 :357——agentInitialization 时 agentInput /
-        // agentSession 条件键放行（形状校验通过后落到
-        // 专属 Agent 初始化尚未接入，形状校验通过后仍保守拒绝。
+    fn begin_agent_initialization_rejects_non_agent_operations() {
+        // 内部初始化标记只放行真正的 Agent 轮次，不能替其他领域豁免准入。
         let conn = Connection::open_in_memory().expect("memory db");
         crate::db::schema::create_tables(&conn).expect("schema");
         let owner = owner_with(&conn);
@@ -6755,7 +6764,7 @@ mod tests {
         });
         let error = owner
             .begin(&conn, &selection, false, true)
-            .expect_err("Agent 准入保持关闭");
+            .expect_err("Agent 初始化不得豁免非 Agent 操作的准入");
         assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
     }
 
@@ -6937,6 +6946,61 @@ mod tests {
             }
         }
 
+        fn for_agent(mut self) -> Self {
+            let (request, run) = {
+                let mut guard = self
+                    .state
+                    .generation_owners
+                    .authorized_owner_current(&self.session, || {
+                        self.state.active_project_snapshot()
+                    })
+                    .unwrap();
+                let owner = guard.owner();
+                self.state
+                    .with_project_db(|conn| {
+                        let recovery = owner.agent_begin(
+                            conn,
+                            &json!({
+                                "uiActionNonce":"production-agent-fixture", "modelId":"fixture",
+                                "input":{"mode":"fast","uiLocale":"zh-CN","historyMessages":[],
+                                    "userMessage":"合成 Agent 任务", "tools":[]}
+                            }),
+                        )?;
+                        let handle = serde_json::to_value(&recovery.handle).unwrap();
+                        let run = owner.repository.get(conn, &recovery.handle.run_id)?;
+                        Ok((json!({"handle":handle,"index":0}), run))
+                    })
+                    .unwrap()
+            };
+            self.request = request;
+            self.run = run;
+            self
+        }
+
+        fn start_agent(
+            &self,
+        ) -> (
+            std::thread::JoinHandle<()>,
+            std::sync::mpsc::Receiver<Result<Value, String>>,
+        ) {
+            let state = self.state.clone();
+            let session = self.session.clone();
+            let request = self.request.clone();
+            let (done, result) = std::sync::mpsc::channel();
+            let execution = std::thread::spawn(move || {
+                done.send(crate::commands::generation::execute_agent_round_for_state(
+                    &state,
+                    &request,
+                    Some(&session),
+                ))
+                .unwrap();
+            });
+            self.started
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("Agent 真实执行路径开始分发");
+            (execution, result)
+        }
+
         fn start(
             &self,
         ) -> (
@@ -6960,6 +7024,219 @@ mod tests {
                 .expect("真实执行路径开始分发");
             (execution, result)
         }
+    }
+
+    #[test]
+    fn production_agent_round_releases_business_locks_and_unknown_replays_without_dispatch_test() {
+        let fixture = ProductionExecutionFixture::new(false).for_agent();
+        let (execution, result) = fixture.start_agent();
+        let state = fixture.state.clone();
+        let session = fixture.session.clone();
+        let request = fixture.request.clone();
+        let (done, read_result) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn(move || {
+            done.send(crate::commands::generation::execute_agent_round_for_state(
+                &state,
+                &request,
+                Some(&session),
+            ))
+            .unwrap();
+        });
+        let replay = read_result.recv_timeout(std::time::Duration::from_secs(2));
+        // 断言前释放合成网络，失败路径也不遗留挂起线程。
+        fixture.release.notify_one();
+        reading.join().unwrap();
+        let replay = replay.expect("网络未结束时未知轮次重放必须完成").unwrap();
+        assert_eq!(replay["rounds"][0]["status"], "unknown");
+        let recovered = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        assert_eq!(recovered["rounds"][0]["visibleText"], "短锁合成正文");
+        assert!(matches!(
+            fixture.started.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?1",
+                        [&fixture.run.run_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                assert_eq!(count, 1);
+                Ok(())
+            })
+            .unwrap();
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_agent_round_pause_and_cancel_settle_before_state_change_test() {
+        for cancel in [false, true] {
+            let fixture = ProductionExecutionFixture::new(false).for_agent();
+            let (execution, result) = fixture.start_agent();
+            let state = fixture.state.clone();
+            let session = fixture.session.clone();
+            let handle = serde_json::from_value(handle_of(&fixture.run)).unwrap();
+            let (done, stopped) = std::sync::mpsc::channel();
+            let stopping = std::thread::spawn(move || {
+                done.send(crate::commands::generation::stop_generation_for_state(
+                    &state,
+                    &handle,
+                    Some(&session),
+                    cancel,
+                ))
+                .unwrap();
+            });
+            let recovered = result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(recovered["rounds"][0]["visibleText"], "短锁合成正文");
+            stopped
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            execution.join().unwrap();
+            stopping.join().unwrap();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let run = GenerationRunRepository::default().get(conn, &fixture.run.run_id)?;
+                    assert_eq!(run.status, if cancel { "cancelled" } else { "paused" });
+                    let durable: bool = conn.query_row(
+                        "SELECT usage_receipt_json IS NOT NULL FROM generation_attempts WHERE run_id=?1",
+                        [&run.run_id], |row|row.get(0),
+                    ).map_err(|e|e.to_string())?;
+                    assert!(durable,"停止前必须持久结算");
+                    Ok(())
+                })
+                .unwrap();
+            assert!(fixture
+                .state
+                .generation_owners
+                .execution_controls
+                .lock()
+                .unwrap()
+                .is_empty());
+            fixture.state.close_project_database().unwrap();
+        }
+    }
+
+    #[test]
+    fn production_agent_round_close_rejects_late_delta_and_settles_original_connection_test() {
+        let fixture = ProductionExecutionFixture::new(true).for_agent();
+        let (execution, result) = fixture.start_agent();
+        let state = fixture.state.clone();
+        let (done, closed) = std::sync::mpsc::channel();
+        let closing = std::thread::spawn(move || {
+            done.send(state.close_project_database()).unwrap();
+        });
+        let recovered = result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered["rounds"][0]["visibleText"], "");
+        closed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        execution.join().unwrap();
+        closing.join().unwrap();
+        assert!(fixture.state.active_project_snapshot().is_none());
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        let path =
+            crate::db::project_database_path(std::path::Path::new(&fixture.session.project_path));
+        let conn = Connection::open(path).unwrap();
+        let run = GenerationRunRepository::default()
+            .get(&conn, &fixture.run.run_id)
+            .unwrap();
+        assert_eq!(run.status, "paused");
+        let durable: bool = conn
+            .query_row(
+                "SELECT usage_receipt_json IS NOT NULL FROM generation_attempts WHERE run_id=?1",
+                [&run.run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(durable);
+        assert!(matches!(
+            fixture.started.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn production_agent_round_identity_and_index_fail_without_attempt_or_control_test() {
+        let fixture = ProductionExecutionFixture::new(false).for_agent();
+        let mut invalid = fixture.request.clone();
+        invalid["handle"]["rootActionId"] = json!("tampered-agent-root");
+        invalid["index"] = json!(8);
+        let error = crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &invalid,
+            Some(&fixture.session),
+        )
+        .unwrap_err();
+        assert_eq!(error, mutating_error("GENERATION_AGENT_IDENTITY_MISMATCH"));
+        invalid["handle"] = fixture.request["handle"].clone();
+        assert_eq!(
+            crate::commands::generation::execute_agent_round_for_state(
+                &fixture.state,
+                &invalid,
+                Some(&fixture.session),
+            )
+            .unwrap_err(),
+            mutating_error("GENERATION_AGENT_ROUND_INVALID")
+        );
+        let mut stale = fixture.session.clone();
+        stale.lease_id = "stale-agent-session".into();
+        assert!(crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &fixture.request,
+            Some(&stale),
+        )
+        .is_err());
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM generation_attempts", [], |r| r.get(0))
+                    .map_err(|e| e.to_string())?;
+                assert_eq!(count, 0);
+                Ok(())
+            })
+            .unwrap();
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            fixture.started.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        fixture.state.close_project_database().unwrap();
     }
 
     #[test]

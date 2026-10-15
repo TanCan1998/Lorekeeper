@@ -135,9 +135,7 @@ pub async fn agent_generation_resume(
 /// messages 后 host.execute 派发 LLM（基线
 /// `owner.agents.executeRound(request)`，controller:227）。
 ///
-/// ⚠️ 本波占位：owner 主体依赖 LLM 双阶段执行循环迁移，
-/// 当前 fail-closed 于 `GENERATION_AGENT_ROUND_UNMIGRATED`
-/// （迁移占位码、非基线码，经错误映射透传）。
+/// 准备与恢复读在短数据库回调中完成，网络阶段释放业务锁；关闭等待最终结算。
 #[tauri::command]
 pub async fn agent_generation_round(
     state: State<'_, AppState>,
@@ -145,10 +143,13 @@ pub async fn agent_generation_round(
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
-    let cache = &state.generation_owners;
-    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
-    let owner = guard.owner();
-    state.with_project_db(|conn| domain_result(owner.agent_round(conn, &request)))
+    tokio::task::block_in_place(|| {
+        crate::commands::generation::execute_agent_round_for_state(
+            state,
+            &request,
+            project_session.as_ref(),
+        )
+    })
 }
 
 /// `agent-generation:claim-tool` —— 作者认领工具调用：

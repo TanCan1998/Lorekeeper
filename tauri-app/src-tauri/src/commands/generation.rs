@@ -144,7 +144,7 @@ struct GenerationExecutionDatabase<'a> {
 }
 
 impl GenerationExecutionDatabase<'_> {
-    fn with_owner_connection<T>(
+    fn with_authorized_connection<T>(
         &self,
         action: impl FnOnce(&mut MainGenerationOwner, &Connection) -> Result<T, String>,
     ) -> Result<T, String> {
@@ -173,8 +173,16 @@ impl GenerationExecutionDatabase<'_> {
         }
         let conn = database.connection();
         let owner = guard.owner();
-        owner.require_run(conn, &self.handle, true)?;
         action(owner, conn)
+    }
+    fn with_owner_connection<T>(
+        &self,
+        action: impl FnOnce(&mut MainGenerationOwner, &Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with_authorized_connection(|owner, conn| {
+            owner.require_run(conn, &self.handle, true)?;
+            action(owner, conn)
+        })
     }
 }
 
@@ -227,6 +235,71 @@ pub(crate) fn execute_generation_for_state(
     });
     drop(execution);
     outcome
+}
+enum PreparedAgentStateExecution<'a> {
+    Replay(Value),
+    Execute {
+        handle: Value,
+        execution: ControlledGenerationExecution<'a>,
+    },
+}
+
+/// Agent 轮次复用普通生成的短连接认证、中止控制和结算退出顺序。
+pub(crate) fn execute_agent_round_for_state(
+    state: &AppState,
+    request: &Value,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    use crate::services::agent_generation::PreparedAgentRound;
+    let session = session.ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    let origin = GenerationExecutionDatabase {
+        state,
+        session,
+        handle: request.get("handle").cloned().unwrap_or(Value::Null),
+    };
+    // 初始段由 Agent 自身认证完整句柄，保留其身份/重放合同与错误码；
+    // 一旦准备执行，每次短回调均认证实际轮次句柄，而非最初导航句柄。
+    let prepared = origin.with_authorized_connection(|owner, conn| {
+        let round = owner.prepare_agent_round(conn, request)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        match round {
+            PreparedAgentRound::Replay(recovery) => Ok(PreparedAgentStateExecution::Replay(
+                serde_json::to_value(recovery).map_err(|_| mutating_error("GENERATION_REQUEST_FAILED"))?,
+            )),
+            PreparedAgentRound::Execute(plan) => {
+                let handle = serde_json::to_value(&plan.handle)
+                    .map_err(|_| mutating_error("GENERATION_REQUEST_FAILED"))?;
+                let request = json!({"handle":handle, "invocationNonce":plan.invocation_nonce, "task":plan.task});
+                let prepared = owner.prepare_execution(conn, &request, true)?;
+                let control = state.generation_owners.register_execution_control(owner, conn, &handle)?;
+                Ok(PreparedAgentStateExecution::Execute {
+                    handle, execution: ControlledGenerationExecution { prepared, _control: control },
+                })
+            }
+        }
+    })?;
+    let (handle, execution) = match prepared {
+        PreparedAgentStateExecution::Replay(recovery) => return Ok(recovery),
+        PreparedAgentStateExecution::Execute { handle, execution } => (handle, execution),
+    };
+    let database = GenerationExecutionDatabase {
+        state,
+        session,
+        handle,
+    };
+    let result = execution
+        .prepared
+        .execute_blocking_with_database(&database)?;
+    let recovery = database.with_owner_connection(|owner, conn| {
+        owner.finish_prepared_execution(conn, &execution.prepared, &result)?;
+        let recovery = owner
+            .agent_read(conn, &database.handle)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        serde_json::to_value(recovery).map_err(|_| mutating_error("GENERATION_REQUEST_FAILED"))
+    });
+    // 与普通 execute 相同：准备对象退出后才通知停止/关闭等待者。
+    drop(execution);
+    recovery
 }
 
 /// 完整句柄认证的停止信号与持久暂停/取消之间，用围栏拒绝插入新执行。
