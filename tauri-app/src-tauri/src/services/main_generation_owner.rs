@@ -2659,23 +2659,8 @@ impl MainGenerationOwner {
         self.execute_inner(conn, &request, true)
     }
 
-    /// 基线 `bindMaterialDecision`（main-generation-owner.ts:646-665）：
-    /// 材料决策收据绑定到未启动运行的源清单。
-    ///
-    /// 本波次就位**准入与冲突校验面**（逐字对齐基线）：运行身份
-    /// （`require_run`，execution 语义）、操作准入（:649-651，仅
-    /// 审稿 / 精修类操作可绑定）→ `GENERATION_MATERIAL_DECISION_INVALID`、
-    /// 幂等重放与冲突检测（:652-656，已绑定且逐字段一致 → 返回运行
-    /// 视图；已绑定但不一致 → `GENERATION_MATERIAL_DECISION_CONFLICT`）。
-    ///
-    /// ⚠️ 诚实化占位（B3 波次说明）：基线 :657-664 的候选绑定重建
-    /// （`deps.rebuildBinding`——`rebuild_generation_source_binding`
-    /// 逻辑层 G4-6a 已就位，但其 `GenerationSourceBindingDependencies`
-    /// 的 `readBuiltinPrompt` 依赖 electron/src/services/
-    /// builtin-prompt-templates.ts 的 1506 行内置提示词模板库，尚未
-    /// 移植到 Rust 侧）与投影比对 / `replaceUnstartedBinding` 持久化
-    /// 随该模板库迁移波次补齐。影响面：首次绑定收到「尚未迁移」
-    /// 拒绝；重复绑定（幂等）与冲突分支的行为与基线逐字一致。
+    /// 基线 bindMaterialDecision：只给审稿/精修的未启动运行绑定冻结材料收据。
+    /// 真实模型和来源重建后，除材料字段及其上下文哈希外的投影必须完全一致。
     pub fn bind_material_decision(
         &self,
         conn: &Connection,
@@ -2683,30 +2668,42 @@ impl MainGenerationOwner {
         material_decision: &Value,
     ) -> Result<Value, String> {
         let run = self.require_run(conn, handle, true)?;
-        // 基线 :649-651：仅审稿 / 精修类操作可绑定材料决策。
         let operation = run
             .binding
             .source_manifest
             .get("operation")
             .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if !["review-chapter", "refine-draft", "refine-from-review"].contains(&operation.as_str()) {
+            .unwrap_or_default();
+        if !["review-chapter", "refine-draft", "refine-from-review"].contains(&operation) {
             return Err(mutating_error("GENERATION_MATERIAL_DECISION_INVALID"));
         }
-        // 基线 :652-656：已绑定 → 逐字段一致幂等返回视图，否则冲突。
         if let Some(existing) = run.binding.source_manifest.get("materialDecision") {
             if existing != material_decision {
                 return Err(mutating_error("GENERATION_MATERIAL_DECISION_CONFLICT"));
             }
             return self.view_of(conn, &run);
         }
-        // ⚠️ B3 占位：基线 :657-664 的候选绑定重建（依赖内置提示词
-        // 模板库）/ 投影比对 / replaceUnstartedBinding 持久化未迁移——
-        // 重建点 fail-closed（命令层收敛为 `GENERATION_REQUEST_FAILED`）。
-        Err(mutating_error(
-            "材料决策绑定尚未迁移：内置提示词模板库（builtin-prompt-templates）待后续批次移植",
-        ))
+        // null 不能经 Option<Value> 被当成没有材料收据而悄悄成功。
+        if !material_decision.is_object() {
+            return Err(mutating_error("GENERATION_MATERIAL_DECISION_INVALID"));
+        }
+        // 仓储替换自建事务；尚未接入外层保存点时显式拒绝，避免半次绑定。
+        if !conn.is_autocommit() {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        let mut proposed = run.binding.clone();
+        proposed
+            .source_manifest
+            .insert("materialDecision".to_string(), material_decision.clone());
+        let candidate = self.rebuild_binding(conn, &proposed)?;
+        if material_decision_projection(&run.binding) != material_decision_projection(&candidate) {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        let bound = self
+            .repository
+            .replace_unstarted_binding(conn, &run.run_id, &run.binding, &candidate)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.view_of(conn, &bound)
     }
 
     /// 基线 `resume`（运行恢复重分发，main-generation-owner.ts:625-646）。
@@ -4315,6 +4312,19 @@ fn text_hash(text: &str) -> String {
 /// `contextSnapshotHash` 本就被排除）、`sources` 剔除
 /// `draft:` / `finalized:` 前缀（+ `excludeKnowledge`
 /// 时 `kb:` 前缀与 `knowledge-selection`）。
+/// 材料绑定允许改变上下文材料身份，不允许重写任何既有事实来源或模型合同。
+fn material_decision_projection(binding: &RunBinding) -> Value {
+    let mut manifest = binding.source_manifest.clone();
+    manifest.remove("materialDecision");
+    manifest.remove("materialDecisionHash");
+    let mut fingerprint = serde_json::to_value(&binding.fingerprint).expect("运行指纹可序列化");
+    fingerprint
+        .as_object_mut()
+        .expect("运行指纹为对象")
+        .remove("contextSnapshotHash");
+    json!({"manifest":manifest,"fingerprint":fingerprint,"sources":binding.source_refs})
+}
+
 fn preparation_projection(binding: &RunBinding, exclude_knowledge: bool) -> Value {
     let manifest_excluded: &[&str] = if exclude_knowledge {
         &PREPARATION_MANIFEST_EXCLUDED_WITH_KNOWLEDGE
@@ -5796,6 +5806,306 @@ mod tests {
             )
             .unwrap();
         (temp, conn, owner, run)
+    }
+
+    fn material_binding_fixture(
+        operation: &str,
+    ) -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        DurableGenerationRun,
+    ) {
+        let (temp, conn, owner, ordinary) = source_owner_fixture();
+        // 仅构造合成领域运行；不通过测试开放生产 review begin 守卫。
+        let mut source = ordinary.binding.clone();
+        source
+            .source_manifest
+            .insert("operation".to_string(), json!(operation));
+        let binding = owner.rebuild_binding(&conn, &source).unwrap();
+        let policy = crate::services::main_generation_plan::read_main_generation_policy(
+            binding.source_manifest.get("policy").unwrap(),
+        )
+        .unwrap();
+        let run = owner
+            .repository
+            .open(
+                &conn,
+                &OpenGenerationRunRequest {
+                    project_id: binding.project_id,
+                    epoch: binding.epoch,
+                    fingerprint: binding.fingerprint,
+                    context_snapshot_id: binding.context_snapshot_id,
+                    source_manifest: binding.source_manifest,
+                    source_refs: binding.source_refs,
+                    operation: operation.to_string(),
+                    ui_action_nonce: format!("material-{operation}"),
+                    frozen_input_hash: fake_content_hash(),
+                    budget: policy.budget,
+                    parent_root_action_id: None,
+                },
+            )
+            .unwrap();
+        (temp, conn, owner, run)
+    }
+
+    fn material_binding_receipt() -> Value {
+        json!({"version":1,"verdict":"admitted","promptHash":"a".repeat(64),
+            "capacity":{"maxInputUnits":1000,"methodVersion":"utf8-bytes-v1","admittedUnits":0},
+            "coverage":{"required":0,"included":0,"complete":true},"included":[],"omitted":[]})
+    }
+
+    #[test]
+    fn material_binding_rebuilds_three_operations_without_dispatch_and_replays_test() {
+        for operation in ["review-chapter", "refine-draft", "refine-from-review"] {
+            let (_temp, conn, owner, run) = material_binding_fixture(operation);
+            let receipt = material_binding_receipt();
+            let view = owner
+                .bind_material_decision(&conn, &handle_of(&run), &receipt)
+                .unwrap();
+            assert_eq!(view["handle"], handle_of(&run));
+            let bound = owner.repository.get(&conn, &run.run_id).unwrap();
+            assert_eq!(
+                bound.binding.source_manifest.get("materialDecision"),
+                Some(&receipt)
+            );
+            assert!(bound
+                .binding
+                .source_manifest
+                .contains_key("materialDecisionHash"));
+            assert_ne!(
+                bound.binding.context_snapshot_id,
+                run.binding.context_snapshot_id
+            );
+            assert_eq!(
+                material_decision_projection(&bound.binding),
+                material_decision_projection(&run.binding)
+            );
+            let changes = conn.total_changes();
+            owner
+                .bind_material_decision(&conn, &handle_of(&run), &receipt)
+                .unwrap();
+            assert_eq!(conn.total_changes(), changes);
+            let mut conflict = receipt.clone();
+            conflict["promptHash"] = json!("b".repeat(64));
+            assert_eq!(
+                owner
+                    .bind_material_decision(&conn, &handle_of(&run), &conflict)
+                    .unwrap_err(),
+                mutating_error("GENERATION_MATERIAL_DECISION_CONFLICT")
+            );
+            assert!(owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .attempts
+                .is_empty());
+            assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+            let error = owner.prepare_execution(&conn,&json!({"handle":handle_of(&run),"invocationNonce":"material-guard",
+                "task":{"purpose":"brainstorm","output":"visible-text","messages":[{"role":"user","content":"合成材料请求"}]}}),false)
+                .err().unwrap();
+            assert_eq!(
+                error,
+                mutating_error("GENERATION_MATERIAL_PROMPT_UNVERIFIED")
+            );
+        }
+    }
+
+    #[test]
+    fn material_binding_projection_excludes_only_material_and_context_hash_test() {
+        let (_temp, _conn, _owner, run) = material_binding_fixture("review-chapter");
+        let original = material_decision_projection(&run.binding);
+        let mut allowed = run.binding.clone();
+        allowed
+            .source_manifest
+            .insert("materialDecision".to_string(), material_binding_receipt());
+        allowed
+            .source_manifest
+            .insert("materialDecisionHash".to_string(), json!("b".repeat(64)));
+        let mut fingerprint = serde_json::to_value(&allowed.fingerprint).unwrap();
+        fingerprint["contextSnapshotHash"] = json!("c".repeat(64));
+        allowed.fingerprint = serde_json::from_value(fingerprint).unwrap();
+        assert_eq!(material_decision_projection(&allowed), original);
+        for key in [
+            "policy",
+            "modelReceipt",
+            "outputContract",
+            "authorInputs",
+            "selectedDraftIds",
+        ] {
+            let mut changed = allowed.clone();
+            changed.source_manifest.insert(key.to_string(), Value::Null);
+            assert_ne!(
+                material_decision_projection(&changed),
+                original,
+                "不得忽略 {key}"
+            );
+        }
+        let mut changed = allowed.clone();
+        let mut fingerprint = serde_json::to_value(&changed.fingerprint).unwrap();
+        fingerprint["templateHash"] = json!("d".repeat(64));
+        changed.fingerprint = serde_json::from_value(fingerprint).unwrap();
+        assert_ne!(material_decision_projection(&changed), original);
+    }
+
+    #[test]
+    fn material_binding_source_and_model_drift_preserve_original_binding_test() {
+        for drift in ["source", "model", "missing-model"] {
+            let (_temp, conn, owner, run) = material_binding_fixture("review-chapter");
+            match drift {
+                "source" => {
+                    crate::repositories::project_core_repository::update(
+                        &conn,
+                        json!({"globalGuidance":"变更后的合成事实"})
+                            .as_object()
+                            .unwrap(),
+                    )
+                    .unwrap();
+                }
+                "model" => {
+                    let mut model = crate::services::main_generation_sources::tests::model();
+                    model["modelName"] = json!("changed-fixture");
+                    crate::services::main_generation_sources::tests::write_model(
+                        &owner.global_data_root,
+                        &model,
+                    );
+                }
+                _ => {
+                    std::fs::write(
+                        crate::app_paths::models_config_path_at(&owner.global_data_root),
+                        "[]",
+                    )
+                    .unwrap();
+                }
+            }
+            let error = owner
+                .bind_material_decision(&conn, &handle_of(&run), &material_binding_receipt())
+                .unwrap_err();
+            assert_eq!(
+                error,
+                mutating_error(if drift == "missing-model" {
+                    "GENERATION_MODEL_MISSING"
+                } else {
+                    "GENERATION_SOURCE_CHANGED"
+                })
+            );
+            assert_eq!(
+                owner.repository.get(&conn, &run.run_id).unwrap().binding,
+                run.binding
+            );
+            assert!(owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .attempts
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn material_binding_rejects_invalid_receipt_wrong_domain_and_started_run_test() {
+        let (_temp, conn, owner, run) = material_binding_fixture("review-chapter");
+        for bad in [
+            Value::Null,
+            json!({}),
+            json!({"version":1}),
+            json!({"unexpected":true}),
+        ] {
+            assert_eq!(
+                owner
+                    .bind_material_decision(&conn, &handle_of(&run), &bad)
+                    .unwrap_err(),
+                mutating_error("GENERATION_MATERIAL_DECISION_INVALID")
+            );
+            assert_eq!(
+                owner.repository.get(&conn, &run.run_id).unwrap().binding,
+                run.binding
+            );
+        }
+        owner
+            .repository
+            .reserve(
+                &conn,
+                &run.run_id,
+                "already-started",
+                &fake_content_hash(),
+                100,
+                10,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            owner
+                .bind_material_decision(&conn, &handle_of(&run), &material_binding_receipt())
+                .unwrap_err(),
+            mutating_error("GENERATION_MATERIAL_DECISION_TOO_LATE")
+        );
+        assert_eq!(
+            owner.repository.get(&conn, &run.run_id).unwrap().binding,
+            run.binding
+        );
+        let (_temp, conn, owner, ordinary) = source_owner_fixture();
+        assert_eq!(
+            owner
+                .bind_material_decision(&conn, &handle_of(&ordinary), &material_binding_receipt())
+                .unwrap_err(),
+            mutating_error("GENERATION_MATERIAL_DECISION_INVALID")
+        );
+    }
+
+    #[test]
+    fn material_binding_nested_guard_and_failed_update_remain_retryable_test() {
+        let (_temp, conn, owner, run) = material_binding_fixture("review-chapter");
+        let receipt = material_binding_receipt();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert_eq!(
+            owner
+                .bind_material_decision(&conn, &handle_of(&run), &receipt)
+                .unwrap_err(),
+            mutating_error(GENERATION_REQUEST_FAILED)
+        );
+        conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(
+            owner.repository.get(&conn, &run.run_id).unwrap().binding,
+            run.binding
+        );
+        conn.execute_batch("CREATE TRIGGER reject_material_binding BEFORE UPDATE OF binding_json ON generation_runs
+            BEGIN SELECT RAISE(ABORT,'synthetic-material-bind'); END;").unwrap();
+        assert!(owner
+            .bind_material_decision(&conn, &handle_of(&run), &receipt)
+            .is_err());
+        assert!(conn.is_autocommit());
+        assert_eq!(
+            owner.repository.get(&conn, &run.run_id).unwrap().binding,
+            run.binding
+        );
+        conn.execute_batch("DROP TRIGGER reject_material_binding;")
+            .unwrap();
+        owner
+            .bind_material_decision(&conn, &handle_of(&run), &receipt)
+            .unwrap();
+        assert_eq!(
+            owner
+                .repository
+                .get(&conn, &run.run_id)
+                .unwrap()
+                .binding
+                .source_manifest
+                .get("materialDecision"),
+            Some(&receipt)
+        );
+        // 只读的已绑定幂等重放可以借外层事务，不引入新的模型租约或写入。
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let changes = conn.total_changes();
+        owner
+            .bind_material_decision(&conn, &handle_of(&run), &receipt)
+            .unwrap();
+        assert_eq!(conn.total_changes(), changes);
+        conn.execute_batch("ROLLBACK").unwrap();
     }
 
     #[test]
