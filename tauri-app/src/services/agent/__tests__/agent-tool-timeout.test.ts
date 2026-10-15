@@ -316,4 +316,22 @@ describe('Agent tool timeout boundary', () => {
     expect(completed).toMatchObject({ status: 'failed' })
     expect(completed).not.toHaveProperty('commitState')
   })
+  it('工具同步抛错也释放外层取消监听，不留下失联的生命周期回调', async () => {
+    const controller = new AbortController()
+    const add = vi.spyOn(controller.signal, 'addEventListener')
+    const remove = vi.spyOn(controller.signal, 'removeEventListener')
+    toolRegistry.register({ name: 'precommit_failure_probe', description: '合成同步失败探针', source: 'builtin',
+      inputSchema: { type: 'object', properties: {} }, requiresConfirmation: false, isReadOnly: true,
+      execute: () => { throw new Error('合成同步失败') } })
+    const ui = callbacks()
+    await runAgentLoop('system', [], 'read', 'model', vi.fn()
+      .mockResolvedValueOnce('<tool_call>{"name":"precommit_failure_probe","arguments":{}}</tool_call>')
+      .mockResolvedValueOnce('done'), ui, controller.signal, context())
+    const listener = add.mock.calls.find(([event]) => event === 'abort')?.[1]
+    expect(listener).toBeDefined()
+    expect(remove).toHaveBeenCalledWith('abort', listener)
+    expect(ui.onToolCallComplete).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }))
+    add.mockRestore(); remove.mockRestore()
+  })
+
 })

@@ -273,4 +273,31 @@ describe('Agent GenerationRuntime boundary', () => {
     } finally { toolRegistry.unregister('synthetic_identity_probe') }
   })
 
+  it.each(['cancel', 'switch'] as const)('认领在途发生 %s 时不再调用工具实现，也不进入下一轮', async interruption => {
+    const execute = vi.fn(async () => ({ success: true, content: '不应执行' }))
+    toolRegistry.register({ name: 'synthetic_interruption_probe', description: '合成中断探针', source: 'builtin',
+      inputSchema: { type: 'object', properties: {} }, requiresConfirmation: false, isReadOnly: false, execute })
+    fixture.response = async () => '<tool_call>{"name":"synthetic_interruption_probe","arguments":{}}</tool_call>'
+    const original = fixture.invoke.getMockImplementation()!
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    fixture.invoke.mockImplementation(async (command, args) => {
+      const result = await original(command, args)
+      if (command === 'agent_generation_claim_tool') await pending
+      return result
+    })
+    const send = useAgentStore.getState().sendMessage('核对认领中断')
+    try {
+      await vi.waitFor(() => expect(calls('agent-generation:claim-tool')).toHaveLength(1))
+      if (interruption === 'cancel') await useAgentStore.getState().cancelGeneration()
+      else useProjectStore.setState({ currentProject: { ...project, sessionLease: 'different-lease' } })
+      release()
+      await send
+      expect(execute).not.toHaveBeenCalled()
+      expect(calls('agent-generation:round')).toHaveLength(1)
+      expect(useAgentStore.getState().generating).toBe(false)
+      if (interruption === 'cancel') expect(lastMessage()?.content).toContain('已停止生成')
+    } finally { release(); await send; toolRegistry.unregister('synthetic_interruption_probe') }
+  })
+
 })

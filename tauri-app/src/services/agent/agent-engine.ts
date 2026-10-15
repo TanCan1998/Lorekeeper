@@ -18,7 +18,7 @@ import {
   type ToolArtifact,
   createToolArtifact,
 } from './tool-registry'
-import { createAgentExecutionContext } from './tools/project-context'
+import { assertAgentProjectCurrent, createAgentExecutionContext } from './tools/project-context'
 import { writingLanguageText, type WritingLanguage } from '../../shared/writing-language'
 import type { FileWriteCommitState } from '../../shared/ipc-channels'
 import { parseAgentResponseProtocol, cleanAgentProtocolVisibleText } from '../../shared/agent-response-protocol'
@@ -390,6 +390,7 @@ async function runHostedAgentLoop(generate: LLMGenerateFn, callbacks: AgentEngin
   try {
     for (let roundIndex = 0; roundIndex < MAX_TOOL_ROUNDS; roundIndex++) {
       if (signal?.aborted) { done(); return }
+      if (context.projectSession) assertAgentProjectCurrent(context)
       const round = await generate([], context.selectedModelId ?? '')
       if (typeof round === 'string' || round.index !== roundIndex) throw new Error('GENERATION_AGENT_ROUND_MISMATCH')
       if (signal?.aborted) { done(); return }
@@ -517,13 +518,16 @@ async function executeToolWithTimeout(
 ): Promise<ToolResult> {
   const controller = new AbortController()
   const forwardAbort = () => controller.abort(outerSignal?.reason)
-  if (outerSignal?.aborted) forwardAbort()
-  else outerSignal?.addEventListener('abort', forwardAbort, { once: true })
+  if (outerSignal?.aborted) {
+    throw new Error(writingLanguageText(writingLanguage, '工具已在执行前取消。', 'The tool was cancelled before execution.'))
+  }
+  outerSignal?.addEventListener('abort', forwardAbort, { once: true })
   const toolContext = Object.freeze({ ...context, abortSignal: controller.signal })
-  const execution = executeFn(args, toolContext)
-
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
+    // 认领可以跨越异步等待；统一在真正调用工具前复验冻结会话。
+    if (context.projectSession) assertAgentProjectCurrent(context)
+    const execution = executeFn(args, toolContext)
     return await Promise.race([
       execution,
       new Promise<ToolResult>((_, reject) => {
