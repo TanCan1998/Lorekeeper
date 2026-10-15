@@ -2673,12 +2673,21 @@ impl GenerationRunRepository {
         conn: &Connection,
         run_id: &str,
     ) -> Result<bool, String> {
-        let attempts = self.query_attempt_json(conn, run_id)?;
-        Ok(attempts.iter().any(|attempt_json| {
-            parse_json::<PhysicalAttempt>(attempt_json)
-                .map(|attempt| attempt.status != "cancelled-before-dispatch")
-                .unwrap_or_default()
-        }))
+        // 此处必须按 run_id，而不是预算账本的 root_action_id：父根内其他子运行不算首稿。
+        let mut statement = conn
+            .prepare("SELECT attempt_json FROM generation_attempts WHERE run_id=? ORDER BY rowid")
+            .map_err(|error| error.to_string())?;
+        let attempts = statement
+            .query_map([run_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        for attempt_json in attempts {
+            let attempt: PhysicalAttempt =
+                parse_json(&attempt_json.map_err(|error| error.to_string())?)?;
+            if attempt.status != "cancelled-before-dispatch" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     // ---------------------------------------------------------------------
@@ -2939,6 +2948,24 @@ impl GenerationRunRepository {
                 return Err(GENERATION_INVOCATION_INVALID.to_string());
             }
             let run = self.get(tx, run_id)?;
+            // 短锁准备后可能有另一调用先完成预留：在同一事务内再次锁定“对账最先一次”。
+            if purpose == Some("chapter-draft-reconcile")
+                && run
+                    .binding
+                    .source_manifest
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    == Some("chapter-draft")
+                && run
+                    .binding
+                    .source_manifest
+                    .get("materialDecision")
+                    .and_then(|decision| decision.get("reconciliationPromptHash"))
+                    .is_some()
+                && self.has_non_cancelled_attempt(tx, run_id)?
+            {
+                return Err("GENERATION_MATERIAL_PROMPT_MISMATCH".to_string());
+            }
             let budget = self.budget(tx, &run.root_action_id)?;
             if run.status != "running" || budget.blocked_code.is_some() {
                 return Err(GENERATION_DISPATCH_BLOCKED.to_string());

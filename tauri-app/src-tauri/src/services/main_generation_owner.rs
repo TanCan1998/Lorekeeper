@@ -2073,6 +2073,7 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_MATERIAL_DECISION_REQUIRED"));
         }
+        let mut reconciliation_injected = false;
         if let Some(decision) = material_decision {
             // 派发前撤销不能让首稿哈希检查失效，也不能借父根其他运行绕过检查。
             let started = self
@@ -2081,6 +2082,17 @@ impl MainGenerationOwner {
                 .map_err(|error| mutating_error(map_generation_error(&error)))?;
             if decision.get("shortOutlinePromptHash").is_some() {
                 self.verify_short_outline_material(conn, &run, decision, &task)?;
+            } else if decision.get("reconciliationPromptHash").is_some() {
+                reconciliation_injected = self.verify_reconciliation_material(
+                    conn,
+                    &run,
+                    decision,
+                    &task,
+                    request
+                        .get("invocationNonce")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )?;
             } else {
                 verify_material_prompt(&run_operation, decision, &task, started)
                     .map_err(mutating_error)?;
@@ -2184,6 +2196,7 @@ impl MainGenerationOwner {
             &invocation_nonce,
             &request_hash,
             retry_attempt_id,
+            reconciliation_injected,
         )?;
         Ok(PreparedMainGenerationExecution {
             task,
@@ -2240,6 +2253,126 @@ impl MainGenerationOwner {
                 self.outcome_of(conn, receipt, &prepared.task)
             }
         }
+    }
+
+    /// 对账必须最先且只允许同 nonce 重放；首稿仅可增加已完成产物重算出的唯一块。
+    fn verify_reconciliation_material(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        decision: &Value,
+        task: &Value,
+        nonce: &str,
+    ) -> Result<bool, String> {
+        let mismatch = || mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH");
+        if run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            != Some("chapter-draft")
+        {
+            return Err(mismatch());
+        }
+        let purpose = task
+            .get("purpose")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if purpose == DRAFT_SHORT_OUTLINE_PURPOSE {
+            return Err(mismatch());
+        }
+        let view = self
+            .repository
+            .read_run_view(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let prior: Vec<_> = view
+            .attempts
+            .iter()
+            .filter(|item| {
+                item.receipt.run.run_id == run.run_id
+                    && item.receipt.attempt.status != "cancelled-before-dispatch"
+            })
+            .collect();
+        let messages = task
+            .get("messages")
+            .and_then(Value::as_array)
+            .ok_or_else(mismatch)?;
+        let users: Vec<_> = messages
+            .iter()
+            .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+            .filter_map(|message| message.get("content").and_then(Value::as_str))
+            .collect();
+        if purpose == DRAFT_RECONCILE_PURPOSE {
+            let replay = if prior.len() == 1 {
+                let original: String = conn
+                    .query_row(
+                        "SELECT invocation_nonce FROM generation_attempts WHERE attempt_id=?1",
+                        [&prior[0].receipt.attempt.attempt_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+                original == nonce
+            } else {
+                false
+            };
+            if !prior.is_empty() && !replay
+                || users.len() != 1
+                || Some(text_hash(users[0]).as_str())
+                    != decision
+                        .get("reconciliationPromptHash")
+                        .and_then(Value::as_str)
+            {
+                return Err(mismatch());
+            }
+            return Ok(false);
+        }
+        let only_reconciled = !prior.is_empty()
+            && prior
+                .iter()
+                .all(|item| item.usage.purpose.as_deref() == Some(DRAFT_RECONCILE_PURPOSE));
+        if prior.is_empty() || only_reconciled {
+            if purpose != "chapter-draft" || users.len() != 1 {
+                return Err(mismatch());
+            }
+            let hash = decision
+                .get("promptHash")
+                .and_then(Value::as_str)
+                .ok_or_else(mismatch)?;
+            if text_hash(users[0]) == hash {
+                return Ok(false);
+            }
+            let output = prior
+                .iter()
+                .rev()
+                .find_map(|item| {
+                    let receipt = &item.receipt;
+                    if receipt.failure_code.is_none()
+                        && receipt
+                            .result
+                            .as_ref()
+                            .and_then(|result| result.finish_reason.as_deref())
+                            == Some("stop")
+                    {
+                        receipt
+                            .artifact
+                            .as_ref()
+                            .map(|artifact| artifact.text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(mismatch)?;
+            let original = crate::services::draft_reconciliation::strip_draft_reconciliation_block(
+                users[0], output,
+            )
+            .ok_or_else(mismatch)?;
+            if text_hash(&original) != hash {
+                return Err(mismatch());
+            }
+            return Ok(true);
+        }
+        // 已有正文后的后续调用沿用基线；不把对账当作作者事实，也不改写消息合同。
+        Ok(false)
     }
 
     /// 短细纲只从当前运行的持久化完成收据重建，不能由渲染层指定输出。
@@ -2332,6 +2465,7 @@ impl MainGenerationOwner {
         invocation_nonce: &str,
         request_hash: &str,
         retry_attempt_id: Option<&str>,
+        reconciliation_injected: bool,
     ) -> Result<PreparedExecutionPlan, String> {
         // 基线 :607-610——幂等读回（`findInvocation`）：已结算且不处于
         // 在途状态（`dispatch-marked` / `reserved`）的调用重放既有收据。
@@ -2436,7 +2570,11 @@ impl MainGenerationOwner {
             .is_some_and(|slot| !slot.is_null())
             || manifest
                 .get("materialDecision")
-                .and_then(|decision| decision.get("shortOutlinePromptHash"))
+                .and_then(|decision| {
+                    decision
+                        .get("shortOutlinePromptHash")
+                        .or_else(|| decision.get("reconciliationPromptHash"))
+                })
                 .is_some()
             || self
                 .repository
@@ -2460,7 +2598,7 @@ impl MainGenerationOwner {
                 .map(Self::task_budget_decision_value),
             agent_tool_names,
             replay_task: replay_task.then(|| task.clone()),
-            reconciliation_injected: false,
+            reconciliation_injected,
         };
         Ok(PreparedExecutionPlan::Dispatch(Box::new(execution_request)))
     }
@@ -6250,17 +6388,51 @@ mod tests {
         DurableGenerationRun,
         Value,
     ) {
+        material_preflight_fixture(true, None)
+    }
+
+    fn material_preflight_fixture(
+        short: bool,
+        base_url: Option<&str>,
+    ) -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        DurableGenerationRun,
+        Value,
+    ) {
         let (temp, conn, owner, _ordinary) = source_owner_fixture();
+        if let Some(url) = base_url {
+            let path = crate::app_paths::models_config_path_at(&owner.global_data_root);
+            let mut profiles: Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            profiles[0]["baseUrl"] = json!(url);
+            std::fs::write(&path, serde_json::to_string(&profiles).unwrap()).unwrap();
+        }
+        let purpose = if short {
+            DRAFT_SHORT_OUTLINE_PURPOSE
+        } else {
+            DRAFT_RECONCILE_PURPOSE
+        };
+        let prompt = if short {
+            "合成短细纲请求"
+        } else {
+            "合成对账请求"
+        };
         conn.execute(
             "INSERT INTO blueprints(chapter_number,title) VALUES (1,'合成蓝图')",
             [],
         )
         .unwrap();
-        let task = json!({"purpose":DRAFT_SHORT_OUTLINE_PURPOSE,"output":"visible-text","messages":[
-            {"role":"system","content":"合成语言与输出合同"},{"role":"user","content":"合成短细纲请求"}]});
+        let task = json!({"purpose":purpose,"output":"visible-text","messages":[
+            {"role":"system","content":"合成语言与输出合同"},{"role":"user","content":prompt}]});
         let mut decision = material_binding_receipt();
         decision["promptHash"] = json!(text_hash("合成原始材料"));
-        decision["shortOutlinePromptHash"] = json!(text_hash("合成短细纲请求"));
+        decision[if short {
+            "shortOutlinePromptHash"
+        } else {
+            "reconciliationPromptHash"
+        }] = json!(text_hash(prompt));
         decision["capacity"]["admittedUnits"] = json!(12);
         decision["coverage"] = json!({"required":1,"included":1,"complete":true});
         decision["included"] = json!([{"sourceId":"author:required","revision":1,"contentHash":text_hash("合成作者"),
@@ -6321,7 +6493,7 @@ mod tests {
                 100,
                 10,
                 None,
-                Some(DRAFT_SHORT_OUTLINE_PURPOSE),
+                task.get("purpose").and_then(Value::as_str),
                 Some(task),
                 None,
                 false,
@@ -6341,6 +6513,445 @@ mod tests {
             })).unwrap()), Some(finish.to_string()), None, None)
             .unwrap();
         id
+    }
+
+    const RECONCILIATION_FIXTURE_OUTPUT: &str = r#"{"finalState":["合成状态仍在等待条件"],"events":[{"event":"合成事件","conflict":false,"realization":"先呈现条件满足"}]}"#;
+
+    fn reserve_prepared_fixture(
+        conn: &Connection,
+        owner: &MainGenerationOwner,
+        prepared: &PreparedMainGenerationExecution,
+    ) -> Result<GenerationExecutionReceipt, String> {
+        let PreparedExecutionPlan::Dispatch(request) = &prepared.plan else {
+            panic!("必须是未分发准备")
+        };
+        owner.repository.reserve(
+            conn,
+            &request.run_id,
+            &request.invocation_nonce,
+            &request.request_hash,
+            request.reserved_tokens,
+            request.requested_output_tokens,
+            Some(&request.usage_policy),
+            request.purpose.as_deref(),
+            request.replay_task.as_ref(),
+            request.budget_decision.as_ref(),
+            request.reconciliation_injected,
+        )
+    }
+
+    #[test]
+    fn material_first_attempt_query_uses_run_scope_and_allows_later_prompt_test() {
+        let (_temp, conn, owner, run) = material_binding_fixture("review-chapter");
+        let mut decision = material_binding_receipt();
+        decision["promptHash"] = json!(text_hash("合成首个审稿提示"));
+        owner
+            .bind_material_decision(&conn, &handle_of(&run), &decision)
+            .unwrap();
+        let run = owner.repository.get(&conn, &run.run_id).unwrap();
+        owner
+            .repository
+            .pause(&conn, &run.root_action_id, false)
+            .unwrap();
+        owner.resume(&conn, &handle_of(&run)).unwrap();
+        let request = json!({"handle":handle_of(&run),"invocationNonce":"first-review","task":{"purpose":"review-chapter","output":"visible-text","messages":[{"role":"user","content":"合成首个审稿提示"}]}});
+        assert!(!owner
+            .repository
+            .has_non_cancelled_attempt(&conn, &run.run_id)
+            .unwrap());
+        let prepared = owner.prepare_execution(&conn, &request, false).unwrap();
+        reserve_prepared_fixture(&conn, &owner, &prepared).unwrap();
+        drop(prepared);
+        assert!(owner
+            .repository
+            .has_non_cancelled_attempt(&conn, &run.run_id)
+            .unwrap());
+        let mut later = request;
+        later["invocationNonce"] = json!("later-review");
+        later["task"]["messages"][0]["content"] = json!("合成后续审稿提示");
+        drop(owner.prepare_execution(&conn, &later, false).unwrap());
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn reconciliation_material_cannot_consume_parent_root_sibling_artifact_test() {
+        let (_temp, conn, owner, run, task) = material_preflight_fixture(false, None);
+        let binding = &run.binding;
+        // 仅仓储合成同父根运行，不开放生产 workflow 子代准入。
+        let sibling = owner
+            .repository
+            .open(
+                &conn,
+                &OpenGenerationRunRequest {
+                    project_id: binding.project_id.clone(),
+                    epoch: binding.epoch.clone(),
+                    fingerprint: binding.fingerprint.clone(),
+                    context_snapshot_id: binding.context_snapshot_id.clone(),
+                    source_manifest: binding.source_manifest.clone(),
+                    source_refs: binding.source_refs.clone(),
+                    operation: "chapter-draft".to_string(),
+                    ui_action_nonce: "synthetic-sibling".to_string(),
+                    frozen_input_hash: fake_content_hash(),
+                    budget: owner
+                        .repository
+                        .budget(&conn, &run.root_action_id)
+                        .unwrap()
+                        .policy,
+                    parent_root_action_id: Some(run.root_action_id.clone()),
+                },
+            )
+            .unwrap();
+        record_outline_attempt_fixture(
+            &conn,
+            &owner,
+            &sibling,
+            &task,
+            RECONCILIATION_FIXTURE_OUTPUT,
+            "stop",
+            "sibling-reconciliation",
+        );
+        assert!(!owner
+            .repository
+            .has_non_cancelled_attempt(&conn, &run.run_id)
+            .unwrap());
+        assert!(owner
+            .repository
+            .has_non_cancelled_attempt(&conn, &sibling.run_id)
+            .unwrap());
+        let block = crate::services::draft_reconciliation::draft_reconciliation_block(
+            false,
+            RECONCILIATION_FIXTURE_OUTPUT,
+        )
+        .unwrap();
+        let draft = json!({"purpose":"chapter-draft","output":"visible-text","messages":[{"role":"user","content":format!("合成原始材料\n\n{block}")}]});
+        let request = json!({"handle":handle_of(&run),"invocationNonce":"foreign-output-first-draft","task":draft});
+        assert_eq!(
+            owner
+                .prepare_execution(&conn, &request, false)
+                .err()
+                .unwrap(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+        );
+        let decision = run.binding.source_manifest.get("materialDecision").unwrap();
+        assert!(owner
+            .verify_reconciliation_material(
+                &conn,
+                &sibling,
+                decision,
+                &draft,
+                "same-run-first-draft"
+            )
+            .unwrap());
+        let first=owner.prepare_execution(&conn,&json!({"handle":handle_of(&run),"invocationNonce":"own-reconciliation","task":task}),false).unwrap();
+        reserve_prepared_fixture(&conn, &owner, &first).unwrap();
+        drop(first);
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            1
+        );
+        assert_eq!(
+            owner
+                .repository
+                .attempt_count(&conn, &sibling.run_id)
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn reconciliation_material_first_prompt_replay_and_preparation_race_test() {
+        let (_temp, conn, owner, run, task) = material_preflight_fixture(false, None);
+        let request =
+            json!({"handle":handle_of(&run),"invocationNonce":"first-reconciliation","task":task});
+        let first = owner.prepare_execution(&conn, &request, false).unwrap();
+        let mut other = request.clone();
+        other["invocationNonce"] = json!("different-reconciliation");
+        let second = owner.prepare_execution(&conn, &other, false).unwrap();
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            0
+        );
+        let receipt = reserve_prepared_fixture(&conn, &owner, &first).unwrap();
+        assert_eq!(
+            reserve_prepared_fixture(&conn, &owner, &second).unwrap_err(),
+            "GENERATION_MATERIAL_PROMPT_MISMATCH"
+        );
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            1
+        );
+        drop(first);
+        drop(second);
+        // 同 nonce、同任务重放仍走既有预留；不得产生第二次物理请求。
+        let replay = owner.prepare_execution(&conn, &request, false).unwrap();
+        assert_eq!(
+            reserve_prepared_fixture(&conn, &owner, &replay)
+                .unwrap()
+                .attempt
+                .attempt_id,
+            receipt.attempt.attempt_id
+        );
+        drop(replay);
+        assert_eq!(
+            owner.prepare_execution(&conn, &other, false).err().unwrap(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+        );
+        owner
+            .repository
+            .pause(&conn, &run.root_action_id, false)
+            .unwrap();
+        owner.resume(&conn, &handle_of(&run)).unwrap();
+        drop(owner.prepare_execution(&conn, &other, false).unwrap());
+        let mut wrong = other.clone();
+        wrong["task"]["messages"][1]["content"] = json!("篡改对账提示");
+        assert_eq!(
+            owner.prepare_execution(&conn, &wrong, false).err().unwrap(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+        );
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconciliation_material_reconstructs_exact_block_and_rejects_unfinished_or_forged_output_test(
+    ) {
+        for finish in ["stop", "length"] {
+            let (_temp, conn, owner, run, task) = material_preflight_fixture(false, None);
+            record_outline_attempt_fixture(
+                &conn,
+                &owner,
+                &run,
+                &task,
+                RECONCILIATION_FIXTURE_OUTPUT,
+                finish,
+                "first-reconciliation",
+            );
+            for english in [false, true] {
+                let block = crate::services::draft_reconciliation::draft_reconciliation_block(
+                    english,
+                    RECONCILIATION_FIXTURE_OUTPUT,
+                )
+                .unwrap();
+                let draft = json!({"purpose":"chapter-draft","output":"visible-text","messages":[{"role":"system","content":"合成语言与输出合同"},
+                    {"role":"user","content":format!("合成原始材料\n\n{block}")}]});
+                let request =
+                    json!({"handle":handle_of(&run),"invocationNonce":"first-draft","task":draft});
+                if finish == "stop" {
+                    let prepared = owner.prepare_execution(&conn, &request, false).unwrap();
+                    let PreparedExecutionPlan::Dispatch(plan) = &prepared.plan else {
+                        panic!("必须准备首稿")
+                    };
+                    assert!(plan.reconciliation_injected);
+                    assert_eq!(prepared.task, draft);
+                    drop(prepared);
+                } else {
+                    assert!(owner.prepare_execution(&conn, &request, false).is_err());
+                }
+                for prompt in [
+                    format!("合成原始材料\n\n{block}\n\n{block}"),
+                    format!("被替换的材料\n\n{block}"),
+                    format!(
+                        "合成原始材料\n\n{}",
+                        block.replace("先呈现条件满足", "伪造事实")
+                    ),
+                ] {
+                    let mut invalid = request.clone();
+                    invalid["task"]["messages"][1]["content"] = json!(prompt);
+                    assert_eq!(
+                        owner
+                            .prepare_execution(&conn, &invalid, false)
+                            .err()
+                            .unwrap(),
+                        mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+                    );
+                }
+                let mut plain = request.clone();
+                plain["task"]["messages"][1]["content"] = json!("合成原始材料");
+                let prepared = owner.prepare_execution(&conn, &plain, false).unwrap();
+                let PreparedExecutionPlan::Dispatch(plan) = &prepared.plan else {
+                    panic!("必须准备首稿")
+                };
+                assert!(!plan.reconciliation_injected);
+                drop(prepared);
+            }
+            assert_eq!(
+                owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+                1
+            );
+            assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn reconciliation_material_plain_draft_cannot_be_followed_by_late_reconciliation_test() {
+        let (_temp, conn, owner, run, task) = material_preflight_fixture(false, None);
+        let plain = json!({"purpose":"chapter-draft","output":"visible-text","messages":[{"role":"user","content":"合成原始材料"}]});
+        let prepared = owner
+            .prepare_execution(
+                &conn,
+                &json!({"handle":handle_of(&run),"invocationNonce":"first-draft","task":plain}),
+                false,
+            )
+            .unwrap();
+        reserve_prepared_fixture(&conn, &owner, &prepared).unwrap();
+        drop(prepared);
+        assert_eq!(owner.prepare_execution(&conn,&json!({"handle":handle_of(&run),"invocationNonce":"late-reconciliation","task":task}),false).err().unwrap(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH"));
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn reconciliation_material_real_http_preflight_completion_and_replay_test() {
+        use crate::services::generation_run_service::create_generation_run_service;
+        use crate::services::main_generation_dispatcher::{
+            tests::server_with_ready, MainGenerationDispatcher,
+        };
+        let body = r###"data: {"choices":[{"delta":{"content":"{\"finalState\":[\"合成状态仍在等待条件\"],\"events\":[{\"event\":\"合成事件\",\"conflict\":false,\"realization\":\"先呈现条件满足\"}]}"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+"###;
+        let (url, server) = server_with_ready(body, std::time::Duration::ZERO, None);
+        let (_temp, conn, mut owner, run, task) = material_preflight_fixture(false, Some(&url));
+        owner.run_service = Arc::new(create_generation_run_service(
+            MainGenerationOwner::dependencies_with_events(
+                owner.repository.clone(),
+                owner.events.clone(),
+                Arc::new(MainGenerationDispatcher::new(
+                    reqwest::Client::builder().no_proxy().build().unwrap(),
+                )),
+            ),
+        ));
+        let request =
+            json!({"handle":handle_of(&run),"invocationNonce":"http-preflight","task":task});
+        let outcome = owner.execute(&conn, &request).unwrap();
+        assert_eq!(outcome["outcome"]["content"], RECONCILIATION_FIXTURE_OUTPUT);
+        let sent = server.join().unwrap();
+        assert_eq!(sent["messages"], task["messages"]);
+        let raw: String = conn
+            .query_row(
+                "SELECT usage_receipt_json FROM generation_attempts WHERE run_id=?1",
+                [&run.run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let usage: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(usage["purpose"], DRAFT_RECONCILE_PURPOSE);
+        assert_eq!(usage["replayTask"], task);
+        let context = crate::commands::generation::read_recovery_context(
+            &conn,
+            &owner,
+            &run.binding.epoch,
+            &handle_of(&run),
+        )
+        .unwrap();
+        assert_eq!(
+            context["draftReconciliation"]["completedOutput"],
+            RECONCILIATION_FIXTURE_OUTPUT
+        );
+        assert_eq!(
+            context["draftReconciliation"]["artifactIds"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let replay = owner.execute(&conn, &request).unwrap();
+        assert_eq!(replay["outcome"]["content"], RECONCILIATION_FIXTURE_OUTPUT);
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            1
+        );
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconciliation_material_real_http_persists_only_verified_injection_and_restores_it_test() {
+        use crate::services::generation_run_service::create_generation_run_service;
+        use crate::services::main_generation_dispatcher::{
+            tests::server_with_ready, MainGenerationDispatcher,
+        };
+        for injected in [false, true] {
+            let (url,server)=server_with_ready("data: {\"choices\":[{\"delta\":{\"content\":\"HTTP合成首稿\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",std::time::Duration::ZERO,None);
+            let (_temp, conn, mut owner, run, task) = material_preflight_fixture(false, Some(&url));
+            owner.run_service = Arc::new(create_generation_run_service(
+                MainGenerationOwner::dependencies_with_events(
+                    owner.repository.clone(),
+                    owner.events.clone(),
+                    Arc::new(MainGenerationDispatcher::new(
+                        reqwest::Client::builder().no_proxy().build().unwrap(),
+                    )),
+                ),
+            ));
+            record_outline_attempt_fixture(
+                &conn,
+                &owner,
+                &run,
+                &task,
+                RECONCILIATION_FIXTURE_OUTPUT,
+                "stop",
+                "first-reconciliation",
+            );
+            let block = crate::services::draft_reconciliation::draft_reconciliation_block(
+                false,
+                RECONCILIATION_FIXTURE_OUTPUT,
+            )
+            .unwrap();
+            let prompt = if injected {
+                format!("合成原始材料\n\n{block}")
+            } else {
+                "合成原始材料".to_string()
+            };
+            let task = json!({"purpose":"chapter-draft","output":"visible-text","messages":[{"role":"system","content":"合成语言与输出合同"},{"role":"user","content":prompt}]});
+            let request = json!({"handle":handle_of(&run),"invocationNonce":"http-first-draft","reconciliationInjected":!injected,"task":task});
+            let outcome = owner.execute(&conn, &request).unwrap();
+            assert_eq!(outcome["outcome"]["content"], "HTTP合成首稿");
+            let sent = server.join().unwrap();
+            assert_eq!(sent["messages"], task["messages"]);
+            let raw:String=conn.query_row("SELECT usage_receipt_json FROM generation_attempts WHERE run_id=?1 AND invocation_nonce='http-first-draft'",[&run.run_id],|row|row.get(0)).unwrap();
+            let usage: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(
+                usage
+                    .get("reconciliationInjected")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                injected
+            );
+            let context = crate::commands::generation::read_recovery_context(
+                &conn,
+                &owner,
+                &run.binding.epoch,
+                &handle_of(&run),
+            )
+            .unwrap();
+            assert_eq!(
+                context["draftReconciliation"]["completedOutput"],
+                if injected {
+                    json!(RECONCILIATION_FIXTURE_OUTPUT)
+                } else {
+                    Value::Null
+                }
+            );
+            assert_eq!(
+                context["draftReconciliation"]["artifactIds"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let replay = owner.execute(&conn, &request).unwrap();
+            assert_eq!(replay["outcome"]["content"], "HTTP合成首稿");
+            assert_eq!(
+                owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+                2
+            );
+            assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        }
     }
 
     #[test]
