@@ -6471,6 +6471,324 @@ mod tests {
         }
     }
 
+    fn reopen_registered_workflow_fixture(
+        fixture: &ProductionExecutionFixture,
+    ) -> ProjectSessionContext {
+        use crate::services::generation_run_service::create_generation_run_service;
+        use crate::services::main_generation_dispatcher::MainGenerationDispatcher;
+        let (global, leases) = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            (
+                guard.owner().global_data_root.clone(),
+                guard.owner().lease_store.clone(),
+            )
+        };
+        fixture.state.close_project_database().unwrap();
+        assert!(!fixture.state.project_database_open());
+        assert_eq!(leases.lock().unwrap().live_lease_count(), 0);
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        let mut reopened = fixture.session.clone();
+        reopened.lease_id = "registered-workflow-reopened".to_string();
+        fixture
+            .state
+            .activate_project(ActiveProject {
+                project_id: reopened.project_id.clone(),
+                lease_id: reopened.lease_id.clone(),
+                root_path: reopened.project_path.clone(),
+            })
+            .unwrap();
+        {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&reopened, || fixture.state.active_project_snapshot())
+                .unwrap();
+            let owner = guard.owner();
+            owner.global_data_root = global;
+            owner.run_service = Arc::new(create_generation_run_service(
+                MainGenerationOwner::dependencies_with_events(
+                    owner.repository.clone(),
+                    owner.events.clone(),
+                    Arc::new(MainGenerationDispatcher::new(
+                        reqwest::Client::builder().no_proxy().build().unwrap(),
+                    )),
+                ),
+            ));
+        }
+        reopened
+    }
+
+    #[test]
+    fn registered_workflow_unstarted_child_reopens_same_identity_and_parent_claim_is_not_reexecuted_test(
+    ) {
+        let (fixture, ref_, selection, server) =
+            registered_draft_workflow_with_followup(Some("合成恢复草稿"));
+        let (child, parent, registration) = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let child = owner.begin(conn, &selection, false, false)?;
+                    let registration = owner.agent_register_workflow(conn, &ref_)?;
+                    let parent = serde_json::to_value(&registration.parent_handle).unwrap();
+                    Ok((child["handle"].clone(), parent, registration))
+                })
+                .unwrap()
+        };
+        let reopened = reopen_registered_workflow_fixture(&fixture);
+        let request = json!({"handle":child,"invocationNonce":"workflow-after-reopen",
+            "task":{"purpose":"chapter-draft","output":"visible-text",
+                "messages":[{"role":"user","content":"合成工作流正文提示"}]}});
+        assert!(crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &request,
+            Some(&fixture.session)
+        )
+        .is_err());
+        let resumed = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&reopened, || fixture.state.active_project_snapshot())
+                .unwrap();
+            let owner = guard.owner();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let resumed = owner.resume(conn, &child)?;
+                    assert_eq!(resumed["handle"]["runId"], child["runId"]);
+                    assert_eq!(resumed["handle"]["rootActionId"], child["rootActionId"]);
+                    assert_eq!(resumed["handle"]["epoch"], json!(reopened.lease_id));
+                    let recovery = owner.agent_resume(conn, &parent)?;
+                    let action = &recovery.rounds[0].actions[0];
+                    assert_eq!(action.status, "unknown");
+                    let stored = action.workflow.as_ref().unwrap();
+                    assert_eq!(stored.registration_id, registration.registration_id);
+                    assert_eq!(stored.child_handles, registration.child_handles);
+                    assert_eq!(recovery.handle.epoch, fixture.session.lease_id);
+                    assert!(
+                        !owner
+                            .agent_claim_tool(conn, &json!({"ref":ref_,"confirmed":true}))?
+                            .execute
+                    );
+                    assert!(owner.begin(conn, &selection, false, false).is_err());
+                    let budget = owner
+                        .repository
+                        .budget(conn, child["rootActionId"].as_str().unwrap())?;
+                    assert_eq!(budget.root.epoch, reopened.lease_id);
+                    assert_eq!(budget.attempts.len(), 1);
+                    assert_eq!(begin_run_count(conn), 3);
+                    assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+                    Ok(resumed["handle"].clone())
+                })
+                .unwrap()
+        };
+        let mut request = request;
+        request["handle"] = resumed;
+        let receipt = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &request,
+            Some(&reopened),
+        )
+        .unwrap();
+        assert_eq!(receipt["outcome"]["content"], "合成恢复草稿");
+        assert_eq!(server.join().unwrap().len(), 2);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_workflow_completed_child_requires_explicit_resume_then_only_replays_receipt_test()
+    {
+        let (fixture, ref_, selection, server) =
+            registered_draft_workflow_with_followup(Some("合成已完成草稿"));
+        let (child, parent) = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let child = guard.owner().begin(conn, &selection, false, false)?;
+                    let registration = guard.owner().agent_register_workflow(conn, &ref_)?;
+                    Ok((
+                        child["handle"].clone(),
+                        serde_json::to_value(registration.parent_handle).unwrap(),
+                    ))
+                })
+                .unwrap()
+        };
+        let request = json!({"handle":child,"invocationNonce":"workflow-completed-before-reopen",
+            "task":{"purpose":"chapter-draft","output":"visible-text",
+                "messages":[{"role":"user","content":"合成工作流正文提示"}]}});
+        let receipt = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert_eq!(server.join().unwrap().len(), 2);
+        let history=fixture.state.with_project_db(|conn|{
+            conn.query_row("SELECT r.binding_json,a.attempt_json,a.usage_receipt_json FROM generation_runs r
+                JOIN generation_attempts a USING(run_id) WHERE r.run_id=?",
+                [child["runId"].as_str().unwrap()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))
+                .map_err(|error|error.to_string())
+        }).unwrap();
+        let reopened = reopen_registered_workflow_fixture(&fixture);
+        // 普通草稿执行要求当前纪元；不能把 Agent 的历史只读重放豁免传给子运行。
+        assert_eq!(
+            crate::commands::generation::execute_generation_for_state(
+                &fixture.state,
+                &request,
+                Some(&reopened)
+            )
+            .unwrap_err(),
+            mutating_error("GENERATION_EPOCH_STALE")
+        );
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&reopened, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        let resumed=fixture.state.with_project_db(|conn|{
+            assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(),0);
+            let resumed=owner.resume(conn,&child)?;
+            assert_eq!(resumed["handle"]["runId"],child["runId"]);
+            assert_eq!(resumed["handle"]["epoch"],json!(reopened.lease_id));
+            let recovery=owner.agent_resume(conn,&parent)?;
+            assert_eq!(recovery.rounds[0].actions[0].status,"unknown");
+            let stored=recovery.rounds[0].actions[0].workflow.as_ref().unwrap();
+            assert_eq!(serde_json::to_value(&stored.child_handles[0]).unwrap(),child);
+            let current=conn.query_row("SELECT r.binding_json,a.attempt_json,a.usage_receipt_json FROM generation_runs r
+                JOIN generation_attempts a USING(run_id) WHERE r.run_id=?",
+                [child["runId"].as_str().unwrap()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))
+                .map_err(|error|error.to_string())?;
+            assert_eq!(current.1,history.1);
+            assert_eq!(current.2,history.2);
+            let original:Value=serde_json::from_str(&history.0).unwrap();
+            let updated:Value=serde_json::from_str(&current.0).unwrap();
+            assert_eq!(original["epoch"],json!(fixture.session.lease_id));
+            assert_eq!(updated["epoch"],json!(reopened.lease_id));
+            let budget=owner.repository.budget(conn,child["rootActionId"].as_str().unwrap())?;
+            assert_eq!(budget.attempts.len(),2);
+            assert_eq!(budget.root.epoch,reopened.lease_id);
+            assert_eq!(begin_run_count(conn),3);
+            assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(),1);
+            Ok(resumed["handle"].clone())
+        }).unwrap();
+        drop(guard);
+        let mut request = request;
+        request["handle"] = resumed;
+        // 服务端已经退出；显式恢复后同 nonce 只能重放，不得生成第三次物理调用。
+        let replay = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &request,
+            Some(&reopened),
+        )
+        .unwrap();
+        let mut actual = replay["outcome"].clone();
+        let mut expected = receipt["outcome"].clone();
+        // 暂停不消耗活动时长；deadlineAt 是恢复后的实时预算投影，不是冻结的尝试收据。
+        let actual_deadline = actual["receipt"]["budget"]
+            .as_object_mut()
+            .unwrap()
+            .remove("deadlineAt")
+            .unwrap();
+        let previous_deadline = expected["receipt"]["budget"]
+            .as_object_mut()
+            .unwrap()
+            .remove("deadlineAt")
+            .unwrap();
+        assert!(actual_deadline.as_i64().unwrap() >= previous_deadline.as_i64().unwrap());
+        assert_eq!(actual, expected);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_workflow_reopened_cancelled_or_source_changed_child_refuses_resume_without_lease_test(
+    ) {
+        for cancelled in [true, false] {
+            let (fixture, _ref, selection) = registered_draft_workflow_fixture();
+            let child = {
+                let mut guard = fixture
+                    .state
+                    .generation_owners
+                    .authorized_owner_current(&fixture.session, || {
+                        fixture.state.active_project_snapshot()
+                    })
+                    .unwrap();
+                fixture
+                    .state
+                    .with_project_db(|conn| {
+                        let child = guard.owner().begin(conn, &selection, false, false)?;
+                        if cancelled {
+                            guard.owner().cancel(conn, &child["handle"])?;
+                        } else {
+                            conn.execute(
+                                "UPDATE project_core SET genre='合成恢复来源漂移' WHERE id='main'",
+                                [],
+                            )
+                            .map_err(|error| error.to_string())?;
+                        }
+                        Ok(child["handle"].clone())
+                    })
+                    .unwrap()
+            };
+            let reopened = reopen_registered_workflow_fixture(&fixture);
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&reopened, || fixture.state.active_project_snapshot())
+                .unwrap();
+            let owner = guard.owner();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    assert!(owner.resume(conn, &child).is_err());
+                    let run = owner
+                        .repository
+                        .get(conn, child["runId"].as_str().unwrap())?;
+                    assert_eq!(run.binding.epoch, fixture.session.lease_id);
+                    let budget = owner.repository.budget(conn, &run.root_action_id)?;
+                    assert_eq!(
+                        budget.root.status,
+                        if cancelled { "cancelled" } else { "paused" }
+                    );
+                    assert_eq!(budget.root.epoch, fixture.session.lease_id);
+                    assert_eq!(budget.attempts.len(), 1);
+                    assert_eq!(begin_run_count(conn), 3);
+                    assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 0);
+                    Ok(())
+                })
+                .unwrap();
+            drop(guard);
+            fixture.state.close_project_database().unwrap();
+        }
+    }
+
     #[test]
     fn ordinary_restart_admits_new_root_before_cancelling_and_replays_identity_test() {
         let (_temp, conn, owner, old) = source_owner_fixture();
