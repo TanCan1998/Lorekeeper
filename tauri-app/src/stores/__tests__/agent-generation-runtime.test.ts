@@ -320,4 +320,80 @@ describe('Agent GenerationRuntime boundary', () => {
     } finally { release(); await send; toolRegistry.unregister('synthetic_interruption_probe') }
   })
 
+
+  it('取消在途模型轮次后不再请求新一轮，恢复只重放已保存轮次', async () => {
+    fixture.response = vi.fn(async () => '完成。')
+    const original = fixture.invoke.getMockImplementation()!
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    fixture.invoke.mockImplementation(async (command, args) => {
+      const result = await original(command, args)
+      if (command === 'agent_generation_round') await pending
+      return result
+    })
+    const send = useAgentStore.getState().sendMessage('检查项目')
+    try {
+      await vi.waitFor(() => expect(calls('agent-generation:round')).toHaveLength(1))
+      const handle = fixture.recovery.handle
+      await useAgentStore.getState().cancelGeneration()
+      release()
+      await send
+      expect(calls('generation:cancel')).toHaveLength(1)
+      expect(useAgentStore.getState().generating).toBe(false)
+      expect(lastMessage()?.content).toContain('已停止生成')
+      expect(lastMessage()?.mainGenerationHandle).toEqual(handle)
+      expect(fixture.response).toHaveBeenCalledOnce()
+      expect(calls('agent-generation:claim-tool')).toHaveLength(0)
+      expect(calls('agent-generation:finish-tool')).toHaveLength(0)
+      expect(fixture.recovery.rounds).toHaveLength(1)
+
+      // 恢复只重放主进程已保存的第 0 轮，不再请求模型，也不发起新一轮。
+      useAgentStore.getState().clearAll()
+      fixture.invoke.mockClear()
+      await useAgentStore.getState().resumeGeneration(handle)
+      expect(lastMessage()?.content).toBe('完成。')
+      expect(lastMessage()?.mainGenerationHandle).toEqual(handle)
+      expect(fixture.response).toHaveBeenCalledOnce()
+      for (const channel of ['agent-generation:begin', 'agent-generation:round', 'agent-generation:resume',
+        'agent-generation:claim-tool', 'agent-generation:finish-tool']) expect(calls(channel)).toHaveLength(0)
+    } finally { release(); await send }
+  })
+
+  it('在途取消后主进程记为 running 的已登记草稿，恢复只补导航不重新认领', async () => {
+    fixture.response = vi.fn(async () => '完成。')
+    const original = fixture.invoke.getMockImplementation()!
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    fixture.invoke.mockImplementation(async (command, args) => {
+      const result = await original(command, args)
+      if (command === 'agent_generation_round') await pending
+      return result
+    })
+    const send = useAgentStore.getState().sendMessage('检查项目')
+    try {
+      await vi.waitFor(() => expect(calls('agent-generation:round')).toHaveLength(1))
+      const handle = fixture.recovery.handle
+      await useAgentStore.getState().cancelGeneration()
+      release()
+      await send
+      expect(fixture.recovery.run.status).toBe('cancelled')
+
+      // 取消后主进程仍把在途工具记为 running，并保留已登记的草稿子代。
+      fixture.recovery.rounds[0].actions = [{ ref: { handle, attemptId: 'synthetic-attempt', toolCallId: 'synthetic-workflow-action' },
+        name: 'start_workflow', arguments: { workflow: 'generate_draft', chapter_number: 1 }, status: 'running',
+        workflow: { registrationId: 'synthetic-draft-registration', workflow: 'generate_draft', chapterNumber: 1,
+          parentHandle: handle, modelId: 'model-a', state: 'started', childHandles: [{ ...handle, runId: 'child-draft' }] } }]
+      fixture.recovery.nextRound = null
+      useAgentStore.getState().clearAll()
+      fixture.invoke.mockClear()
+      await useAgentStore.getState().resumeGeneration(handle)
+      expect(lastMessage()?.artifacts).toEqual([expect.objectContaining({ type: 'workflow_started',
+        runId: 'synthetic-draft-registration', projectPath: session.projectPath, projectSession: session })])
+      expect(lastMessage()?.toolCalls).toEqual([expect.objectContaining({ status: 'result_unknown' })])
+      expect(lastMessage()?.content).toContain('写入结果待确认')
+      expect(fixture.response).toHaveBeenCalledOnce()
+      for (const channel of ['agent-generation:round', 'agent-generation:resume',
+        'agent-generation:claim-tool', 'agent-generation:finish-tool']) expect(calls(channel)).toHaveLength(0)
+    } finally { release(); await send }
+  })
 })
