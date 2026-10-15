@@ -330,6 +330,7 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'finalized-character:read-context': ['request'],
   'finalized-character:read-state-candidate': ['request'],
   'finalized-character:decide-state-candidate': ['request'],
+  'finalized-character:commit': ['request'],
   // 批次 G4-9a：角色提案（character-proposal:* 6 频道 +
   // character-identity:read；单对象参数频道统一登记 request
   // ——位置参数整体映射为命名参数 request，对齐基线 handler

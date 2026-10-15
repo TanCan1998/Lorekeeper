@@ -1562,12 +1562,6 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
         }
-        if matches!(
-            operation,
-            "finalized-chapter-notes" | "finalized-character-state"
-        ) {
-            return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
-        }
         if GRAPH_OPERATIONS.contains(&operation) && !graph_admission {
             return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
         }
@@ -1649,12 +1643,6 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_IMPORT_SLOT_REQUIRED"));
         }
-        if selection
-            .get("finalizedCharacterContextId")
-            .is_some_and(|value| !value.is_null())
-        {
-            return Err(mutating_error("GENERATION_CHARACTER_CONTEXT_INVALID"));
-        }
         if crate::services::review_revision_context::REVIEW_REVISION_OPERATIONS.contains(&operation)
             || selection
                 .get("reviewRevisionContextId")
@@ -1709,7 +1697,14 @@ impl MainGenerationOwner {
                 return self.view_of(&tx, &run);
             }
         }
+        // 基线 :373 —— 定稿角色上下文准入（哈希随后进入源绑定）。
+        let finalized_character_context_hash = self
+            .admit_finalized_character(&tx, selection)
+            .map_err(|error| mutating_error(&error))?;
         let mut frozen_selection = selection.clone();
+        if let Some(hash) = &finalized_character_context_hash {
+            frozen_selection["finalizedCharacterContextHash"] = json!(hash);
+        }
         let scope = crate::services::main_generation_plan::planning_generation_scope(selection)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
         if let Some(scope) = &scope {
@@ -5261,7 +5256,7 @@ impl MainGenerationOwner {
 
     /// finalization-generation:begin 频道处理器
     pub fn begin_finalization_generation(
-        &self,
+        &mut self,
         conn: &Connection,
         request: &Value,
     ) -> Result<Value, String> {
@@ -5501,10 +5496,26 @@ impl MainGenerationOwner {
             "output": if character_step { "structured-data" } else { "visible-text" },
             "authorInputs": [{
                 "id": "finalized-character-context",
-                "text": serde_json::to_string(&prepared).unwrap_or_default()
+                "text": serde_json::to_string(&prepared.identity).unwrap_or_default()
             }],
             "finalizationGenerationSlot": slot,
         });
+        if character_step {
+            // 基线 finalization-generation.ts:1105-1112 —— 定稿角色上下文句柄由主进程签发
+            // 并进入 LRU 缓存；`admit` 随后按它校验并把哈希冻结进源绑定。
+            let context_id = crate::project_access::random_uuid_v4();
+            if self.finalized_character_contexts.len() >= FINALIZED_CHARACTER_CONTEXT_CAPACITY {
+                if let Some((oldest, _)) = self.finalized_character_contexts.first().cloned() {
+                    self.finalized_character_contexts
+                        .retain(|(id, _)| *id != oldest);
+                }
+            }
+            let context_value = serde_json::to_value(&prepared.identity)
+                .map_err(|error| mutating_error(&error.to_string()))?;
+            self.finalized_character_contexts
+                .push((context_id.clone(), context_value));
+            selection["finalizedCharacterContextId"] = json!(context_id);
+        }
         if let Some(parent) = derived_parent_root {
             selection["parentRootActionId"] = json!(parent);
         }
@@ -5659,6 +5670,11 @@ impl MainGenerationOwner {
         request: &Value,
     ) -> Result<Value, String> {
         self.assert_current()?;
+        // 基线 `commit` 在同一 `IMMEDIATE` 事务内完成校验、领域提交与效应落盘。
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|error| mutating_error(&error.to_string()))?;
+        let conn = &tx;
         let obj = request
             .as_object()
             .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
@@ -5794,14 +5810,67 @@ impl MainGenerationOwner {
                 })
             }
             crate::services::finalization_generation_source::FinalizationGenerationStep::CharacterCards => {
-                json!({
+                let proof =
+                    crate::services::finalized_character_proof::prove_finalized_character_generation(
+                        conn,
+                        &self.repository,
+                        &self.session.project_id,
+                        handle,
+                        artifact_val,
+                    )
+                    .map_err(|error| mutating_error(&error))?;
+                // transferOrigin 同步读取已验证的转移凭据，与本事务同属一次同步执行。
+                let origin = self.transfer_origin(conn)?;
+                let applied =
+                    crate::services::finalized_character_service::commit_finalized_character_states_in_transaction(
+                        conn,
+                        &proof.context,
+                        &proof.response_value,
+                        origin.as_deref(),
+                    )
+                    .map_err(|error| mutating_error(&error))?;
+                let unresolved = proof
+                    .response_value
+                    .get("unresolved")
+                    .cloned()
+                    .unwrap_or(Value::Array(Vec::new()));
+                let has_named_occurrence = unresolved.as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get("displayName")
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| !text.trim().is_empty())
+                    })
+                });
+                let proposal_batch_id = if has_named_occurrence {
+                    let proposals = self.character_proposal_service(conn);
+                    let batch = proposals
+                        .stage_in_transaction(&json!({
+                            "kind": "finalized-generation",
+                            "handle": &proof.current_handle,
+                            "artifact": &proof.artifact,
+                        }))
+                        .map_err(|error| mutating_error(&error))?;
+                    batch
+                        .get("proposalBatchId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                } else {
+                    None
+                };
+                let mut receipt = json!({
                     "success": true,
                     "stepKey": "character_cards",
-                    "applied": 0,
-                    "unchanged": 0,
-                    "candidates": [],
-                    "unresolved": []
-                })
+                });
+                if let (Some(map), Some(applied_map)) = (receipt.as_object_mut(), applied.as_object()) {
+                    for (key, value) in applied_map {
+                        map.insert(key.clone(), value.clone());
+                    }
+                    map.insert("unresolved".to_string(), unresolved);
+                    if let Some(batch_id) = proposal_batch_id {
+                        map.insert("proposalBatchId".to_string(), Value::String(batch_id));
+                    }
+                }
+                receipt
             }
         };
 
@@ -5838,6 +5907,8 @@ impl MainGenerationOwner {
         )
         .map_err(|e| mutating_error(&e.to_string()))?;
 
+        tx.commit()
+            .map_err(|error| mutating_error(&error.to_string()))?;
         Ok(receipt)
     }
 
@@ -6374,6 +6445,215 @@ impl MainGenerationOwner {
         self.assert_current()?;
         crate::services::finalized_character_service::decide_state_candidate(conn, request)
             .map_err(|error| mutating_error(&error))
+    }
+
+    /// 基线 `FinalizedCharacterGeneration.admit`（main-generation-owner.ts:373）：
+    /// 只有 `finalized-character-state` 操作可携带 `finalizedCharacterContextId`，
+    /// 且选择、作者输入与当前冻结事实必须与该上下文一致；通过后返回
+    /// `textHash(JSON.stringify(context))` 进入源绑定。
+    fn admit_finalized_character(
+        &self,
+        conn: &Connection,
+        selection: &Value,
+    ) -> Result<Option<String>, String> {
+        let operation = selection
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let context_id = selection
+            .get("finalizedCharacterContextId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
+        if operation != "finalized-character-state" {
+            if context_id.is_some() {
+                return Err("GENERATION_CHARACTER_CONTEXT_INVALID".to_string());
+            }
+            return Ok(None);
+        }
+        let context = context_id.and_then(|id| {
+            self.finalized_character_contexts
+                .iter()
+                .find(|(key, _)| key == id)
+                .map(|(_, value)| value.clone())
+        });
+        let Some(context) = context else {
+            return Err("GENERATION_CHARACTER_CONTEXT_REQUIRED".to_string());
+        };
+        let source = context.get("source").cloned().unwrap_or(Value::Null);
+        let structured = selection.get("output").and_then(Value::as_str) == Some("structured-data");
+        let chapter_matches = selection.get("chapterNumber").and_then(Value::as_i64)
+            == source.get("chapterNumber").and_then(Value::as_i64);
+        let selected_drafts = selection
+            .get("selectedDraftIds")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let selected_finalized = selection
+            .get("selectedFinalizedDraftIds")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let serialized_context = serde_json::to_string(&context).unwrap_or_default();
+        let author_input_matches = selection
+            .get("authorInputs")
+            .and_then(Value::as_array)
+            .and_then(|inputs| {
+                inputs.iter().find(|input| {
+                    input.get("id").and_then(Value::as_str) == Some("finalized-character-context")
+                })
+            })
+            .and_then(|input| input.get("text"))
+            .and_then(Value::as_str)
+            == Some(serialized_context.as_str());
+        if !structured
+            || !chapter_matches
+            || selected_drafts != json!([])
+            || selected_finalized != json!([source.get("draftId").cloned().unwrap_or(Value::Null)])
+            || !author_input_matches
+        {
+            return Err("GENERATION_CHARACTER_CONTEXT_REQUIRED".to_string());
+        }
+        let Some(draft_id) = source.get("draftId").and_then(Value::as_i64) else {
+            return Err("GENERATION_CHARACTER_CONTEXT_REQUIRED".to_string());
+        };
+        let scope = crate::repositories::generation_run_repository::ProjectEpoch {
+            project_id: self.session.project_id.clone(),
+            epoch: self.session.lease_id.clone(),
+        };
+        let current =
+            crate::services::finalization_generation_source::read_finalized_character_context(
+                conn, draft_id, &scope,
+            )?;
+        if serde_json::to_value(&current).ok() != Some(context) {
+            return Err("GENERATION_CHARACTER_CONTEXT_CHANGED".to_string());
+        }
+        Ok(Some(crate::services::finalization_generation::text_hash(
+            &serde_json::to_string(&current).unwrap_or_default(),
+        )))
+    }
+
+    /// `finalized-character:commit` 频道处理器（基线
+    /// `FinalizedCharacterGeneration.commit`，finalized-character-generation.ts:63-82）。
+    pub fn commit_finalized_character_states(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_CHARACTER_COMMIT_INVALID"))?;
+        if obj
+            .keys()
+            .any(|key| !["contextId", "handle", "artifact"].contains(&key.as_str()))
+        {
+            return Err(mutating_error("GENERATION_CHARACTER_COMMIT_INVALID"));
+        }
+        let context_id = obj
+            .get("contextId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_CHARACTER_COMMIT_INVALID"))?;
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_CHARACTER_COMMIT_INVALID"))?;
+        let artifact = obj
+            .get("artifact")
+            .ok_or_else(|| mutating_error("GENERATION_CHARACTER_COMMIT_INVALID"))?;
+        let run_id = handle
+            .get("runId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_CHARACTER_COMMIT_INVALID"))?;
+        let run = self
+            .repository
+            .get(conn, run_id)
+            .map_err(|error| mutating_error(&error.to_string()))?;
+        if run
+            .binding
+            .source_manifest
+            .get("finalizationGenerationContext")
+            .is_some()
+        {
+            return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
+        }
+        let handle_project = handle
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let handle_epoch = handle
+            .get("epoch")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let context = self
+            .finalized_character_contexts
+            .iter()
+            .find(|(key, _)| key == context_id)
+            .map(|(_, value)| value.clone())
+            .filter(|_| {
+                handle_project == self.session.project_id && handle_epoch == self.session.lease_id
+            });
+        let Some(context) = context else {
+            return Err(mutating_error("GENERATION_CHARACTER_CONTEXT_REQUIRED"));
+        };
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|error| mutating_error(&error.to_string()))?;
+        self.assert_sources_current(&tx, handle, None)?;
+        let proof =
+            crate::services::finalized_character_proof::prove_finalized_character_generation(
+                &tx,
+                &self.repository,
+                &self.session.project_id,
+                handle,
+                artifact,
+            )
+            .map_err(|error| mutating_error(&error))?;
+        if serde_json::to_value(&proof.context).ok() != Some(context) {
+            return Err(mutating_error("GENERATION_CHARACTER_CONTEXT_MISMATCH"));
+        }
+        let origin = self.transfer_origin(&tx)?;
+        let receipt = crate::services::finalized_character_service::commit_finalized_character_states_in_transaction(
+            &tx,
+            &proof.context,
+            &proof.response_value,
+            origin.as_deref(),
+        )
+        .map_err(|error| mutating_error(&error))?;
+        let unresolved = proof
+            .response_value
+            .get("unresolved")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
+        let has_named_occurrence = unresolved.as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("displayName")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+            })
+        });
+        let proposal_batch_id = if has_named_occurrence {
+            let proposals = self.character_proposal_service(&tx);
+            let batch = proposals
+                .stage_in_transaction(&json!({
+                    "kind": "finalized-generation",
+                    "handle": &proof.current_handle,
+                    "artifact": &proof.artifact,
+                }))
+                .map_err(|error| mutating_error(&error))?;
+            batch
+                .get("proposalBatchId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        } else {
+            None
+        };
+        tx.commit()
+            .map_err(|error| mutating_error(&error.to_string()))?;
+        let mut result = receipt;
+        if let Some(map) = result.as_object_mut() {
+            map.insert("unresolved".to_string(), unresolved);
+            if let Some(batch_id) = proposal_batch_id {
+                map.insert("proposalBatchId".to_string(), Value::String(batch_id));
+            }
+        }
+        Ok(result)
     }
 
     /// 基线 controller 的 `transferOrigin`（generation-controller.ts:110）：
@@ -15813,6 +16093,59 @@ data: [DONE]
             .unwrap_err();
         assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
     }
+    // ===== B99: finalized-character 提交与准入 =====
+
+    #[test]
+    fn finalized_character_admit_requires_dedicated_context_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let mut owner = owner_with(&conn);
+
+        // 非 finalized-character-state 操作携带上下文 id → INVALID。
+        let err = owner
+            .admit_finalized_character(
+                &conn,
+                &json!({ "operation": "chapter-draft", "finalizedCharacterContextId": "ctx-1" }),
+            )
+            .unwrap_err();
+        assert_eq!(err, "GENERATION_CHARACTER_CONTEXT_INVALID");
+
+        // 其他操作不携带上下文 → 放行。
+        assert_eq!(
+            owner
+                .admit_finalized_character(&conn, &json!({ "operation": "chapter-draft" }))
+                .unwrap(),
+            None
+        );
+
+        // finalized-character-state 缺少句柄 → REQUIRED。
+        let err = owner
+            .admit_finalized_character(&conn, &json!({ "operation": "finalized-character-state" }))
+            .unwrap_err();
+        assert_eq!(err, "GENERATION_CHARACTER_CONTEXT_REQUIRED");
+
+        // 句柄存在但选择形状不符（非结构化输出）→ REQUIRED。
+        owner.finalized_character_contexts.push((
+            "ctx-1".to_string(),
+            json!({ "source": { "draftId": 1, "chapterNumber": 1 } }),
+        ));
+        let err = owner
+            .admit_finalized_character(
+                &conn,
+                &json!({
+                    "operation": "finalized-character-state",
+                    "finalizedCharacterContextId": "ctx-1",
+                    "output": "visible-text",
+                    "chapterNumber": 1,
+                    "selectedDraftIds": [],
+                    "selectedFinalizedDraftIds": [1],
+                    "authorInputs": [{ "id": "finalized-character-context", "text": "{}" }]
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(err, "GENERATION_CHARACTER_CONTEXT_REQUIRED");
+    }
+
     // ===== B98: finalized-character 单元测试 =====
 
     #[test]

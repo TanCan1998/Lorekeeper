@@ -209,9 +209,16 @@ impl<'a> CharacterProposalService<'a> {
             .as_str()
             .unwrap_or_default();
         let scope = json!({ "projectId": self.project_id, "epoch": epoch });
-        // readFinalizedCharacterContext 待移植（见私有桩函数）；上游对任何
-        // 失败统一折叠为 `CHARACTER_PROPOSAL_SOURCE_CHANGED`。
-        if read_finalized_character_context(self.conn, draft_id, &scope).is_err() {
+        // 上游对任何读取失败统一折叠为 `CHARACTER_PROPOSAL_SOURCE_CHANGED`，
+        // 并逐项比较定稿身份、正文哈希与权威定稿版本。
+        let Ok(current) = read_finalized_character_context(self.conn, draft_id, &scope) else {
+            return Err("CHARACTER_PROPOSAL_SOURCE_CHANGED".to_string());
+        };
+        let matches = current["source"]["finalizationId"].as_str() == Some(source_id)
+            && current["source"]["contentHash"].as_str() == source["contentHash"].as_str()
+            && current["sourceOrder"]["authoritativeFinalizationRevision"].as_i64()
+                == source["revision"].as_i64();
+        if !matches {
             return Err("CHARACTER_PROPOSAL_SOURCE_CHANGED".to_string());
         }
         Ok(())
@@ -1324,10 +1331,76 @@ pub fn prove_character_proposal(
             if !keys_subset(source, &["kind", "handle", "artifact"]) {
                 return Err("CHARACTER_PROPOSAL_SOURCE_INVALID".to_string());
             }
-            // TODO(B1 后续批次)：移植 `proveFinalizedCharacterGeneration`
-            // （依赖 `parseFinalizedCharacterStateResponse` / `FinalizedCharacterContext`
-            // 等定稿连续性叶函数，尚未迁移）。
-            Err(PENDING_MIGRATION_CODE.to_string())
+            let proof =
+                crate::services::finalized_character_proof::prove_finalized_character_generation(
+                    conn,
+                    runs,
+                    project_id,
+                    &source["handle"],
+                    &source["artifact"],
+                )?;
+            if for_write {
+                assert_sources(&proof.current_handle, None)?;
+            }
+            // 无名出现只保留在持久产物中；绝不为其编造姓名。
+            let items: Vec<Value> = proof
+                .response
+                .unresolved
+                .iter()
+                .filter(|item| {
+                    item["displayName"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+                .map(|item| {
+                    let selection_key = item["selectionKey"].as_str().unwrap_or_default();
+                    let artifact_id = source["artifact"]["artifactId"]
+                        .as_str()
+                        .unwrap_or_default();
+                    json!({
+                        "selectionKey": selection_key,
+                        "sourceId": format!(
+                            "{}:{}:{}",
+                            proof.context.source.finalization_id, artifact_id, selection_key
+                        ),
+                        "fields": { "name": item["displayName"] },
+                        "relationships": [],
+                        "rawValue": item,
+                    })
+                })
+                .collect();
+            let canonical_source = if proof.stable_finalization_source {
+                json!({
+                    "kind": source["kind"],
+                    "handle": proof.source_handle,
+                    "artifact": {
+                        "artifactId": source["artifact"]["artifactId"],
+                        "revision": source["artifact"]["revision"],
+                        "textHash": source["artifact"]["textHash"],
+                    },
+                })
+            } else {
+                source.clone()
+            };
+            let source_hash = text_hash(
+                &serde_json::to_string(&json!([&canonical_source, &items]))
+                    .map_err(|error| error.to_string())?,
+            );
+            Ok(CharacterProposalProof {
+                items,
+                source_hash,
+                provenance: Some(json!({
+                    "kind": "derived",
+                    "modelRevision": proof.model["modelRevision"],
+                    "source": {
+                        "projectId": project_id,
+                        "epoch": proof.source_handle["epoch"],
+                        "sourceId": proof.context.source.finalization_id,
+                        "revision": proof.context.source_order.authoritative_finalization_revision,
+                        "contentHash": proof.context.source.content_hash,
+                    },
+                })),
+            })
         }
         Some("import") => {
             if !keys_subset(source, &["kind", "operationId"]) {
@@ -1954,16 +2027,31 @@ fn proposal_exists(conn: &Connection, proposal_batch_id: &str) -> Result<bool, S
     .map_err(|error| error.to_string())
 }
 
-/// `readFinalizedCharacterContext` —— 待移植桩（依赖
-/// `electron/repositories/summary-repository.ts` 的 `readFinalizedSourceFromDb` /
-/// `readFrozenCharacterSnapshot` / `stateSnapshot`，尚未迁移）。
+/// `readFinalizedCharacterContext`（基线 `summary-repository.ts:400-420`）：
+/// 复用 `finalization_generation_source` 的 1:1 移植（`scope` 为
+/// `{projectId, epoch}` 的 IPC 形态）。
 fn read_finalized_character_context(
-    _conn: &Connection,
-    _draft_id: i64,
-    _scope: &Value,
+    conn: &Connection,
+    draft_id: i64,
+    scope: &Value,
 ) -> Result<Value, String> {
-    // TODO(B1 后续批次)：平移 summary-repository.ts 的定稿上下文读取。
-    Err(PENDING_MIGRATION_CODE.to_string())
+    let scope = crate::repositories::generation_run_repository::ProjectEpoch {
+        project_id: scope
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        epoch: scope
+            .get("epoch")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    };
+    let context =
+        crate::services::finalization_generation_source::read_finalized_character_context(
+            conn, draft_id, &scope,
+        )?;
+    serde_json::to_value(&context).map_err(|error| error.to_string())
 }
 
 /// `readLegacyRosterGenerationProof`（平移
@@ -2144,21 +2232,17 @@ pub(crate) fn read_legacy_roster_generation_proof(
     }))
 }
 
-/// `normalizeFinalizedCharacterProposalSource` —— 待移植桩（依赖
-/// `proveFinalizedCharacterGeneration`，尚未迁移）。
+/// `normalizeFinalizedCharacterProposalSource`：B99 起委托
+/// `finalized_character_proof`（1:1 平移 `finalized-character-generation-proof.ts`）。
 fn normalize_finalized_character_proposal_source(
-    _conn: &Connection,
-    _runs: &GenerationRunRepository,
-    _project_id: &str,
+    conn: &Connection,
+    runs: &GenerationRunRepository,
+    project_id: &str,
     source: &Value,
 ) -> Result<Value, String> {
-    // TODO(B1 后续批次)：平移 finalized-character-generation-proof.ts。
-    if source["kind"].as_str() != Some("finalized-generation")
-        || !keys_subset(source, &["kind", "handle", "artifact"])
-    {
-        return Err("CHARACTER_PROPOSAL_SOURCE_INVALID".to_string());
-    }
-    Err(PENDING_MIGRATION_CODE.to_string())
+    crate::services::finalized_character_proof::normalize_finalized_character_proposal_source(
+        conn, runs, project_id, source,
+    )
 }
 
 /// `parseArchitectureCharacterProposal` —— 待移植桩。

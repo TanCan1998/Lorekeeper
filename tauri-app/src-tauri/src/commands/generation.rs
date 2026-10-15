@@ -3029,6 +3029,19 @@ pub async fn finalized_character_decide_state_candidate(
     state.with_project_db(|conn| owner.decide_finalized_character_state_candidate(conn, &request))
 }
 
+#[tauri::command]
+pub async fn finalized_character_commit(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.commit_finalized_character_states(conn, &request))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

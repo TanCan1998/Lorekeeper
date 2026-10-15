@@ -540,7 +540,7 @@ pub fn finalization_generation_task(
 // ============================================================================
 
 /// `immutableIdentity`：剥除每个角色的 `fields`（派生投影，不进不可变身份）。
-fn immutable_identity(context: &FinalizedCharacterContext) -> Value {
+pub(crate) fn immutable_identity(context: &FinalizedCharacterContext) -> Value {
     let mut value = serde_json::to_value(context).expect("FinalizedCharacterContext 可序列化");
     if let Some(characters) = value.get_mut("characters").and_then(Value::as_array_mut) {
         for character in characters {
@@ -931,7 +931,7 @@ fn finalized_character_prompt_cards(
 
 /// 派生补丁决策（`DerivedPatchDecision` 联合）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DerivedPatchDecision {
+pub(crate) enum DerivedPatchDecision {
     ApplyDerived,
     AlreadyApplied,
     ProposalRequired,
@@ -941,34 +941,34 @@ enum DerivedPatchDecision {
 
 /// `decideDerivedPatch` 的 `patch` 入参（`DerivedCharacterPatch`）。
 #[derive(Debug, Clone)]
-struct DerivedCharacterPatch {
-    project_id: String,
-    epoch: String,
-    character_id: String,
-    field: CharacterStateTextField,
+pub(crate) struct DerivedCharacterPatch {
+    pub(crate) project_id: String,
+    pub(crate) epoch: String,
+    pub(crate) character_id: String,
+    pub(crate) field: CharacterStateTextField,
     /// 上游 `DerivedCharacterPatch` 合同字段：随 patch 携带，
     /// `decideDerivedPatch` 只读 `value_hash`/`base_value_hash`，
     /// 不读 `value`（基线 `character-identity.ts:67-94` 同型）。
     #[allow(dead_code)]
-    value: String,
-    value_hash: String,
-    base_field_revision: i64,
-    base_value_hash: String,
-    base_provenance: CharacterStateFieldProvenance,
-    source: FinalizedSourceIdentity,
-    source_order: DerivedSourceOrder,
+    pub(crate) value: String,
+    pub(crate) value_hash: String,
+    pub(crate) base_field_revision: i64,
+    pub(crate) base_value_hash: String,
+    pub(crate) base_provenance: CharacterStateFieldProvenance,
+    pub(crate) source: FinalizedSourceIdentity,
+    pub(crate) source_order: DerivedSourceOrder,
 }
 
 /// `decideDerivedPatch` 的 `authority` 入参。
 #[derive(Debug, Clone)]
-struct DerivedPatchAuthority {
-    source: FinalizedSourceIdentity,
-    order: DerivedSourceOrder,
-    origin_project_id: Option<String>,
+pub(crate) struct DerivedPatchAuthority {
+    pub(crate) source: FinalizedSourceIdentity,
+    pub(crate) order: DerivedSourceOrder,
+    pub(crate) origin_project_id: Option<String>,
 }
 
 /// `decideDerivedPatch`（基线 `src/shared/character-identity.ts:67-94`，1:1）。
-fn decide_derived_patch(
+pub(crate) fn decide_derived_patch(
     current: &CharacterFieldSnapshot,
     patch: &DerivedCharacterPatch,
     authority: &DerivedPatchAuthority,

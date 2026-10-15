@@ -10,20 +10,27 @@
 //! `finalized-character:commit` 频道依赖 `finalized-character-generation-proof.ts`
 //! 的产物来源证明与 `FinalizedCharacterGeneration.admit` 准入，留待后续批次。
 
+use std::sync::LazyLock;
+
+use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 
-use crate::repositories::character_repository::{CharacterStateTextField, FinalizedSourceIdentity};
+use crate::repositories::character_repository::{
+    CharacterStateFieldProvenance, CharacterStateTextField, FinalizedSourceIdentity,
+};
 use crate::repositories::finalized_continuity_repository::{
     is_lowercase_hex64, parse_character_state_candidate_store, read_finalized_source_from_db,
     CharacterStateCandidateStore, CharacterStateDecision, FinalizedCharacterStateCandidate,
-    StoredCharacterStateDecisionReceipt,
+    SaveFinalizedCharacterStateCandidatesRequest, StoredCharacterStateDecisionReceipt,
 };
 use crate::repositories::generation_run_repository::ProjectEpoch;
 use crate::services::finalization_generation::text_hash;
 use crate::services::finalization_generation_source::{
-    read_finalized_character_context, read_frozen_character_snapshot, state_snapshot,
-    CharacterStateRow,
+    decide_derived_patch, immutable_identity, read_finalized_character_context,
+    read_frozen_character_snapshot, state_snapshot, CharacterStateRow, DerivedCharacterPatch,
+    DerivedPatchAuthority, DerivedPatchDecision, FinalizedCharacterContext,
+    FinalizedIdentityStatus,
 };
 
 // ============================================================================
@@ -687,9 +694,688 @@ pub fn read_context(
     serde_json::to_value(&context).map_err(|error| error.to_string())
 }
 
+/// `currentState` 的六个文本字段（对齐 `CHARACTER_STATE_TEXT_FIELDS`）。
+const CHARACTER_STATE_TEXT_FIELDS: [CharacterStateTextField; 6] = [
+    CharacterStateTextField::Location,
+    CharacterStateTextField::PowerLevel,
+    CharacterStateTextField::PhysicalState,
+    CharacterStateTextField::MentalState,
+    CharacterStateTextField::KeyItems,
+    CharacterStateTextField::RecentEvents,
+];
+
+// ============================================================================
+// 定稿角色状态响应解析（基线 `src/shared/finalized-continuity.ts:171-224`）
+// ============================================================================
+
+/// `updates` 项（`{characterId, currentState, evidence}` 与原始 JSON）。
+#[derive(Debug)]
+pub(crate) struct ParsedStateUpdate {
+    pub(crate) character_id: String,
+    /// `currentState` 中实际出现的字段与值（按字段声明序）。
+    pub(crate) current_state: Vec<(CharacterStateTextField, String)>,
+    pub(crate) evidence: Value,
+    /// 基线 `rawValue: structuredClone(update)`。
+    pub(crate) raw: Value,
+}
+
+#[derive(Debug)]
+pub(crate) struct ParsedStateResponse {
+    pub(crate) updates: Vec<ParsedStateUpdate>,
+    pub(crate) unresolved: Vec<Value>,
+}
+
+/// 代码围栏剥离（基线 `^```(?:json)?\s*\n?` 与 `\n?```\s*$`）。
+static FENCE_HEAD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^```(?:json)?\s*\n?").expect("围栏头正则合法"));
+static FENCE_TAIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\n?```\s*$").expect("围栏尾正则合法"));
+
+/// JS UTF-16 码元偏移 → 字节偏移（偏移落在字符中间时返回 `None`）。
+fn utf16_boundary_to_byte(text: &str, units: usize) -> Option<usize> {
+    let mut seen = 0usize;
+    for (index, character) in text.char_indices() {
+        if seen == units {
+            return Some(index);
+        }
+        seen += character.len_utf16();
+    }
+    if seen == units {
+        Some(text.len())
+    } else {
+        None
+    }
+}
+
+/// `content.slice(start, end)` 的等价物（UTF-16 码元区间）。
+fn utf16_slice(text: &str, start: usize, end: usize) -> Option<String> {
+    let from = utf16_boundary_to_byte(text, start)?;
+    let to = utf16_boundary_to_byte(text, end)?;
+    if from > to {
+        return None;
+    }
+    Some(text[from..to].to_string())
+}
+
+/// `content.indexOf(needle)` 的 UTF-16 码元偏移。
+fn utf16_index_of(text: &str, needle: &str) -> Option<usize> {
+    utf16_index_of_from(text, needle, 0)
+}
+
+/// `content.indexOf(needle, from)` 的 UTF-16 码元偏移。
+fn utf16_index_of_from(text: &str, needle: &str, from_units: usize) -> Option<usize> {
+    let byte_from = utf16_boundary_to_byte(text, from_units)?;
+    let byte = text.get(byte_from..)?.find(needle)?;
+    Some(text[..byte_from + byte].encode_utf16().count())
+}
+
+/// 基线 `parseFinalizedCharacterStateResponse`：解析模型产物中的角色状态
+/// 更新，未证明身份的出现保留为待确认（绝不自动归并）。
+pub(crate) fn parse_finalized_character_state_response(
+    content: &str,
+    context: &FinalizedCharacterContext,
+) -> Result<ParsedStateResponse, String> {
+    let text = FENCE_TAIL
+        .replace(&FENCE_HEAD.replace(content.trim(), ""), "")
+        .to_string();
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|_| "FINALIZED_CHARACTER_UPDATES_INVALID".to_string())?;
+    let Some(items) = parsed.get("updates").and_then(Value::as_array) else {
+        return Err("FINALIZED_CHARACTER_UPDATES_INVALID".to_string());
+    };
+    if items.len() > 1_000 {
+        return Err("FINALIZED_CHARACTER_UPDATES_INVALID".to_string());
+    }
+    let content_units = context.content.encode_utf16().count() as i64;
+    let mut result = ParsedStateResponse {
+        updates: Vec::new(),
+        unresolved: Vec::new(),
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for (index, input) in items.iter().enumerate() {
+        let Some(record) = input.as_object() else {
+            return Err("FINALIZED_CHARACTER_UPDATE_INVALID".to_string());
+        };
+        let Some(current_state_obj) = record.get("currentState").and_then(Value::as_object) else {
+            return Err("FINALIZED_CHARACTER_UPDATE_INVALID".to_string());
+        };
+        let Some(evidence) = record.get("evidence").and_then(Value::as_object) else {
+            return Err("FINALIZED_CHARACTER_EVIDENCE_MISSING".to_string());
+        };
+        let located_text = evidence.get("text").and_then(Value::as_str);
+        let mut start = evidence.get("start").and_then(Value::as_i64);
+        let mut end = evidence.get("end").and_then(Value::as_i64);
+        // 只给 text 时按唯一子串定位（基线 :179-184）。
+        if !evidence.contains_key("start") && !evidence.contains_key("end") {
+            let Some(needle) = located_text.filter(|value| !value.is_empty()) else {
+                return Err("FINALIZED_CHARACTER_EVIDENCE_INVALID".to_string());
+            };
+            let Some(located) = utf16_index_of(&context.content, needle) else {
+                return Err("FINALIZED_CHARACTER_EVIDENCE_NOT_UNIQUE".to_string());
+            };
+            if utf16_index_of_from(&context.content, needle, located + 1).is_some() {
+                return Err("FINALIZED_CHARACTER_EVIDENCE_NOT_UNIQUE".to_string());
+            }
+            start = Some(located as i64);
+            end = Some(located as i64 + needle.encode_utf16().count() as i64);
+        }
+        let (Some(start), Some(end)) = (start, end) else {
+            return Err("FINALIZED_CHARACTER_EVIDENCE_INVALID".to_string());
+        };
+        let Some(needle) = located_text else {
+            return Err("FINALIZED_CHARACTER_EVIDENCE_INVALID".to_string());
+        };
+        if start < 0
+            || end <= start
+            || end > content_units
+            || utf16_slice(&context.content, start as usize, end as usize).as_deref()
+                != Some(needle)
+        {
+            return Err("FINALIZED_CHARACTER_EVIDENCE_INVALID".to_string());
+        }
+        let mut current_state: Vec<(CharacterStateTextField, String)> = Vec::new();
+        for field in CHARACTER_STATE_TEXT_FIELDS {
+            let Some(value) = current_state_obj.get(field_name(field)) else {
+                continue;
+            };
+            let Some(value) = value.as_str() else {
+                return Err("FINALIZED_CHARACTER_FIELD_INVALID".to_string());
+            };
+            current_state.push((field, value.to_string()));
+        }
+        if current_state.is_empty() {
+            return Err("FINALIZED_CHARACTER_FIELD_INVALID".to_string());
+        }
+        if let Some(chapter) = current_state_obj.get("updatedAtChapter") {
+            if chapter.as_i64() != Some(context.source.chapter_number) {
+                return Err("FINALIZED_CHARACTER_FIELD_INVALID".to_string());
+            }
+        }
+        let character_id = record
+            .get("characterId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let original_text = record
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let character = if context.identity_status == FinalizedIdentityStatus::Bound {
+            context
+                .characters
+                .iter()
+                .find(|item| item.character_id == character_id)
+        } else {
+            None
+        };
+        let exact_evidence = json!({
+            "start": start,
+            "end": end,
+            "text": needle,
+        });
+        // 冻结名单里同名标签不唯一时，模型给出的 ID 也不足以判定身份。
+        let shared_label = character.is_some_and(|item| {
+            context
+                .characters
+                .iter()
+                .filter(|other| other.display_name_snapshot == item.display_name_snapshot)
+                .count()
+                > 1
+        });
+        if character.is_none() || shared_label {
+            if original_text.trim().is_empty() && character_id.is_empty() {
+                return Err("FINALIZED_CHARACTER_IDENTITY_REQUIRED".to_string());
+            }
+            let mut candidate_ids: Vec<String> = Vec::new();
+            for item in &context.characters {
+                let matches = (!character_id.is_empty() && item.character_id == character_id)
+                    || (shared_label
+                        && character.is_some_and(|current| {
+                            item.display_name_snapshot == current.display_name_snapshot
+                        }))
+                    || item.display_name_snapshot == original_text
+                    || item.aliases.iter().any(|alias| alias == &original_text);
+                if matches {
+                    candidate_ids.push(item.character_id.clone());
+                }
+            }
+            let display_name = if original_text.trim().is_empty() {
+                character
+                    .map(|current| current.display_name_snapshot.clone())
+                    .unwrap_or_else(|| original_text.clone())
+            } else {
+                original_text.clone()
+            };
+            let reason = if context.identity_status == FinalizedIdentityStatus::Legacy {
+                "legacy"
+            } else if shared_label {
+                "ambiguous"
+            } else if character_id.is_empty() {
+                "name-only"
+            } else {
+                "unknown-id"
+            };
+            let mut current_state_map = Map::new();
+            for (field, value) in &current_state {
+                current_state_map
+                    .insert(field_name(*field).to_string(), Value::String(value.clone()));
+            }
+            result.unresolved.push(json!({
+                "selectionKey": format!("update:{}", index),
+                "displayName": display_name,
+                "originalText": original_text,
+                "candidateIds": candidate_ids,
+                "currentState": Value::Object(current_state_map),
+                "evidence": exact_evidence,
+                "rawValue": input.clone(),
+                "reason": reason,
+            }));
+            continue;
+        }
+        if seen.iter().any(|item| item == &character_id) {
+            return Err("FINALIZED_CHARACTER_DUPLICATE_ID".to_string());
+        }
+        seen.push(character_id.clone());
+        result.updates.push(ParsedStateUpdate {
+            character_id,
+            current_state,
+            evidence: exact_evidence,
+            raw: input.clone(),
+        });
+    }
+    Ok(result)
+}
+
+/// 基线 `SummaryRepository.commitFinalizedCharacterStates`
+/// （`summary-repository.ts:423-473`）：逐字段按派生补丁判定后落库，需要作者
+/// 确认的保留为候选；任一出现未被证明身份即拒绝提交。
+///
+/// 调用方必须已持有 `IMMEDIATE` 事务（基线的 `db.transaction(...)` 内嵌套调用）。
+pub fn commit_finalized_character_states_in_transaction(
+    conn: &Connection,
+    context: &FinalizedCharacterContext,
+    response: &Value,
+    origin_project_id: Option<&str>,
+) -> Result<Value, String> {
+    let scope = ProjectEpoch {
+        project_id: context.project_id.clone(),
+        epoch: context.epoch.clone(),
+    };
+    let current = read_finalized_character_context(conn, context.source.draft_id, &scope)?;
+    if immutable_identity(&current) != immutable_identity(context) {
+        return Err("FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string());
+    }
+    if context.characters.iter().any(|character| {
+        character.fields.iter().any(|field| {
+            field.character_id != character.character_id
+                || field.project_id != context.project_id
+                || field.epoch != context.epoch
+        })
+    }) {
+        return Err("FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string());
+    }
+    let updates = response
+        .get("updates")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new()));
+    let verified = parse_finalized_character_state_response(
+        &json!({ "updates": updates }).to_string(),
+        context,
+    )?;
+    if !verified.unresolved.is_empty() {
+        return Err("FINALIZED_CHARACTER_IDENTITY_REQUIRED".to_string());
+    }
+    let mut applied = 0i64;
+    let mut unchanged = 0i64;
+    let mut candidates: Vec<Value> = Vec::new();
+    for update in &verified.updates {
+        let Some(captured) = context
+            .characters
+            .iter()
+            .find(|item| item.character_id == update.character_id)
+        else {
+            return Err("FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string());
+        };
+        let Some(current_character) = current
+            .characters
+            .iter()
+            .find(|item| item.character_id == update.character_id)
+        else {
+            return Err("FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string());
+        };
+        let provenance_raw: String = conn
+            .query_row(
+                "SELECT cs_provenance FROM characters WHERE character_id=?1 AND retired=0",
+                [update.character_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let mut provenance = parse_provenance_map(Some(provenance_raw.as_str()))?;
+        let mut changed = false;
+        for field in CHARACTER_STATE_TEXT_FIELDS {
+            let Some((_, value)) = update
+                .current_state
+                .iter()
+                .find(|(candidate_field, _)| *candidate_field == field)
+            else {
+                continue;
+            };
+            let Some(base) = captured.fields.iter().find(|item| item.field == field) else {
+                return Err("FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string());
+            };
+            if text_hash(&base.value) != base.value_hash {
+                return Err("FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string());
+            }
+            let Some(actual) = current_character
+                .fields
+                .iter()
+                .find(|item| item.field == field)
+            else {
+                return Err("FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string());
+            };
+            let decision = decide_derived_patch(
+                actual,
+                &DerivedCharacterPatch {
+                    project_id: context.project_id.clone(),
+                    epoch: context.epoch.clone(),
+                    character_id: update.character_id.clone(),
+                    field,
+                    value: value.clone(),
+                    value_hash: text_hash(value),
+                    base_field_revision: base.revision,
+                    base_value_hash: base.value_hash.clone(),
+                    base_provenance: base.provenance.clone(),
+                    source: context.source.clone(),
+                    source_order: context.source_order.clone(),
+                },
+                &DerivedPatchAuthority {
+                    source: current.source.clone(),
+                    order: current.source_order.clone(),
+                    origin_project_id: origin_project_id.map(str::to_string),
+                },
+            );
+            match decision {
+                DerivedPatchDecision::SourceConflict => {
+                    return Err("FINALIZED_CHARACTER_SOURCE_CONFLICT".to_string())
+                }
+                DerivedPatchDecision::FieldConflict => {
+                    return Err("FINALIZED_CHARACTER_FIELD_CONFLICT".to_string())
+                }
+                DerivedPatchDecision::AlreadyApplied => {
+                    unchanged += 1;
+                    continue;
+                }
+                DerivedPatchDecision::ProposalRequired => {
+                    if value == &actual.value {
+                        unchanged += 1;
+                        continue;
+                    }
+                    let reason = if matches!(
+                        actual.provenance,
+                        CharacterStateFieldProvenance::Author { .. }
+                    ) {
+                        "author-protected"
+                    } else {
+                        "legacy-protected"
+                    };
+                    candidates.push(json!({
+                        "candidateKey": character_state_candidate_key(
+                            &context.source,
+                            &update.character_id,
+                            field,
+                            value
+                        ),
+                        "source": &context.source,
+                        "expectedFieldRevision": actual.revision,
+                        "expectedFieldValueHash": &actual.value_hash,
+                        "characterId": &update.character_id,
+                        "characterName": &captured.display_name_snapshot,
+                        "displayName": &captured.display_name_snapshot,
+                        "selectionKey": format!("state:{}:{}", update.character_id, field_name(field)),
+                        "field": field_name(field),
+                        "value": value,
+                        "evidence": &update.evidence,
+                        "rawValue": &update.raw,
+                        "reason": reason,
+                    }));
+                    continue;
+                }
+                DerivedPatchDecision::ApplyDerived => {
+                    conn.execute(
+                        &format!(
+                            "UPDATE characters SET {}=?1 WHERE character_id=?2 AND retired=0",
+                            state_column(field)
+                        ),
+                        params![value, update.character_id.as_str()],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    provenance.insert(
+                        field_name(field).to_string(),
+                        json!({
+                            "kind": "derived",
+                            "source": &context.source,
+                            "revision": actual.revision + 1,
+                            "sourceOrder": &context.source_order,
+                        }),
+                    );
+                    applied += 1;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            conn.execute(
+                "UPDATE characters SET cs_provenance=?1, \
+                 cs_updated_at_chapter=MAX(COALESCE(cs_updated_at_chapter,0),?2), \
+                 updated_at=datetime('now') WHERE character_id=?3",
+                params![
+                    serde_json::to_string(&provenance).map_err(|error| error.to_string())?,
+                    context.source.chapter_number,
+                    update.character_id.as_str()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    if !candidates.is_empty() {
+        let request = SaveFinalizedCharacterStateCandidatesRequest {
+            draft_id: context.source.draft_id,
+            chapter_number: context.source.chapter_number,
+            candidates: Some(candidates.clone()),
+            projection_generation: context.projection_generation,
+            source: context.source.clone(),
+        };
+        crate::repositories::finalized_continuity_repository::save_finalized_character_state_candidates_in_transaction(
+            conn,
+            &request,
+        )?;
+    }
+    if applied > 0 {
+        crate::repositories::character_roster_repository::refresh_character_state_projection(conn)?;
+    }
+    Ok(json!({
+        "applied": applied,
+        "unchanged": unchanged,
+        "candidates": candidates,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== B99: 定稿角色状态领域提交 =====
+
+    fn commit_in_tx(
+        conn: &Connection,
+        context: &FinalizedCharacterContext,
+        response: &Value,
+    ) -> Result<Value, String> {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let receipt =
+            commit_finalized_character_states_in_transaction(&tx, context, response, None)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(receipt)
+    }
+
+    #[test]
+    fn parse_state_response_locates_evidence_and_validates_fields() {
+        let (conn, draft_id) = setup();
+        let context = read_finalized_character_context(&conn, draft_id, &scope()).unwrap();
+        let parsed = parse_finalized_character_state_response(
+            &json!({"updates": [{
+                "characterId": "char-1",
+                "currentState": { "recentEvents": "抵达仓库" },
+                "evidence": { "text": "测试" }
+            }]})
+            .to_string(),
+            &context,
+        )
+        .unwrap();
+        assert_eq!(parsed.updates.len(), 1);
+        assert_eq!(parsed.updates[0].character_id, "char-1");
+        assert_eq!(parsed.updates[0].evidence["start"], json!(0));
+        assert_eq!(parsed.updates[0].evidence["end"], json!(2));
+        assert!(parsed.unresolved.is_empty());
+
+        // 冻结名单外 / 名字-only 的出现保留为待确认。
+        let parsed = parse_finalized_character_state_response(
+            &json!({"updates": [{
+                "name": "陌生人",
+                "currentState": { "location": "某处" },
+                "evidence": { "text": "正文" }
+            }]})
+            .to_string(),
+            &context,
+        )
+        .unwrap();
+        assert!(parsed.updates.is_empty());
+        assert_eq!(parsed.unresolved.len(), 1);
+        assert_eq!(parsed.unresolved[0]["reason"], json!("name-only"));
+        assert_eq!(parsed.unresolved[0]["selectionKey"], json!("update:0"));
+
+        // 证据越界 / 文本不匹配 / 字段非法 / 缺证据。
+        for (payload, expected) in [
+            (
+                json!({"updates": [{"characterId": "char-1", "currentState": {"location": "北境"},
+                    "evidence": {"start": 0, "end": 1, "text": "测试"}}]}),
+                "FINALIZED_CHARACTER_EVIDENCE_INVALID",
+            ),
+            (
+                json!({"updates": [{"characterId": "char-1", "currentState": {"location": "北境"},
+                    "evidence": {"text": "不存在的引用"}}]}),
+                "FINALIZED_CHARACTER_EVIDENCE_NOT_UNIQUE",
+            ),
+            (
+                json!({"updates": [{"characterId": "char-1", "currentState": {"location": 7},
+                    "evidence": {"text": "测试"}}]}),
+                "FINALIZED_CHARACTER_FIELD_INVALID",
+            ),
+            (
+                json!({"updates": [{"characterId": "char-1", "currentState": {},
+                    "evidence": {"text": "测试"}}]}),
+                "FINALIZED_CHARACTER_FIELD_INVALID",
+            ),
+            (
+                json!({"updates": [{"characterId": "char-1", "currentState": {"location": "北境"}}]}),
+                "FINALIZED_CHARACTER_EVIDENCE_MISSING",
+            ),
+            (json!({ "updates": [] }), ""),
+        ] {
+            let result = parse_finalized_character_state_response(&payload.to_string(), &context);
+            if expected.is_empty() {
+                assert!(result.unwrap().updates.is_empty());
+            } else {
+                assert_eq!(result.unwrap_err(), expected.to_string());
+            }
+        }
+    }
+
+    #[test]
+    fn commit_applies_derived_fields_then_reports_already_applied() {
+        let (conn, draft_id) = setup();
+        let context = read_finalized_character_context(&conn, draft_id, &scope()).unwrap();
+        // `mentalState` 当前为空且无来源 → 派生补丁可直接应用（作者值需确认）。
+        let response = json!({"updates": [{
+            "characterId": "char-1",
+            "currentState": { "mentalState": "动摇" },
+            "evidence": { "start": 0, "end": 2, "text": "测试" }
+        }]});
+        let receipt = commit_in_tx(&conn, &context, &response).unwrap();
+        assert_eq!(receipt["applied"], json!(1));
+        assert_eq!(receipt["unchanged"], json!(0));
+        assert!(receipt["candidates"].as_array().unwrap().is_empty());
+        let mental_state: String = conn
+            .query_row(
+                "SELECT cs_mental_state FROM characters WHERE character_id=?1",
+                ["char-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mental_state, "动摇");
+        let provenance: String = conn
+            .query_row(
+                "SELECT cs_provenance FROM characters WHERE character_id=?1",
+                ["char-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let provenance: Value = serde_json::from_str(&provenance).unwrap();
+        assert_eq!(provenance["mentalState"]["kind"], json!("derived"));
+        assert_eq!(provenance["mentalState"]["revision"], json!(1));
+        assert_eq!(
+            provenance["mentalState"]["source"]["finalizationId"],
+            json!(FINALIZATION_ID)
+        );
+
+        // 同一结果再次提交：派生值已应用，不再改写。
+        let current = read_finalized_character_context(&conn, draft_id, &scope()).unwrap();
+        let again = commit_in_tx(&conn, &current, &response).unwrap();
+        assert_eq!(again["applied"], json!(0));
+        assert_eq!(again["unchanged"], json!(1));
+    }
+
+    #[test]
+    fn commit_keeps_author_protected_field_as_pending_candidate() {
+        let (conn, draft_id) = setup();
+        conn.execute(
+            "UPDATE characters SET cs_location=?1, cs_provenance=?2 WHERE character_id=?3",
+            params![
+                "旧地",
+                r#"{"location":{"kind":"author","chapterNumber":6,"revision":3}}"#,
+                "char-1"
+            ],
+        )
+        .unwrap();
+        seed_candidate(&conn, draft_id);
+        let context = read_finalized_character_context(&conn, draft_id, &scope()).unwrap();
+        let response = json!({"updates": [{
+            "characterId": "char-1",
+            "currentState": { "location": "北境" },
+            "evidence": { "start": 0, "end": 2, "text": "测试" }
+        }]});
+        let receipt = commit_in_tx(&conn, &context, &response).unwrap();
+        assert_eq!(receipt["applied"], json!(0));
+        let candidates = receipt["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0]["reason"], json!("author-protected"));
+        assert_eq!(candidates[0]["expectedFieldRevision"], json!(3));
+        assert_eq!(
+            candidates[0]["expectedFieldValueHash"],
+            json!(text_hash("旧地"))
+        );
+        assert_eq!(
+            candidates[0]["selectionKey"],
+            json!("state:char-1:location")
+        );
+        // 作者值未被改写，候选进入待决列表。
+        let location: String = conn
+            .query_row(
+                "SELECT cs_location FROM characters WHERE character_id=?1",
+                ["char-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(location, "旧地");
+        assert_eq!(
+            list_pending_state_candidates(&conn)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn commit_rejects_unproven_identity_and_changed_context() {
+        let (conn, draft_id) = setup();
+        let context = read_finalized_character_context(&conn, draft_id, &scope()).unwrap();
+        let stranger = json!({"updates": [{
+            "name": "陌生人",
+            "currentState": { "location": "某处" },
+            "evidence": { "start": 0, "end": 2, "text": "测试" }
+        }]});
+        assert_eq!(
+            commit_in_tx(&conn, &context, &stranger).unwrap_err(),
+            "FINALIZED_CHARACTER_IDENTITY_REQUIRED".to_string()
+        );
+
+        // 冻结身份已变化（作者改名后重建快照）→ CONTEXT_CHANGED。
+        let mut stale = context.clone();
+        stale.identity_revision += 1;
+        let ok = json!({"updates": [{
+            "characterId": "char-1",
+            "currentState": { "location": "北境" },
+            "evidence": { "start": 0, "end": 2, "text": "测试" }
+        }]});
+        assert_eq!(
+            commit_in_tx(&conn, &stale, &ok).unwrap_err(),
+            "FINALIZED_CHARACTER_CONTEXT_CHANGED".to_string()
+        );
+    }
 
     const PROJECT_ID: &str = "project-1";
     const EPOCH: &str = "lease-1";

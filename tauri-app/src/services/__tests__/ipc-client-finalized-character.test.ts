@@ -9,6 +9,7 @@ import type {
   PendingFinalizedCharacterStateCandidate,
   PendingFinalizedCharacterStateCandidateSummary,
 } from '../../shared/finalized-continuity'
+import type { FinalizedCharacterGenerationReceipt } from '../../shared/finalized-character-generation'
 import { ipc } from '../ipc-client'
 import { installTauriInternals, type TauriInternalsHandle } from '../../../test/helpers/tauri-internals'
 
@@ -69,6 +70,20 @@ const mockReceipt = {
   idempotent: false,
 } as FinalizedCharacterStateDecisionReceipt
 
+const mockHandle = {
+  projectId: 'project-A',
+  epoch: 'lease-A',
+  rootActionId: 'root-1',
+  runId: 'run-1',
+}
+
+const mockCommitReceipt = {
+  applied: 1,
+  unchanged: 0,
+  candidates: [],
+  unresolved: [],
+} as unknown as FinalizedCharacterGenerationReceipt
+
 const session = {
   projectId: 'project-A',
   leaseId: 'lease-A',
@@ -82,6 +97,7 @@ beforeEach(() => {
       finalized_character_list_state_candidates: [mockSummary],
       finalized_character_read_state_candidate: mockCandidate,
       finalized_character_decide_state_candidate: mockReceipt,
+      finalized_character_commit: mockCommitReceipt,
     },
   })
   setActiveProjectSessionContext(session)
@@ -148,5 +164,21 @@ describe('finalized-character IPC transport', () => {
       { request, projectSession: session },
     ])
     expect(res).toEqual(mockReceipt)
+  })
+
+  it('invokes finalized-character:commit with request', async () => {
+    const request = {
+      contextId: 'ctx-1',
+      handle: mockHandle,
+      artifact: { artifactId: 'art-1', revision: 1, textHash: 'd'.repeat(64) },
+    } as const
+
+    const res = await ipc.invoke('finalized-character:commit', request)
+
+    expect(tauriInternals.invoke.mock.calls[0]?.slice(0, 2)).toEqual([
+      'finalized_character_commit',
+      { request, projectSession: session },
+    ])
+    expect(res).toEqual(mockCommitReceipt)
   })
 })

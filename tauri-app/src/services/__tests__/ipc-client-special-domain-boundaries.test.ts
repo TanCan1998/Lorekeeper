@@ -23,19 +23,10 @@ afterEach(() => {
 // 使用真实适配器而非 ipc mock，证明前端不会把未迁移特殊域送到主进程。
 // 已成为正式迁移面的频道（graph-generation / finalization-generation /
 // finalized-character 读面）不再属于本回归；改用仍未迁移的域：
-// finalized-character:commit（源证明准入）与 character-avatar 头像域。
+// character-avatar 头像域（finalized-character 全五频道已成为正式迁移面）。
 const cases = [
-  { channel: 'finalized-character:commit',
-    invoke: () => ipc.invokeWithProjectSession(session, 'finalized-character:commit', {
-      contextId: 'synthetic-context',
-      handle: {
-        projectId: 'synthetic-project',
-        epoch: 'synthetic-lease',
-        rootActionId: 'synthetic-root',
-        runId: 'synthetic-run',
-      },
-      artifact: { artifactId: 'synthetic-artifact', revision: 1, textHash: 'a'.repeat(64) },
-    }) },
+  { channel: 'character-avatar:commit',
+    invoke: () => ipc.invokeWithProjectSession(session, 'character-avatar:commit', 'synthetic-character', 'c3ludGhldGlj') },
   { channel: 'character-avatar:choose',
     invoke: () => ipc.invokeWithProjectSession(session, 'character-avatar:choose', 'synthetic-character') },
   { channel: 'character-avatar:read-batch',

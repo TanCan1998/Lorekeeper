@@ -3,7 +3,7 @@
 //! 1:1 port of electron/services/finalization-generation.ts
 //! Handles state machine, slot recovery, and effect validation for finalization-generation.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -231,7 +231,7 @@ pub fn validate_finalization_artifact(
 pub fn read_finalization_effect(
     conn: &Connection,
     repository: &GenerationRunRepository,
-    _project_id: &str,
+    project_id: &str,
     run: &DurableGenerationRun,
 ) -> Result<Option<Value>, String> {
     let mut stmt = conn
@@ -299,6 +299,49 @@ pub fn read_finalization_effect(
         return Err(GENERATION_FINALIZATION_EFFECT_INVALID.to_string());
     }
 
+    if step_key_str == "character_cards" {
+        // 基线 `readEffect`：character_cards 效应必须能被定稿角色来源证明复验，
+        // 且已暂存提案的来源必须与该证明完全一致。
+        let handle = serde_json::json!({
+            "projectId": run.binding.project_id,
+            "epoch": run.binding.epoch,
+            "rootActionId": run.root_action_id,
+            "runId": run.run_id,
+        });
+        let reference = serde_json::to_value(&saved.artifact)
+            .map_err(|_| GENERATION_FINALIZATION_EFFECT_INVALID.to_string())?;
+        let proof =
+            crate::services::finalized_character_proof::prove_finalized_character_generation(
+                conn, repository, project_id, &handle, &reference,
+            )
+            .map_err(|_| GENERATION_FINALIZATION_EFFECT_INVALID.to_string())?;
+        if let Some(batch_id) = saved.receipt.get("proposalBatchId").and_then(Value::as_str) {
+            let raw: Option<String> = conn
+                .query_row(
+                    "SELECT raw_value FROM character_identity_proposals WHERE proposal_id=?1",
+                    [batch_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| GENERATION_FINALIZATION_EFFECT_INVALID.to_string())?;
+            let batch_source = raw
+                .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+                .and_then(|envelope| {
+                    envelope
+                        .get("batch")
+                        .and_then(|batch| batch.get("source"))
+                        .cloned()
+                });
+            let expected = serde_json::json!({
+                "kind": "finalized-generation",
+                "handle": &proof.source_handle,
+                "artifact": &proof.artifact,
+            });
+            if batch_source.as_ref() != Some(&expected) {
+                return Err(GENERATION_FINALIZATION_EFFECT_INVALID.to_string());
+            }
+        }
+    }
     Ok(Some(saved.receipt))
 }
 

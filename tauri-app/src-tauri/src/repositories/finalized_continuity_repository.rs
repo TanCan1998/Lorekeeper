@@ -959,11 +959,21 @@ pub fn save_finalized_character_state_candidates(
     conn: &Connection,
     request: &SaveFinalizedCharacterStateCandidatesRequest,
 ) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    save_finalized_character_state_candidates_in_transaction(&tx, request)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// 事务内版本（基线 `commitFinalizedCharacterStates` 在同一事务内嵌套调用）：
+/// 调用方必须已持有事务。
+pub(crate) fn save_finalized_character_state_candidates_in_transaction(
+    conn: &Connection,
+    request: &SaveFinalizedCharacterStateCandidatesRequest,
+) -> Result<(), String> {
     if request.draft_id < 1 || request.chapter_number < 1 || request.projection_generation < 0 {
         return Err("角色状态候选参数无效".to_string());
     }
     let empty: Vec<serde_json::Value> = Vec::new();
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let snapshot = read_finalized_source_from_db(conn, request.draft_id)?;
     let Some(snapshot) = snapshot else {
         return Err("角色状态候选来源已失效，已拒绝过期结果".to_string());
@@ -976,7 +986,7 @@ pub fn save_finalized_character_state_candidates(
     if request.projection_generation != snapshot.projection_generation {
         return Err("连续性投影失效水位已推进，已拒绝过期结果".to_string());
     }
-    let row = tx
+    let row = conn
         .query_row(
             "SELECT character_state_candidates, source_finalization_id,
                     source_content_hash, projection_generation
@@ -1037,7 +1047,7 @@ pub fn save_finalized_character_state_candidates(
         pending: merged.into_values().collect(),
         receipts: store.receipts,
     };
-    tx.execute(
+    conn.execute(
         "UPDATE summary_snapshots
          SET character_state_candidates = ?1, created_at = datetime('now')
          WHERE draft_id = ?2",
@@ -1047,7 +1057,7 @@ pub fn save_finalized_character_state_candidates(
         ],
     )
     .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+    Ok(())
 }
 
 /// 基线 `SummaryRepository.listFinalizedContinuityBefore`

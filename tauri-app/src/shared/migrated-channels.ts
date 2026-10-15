@@ -148,6 +148,7 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'finalization-generation:read',
   'finalization:commit',
   'finalization:retry',
+  'finalized-character:commit',
   'finalized-character:decide-state-candidate',
   'finalized-character:list-state-candidates',
   'finalized-character:read-context',
