@@ -2448,6 +2448,186 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn parent_root_pause_cancel_aborts_distinct_children_not_other_root_and_replays_unknown_test(
+    ) {
+        for cancel in [false, true] {
+            let (conn, parent) = test_setup();
+            let repository = GenerationRunRepository::default();
+            let child = |nonce: &str| {
+                repository
+                    .open(
+                        &conn,
+                        &OpenGenerationRunRequest {
+                            project_id: parent.binding.project_id.clone(),
+                            epoch: parent.binding.epoch.clone(),
+                            fingerprint: parent.binding.fingerprint.clone(),
+                            context_snapshot_id: parent.binding.context_snapshot_id.clone(),
+                            source_manifest: parent.binding.source_manifest.clone(),
+                            source_refs: parent.binding.source_refs.clone(),
+                            operation: "chapter-draft".to_string(),
+                            ui_action_nonce: nonce.to_string(),
+                            frozen_input_hash: fake_content_hash(),
+                            budget: repository
+                                .budget(&conn, &parent.root_action_id)
+                                .unwrap()
+                                .policy,
+                            parent_root_action_id: Some(parent.root_action_id.clone()),
+                        },
+                    )
+                    .unwrap()
+            };
+            // 仅仓储合成子运行，生产 workflow/普通 IPC 准入保持关闭。
+            let first = child("synthetic-child-1");
+            let second = child("synthetic-child-2");
+            let unrelated = open_run(&conn, "project-other", "lease-other");
+            let database = ScopedDatabase {
+                connection: Mutex::new(conn),
+                allowed: std::sync::atomic::AtomicBool::new(true),
+            };
+            let (started, received) = std::sync::mpsc::channel();
+            let svc = service(Arc::new(WaitingDispatcher { started }));
+            // 同一 nonce 在不同 run 下仍是两个物理调用，不能被父根级 pending 错误合并。
+            let request1 = execute_request(
+                &first,
+                &"b".repeat(64),
+                usage_policy("included-in-completion"),
+            );
+            let request2 = execute_request(
+                &second,
+                &"c".repeat(64),
+                usage_policy("included-in-completion"),
+            );
+            let request3 = execute_request(
+                &unrelated,
+                &"d".repeat(64),
+                usage_policy("included-in-completion"),
+            );
+            let joined = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(
+                    svc.execute_with_database(&database, request1.clone()),
+                    svc.execute_with_database(&database, request2.clone()),
+                    svc.execute_with_database(&database, request3.clone()),
+                    async {
+                        let mut count = 0;
+                        while count < 3 {
+                            if received.try_recv().is_ok() {
+                                count += 1;
+                            } else {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                        assert!(
+                            database.connection.try_lock().is_ok(),
+                            "三个网络等待均须释放连接"
+                        );
+                        database
+                            .with_connection(|conn| {
+                                if cancel {
+                                    svc.cancel(conn, &parent.root_action_id)
+                                } else {
+                                    svc.pause(conn, &parent.root_action_id)
+                                }
+                            })
+                            .unwrap();
+                        {
+                            let controllers = svc.controllers.lock().unwrap();
+                            assert_eq!(
+                                controllers
+                                    .values()
+                                    .filter(|record| record.root_id == parent.root_action_id
+                                        && *record.token.sender.borrow())
+                                    .count(),
+                                2
+                            );
+                            assert!(!*controllers
+                                .values()
+                                .find(|record| record.root_id == unrelated.root_action_id)
+                                .unwrap()
+                                .token
+                                .sender
+                                .borrow());
+                        }
+                        while svc
+                            .controllers
+                            .lock()
+                            .unwrap()
+                            .values()
+                            .any(|record| record.root_id == parent.root_action_id)
+                        {
+                            tokio::task::yield_now().await;
+                        }
+                        database
+                            .with_connection(|conn| {
+                                assert_eq!(
+                                    repository.get(conn, &first.run_id)?.status,
+                                    if cancel { "cancelled" } else { "paused" }
+                                );
+                                assert_eq!(
+                                    repository.get(conn, &second.run_id)?.status,
+                                    if cancel { "cancelled" } else { "paused" }
+                                );
+                                assert_eq!(
+                                    repository.get(conn, &unrelated.run_id)?.status,
+                                    "running"
+                                );
+                                Ok(())
+                            })
+                            .unwrap();
+                        svc.request_abort_root(&unrelated.root_action_id);
+                    }
+                )
+            })
+            .await
+            .expect("父根的两个子执行必须退出，其他根不受连带中止");
+            let receipts = [joined.0.unwrap(), joined.1.unwrap(), joined.2.unwrap()];
+            for receipt in &receipts {
+                assert_eq!(
+                    receipt.failure_code.as_deref(),
+                    Some("GENERATION_CANCELLED")
+                );
+                assert_eq!(receipt.attempt.status, "unknown");
+                assert_eq!(receipt.artifact.as_ref().unwrap().text, "中止前正文");
+            }
+            assert_ne!(
+                receipts[0].attempt.attempt_id,
+                receipts[1].attempt.attempt_id
+            );
+            assert_eq!(receipts[0].run.root_action_id, parent.root_action_id);
+            assert_eq!(receipts[1].run.root_action_id, parent.root_action_id);
+            // 已有未知收据只读回放，不能因暂停/取消或同 nonce 而重派到供应商。
+            for (request, receipt) in [(request1, &receipts[0]), (request2, &receipts[1])] {
+                let replay = svc.execute_with_database(&database, request).await.unwrap();
+                assert_eq!(replay.attempt.attempt_id, receipt.attempt.attempt_id);
+                assert_eq!(replay.artifact.as_ref().unwrap().text, "中止前正文");
+            }
+            let budget = database
+                .with_connection(|conn| repository.budget(conn, &parent.root_action_id))
+                .unwrap();
+            assert_eq!(
+                budget.root.status,
+                if cancel { "cancelled" } else { "paused" }
+            );
+            assert_eq!(budget.attempts.len(), 2);
+            assert_eq!(
+                budget
+                    .attempts
+                    .iter()
+                    .map(|attempt| attempt.reserved_tokens)
+                    .sum::<i64>(),
+                2048
+            );
+            assert!(budget
+                .attempts
+                .iter()
+                .all(|attempt| attempt.actual_tokens.is_none()));
+            assert!(svc.controllers.lock().unwrap().is_empty());
+            assert!(svc.pending.lock().unwrap().is_empty());
+            assert!(svc.read_unsaved_tails().is_empty());
+            assert!(received.try_recv().is_err(), "重放不得触发新的分发");
+        }
+    }
+
     #[test]
     fn scoped_database_network_wait_releases_connection_and_preserves_abort_text_test() {
         let (conn, run) = test_setup();
