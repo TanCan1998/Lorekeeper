@@ -327,6 +327,7 @@ pub struct RecheckContextView {
 /// 的同名类型仅派生 `Serialize`；本文件另译带 `Deserialize` 的同形类型。
 /// 字段类型均已派生 `Deserialize`，字段序与原类型逐字一致）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContinuityProjectionView {
     pub draft_id: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1581,5 +1582,24 @@ impl RevisionContextBuilder {
             confirmation: self.confirmation,
             recheck: self.recheck,
         }
+    }
+}
+
+#[cfg(test)]
+mod serialization_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn continuity_projection_preserves_camel_case_contract() {
+        let value = json!({ "draftId": 7, "currentFinalizedDraftId": 8,
+            "chapterNumber": 2, "chapterTitle": "合成章节", "chapterNotes": "合成摘要", "sourceStatus": "current" });
+        let projection: ContinuityProjectionView = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(projection.draft_id, 7);
+        assert_eq!(projection.current_finalized_draft_id, Some(8));
+        assert_eq!(serde_json::to_value(projection).unwrap(), value);
+        assert!(serde_json::from_value::<ContinuityProjectionView>(json!({
+            "draft_id": 7, "chapter_number": 2, "chapter_title": "合成章节", "chapter_notes": "", "source_status": "current"
+        })).is_err());
     }
 }

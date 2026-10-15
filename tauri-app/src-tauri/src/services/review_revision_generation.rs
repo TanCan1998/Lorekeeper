@@ -128,6 +128,7 @@ pub struct ReviewGenerationCommitRequest {
 
 /// 基线 `RevisionGenerationCommitRequest`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RevisionGenerationCommitRequest {
     pub context_id: String,
     pub handle: MainGenerationRunHandle,
@@ -2830,4 +2831,26 @@ fn recheck_item_value(
         record.insert("resolved".to_string(), Value::Bool(resolved));
     }
     Value::Object(record)
+}
+
+#[cfg(test)]
+mod serialization_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn revision_commit_request_accepts_renderer_camel_case() {
+        let handle = json!({ "projectId": "synthetic-project", "epoch": "synthetic-epoch",
+            "rootActionId": "synthetic-root", "runId": "synthetic-run" });
+        let value = json!({ "contextId": "synthetic-context", "handle": handle.clone(),
+            "expectedCompositionHash": "a".repeat(64) });
+        let request: RevisionGenerationCommitRequest =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(request.context_id, "synthetic-context");
+        assert_eq!(request.expected_composition_hash, "a".repeat(64));
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert!(serde_json::from_value::<RevisionGenerationCommitRequest>(json!({
+            "context_id": "synthetic-context", "handle": handle, "expected_composition_hash": "a".repeat(64)
+        })).is_err());
+    }
 }

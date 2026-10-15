@@ -97,6 +97,7 @@ impl<'de> Deserialize<'de> for States {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawReconciliation {
     #[serde(rename = "finalState")]
     final_state: States,
