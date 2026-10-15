@@ -214,7 +214,7 @@ beforeEach(() => {
   vi.stubGlobal('window', {
     __TAURI_INTERNALS__: {
       invoke: vi.fn(async (channel: string, args: Record<string, unknown>) => {
-        if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
         if (channel === 'fs_check_exists') return false
@@ -560,7 +560,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return { templates: [], diagnostics: [] }
         case 'fs_check_exists':
@@ -794,7 +794,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
       }),
     })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -843,7 +843,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     const generateStream = vi.fn()
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -903,7 +903,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     const generateStream = createResponseStream([JSON.stringify({ slots: [] })])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -939,7 +939,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     const generateStream = createResponseStream([JSON.stringify({ slots: [] })])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -1071,7 +1071,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     const expectedSnapshot = { ...readyRoster, entries: fullEntries, renderedMarkdown: '# 八人角色图谱' }
     let committedRequest: unknown
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -1184,7 +1184,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     const generateStream = createResponseStream([JSON.stringify(manifest)])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -1214,7 +1214,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     ])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -1245,7 +1245,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     ])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -1302,7 +1302,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     let committedRequest: unknown
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global': return { templates: [], diagnostics: [] }
         case 'fs_check_exists': return false
         case 'db_project_core_get': return { premise: '双主角校园故事围绕一份异常记录展开，四名角色分别承担调查、阻碍、见证与选择职责，并在同一条因果链中推进冲突。' }
@@ -1380,7 +1380,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
 
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return { templates: [], diagnostics: [] }
         case 'fs_check_exists':
@@ -1443,7 +1443,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
 
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1497,7 +1497,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
 
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1548,7 +1548,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
 
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1603,7 +1603,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': committedThenCancelledContext.cancelled = true; return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': committedThenCancelledContext.cancelled = true; return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1652,7 +1652,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1719,7 +1719,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1782,7 +1782,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1857,7 +1857,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     const generateStream = createResponseStream(['{"slots":['], ['length'])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -1927,7 +1927,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return []
         case 'fs_check_exists':
@@ -1979,7 +1979,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global':
           return { templates: [], diagnostics: [] }
         case 'fs_check_exists':
@@ -2037,7 +2037,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     let committedEntries: CharacterRosterEntry[] | undefined
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
-        case 'character_proposal_stage': return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        case 'character_proposal_stage': return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
         case 'prompt_load_global': return { templates: [], diagnostics: [] }
         case 'fs_check_exists': return false
         case 'db_project_core_get': return { premise: '这是一段足够长且包含明确冲突的故事前提，用于验证模型生成的完整自由描述必须保留尾部澄清句，并且不得静默丢失否定事实或改变作者材料中的原始含义。' }
@@ -2098,7 +2098,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
       const generateStream = createResponseStream([JSON.stringify(manifestFor(rosterEntries)), JSON.stringify(invalid)])
       useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
       const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-        if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+        if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
         if (channel === 'fs_check_exists') return false
@@ -2128,7 +2128,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
         const generateStream = createResponseStream([JSON.stringify(manifestFor(rosterEntries)), JSON.stringify(invalid)])
         useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
         const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-          if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+          if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
           if (channel === 'fs_check_exists') return false
@@ -2156,7 +2156,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     const generateStream = createResponseStream([JSON.stringify(manifestFor(rosterEntries)), JSON.stringify(missingState)])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -2184,7 +2184,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     ])
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -2220,7 +2220,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     })
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false
@@ -2258,7 +2258,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
     })
     useLLMStore.setState({ defaultModelId: 'model-1', generateStream })
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.source as { source: CharacterProposalSource }).source)
+      if (channel === 'character_proposal_stage') return proposalBatchFixture((args.request as { source: CharacterProposalSource }).source)
       if (channel === 'character_proposal_approve') return { batch: { proposalBatchId: 'fixture-proposals', revision: 1, status: 'approved', items: [] } as unknown as CharacterProposalBatch, created: [] }
       if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
       if (channel === 'fs_check_exists') return false

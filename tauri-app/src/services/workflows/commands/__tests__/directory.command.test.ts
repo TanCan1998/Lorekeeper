@@ -345,7 +345,7 @@ describe('GenerateDirectoryCommand', () => {
     await command.execute({ step: {}, context: workflowContext(), callbacks: stepCallbacks() })
 
     expect(invoke.mock.calls.find(([channel]) => channel === 'db_blueprint_commit_range')?.[1])
-      .toMatchObject({ startChapter: 10, endChapter: 10 })
+      .toMatchObject({ request: { startChapter: 10, endChapter: 10 }, projectSession: workflowContext().projectSession })
   })
 
   it('fails before opening a runtime when finalized authority is discontinuous', async () => {
@@ -704,10 +704,10 @@ describe('GenerateDirectoryCommand', () => {
 
     expect(invoke.mock.calls.find(([channel]) => channel === 'db_blueprint_commit_range')?.[1])
       .toMatchObject({
-        mode: 'replace-range',
-        startChapter: 2,
-        endChapter: 3,
-        blueprints: [{ chapterNumber: 2 }, { chapterNumber: 3 }],
+        request: { mode: 'replace-range', startChapter: 2, endChapter: 3,
+          blueprints: [{ chapterNumber: 2 }, { chapterNumber: 3 }],
+        },
+        projectSession: workflowContext().projectSession,
       })
   })
 
@@ -1421,7 +1421,7 @@ describe('GenerateDirectoryCommand', () => {
     expect(committedAt).toBeGreaterThanOrEqual(0)
     expect(syncAt).toBeGreaterThan(committedAt)
     expect(invoke).toHaveBeenCalledWith('character_proposal_stage', {
-      source: { kind: 'directory', operationId: 'blueprint-sync-directory-test-run-1-1' },
+      request: { source: { kind: 'directory', operationId: 'blueprint-sync-directory-test-run-1-1' } },
       projectSession: context.projectSession,
     }, undefined)
     expect(invoke.mock.calls.some(([channel]) => channel === 'db_character_roster_commit')).toBe(false)
