@@ -7616,6 +7616,145 @@ mod tests {
         fixture.state.close_project_database().unwrap();
     }
 
+    fn assert_production_agent_close_and_reopen(completed: bool) {
+        let fixture = ProductionExecutionFixture::new(false).for_agent();
+        let handle = handle_of(&fixture.run);
+        let completed_rounds = if completed {
+            let (execution, result) = fixture.start_agent();
+            fixture.release.notify_one();
+            let response = result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            execution.join().unwrap();
+            assert_eq!(response["rounds"][0]["status"], "completed");
+            Some(response["rounds"].clone())
+        } else {
+            None
+        };
+        let (global_root, old_leases) = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            (owner.global_data_root.clone(), owner.lease_store.clone())
+        };
+        let history: Option<(String, String, String)> = fixture.state.with_project_db(|conn| {
+            if !completed { return Ok(None); }
+            conn.query_row("SELECT r.binding_json,a.attempt_json,a.usage_receipt_json FROM generation_runs r
+                JOIN generation_attempts a USING(run_id) WHERE r.run_id=?1", [&fixture.run.run_id],
+                |row| Ok(Some((row.get(0)?,row.get(1)?,row.get(2)?))))
+                .map_err(|error|error.to_string())
+        }).unwrap();
+        fixture.state.close_project_database().unwrap();
+        assert!(!fixture.state.project_database_open());
+        assert!(fixture.state.active_project_snapshot().is_none());
+        assert_eq!(old_leases.lock().unwrap().live_lease_count(), 0);
+        assert!(crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &fixture.request,
+            Some(&fixture.session)
+        )
+        .is_err());
+        let mut reopened = fixture.session.clone();
+        reopened.lease_id = "production-agent-reopened".to_string();
+        fixture
+            .state
+            .activate_project(ActiveProject {
+                project_id: reopened.project_id.clone(),
+                lease_id: reopened.lease_id.clone(),
+                root_path: reopened.project_path.clone(),
+            })
+            .unwrap();
+        // 同一路径的新会话也不能复用已关闭会话的授权。
+        assert!(crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &fixture.request,
+            Some(&fixture.session)
+        )
+        .is_err());
+        let recovered = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&reopened, || fixture.state.active_project_snapshot())
+                .unwrap();
+            let owner = guard.owner();
+            owner.global_data_root = global_root;
+            fixture.state.with_project_db(|conn| {
+                let recovery = owner.agent_resume(conn, &handle)?;
+                assert_eq!(recovery.handle.root_action_id, fixture.run.root_action_id);
+                assert_eq!(recovery.handle.run_id, fixture.run.run_id);
+                assert_eq!(recovery.source_status, "current");
+                let budget = owner.repository.budget(conn, &fixture.run.root_action_id)?;
+                assert_eq!(budget.root.epoch, reopened.lease_id);
+                assert_eq!(budget.attempts.len(), usize::from(completed));
+                assert_eq!(begin_run_count(conn), 2);
+                let roots: i64 = conn.query_row("SELECT COUNT(*) FROM generation_roots", [], |row|row.get(0))
+                    .map_err(|error|error.to_string())?;
+                assert_eq!(roots, 2);
+                if let Some((binding, attempt, usage)) = &history {
+                    // 完成回复只接管控制，历史身份和调用均保持原始字节。
+                    assert_eq!(recovery.handle.epoch, fixture.session.lease_id);
+                    assert_eq!(serde_json::to_value(&recovery.rounds).unwrap(), *completed_rounds.as_ref().unwrap());
+                    let current: (String,String,String) = conn.query_row(
+                        "SELECT r.binding_json,a.attempt_json,a.usage_receipt_json FROM generation_runs r
+                         JOIN generation_attempts a USING(run_id) WHERE r.run_id=?1", [&fixture.run.run_id],
+                        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(|error|error.to_string())?;
+                    assert_eq!(&current.0,binding);
+                    assert_eq!(&current.1,attempt);
+                    let mut current_usage: Value = serde_json::from_str(&current.2).unwrap();
+                    assert_eq!(current_usage.as_object_mut().unwrap().remove("agentControlEpoch"),Some(json!(reopened.lease_id)));
+                    assert_eq!(current_usage,serde_json::from_str::<Value>(usage).unwrap());
+                    assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(),0);
+                } else {
+                    assert_eq!(recovery.handle.epoch,reopened.lease_id);
+                    assert_eq!(recovery.next_round,Some(0));
+                    assert!(matches!(owner.prepare_agent_round(conn,&json!({"handle":recovery.handle,"index":0}))?,
+                        crate::services::agent_generation::PreparedAgentRound::Execute(_)));
+                    assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(),1);
+                }
+                Ok(recovery)
+            }).unwrap()
+        };
+        if completed {
+            // 旧历史句柄在新会话中仅重放，不能生成第二次物理请求。
+            let replay = crate::commands::generation::execute_agent_round_for_state(
+                &fixture.state,
+                &fixture.request,
+                Some(&reopened),
+            )
+            .unwrap();
+            assert_eq!(
+                replay["rounds"],
+                serde_json::to_value(recovered.rounds).unwrap()
+            );
+        }
+        assert!(fixture
+            .state
+            .generation_owners
+            .execution_controls
+            .lock()
+            .unwrap()
+            .is_empty());
+        fixture.state.close_project_database().unwrap();
+        assert_eq!(old_leases.lock().unwrap().live_lease_count(), 0);
+    }
+
+    #[test]
+    fn production_agent_unstarted_close_and_reopen_restores_same_root_without_dispatch_test() {
+        assert_production_agent_close_and_reopen(false);
+    }
+
+    #[test]
+    fn production_agent_completed_close_and_reopen_only_transfers_control_test() {
+        assert_production_agent_close_and_reopen(true);
+    }
+
     #[test]
     fn production_agent_resume_unknown_never_dispatches_again_and_cancel_stays_refused_test() {
         for cancel in [false, true] {
