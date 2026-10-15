@@ -1714,7 +1714,7 @@ fn is_draft_visible_text_version(value: &str) -> bool {
     value == "draft-visible-v1" || value == DRAFT_VISIBLE_TEXT_VERSION
 }
 
-fn strip_draft_thinking_tags(text: &str) -> String {
+pub(crate) fn strip_draft_thinking_tags(text: &str) -> String {
     if text.is_empty() {
         return text.to_string();
     }

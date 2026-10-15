@@ -2245,29 +2245,90 @@ fn normalize_finalized_character_proposal_source(
     )
 }
 
-/// `parseArchitectureCharacterProposal` —— 待移植桩。
+/// `parseArchitectureCharacterProposal`：B100 起委托 `character_proposal_parser`
+/// （1:1 平移 `src/shared/character-proposal-parser.ts`）。
 fn parse_architecture_character_proposal(
-    _manifest: &Value,
-    _details: &[Value],
-    _version: u8,
+    manifest: &Value,
+    details: &[Value],
+    version: u8,
 ) -> Result<Vec<Value>, String> {
-    // TODO(B1 后续批次)：平移 character-proposal-parser.ts。
-    Err(PENDING_MIGRATION_CODE.to_string())
+    let manifest = artifact_from_value(manifest)?;
+    let details = details
+        .iter()
+        .map(artifact_from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::services::character_proposal_parser::parse_architecture_character_proposal(
+        &manifest, &details, version,
+    )
 }
 
-/// `parsePlanningMaterialCharacterProposal` —— 待移植桩。
+/// `parsePlanningMaterialCharacterProposal`：B100 起委托 `character_proposal_parser`。
 fn parse_planning_material_character_proposal(
-    _artifacts: &[Value],
-    _expected_source_ids: &[Value],
+    artifacts: &[Value],
+    expected_source_ids: &[Value],
 ) -> Result<Vec<Value>, String> {
-    // TODO(B1 后续批次)：平移 character-proposal-parser.ts。
-    Err(PENDING_MIGRATION_CODE.to_string())
+    let artifacts = artifacts
+        .iter()
+        .map(artifact_from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected = expected_source_ids
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "CHARACTER_PROPOSAL_SOURCE_INVALID".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::services::character_proposal_parser::parse_planning_material_character_proposal(
+        &artifacts, &expected,
+    )
 }
 
-/// `characterProposalMaterialChunks` —— 待移植桩。
-fn character_proposal_material_chunks(_materials: &[Value]) -> Result<Vec<Value>, String> {
-    // TODO(B1 后续批次)：平移 character-proposal-parser.ts。
-    Err(PENDING_MIGRATION_CODE.to_string())
+/// `characterProposalMaterialChunks`：B100 起委托 `character_proposal_parser`，
+/// 返回分块 `sourceId` 列表（调用点用它作为期望来源集合）。
+fn character_proposal_material_chunks(materials: &[Value]) -> Result<Vec<Value>, String> {
+    let materials = materials
+        .iter()
+        .map(|value| {
+            let file_name = value
+                .get("fileName")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "CHARACTER_PROPOSAL_SOURCE_INVALID".to_string())?;
+            let text = value
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "CHARACTER_PROPOSAL_SOURCE_INVALID".to_string())?;
+            Ok::<_, String>(crate::services::character_proposal_parser::MaterialInput {
+                file_name: file_name.to_string(),
+                text: text.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(
+        crate::services::character_proposal_parser::character_proposal_material_chunks(&materials)
+            .into_iter()
+            .map(|chunk| Value::String(chunk.source_id))
+            .collect(),
+    )
+}
+
+/// `{artifactId, text}` 产物引用 → 解析器输入。
+fn artifact_from_value(
+    value: &Value,
+) -> Result<crate::services::character_proposal_parser::Artifact, String> {
+    let artifact_id = value
+        .get("artifactId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "CHARACTER_PROPOSAL_ARTIFACT_INVALID".to_string())?;
+    let text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "CHARACTER_PROPOSAL_ARTIFACT_INVALID".to_string())?;
+    Ok(crate::services::character_proposal_parser::Artifact {
+        artifact_id: artifact_id.to_string(),
+        text: text.to_string(),
+    })
 }
 
 /// `importCharacterEntriesFromArtifacts` —— 推理产物回放。

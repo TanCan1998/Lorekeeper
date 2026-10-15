@@ -9,6 +9,7 @@
 
 pub mod avatar_image;
 pub mod character_proposal;
+pub mod character_proposal_parser;
 pub mod draft_reconciliation;
 pub mod draft_short_outline;
 pub mod main_generation_owner;
