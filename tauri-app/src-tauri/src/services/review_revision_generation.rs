@@ -27,10 +27,9 @@
 //!   快照投影（基线 `compareGenerationSourceBindings` /
 //!   `viewOf(run).candidates?.at(-1)`）——二者依赖
 //!   `MainGenerationOwner` 的 `rebuildBinding` / `currentModelReceipt` /
-//!   `snapshotOf`，owner 尚未接入命令层，故命令层本轮以保守占位
-//!   注入（`sources_match` 恒真、`snapshot` 恒 `None`），待
-//!   owner 命令层接入波次补齐；占位只会放宽 `sourceStatus` /
-//!   `latestArtifact` 的判定，不会误存。
+//!   `viewOf(run).candidates`，已由命令层按真实实现注入
+//!   （`assert_review_sources_current` / `review_revision_sources_match` /
+//!   `review_revision_candidate_snapshot`）。
 //!
 //! # 共享纯函数随调用图平移（私有项）
 //!

@@ -18,11 +18,8 @@
 //! 以同一断言闭包作二级门禁，失败收敛为 `GENERATION_OWNER_CLOSED`。
 //!
 //! `assertSourcesCurrent` / `compareGenerationSourceBindings` / 候选快照
-//! 投影依赖 `MainGenerationOwner` 的 `rebuildBinding` / `currentModelReceipt`
-//! / `snapshotOf`，owner 尚未接入命令层，本轮以保守占位注入
-//! （`assert_sources` 恒通过、`sources_match` 恒真、`snapshot` 恒 `None`），
-//! 待 owner 命令层接入波次补齐（见
-//! `services/review_revision_generation.rs` 文件头注「依赖注入」）。
+//! 投影由 `MainGenerationOwner` 的真实实现注入：`assert_sources_current`、
+//! `rebuild_binding` + `current_model_receipt` 与 `view_of(run).candidates`。
 
 use serde::Deserialize;
 use tauri::State;
@@ -104,12 +101,18 @@ pub async fn review_revision_commit_review(
 ) -> Result<ReviewRevisionCommitReceipt, String> {
     let state = state.inner();
     assert_current_session(state, project_session.as_ref())?;
+    let cache = &state.generation_owners;
+    let mut guard =
+        crate::commands::generation::authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner: &crate::services::main_generation_owner::MainGenerationOwner = guard.owner();
     let scope = scope_of(state)?;
     let service = ReviewRevisionGeneration::new(GenerationRunRepository::default(), scope);
-    // 基线 `assertSourcesCurrent` 依赖 owner 的 `rebuildBinding` /
-    // `currentModelReceipt`（owner 未接入命令层），本轮保守占位：恒通过。
-    let assert_sources = |_handle: &MainGenerationRunHandle| Ok(());
-    state.with_project_db(|conn| service.commit_review(conn, &request, assert_sources))
+    // 基线 `assertSourcesCurrent`：提交前复核源 / 模型 / 模板仍为当前。
+    state.with_project_db(|conn| {
+        let assert_sources =
+            |handle: &MainGenerationRunHandle| owner.assert_review_sources_current(conn, handle);
+        service.commit_review(conn, &request, assert_sources)
+    })
 }
 
 /// `review-revision:commit-revision` —— 提交已生成的修稿正文
@@ -122,11 +125,18 @@ pub async fn review_revision_commit_revision(
 ) -> Result<ReviewRevisionCommitReceipt, String> {
     let state = state.inner();
     assert_current_session(state, project_session.as_ref())?;
+    let cache = &state.generation_owners;
+    let mut guard =
+        crate::commands::generation::authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner: &crate::services::main_generation_owner::MainGenerationOwner = guard.owner();
     let scope = scope_of(state)?;
     let service = ReviewRevisionGeneration::new(GenerationRunRepository::default(), scope);
-    // 占位理由同 `review_revision_commit_review`。
-    let assert_sources = |_handle: &MainGenerationRunHandle| Ok(());
-    state.with_project_db(|conn| service.commit_revision(conn, &request, assert_sources))
+    // 基线 `assertSourcesCurrent`：占位理由同 `review_revision_commit_review`。
+    state.with_project_db(|conn| {
+        let assert_sources =
+            |handle: &MainGenerationRunHandle| owner.assert_review_sources_current(conn, handle);
+        service.commit_revision(conn, &request, assert_sources)
+    })
 }
 
 /// `review-revision:read-recovery` —— 读取候选恢复读面
@@ -139,14 +149,18 @@ pub async fn review_revision_read_recovery(
 ) -> Result<ReviewRevisionRecovery, String> {
     let state = state.inner();
     assert_current_session(state, project_session.as_ref())?;
+    let cache = &state.generation_owners;
+    let mut guard =
+        crate::commands::generation::authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner: &crate::services::main_generation_owner::MainGenerationOwner = guard.owner();
     let scope = scope_of(state)?;
     let service = ReviewRevisionGeneration::new(GenerationRunRepository::default(), scope);
-    // 基线 `sourcesMatch` / `snapshot` 依赖 owner 的
-    // `compareGenerationSourceBindings` / `viewOf(run).candidates?.at(-1)`
-    // （owner 未接入命令层），本轮保守占位：恒真 / 恒 `None`。
-    let sources_match = |_run: &DurableGenerationRun| true;
-    let snapshot = |_run: &DurableGenerationRun| None;
+    // 基线 `sourcesMatch` / `snapshot`：源绑定比对与最新候选快照。
     state.with_project_db(|conn| {
+        let sources_match =
+            |run: &DurableGenerationRun| owner.review_revision_sources_match(conn, run);
+        let snapshot =
+            |run: &DurableGenerationRun| owner.review_revision_candidate_snapshot(conn, run);
         service.read_recovery(conn, &request.handle, sources_match, snapshot)
     })
 }

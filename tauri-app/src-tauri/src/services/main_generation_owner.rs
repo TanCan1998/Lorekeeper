@@ -4083,6 +4083,50 @@ impl MainGenerationOwner {
         self.assert_binding_current(conn, &run.binding)
     }
 
+    /// 基线 `assertSourcesCurrent`（review-revision 提交路径注入的闭包）：
+    /// 提交前要求运行仍为当前源、模型与模板。
+    pub fn assert_review_sources_current(
+        &self,
+        conn: &Connection,
+        handle: &crate::repositories::generation_run_repository::MainGenerationRunHandle,
+    ) -> Result<(), String> {
+        let handle =
+            serde_json::to_value(handle).map_err(|error| mutating_error(&error.to_string()))?;
+        self.assert_sources_current(conn, &handle, None)
+    }
+
+    /// 基线 `readRecovery` 的 `sourcesMatch`：
+    /// `compareGenerationSourceBindings(run.binding, rebuildBinding(run.binding,
+    /// currentModelReceipt(run.binding)))`。模型缺失或源漂移导致无法重建时按不一致处理。
+    pub fn review_revision_sources_match(
+        &self,
+        conn: &Connection,
+        run: &crate::repositories::generation_run_repository::DurableGenerationRun,
+    ) -> bool {
+        match self.rebuild_binding(conn, &run.binding) {
+            Ok(rebuilt) => {
+                crate::services::generation_source_binding::compare_generation_source_bindings(
+                    &run.binding,
+                    &rebuilt,
+                )
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// 基线 `viewOf(run).candidates?.at(-1)`：恢复读面的候选快照投影。
+    pub fn review_revision_candidate_snapshot(
+        &self,
+        conn: &Connection,
+        run: &crate::repositories::generation_run_repository::DurableGenerationRun,
+    ) -> Option<Value> {
+        self.view_of(conn, run).ok().and_then(|view| {
+            view.get("candidates")
+                .and_then(Value::as_array)
+                .and_then(|items| items.last().cloned())
+        })
+    }
+
     /// 构造角色提案服务（对齐基线 main-generation-owner.ts:880-896
     /// `characters` 依赖）：prove 闭包内 `assertCurrent` +
     /// `proveCharacterProposal`，其 `assertSources` 闭包做
@@ -16093,6 +16137,36 @@ data: [DONE]
             .unwrap_err();
         assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
     }
+    // ===== B102: review-revision 恢复投影 =====
+
+    #[test]
+    fn review_revision_projections_follow_binding_state_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let run = open_run(&conn, "project-1", "lease-1", "review-chapter").expect("open run");
+        let handle: crate::repositories::generation_run_repository::MainGenerationRunHandle =
+            serde_json::from_value(handle_of(&run)).expect("run handle");
+
+        // 模型库中不存在该运行引用的模型 → 无法重建绑定 → 视为不一致。
+        assert!(!owner.review_revision_sources_match(&conn, &run));
+        // 新运行尚无候选产物 → 快照为空。
+        assert!(owner
+            .review_revision_candidate_snapshot(&conn, &run)
+            .is_none());
+        // 提交前源时效断言不会静默通过（模型缺失时明确失败）。
+        let error = owner
+            .assert_review_sources_current(&conn, &handle)
+            .unwrap_err();
+        assert!(error.contains("GENERATION_MODEL_MISSING"), "{error}");
+        // 句柄身份不匹配仍被拒绝。
+        let mut mismatched = handle.clone();
+        mismatched.run_id = "nonexistent-run".to_string();
+        assert!(owner
+            .assert_review_sources_current(&conn, &mismatched)
+            .is_err());
+    }
+
     // ===== B99: finalized-character 提交与准入 =====
 
     #[test]

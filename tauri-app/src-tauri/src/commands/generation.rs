@@ -125,7 +125,7 @@ pub struct GenerationReadBatchRequest {
 /// 会话再认证 + 活跃项目库校验，返回持锁的 owner 守卫。
 /// 会话缺失时按基线 register catch 前的守卫文案拒绝
 /// （对齐 `commands/review_revision.rs` 的同型门禁）。
-fn authorized_gate<'a>(
+pub(crate) fn authorized_gate<'a>(
     cache: &'a MainGenerationOwnerCache,
     state: &'a AppState,
     project_session: Option<&'a ProjectSessionContext>,
