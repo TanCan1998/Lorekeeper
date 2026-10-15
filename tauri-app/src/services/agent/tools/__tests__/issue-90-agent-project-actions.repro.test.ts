@@ -11,6 +11,8 @@ import { PROJECT_FACT_TARGETS } from '../../../project-fact-targets'
 import { createAgentExecutionContext } from '../project-context'
 import { startWorkflowTool as productionStartWorkflowTool } from '../start-workflow.tool'
 import { writeFileTool } from '../write-file.tool'
+import * as writingSkillBindings from '../../writing-skill-bindings'
+import { GenerateDraftCommand } from '../../../workflows/commands/generate-draft.command'
 
 const projectPath = 'C:\\novels\\issue-90'
 const project = {
@@ -49,7 +51,7 @@ const startWorkflowTool = {
   },
 }
 
-function stubWorkflowIpc(overrides: Partial<Record<string, unknown>> = {}): ReturnType<typeof vi.fn> {
+function stubWorkflowIpc(overrides: Partial<Record<string, unknown>> = {}) {
   const invoke = vi.fn((command: string, args?: Record<string, unknown>) => {
     // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为
     // 命名参数对象（单对象参数登记为 `request`）并追加 projectSession 尾参。
@@ -167,7 +169,7 @@ describe('Issue #90 AI assistant project actions', () => {
   })
 
   it('returns no workflow artifact when a canonical guard rejects the Agent action', async () => {
-    stubWorkflowIpc({ 'db:character-get-all': [] })
+    stubWorkflowIpc({ db_character_get_all: [] })
 
     const result = await startWorkflowTool.execute({ workflow: 'generate_draft', chapter_number: 1 }, createAgentExecutionContext())
 
@@ -327,6 +329,39 @@ describe('Issue #90 AI assistant project actions', () => {
       projectPath,
       status: 'running',
     }))
+  })
+
+  it('将主进程登记身份和父根传到实际草稿命令，重放不重复启动命令', async () => {
+    const freeze = vi.spyOn(writingSkillBindings, 'freezeWritingSkillsSnapshot').mockResolvedValue({})
+    let finish!: (text: string) => void
+    const pending = new Promise<string>(resolve => { finish = resolve })
+    const execute = vi.spyOn(GenerateDraftCommand.prototype, 'execute').mockReturnValue(pending)
+    const invoke = stubWorkflowIpc()
+    try {
+      const result = await startWorkflowTool.execute({ workflow: 'generate_draft', chapter_number: 1 }, createAgentExecutionContext())
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1))
+      const context = execute.mock.calls[0][0].context
+      expect(context).toMatchObject({ runId: 'registration-synthetic-action-0', generationModelId: 'model',
+        agentWorkflowRegistrationId: 'registration-synthetic-action-0',
+        mainGenerationRootHandle: { projectId: project.id, epoch: project.sessionLease,
+          rootActionId: 'synthetic-agent-root', runId: 'synthetic-agent-run' } })
+      expect(result.artifacts?.[0]?.runId).toBe(context.runId)
+      const registration = { registrationId: context.runId, workflow: 'generate_draft', chapterNumber: 1,
+        parentHandle: context.mainGenerationRootHandle, modelId: 'model', state: 'registered', childHandles: [] }
+      const original = invoke.getMockImplementation()!
+      invoke.mockImplementation((command, args) => command === 'agent_generation_register_workflow'
+        ? Promise.resolve(registration) : original(command, args))
+      const replay = await startWorkflowTool.execute({ workflow: 'generate_draft', chapter_number: 1 }, createAgentExecutionContext())
+      expect(replay.artifacts?.[0]?.runId).toBe(context.runId)
+      expect(execute).toHaveBeenCalledTimes(1)
+      expect(useWorkflowStore.getState().activeRuns).toHaveLength(1)
+      finish('合成草稿命令结果')
+      await vi.waitFor(() => expect(useWorkflowStore.getState().history).toContainEqual(expect.objectContaining({ id: context.runId, status: 'completed' })))
+    } finally {
+      finish('合成草稿命令结果')
+      execute.mockRestore()
+      freeze.mockRestore()
+    }
   })
 
   it('returns an English start receipt from the frozen project writing language', async () => {
