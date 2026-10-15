@@ -9,6 +9,14 @@
  *       而不是 Tauri 原生的 `Unknown Error: Command xxx not found`。
  */
 export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
+  'agent-generation:begin',
+  'agent-generation:claim-tool',
+  'agent-generation:commit-domain-tool',
+  'agent-generation:finish-tool',
+  'agent-generation:read',
+  'agent-generation:register-workflow',
+  'agent-generation:resume',
+  'agent-generation:round',
   'chapter:confirm-legacy-knowledge-absent',
   'chapter:delete-finalized',
   'chapter:list-incomplete-deletions',

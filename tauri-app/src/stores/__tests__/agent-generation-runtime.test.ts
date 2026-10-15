@@ -18,7 +18,10 @@ const project = { id: session.projectId, sessionLease: session.leaseId, path: se
     coreOutline: '', worldSetting: '', goldenFinger: '', protagonistProfile: '', globalGuidance: '' } }
 let fixture: AgentHostFixture
 const lastMessage = () => useAgentStore.getState().getActiveConversation()?.messages.at(-1)
-const calls = (channel: string) => fixture.invoke.mock.calls.filter(call => call[0] === channel)
+// 将真实 Tauri 命名参数展开为频道合同，保留业务断言；不伪装 Electron 传输。
+const calls = (channel: string) => fixture.invoke.mock.calls
+  .filter(call => call[0] === channel.replace(/[:-]/g, '_'))
+  .map(([command, args]) => [command, args.request ?? args.handle ?? args, args.projectSession] as const)
 
 describe('Agent GenerationRuntime boundary', () => {
   beforeEach(() => {

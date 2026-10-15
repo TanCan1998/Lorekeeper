@@ -262,6 +262,15 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'generation:read-visible-composition': ['handle'],
   'generation:read-context': ['handle'],
   'generation:read-batch': ['batchId'],
+  // Agent 频道均为单一 request 对象，会话由项目域尾参注入。
+  'agent-generation:begin': ['request'],
+  'agent-generation:read': ['request'],
+  'agent-generation:resume': ['request'],
+  'agent-generation:round': ['request'],
+  'agent-generation:claim-tool': ['request'],
+  'agent-generation:finish-tool': ['request'],
+  'agent-generation:register-workflow': ['request'],
+  'agent-generation:commit-domain-tool': ['request'],
   // 批次 G4-6b：主生成 owner 写面（generation:* 4 频道）
   'generation:begin': ['selection'],
   'generation:bind-material-decision': ['request'],

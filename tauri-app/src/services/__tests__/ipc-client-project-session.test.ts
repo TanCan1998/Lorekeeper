@@ -17,6 +17,14 @@ beforeEach(() => {
     commands: {
       db_blueprint_get_all: [],
       fs_grant_write_file: { success: true },
+      agent_generation_begin: null,
+      agent_generation_read: null,
+      agent_generation_resume: null,
+      agent_generation_round: null,
+      agent_generation_claim_tool: null,
+      agent_generation_finish_tool: null,
+      agent_generation_register_workflow: null,
+      agent_generation_commit_domain_tool: null,
     },
   })
   setActiveProjectSessionContext({
@@ -47,6 +55,23 @@ describe('project-scoped IPC session transport', () => {
       },
     }])
   })
+
+  it.each([
+    'agent-generation:begin', 'agent-generation:read', 'agent-generation:resume',
+    'agent-generation:round', 'agent-generation:claim-tool', 'agent-generation:finish-tool',
+    'agent-generation:register-workflow', 'agent-generation:commit-domain-tool',
+  ] as const)('按命名参数发送 %s 并附带项目会话', async channel => {
+    // 这里只验证传输打包；领域请求校验由后端合同测试覆盖。
+    const request = { synthetic: 'agent-transport' }
+    await ipc.invoke(channel, request as never)
+    expect(tauriInternals.invoke.mock.calls[0]?.slice(0, 2)).toEqual([
+      channel.replace(/[:-]/g, '_'),
+      { request, projectSession: {
+        projectId: 'project-A', leaseId: 'lease-A', projectPath: 'C:/projects/A',
+      } },
+    ])
+  })
+
 
   it('allows a capability-grant filesystem request without an active project session', async () => {
     setActiveProjectSessionContext(null)
