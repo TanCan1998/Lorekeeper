@@ -1,4 +1,4 @@
-//! services —— 领域服务的纯 Rust 逻辑层（批次 B5 起）。
+﻿//! services —— 领域服务的纯 Rust 逻辑层（批次 B5 起）。
 //!
 //! 首批成员：`avatar_image`（自 `electron/services/avatar-image.ts` 移植的头像压缩）。
 //! B1-W3 起：`main_generation_owner`（主生成 owner 骨架——per-database
@@ -45,6 +45,7 @@ pub mod agent_domain_tool_effect;
 pub mod agent_generation;
 pub mod agent_generation_context;
 pub mod editor_inline_generation;
+pub mod finalization_generation;
 pub mod finalization_generation_source;
 pub mod generation_draft_effects; // 批次 G4-5：批量草稿效应读面（generation:* 读面依赖）
 pub mod generation_source_binding; // 批次 G4-6a：生成源绑定服务层（平移自 electron/services/generation-source-binding.ts）

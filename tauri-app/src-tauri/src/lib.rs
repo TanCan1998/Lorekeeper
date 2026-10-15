@@ -1,4 +1,4 @@
-//! Tauri 2 后端入口 —— 迁移自 `electron/main.ts` + `electron/ipc-handlers.ts`。
+﻿//! Tauri 2 后端入口 —— 迁移自 `electron/main.ts` + `electron/ipc-handlers.ts`。
 //!
 //! 迁移纪律（docs-fork/agents/pi-development.md）：
 //! - 每个 `src/shared/ipc-channels.ts` 频道对应一个 `#[tauri::command]`，契约唯一事实源不变；
@@ -321,6 +321,12 @@ pub fn run() {
             // 批次 B95：导入生成（import-generation:* 2 频道）
             commands::import_generation_read,
             commands::import_generation_execute,
+            // 批次 B96：定稿后续生成（finalization-generation:* 5 频道）
+            commands::finalization_generation_read,
+            commands::finalization_generation_begin,
+            commands::finalization_generation_execute,
+            commands::finalization_generation_commit,
+            commands::finalization_generation_cancel,
             // 批次 G4-9a：角色提案（character-proposal:* 6 频道
             // + character-identity:read）
             commands::character_proposal_stage,

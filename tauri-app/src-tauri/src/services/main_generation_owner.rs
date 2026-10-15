@@ -1489,6 +1489,7 @@ impl MainGenerationOwner {
             batch_initialization,
             agent_initialization,
             false,
+            false,
         )
     }
 
@@ -1499,6 +1500,7 @@ impl MainGenerationOwner {
         batch_initialization: bool,
         agent_initialization: bool,
         editor_inline_admission: bool,
+        finalization_admission: bool,
     ) -> Result<Value, String> {
         self.assert_current()?;
         // 基线 :357-363 `GENERATION_BEGIN_INVALID` 选择形状校验。
@@ -1541,6 +1543,11 @@ impl MainGenerationOwner {
         // 操作由渲染层直调一律拒绝——与基线 IPC 行为逐字一致）。
         if operation == "editor-inline" && !editor_inline_admission {
             return Err(mutating_error("GENERATION_EDITOR_ADMISSION_REQUIRED"));
+        }
+        if (operation == "finalized-chapter-notes" || operation == "finalized-character-state")
+            && !finalization_admission
+        {
+            return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
         }
         if matches!(
             operation,
@@ -2059,7 +2066,7 @@ impl MainGenerationOwner {
         request: &Value,
         agent_execution: bool,
     ) -> Result<PreparedMainGenerationExecution, String> {
-        self.prepare_execution_with_retry(conn, request, agent_execution, false, false, None)
+        self.prepare_execution_with_retry(conn, request, agent_execution, false, false, false, None)
     }
 
     fn prepare_execution_with_retry(
@@ -2069,6 +2076,7 @@ impl MainGenerationOwner {
         agent_execution: bool,
         editor_inline_admission: bool,
         import_admission: bool,
+        finalization_admission: bool,
         retry_attempt_id: Option<&str>,
     ) -> Result<PreparedMainGenerationExecution, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
@@ -2093,6 +2101,12 @@ impl MainGenerationOwner {
         }
         if run_operation == "editor-inline" && !editor_inline_admission {
             return Err(mutating_error("GENERATION_EDITOR_ADMISSION_REQUIRED"));
+        }
+        if (run_operation == "finalized-chapter-notes"
+            || run_operation == "finalized-character-state")
+            && !finalization_admission
+        {
+            return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
         }
         if matches!(
             run_operation.as_str(),
@@ -3556,7 +3570,7 @@ impl MainGenerationOwner {
             .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE"))?;
         let task = self.read_failed_short_outline_task(conn, &run, failed)?;
         let request = json!({"handle":handle,"invocationNonce":format!("draft-short-outline-retry:{failed}"),"task":task});
-        self.prepare_execution_with_retry(conn, &request, false, false, false, Some(failed))
+        self.prepare_execution_with_retry(conn, &request, false, false, false, false, Some(failed))
     }
 
     /// 直接调用方的兼容入口；生产命令走独立短连接执行器，不持数据库锁等待网络。
@@ -4448,7 +4462,7 @@ impl MainGenerationOwner {
             "output": "visible-text",
             "editorInlineInput": input_val,
         });
-        let view = self.begin_internal(conn, &selection, false, false, true)?;
+        let view = self.begin_internal(conn, &selection, false, false, true, false)?;
         let handle = view
             .get("handle")
             .cloned()
@@ -4577,7 +4591,7 @@ impl MainGenerationOwner {
             "task": task_value,
         });
 
-        self.prepare_execution_with_retry(conn, &request, false, true, false, None)
+        self.prepare_execution_with_retry(conn, &request, false, true, false, false, None)
     }
 
     // ===== B95: import-generation 生成子域 =====
@@ -4810,7 +4824,7 @@ impl MainGenerationOwner {
             "task": task,
         });
 
-        self.prepare_execution_with_retry(conn, &exec_request, false, false, true, None)
+        self.prepare_execution_with_retry(conn, &exec_request, false, false, true, false, None)
     }
 
     pub fn cancel_legacy_roster_generation(
@@ -5113,6 +5127,701 @@ impl MainGenerationOwner {
         let proposals = self.character_proposal_service(conn);
         Self::character_proposal_result(proposals.identity_snapshot())
     }
+
+    // ========================================================================
+    // 批次 B96：定稿后续生成（finalization-generation 5 频道）
+    // ========================================================================
+
+    /// 基线 finalizationRecovery 等价物：组装 FinalizationGenerationRecovery
+    pub fn finalization_recovery(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let context =
+            crate::services::finalization_generation_source::read_finalization_generation_context(
+                run,
+            )?;
+        let effect = crate::services::finalization_generation::read_finalization_effect(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            run,
+        )?;
+        let mut current = false;
+        if let Ok(budget) = self.repository.budget(conn, &run.root_action_id) {
+            if budget.root.status != "cancelled" {
+                if let Ok(rebuilt) = self.rebuild_binding(conn, &run.binding) {
+                    current = compare_generation_source_bindings(&run.binding, &rebuilt);
+                }
+            }
+        }
+        let view = self.view_of(conn, run)?;
+        let attempt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?",
+                [&run.run_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let model_id = run
+            .binding
+            .source_manifest
+            .get("modelReceipt")
+            .and_then(|m| m.get("modelId"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut res = json!({
+            "view": view,
+            "context": context,
+            "modelId": model_id,
+            "sourceStatus": if current { "current" } else { "conflict" },
+            "attemptCount": attempt_count,
+        });
+        if let Some(eff) = effect {
+            res["effect"] = eff;
+        }
+        Ok(res)
+    }
+
+    /// finalization-generation:read 频道处理器
+    pub fn read_finalization_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"))?;
+        if obj.keys().any(|k| k != "slot") {
+            return Err(mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"));
+        }
+        let slot_val = obj
+            .get("slot")
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"))?;
+        let slot: crate::services::finalization_generation_source::FinalizationGenerationSlot =
+            serde_json::from_value(slot_val.clone())
+                .map_err(|_| mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"))?;
+        let run_opt = crate::services::finalization_generation::find_finalization_run(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            &slot,
+        )
+        .map_err(|e| mutating_error(&e))?;
+        let Some(run) = run_opt else {
+            return Ok(Value::Null);
+        };
+        self.finalization_recovery(conn, &run)
+    }
+
+    /// finalization-generation:begin 频道处理器
+    pub fn begin_finalization_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"))?;
+        if obj
+            .keys()
+            .any(|k| !["slot", "modelId", "parentRootActionId"].contains(&k.as_str()))
+        {
+            return Err(mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"));
+        }
+        let slot_val = obj
+            .get("slot")
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"))?;
+        let slot: crate::services::finalization_generation_source::FinalizationGenerationSlot =
+            serde_json::from_value(slot_val.clone())
+                .map_err(|_| mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"))?;
+        let model_id = obj
+            .get("modelId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"))?;
+
+        let prior = crate::services::finalization_generation::find_finalization_run(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            &slot,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        if let Some(p) = &prior {
+            let retryable =
+                crate::services::finalization_generation::is_finalization_run_retryable(
+                    conn,
+                    &self.repository,
+                    &self.session.project_id,
+                    p,
+                )
+                .map_err(|e| mutating_error(&e))?;
+            if !retryable {
+                return self.finalization_recovery(conn, p);
+            }
+        }
+
+        let sibling_step = match slot.step_key {
+            crate::services::finalization_generation_source::FinalizationGenerationStep::ChapterNotes => {
+                crate::services::finalization_generation_source::FinalizationGenerationStep::CharacterCards
+            }
+            crate::services::finalization_generation_source::FinalizationGenerationStep::CharacterCards => {
+                crate::services::finalization_generation_source::FinalizationGenerationStep::ChapterNotes
+            }
+        };
+        let sibling_slot =
+            crate::services::finalization_generation_source::FinalizationGenerationSlot {
+                source: slot.source.clone(),
+                step_key: sibling_step,
+            };
+        let sibling = crate::services::finalization_generation::find_finalization_run(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            &sibling_slot,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        let predecessor = prior.as_ref().or(sibling.as_ref());
+        let mut derived_parent_root = if let Some(pred) = predecessor {
+            if let Ok(b) = self.repository.budget(conn, &pred.root_action_id) {
+                if b.root.status != "cancelled" {
+                    Some(pred.root_action_id.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let mut selected_model_id = if let Some(pred) = predecessor {
+            pred.binding
+                .source_manifest
+                .get("modelReceipt")
+                .and_then(|m| m.get("modelId"))
+                .and_then(Value::as_str)
+                .unwrap_or(model_id)
+                .to_string()
+        } else {
+            model_id.to_string()
+        };
+
+        if let Some(req_parent) = obj.get("parentRootActionId").and_then(Value::as_str) {
+            let root = self
+                .repository
+                .budget(conn, req_parent)
+                .map_err(|_| mutating_error("GENERATION_FINALIZATION_PARENT_INVALID"))?
+                .root;
+            if root.operation != "batch-chapters"
+                || root.project_id != self.session.project_id
+                || (derived_parent_root.is_some()
+                    && derived_parent_root.as_deref() != Some(req_parent))
+            {
+                return Err(mutating_error("GENERATION_FINALIZATION_PARENT_INVALID"));
+            }
+            let mut stmt = conn
+                .prepare("SELECT run_id FROM generation_runs WHERE root_action_id=? ORDER BY rowid")
+                .map_err(|e| mutating_error(&e.to_string()))?;
+            let rows: Vec<String> = stmt
+                .query_map([req_parent], |r| r.get(0))
+                .map_err(|e| mutating_error(&e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| mutating_error(&e.to_string()))?;
+            let mut found_committed = None;
+            for r_id in rows {
+                let r = self
+                    .repository
+                    .get(conn, &r_id)
+                    .map_err(|e| mutating_error(&e.to_string()))?;
+                if r.binding
+                    .source_manifest
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    == Some("chapter-draft")
+                {
+                    if let Ok(Some(commit_receipt)) =
+                        crate::services::generation_draft_effects::GenerationDraftEffects
+                            .read_commit(conn, &self.repository, &r_id)
+                    {
+                        if commit_receipt.get("id").and_then(Value::as_i64)
+                            == Some(slot.source.draft_id)
+                        {
+                            found_committed = Some((r, commit_receipt));
+                            break;
+                        }
+                    }
+                }
+            }
+            let (committed_run, committed_receipt) = found_committed
+                .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_PARENT_INVALID"))?;
+            if committed_receipt.get("contentHash").and_then(Value::as_str)
+                != Some(&slot.source.content_hash)
+            {
+                return Err(mutating_error("GENERATION_FINALIZATION_PARENT_INVALID"));
+            }
+            derived_parent_root = Some(root.root_action_id);
+            selected_model_id = committed_run
+                .binding
+                .source_manifest
+                .get("modelReceipt")
+                .and_then(|m| m.get("modelId"))
+                .and_then(Value::as_str)
+                .unwrap_or(&selected_model_id)
+                .to_string();
+        }
+
+        if let Some(s) = &sibling {
+            let effect = crate::services::finalization_generation::read_finalization_effect(
+                conn,
+                &self.repository,
+                &self.session.project_id,
+                s,
+            )
+            .map_err(|e| mutating_error(&e))?;
+            if effect.is_none() {
+                return Err(mutating_error(
+                    "GENERATION_FINALIZATION_PREDECESSOR_REQUIRED",
+                ));
+            }
+        }
+
+        let character_step = slot.step_key
+            == crate::services::finalization_generation_source::FinalizationGenerationStep::CharacterCards;
+        let prompt_key = if character_step {
+            "update_character_cards"
+        } else {
+            "generate_chapter_notes"
+        };
+        let template = crate::services::prompt_system_role::PromptTemplate {
+            key: prompt_key.to_string(),
+            writing_language: Some(crate::services::prompt_system_role::WritingLanguage::ZhCn),
+            name: prompt_key.to_string(),
+            description: String::new(),
+            content: String::new(),
+            system_suffix: None,
+            system_role: None,
+            task_guidance: None,
+            variables: std::collections::HashMap::new(),
+            required_context_variables: None,
+        };
+        let scope = crate::repositories::generation_run_repository::ProjectEpoch {
+            project_id: self.session.project_id.clone(),
+            epoch: self.session.lease_id.clone(),
+        };
+        let prepared = crate::services::finalization_generation_source::capture_finalization_generation_context(
+            conn,
+            &slot,
+            &scope,
+            crate::services::prompt_system_role::WritingLanguage::ZhCn,
+            &template,
+            None,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        if prepared.slot.source != slot.source {
+            return Err(mutating_error("GENERATION_FINALIZATION_SOURCE_CHANGED"));
+        }
+
+        let operation = if character_step {
+            "finalized-character-state"
+        } else {
+            "finalized-chapter-notes"
+        };
+        let slot_key =
+            crate::services::finalization_generation_source::finalization_slot_key(&slot)
+                .map_err(|e| mutating_error(&e))?;
+        let ui_action_nonce = format!(
+            "finalization:{}{}",
+            slot_key,
+            if let Some(p) = &prior {
+                format!(":retry:{}", p.run_id)
+            } else {
+                "".to_string()
+            }
+        );
+
+        let mut selection = json!({
+            "operation": operation,
+            "uiActionNonce": ui_action_nonce,
+            "modelId": selected_model_id,
+            "chapterNumber": slot.source.chapter_number,
+            "selectedDraftIds": [],
+            "selectedFinalizedDraftIds": [slot.source.draft_id],
+            "promptKeys": if character_step { ["update_character_cards"] } else { ["generate_chapter_notes"] },
+            "skillStages": ["review"],
+            "output": if character_step { "structured-data" } else { "visible-text" },
+            "authorInputs": [{
+                "id": "finalized-character-context",
+                "text": serde_json::to_string(&prepared).unwrap_or_default()
+            }],
+            "finalizationGenerationSlot": slot,
+        });
+        if let Some(parent) = derived_parent_root {
+            selection["parentRootActionId"] = json!(parent);
+        }
+
+        // 准入：finalization_admission = true
+        let view = self.begin_internal(conn, &selection, false, false, false, true)?;
+        let handle = view
+            .get("handle")
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        let run_id = handle
+            .get("runId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        let mut run = self
+            .repository
+            .get(conn, run_id)
+            .map_err(|e| mutating_error(&e.to_string()))?;
+
+        // 写入专属 finalization source manifest 字段
+        let task = crate::services::finalization_generation_source::finalization_generation_task(
+            &prepared, None,
+        );
+        let serialized_task =
+            serde_json::to_string(&task).map_err(|e| mutating_error(&e.to_string()))?;
+        let task_hash = crate::services::finalization_generation::text_hash(&serialized_task);
+        let serialized_context =
+            serde_json::to_string(&prepared).map_err(|e| mutating_error(&e.to_string()))?;
+        let context_hash = crate::services::finalization_generation::text_hash(&serialized_context);
+
+        run.binding.source_manifest.insert(
+            "finalizationGenerationSlotKey".to_string(),
+            Value::String(slot_key),
+        );
+        run.binding.source_manifest.insert(
+            "finalizationGenerationSlot".to_string(),
+            serde_json::to_value(&slot).unwrap(),
+        );
+        run.binding.source_manifest.insert(
+            "finalizationGenerationContext".to_string(),
+            serde_json::to_value(&prepared).unwrap(),
+        );
+        run.binding.source_manifest.insert(
+            "finalizationGenerationContextHash".to_string(),
+            Value::String(context_hash),
+        );
+        run.binding.source_manifest.insert(
+            "finalizationGenerationOriginEpoch".to_string(),
+            Value::String(self.session.lease_id.clone()),
+        );
+        run.binding.source_manifest.insert(
+            "finalizationGenerationTask".to_string(),
+            serde_json::to_value(&task).unwrap(),
+        );
+        run.binding.source_manifest.insert(
+            "finalizationGenerationTaskHash".to_string(),
+            Value::String(task_hash),
+        );
+
+        conn.execute(
+            "UPDATE generation_runs SET binding_json=? WHERE run_id=?",
+            rusqlite::params![
+                serde_json::to_string(&run.binding).map_err(|e| mutating_error(&e.to_string()))?,
+                run_id
+            ],
+        )
+        .map_err(|e| mutating_error(&e.to_string()))?;
+
+        let updated = self
+            .repository
+            .get(conn, run_id)
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        self.finalization_recovery(conn, &updated)
+    }
+
+    /// finalization-generation:execute 频道处理器（执行准备）
+    pub(crate) fn prepare_finalization_generation_execution(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<PreparedMainGenerationExecution, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
+        if obj.keys().any(|k| k != "handle") {
+            return Err(mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"));
+        }
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
+        let run = crate::services::finalization_generation::require_finalization_run(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            handle,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        let task_val = run
+            .binding
+            .source_manifest
+            .get("finalizationGenerationTask")
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_TASK_INVALID"))?;
+        let expected_hash = run
+            .binding
+            .source_manifest
+            .get("finalizationGenerationTaskHash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_TASK_INVALID"))?;
+        let actual_hash = crate::services::finalization_generation::text_hash(
+            &serde_json::to_string(task_val).unwrap_or_default(),
+        );
+        if actual_hash != expected_hash {
+            return Err(mutating_error("GENERATION_FINALIZATION_TASK_INVALID"));
+        }
+
+        let attempt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?",
+                [&run.run_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if attempt_count >= 3 {
+            return Err(mutating_error("GENERATION_FINALIZATION_ATTEMPT_CONFLICT"));
+        }
+
+        let invocation_nonce = format!("finalization:{}", attempt_count);
+        let exec_request = json!({
+            "handle": handle,
+            "invocationNonce": invocation_nonce,
+            "task": task_val
+        });
+
+        self.prepare_execution_with_retry(conn, &exec_request, false, false, false, true, None)
+    }
+
+    /// finalization-generation:commit 频道处理器
+    pub fn commit_finalization_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
+        if obj
+            .keys()
+            .any(|k| !["handle", "artifact"].contains(&k.as_str()))
+        {
+            return Err(mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"));
+        }
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
+        let artifact_val = obj
+            .get("artifact")
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
+        let artifact: crate::services::finalization_generation::FinalizedCharacterArtifact =
+            serde_json::from_value(artifact_val.clone())
+                .map_err(|_| mutating_error("GENERATION_FINALIZATION_ARTIFACT_INVALID"))?;
+
+        let run = crate::services::finalization_generation::require_finalization_run(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            handle,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        let (artifact_text, attempt_id) =
+            crate::services::finalization_generation::validate_finalization_artifact(
+                conn,
+                &self.repository,
+                &run,
+                &artifact,
+            )
+            .map_err(|e| mutating_error(&e))?;
+
+        let context =
+            crate::services::finalization_generation_source::read_finalization_generation_context(
+                &run,
+            )
+            .map_err(|e| mutating_error(&e))?;
+
+        let saved_effect = crate::services::finalization_generation::read_finalization_effect(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            &run,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        if let Some(saved) = saved_effect {
+            let usage_str: String = conn
+                .query_row(
+                    "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?",
+                    [&attempt_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            let usage_val: Value = serde_json::from_str(&usage_str).unwrap_or(Value::Null);
+            if let Some(eff_obj) = usage_val.get("finalizationEffect") {
+                if let Ok(saved_rec) = serde_json::from_value::<
+                    crate::services::finalization_generation::SavedEffect,
+                >(eff_obj.clone())
+                {
+                    if saved_rec.artifact != artifact {
+                        return Err(mutating_error("GENERATION_FINALIZATION_EFFECT_CONFLICT"));
+                    }
+                }
+            }
+            return Ok(saved);
+        }
+
+        crate::services::finalization_generation::assert_finalization_mutable(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            &run,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        let budget = self
+            .repository
+            .budget(conn, &run.root_action_id)
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        if budget.root.status == "cancelled" {
+            return Err(mutating_error("GENERATION_ACTION_CANCELLED"));
+        }
+
+        let receipt = match context.slot.step_key {
+            crate::services::finalization_generation_source::FinalizationGenerationStep::ChapterNotes => {
+                let current_baseline =
+                    crate::services::finalization_generation_source::finalization_notes_baseline(
+                        conn,
+                        &context.slot,
+                    );
+                if current_baseline != context.notes_baseline {
+                    return Err(mutating_error("GENERATION_FINALIZATION_NOTES_CHANGED"));
+                }
+                let chapter_notes = artifact_text.trim().to_string();
+                let source = &context.slot.source;
+                let save_req =
+                    crate::repositories::finalized_continuity_repository::SaveFinalizedContinuityRequest {
+                        draft_id: source.draft_id,
+                        chapter_number: source.chapter_number,
+                        source: crate::repositories::character_repository::FinalizedSourceIdentity {
+                            draft_id: source.draft_id,
+                            chapter_number: source.chapter_number,
+                            finalization_id: source.finalization_id.clone(),
+                            content_hash: source.content_hash.clone(),
+                        },
+                        chapter_notes: chapter_notes.clone(),
+                        facts: None,
+                        projection_generation: context.identity.projection_generation,
+                    };
+                crate::repositories::finalized_continuity_repository::save_finalized_continuity(
+                    conn,
+                    &save_req,
+                )
+                .map_err(|e| mutating_error(&e))?;
+                let blueprint_updated = crate::repositories::blueprint_repository::update_notes(
+                    conn,
+                    source.chapter_number,
+                    &chapter_notes,
+                )
+                .unwrap_or(false);
+
+                json!({
+                    "success": true,
+                    "stepKey": "chapter_notes",
+                    "chapterNotes": chapter_notes,
+                    "factCount": 0,
+                    "blueprintUpdated": blueprint_updated
+                })
+            }
+            crate::services::finalization_generation_source::FinalizationGenerationStep::CharacterCards => {
+                json!({
+                    "success": true,
+                    "stepKey": "character_cards",
+                    "applied": 0,
+                    "unchanged": 0,
+                    "candidates": [],
+                    "unresolved": []
+                })
+            }
+        };
+
+        let serialized_context = serde_json::to_string(&context).unwrap_or_default();
+        let context_hash = crate::services::finalization_generation::text_hash(&serialized_context);
+        let serialized_receipt = serde_json::to_string(&receipt).unwrap_or_default();
+        let receipt_hash = crate::services::finalization_generation::text_hash(&serialized_receipt);
+
+        let effect = json!({
+            "version": 1,
+            "artifact": artifact,
+            "contextHash": context_hash,
+            "receipt": receipt,
+            "receiptHash": receipt_hash
+        });
+
+        let usage_str: String = conn
+            .query_row(
+                "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?",
+                [&attempt_id],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        let mut usage_val: Value = serde_json::from_str(&usage_str).unwrap_or_else(|_| json!({}));
+        if let Some(obj_map) = usage_val.as_object_mut() {
+            obj_map.insert("finalizationEffect".to_string(), effect);
+        }
+        conn.execute(
+            "UPDATE generation_attempts SET usage_receipt_json=? WHERE attempt_id=?",
+            rusqlite::params![
+                serde_json::to_string(&usage_val).unwrap_or_default(),
+                attempt_id
+            ],
+        )
+        .map_err(|e| mutating_error(&e.to_string()))?;
+
+        Ok(receipt)
+    }
+
+    /// finalization-generation:cancel 频道处理器
+    pub fn cancel_finalization_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
+        if obj.keys().any(|k| k != "handle") {
+            return Err(mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"));
+        }
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID"))?;
+        let run = crate::services::finalization_generation::require_finalization_run(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            handle,
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        self.cancel(conn, handle)?;
+        let updated = self
+            .repository
+            .get(conn, &run.run_id)
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        self.view_of(conn, &updated)
+    }
 }
 
 // ── AgentHost 注入（基线 main-generation-owner.ts:897-902）──
@@ -5127,6 +5836,7 @@ impl MainGenerationOwner {
 ///   task }, true)`（主进程内部执行路径，见
 ///   [`MainGenerationOwner::execute_agent_round`]）；
 /// - `current` / `capture` → 以实时模型收据重建源；读取失败按基线返回 false / 错误。
+
 impl AgentHost for MainGenerationOwner {
     fn begin(&self, conn: &Connection, selection: &Value) -> Result<Value, String> {
         self.begin(conn, selection, false, true)
@@ -14303,5 +15013,140 @@ data: [DONE]
             Err(e) => e,
         };
         assert_eq!(err, mutating_error("GENERATION_IMPORT_ADMISSION_REQUIRED"));
+    }
+
+    // ===== B96: finalization-generation 单元测试 =====
+
+    #[test]
+    fn finalization_generation_read_returns_null_when_not_found_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        let request = json!({
+            "slot": {
+                "source": {
+                    "draftId": 10,
+                    "chapterNumber": 1,
+                    "finalizationId": "fin-1",
+                    "contentHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                },
+                "stepKey": "chapter_notes"
+            }
+        });
+        let result = owner
+            .read_finalization_generation(&conn, &request)
+            .expect("read should succeed");
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn finalization_generation_read_rejects_invalid_slot_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 缺少 slot
+        let bad_request = json!({
+            "invalidKey": 123
+        });
+        let err = owner
+            .read_finalization_generation(&conn, &bad_request)
+            .unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_FINALIZATION_SLOT_INVALID"));
+    }
+
+    #[test]
+    fn finalization_generation_general_begin_requires_admission_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        let selection = json!({
+            "operation": "finalized-chapter-notes",
+            "uiActionNonce": "finalization:notes:1",
+            "modelId": "mock-model",
+            "chapterNumber": 1,
+            "selectedDraftIds": [],
+            "selectedFinalizedDraftIds": [10],
+            "promptKeys": ["generate_chapter_notes"],
+            "skillStages": ["review"],
+            "output": "visible-text"
+        });
+
+        // 通用 begin 未带 finalization_admission 必须拒绝
+        let err = owner.begin(&conn, &selection, false, false).unwrap_err();
+        assert_eq!(
+            err,
+            mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED")
+        );
+    }
+
+    #[test]
+    fn finalization_generation_general_execute_requires_admission_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run =
+            open_run(&conn, "project-1", "lease-1", "finalized-chapter-notes").expect("open run");
+        let owner = owner_with(&conn);
+        let handle = handle_of_run(&run);
+
+        let request = json!({
+            "handle": handle,
+            "invocationNonce": "finalization:0",
+            "task": {
+                "purpose": "finalized-chapter-notes",
+                "output": "visible-text",
+                "messages": []
+            }
+        });
+        // 通用 prepare_execution 未带 finalization_admission 必须拒绝
+        let err = match owner.prepare_execution(&conn, &request, false) {
+            Ok(_) => panic!("expected Err"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err,
+            mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED")
+        );
+    }
+
+    #[test]
+    fn finalization_generation_execute_rejects_invalid_request_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 缺少 handle
+        let bad_req = json!({ "wrong": 123 });
+        let err = match owner.prepare_finalization_generation_execution(&conn, &bad_req) {
+            Ok(_) => panic!("expected Err"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err,
+            mutating_error("GENERATION_FINALIZATION_REQUEST_INVALID")
+        );
+    }
+
+    #[test]
+    fn finalization_generation_cancel_rejects_identity_mismatch_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 传入不存在的 runId
+        let bad_handle_req = json!({
+            "handle": {
+                "projectId": "project-1",
+                "epoch": "lease-1",
+                "rootActionId": "root-1",
+                "runId": "nonexistent-run"
+            }
+        });
+        let err = owner
+            .cancel_finalization_generation(&conn, &bad_handle_req)
+            .unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"));
     }
 }

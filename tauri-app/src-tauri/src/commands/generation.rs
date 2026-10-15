@@ -2762,6 +2762,112 @@ pub async fn import_generation_execute(
     })
 }
 
+// ============================================================================
+// 批次 B96：定稿后续生成命令（finalization-generation 5 频道）
+// ============================================================================
+
+pub(crate) fn execute_finalization_generation_for_state(
+    state: &AppState,
+    request: &Value,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    let session = session.ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    let handle = request
+        .get("handle")
+        .cloned()
+        .ok_or_else(|| "GENERATION_RUN_IDENTITY_MISMATCH".to_string())?;
+    let database = GenerationExecutionDatabase {
+        state,
+        session,
+        handle: handle.clone(),
+    };
+    let execution = database.with_owner_connection(|owner, conn| {
+        let control =
+            state
+                .generation_owners
+                .register_execution_control(owner, conn, &database.handle)?;
+        let prepared = owner.prepare_finalization_generation_execution(conn, request)?;
+        Ok(ControlledGenerationExecution {
+            prepared,
+            _control: control,
+        })
+    })?;
+    let result = execution
+        .prepared
+        .execute_blocking_with_database(&database)?;
+    let outcome = database.with_owner_connection(|owner, conn| {
+        owner.finish_prepared_execution(conn, &execution.prepared, &result)
+    });
+    drop(execution);
+    outcome
+}
+
+#[tauri::command]
+pub async fn finalization_generation_read(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    let slot = request.get("slot").cloned().unwrap_or(request);
+    let wrapped = json!({ "slot": slot });
+    state.with_project_db(|conn| owner.read_finalization_generation(conn, &wrapped))
+}
+
+#[tauri::command]
+pub async fn finalization_generation_begin(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.begin_finalization_generation(conn, &request))
+}
+
+#[tauri::command]
+pub async fn finalization_generation_execute(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    tokio::task::block_in_place(|| {
+        execute_finalization_generation_for_state(state, &request, project_session.as_ref())
+    })
+}
+
+#[tauri::command]
+pub async fn finalization_generation_commit(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.commit_finalization_generation(conn, &request))
+}
+
+#[tauri::command]
+pub async fn finalization_generation_cancel(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.cancel_finalization_generation(conn, &request))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

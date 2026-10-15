@@ -313,6 +313,12 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   // 批次 B95：导入生成（import-generation:* 2 频道）
   'import-generation:read': ['request'],
   'import-generation:execute': ['request'],
+  // 批次 B96：定稿后续生成（finalization-generation:* 5 频道）
+  'finalization-generation:read': ['request'],
+  'finalization-generation:begin': ['request'],
+  'finalization-generation:execute': ['request'],
+  'finalization-generation:commit': ['request'],
+  'finalization-generation:cancel': ['request'],
   // 批次 G4-9a：角色提案（character-proposal:* 6 频道 +
   // character-identity:read；单对象参数频道统一登记 request
   // ——位置参数整体映射为命名参数 request，对齐基线 handler
