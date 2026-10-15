@@ -305,6 +305,11 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'legacy-roster:execute': ['request'],
   'legacy-roster:stage': ['request'],
   'legacy-roster:cancel': ['request'],
+  // 批次 B94：编辑器行内生成（editor-inline:* 4 频道）
+  'editor-inline:begin': ['request'],
+  'editor-inline:read-recovery': ['request'],
+  'editor-inline:execute': ['request'],
+  'editor-inline:cancel': ['request'],
   // 批次 G4-9a：角色提案（character-proposal:* 6 频道 +
   // character-identity:read；单对象参数频道统一登记 request
   // ——位置参数整体映射为命名参数 request，对齐基线 handler

@@ -7,12 +7,12 @@
 //! cancel / evidence / 身份快照；prove 注入式，五分支证明结构含待移植叶函数桩）。
 //! 约定：纯逻辑、无 Tauri 依赖，由 commands 层按需调用。
 
-pub mod project_peek;
 pub mod avatar_image;
 pub mod character_proposal;
 pub mod draft_reconciliation;
 pub mod draft_short_outline;
 pub mod main_generation_owner;
+pub mod project_peek;
 
 // ── 批次 G4-1：生成采集器与纯逻辑面（移植自 electron/services/）──
 // 依赖关系：source_ref 为共享内核（SourceRef/FrozenInputFingerprint 等）；

@@ -117,7 +117,9 @@ impl<'a> LegacyRosterGeneration<'a> {
         if !keys_subset(handle, &["projectId", "epoch", "rootActionId", "runId"]) {
             return Err("GENERATION_RUN_IDENTITY_MISMATCH".to_string());
         }
-        let run = self.runs.get(self.conn, handle["runId"].as_str().unwrap_or_default())?;
+        let run = self
+            .runs
+            .get(self.conn, handle["runId"].as_str().unwrap_or_default())?;
         let context = read_legacy_roster_generation_context(&run)?;
         if handle["projectId"].as_str() != Some(self.project_id)
             || run.binding.project_id != *self.project_id
@@ -185,10 +187,9 @@ impl<'a> LegacyRosterGeneration<'a> {
 
     fn saved(&self, run: &DurableGenerationRun) -> Result<Option<StoredLegacyProposal>, String> {
         let context = read_legacy_roster_generation_context(run)?;
-        let context_json = serde_json::to_value(&context)
-            .map_err(|error| error.to_string())?;
-        let context_payload = serde_json::to_string(&context_json)
-            .map_err(|error| error.to_string())?;
+        let context_json = serde_json::to_value(&context).map_err(|error| error.to_string())?;
+        let context_payload =
+            serde_json::to_string(&context_json).map_err(|error| error.to_string())?;
         let context_hash = text_hash(&context_payload);
         let mut statement = self
             .conn
@@ -249,7 +250,11 @@ impl<'a> LegacyRosterGeneration<'a> {
     }
 
     pub fn assert_mutable(&self, run: &DurableGenerationRun) -> Result<(), String> {
-        if run.binding.source_manifest.get("legacyRosterContext").is_some()
+        if run
+            .binding
+            .source_manifest
+            .get("legacyRosterContext")
+            .is_some()
             && self.saved(run)?.is_some()
         {
             return Err("GENERATION_LEGACY_EFFECT_SEALED".to_string());
@@ -307,8 +312,7 @@ impl<'a> LegacyRosterGeneration<'a> {
         assert_sources(&run)?;
         let batch = self.proposals.stage(&proof_source)?;
         let context_hash = text_hash(
-            &serde_json::to_string(&proof["context"])
-                .map_err(|error| error.to_string())?,
+            &serde_json::to_string(&proof["context"]).map_err(|error| error.to_string())?,
         );
         let effect = json!({
             "version": 1,

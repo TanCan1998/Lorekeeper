@@ -1483,6 +1483,23 @@ impl MainGenerationOwner {
         batch_initialization: bool,
         agent_initialization: bool,
     ) -> Result<Value, String> {
+        self.begin_internal(
+            conn,
+            selection,
+            batch_initialization,
+            agent_initialization,
+            false,
+        )
+    }
+
+    pub fn begin_internal(
+        &self,
+        conn: &Connection,
+        selection: &Value,
+        batch_initialization: bool,
+        agent_initialization: bool,
+        editor_inline_admission: bool,
+    ) -> Result<Value, String> {
         self.assert_current()?;
         // 基线 :357-363 `GENERATION_BEGIN_INVALID` 选择形状校验。
         let Some(operation) = selection.get("operation").and_then(Value::as_str) else {
@@ -1513,6 +1530,7 @@ impl MainGenerationOwner {
                 BEGIN_ALLOWED_KEYS.contains(&key.as_str())
                     || (agent_initialization
                         && matches!(key.as_str(), "agentInput" | "agentSession"))
+                    || (editor_inline_admission && key.as_str() == "editorInlineInput")
             })
         });
         if !operation_valid || !prompt_keys_valid || parent_invalid || !nonce_valid || !keys_valid {
@@ -1521,7 +1539,7 @@ impl MainGenerationOwner {
         // 基线 :364-369 与 :376 子生成器准入（IPC 边界初始化标志恒为
         // false，故 editor-inline / 定稿 / 图 / 旧 roster / agent-round
         // 操作由渲染层直调一律拒绝——与基线 IPC 行为逐字一致）。
-        if operation == "editor-inline" {
+        if operation == "editor-inline" && !editor_inline_admission {
             return Err(mutating_error("GENERATION_EDITOR_ADMISSION_REQUIRED"));
         }
         if matches!(
@@ -2041,7 +2059,7 @@ impl MainGenerationOwner {
         request: &Value,
         agent_execution: bool,
     ) -> Result<PreparedMainGenerationExecution, String> {
-        self.prepare_execution_with_retry(conn, request, agent_execution, None)
+        self.prepare_execution_with_retry(conn, request, agent_execution, false, None)
     }
 
     fn prepare_execution_with_retry(
@@ -2049,6 +2067,7 @@ impl MainGenerationOwner {
         conn: &Connection,
         request: &Value,
         agent_execution: bool,
+        editor_inline_admission: bool,
         retry_attempt_id: Option<&str>,
     ) -> Result<PreparedMainGenerationExecution, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
@@ -2070,7 +2089,7 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_IMPORT_ADMISSION_REQUIRED"));
         }
-        if run_operation == "editor-inline" {
+        if run_operation == "editor-inline" && !editor_inline_admission {
             return Err(mutating_error("GENERATION_EDITOR_ADMISSION_REQUIRED"));
         }
         if matches!(
@@ -3020,9 +3039,7 @@ impl MainGenerationOwner {
         if agent_initialization && !conn.is_autocommit() {
             return Err(mutating_error(GENERATION_REQUEST_FAILED));
         }
-        let blocked = if operation == "editor-inline" {
-            Some("GENERATION_EDITOR_ADMISSION_REQUIRED")
-        } else if !agent_initialization
+        let blocked = if !agent_initialization
             && (operation == "agent-round"
                 || ["agentInput", "agentSession", "agentAdmission"]
                     .iter()
@@ -3537,7 +3554,7 @@ impl MainGenerationOwner {
             .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE"))?;
         let task = self.read_failed_short_outline_task(conn, &run, failed)?;
         let request = json!({"handle":handle,"invocationNonce":format!("draft-short-outline-retry:{failed}"),"task":task});
-        self.prepare_execution_with_retry(conn, &request, false, Some(failed))
+        self.prepare_execution_with_retry(conn, &request, false, false, Some(failed))
     }
 
     /// 直接调用方的兼容入口；生产命令走独立短连接执行器，不持数据库锁等待网络。
@@ -4335,6 +4352,232 @@ impl MainGenerationOwner {
     /// 请求校验（handle 键集）→ `legacyRosters.require(handle)` 身份
     /// 校验 → `service.cancel(run.rootActionId)`（`repository.pause(cancel=true)`
     /// 等价物）→ `viewOf` 运行视图。
+
+    // ===== B94: editor-inline 生成子域 =====
+
+    pub fn begin_editor_inline(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
+        self.assert_current()?;
+        let Some(obj) = request.as_object() else {
+            return Err(mutating_error("GENERATION_EDITOR_INPUT_INVALID"));
+        };
+        if obj
+            .keys()
+            .any(|k| !matches!(k.as_str(), "input" | "modelId" | "uiActionNonce"))
+        {
+            return Err(mutating_error("GENERATION_EDITOR_INPUT_INVALID"));
+        }
+        let Some(ui_action_nonce) = obj.get("uiActionNonce").and_then(Value::as_str) else {
+            return Err(mutating_error("GENERATION_EDITOR_INPUT_INVALID"));
+        };
+        let trimmed_nonce = ui_action_nonce.trim();
+        if trimmed_nonce.is_empty() || trimmed_nonce.chars().count() > 256 {
+            return Err(mutating_error("GENERATION_EDITOR_INPUT_INVALID"));
+        }
+        let Some(input_val) = obj.get("input") else {
+            return Err(mutating_error("GENERATION_EDITOR_INPUT_INVALID"));
+        };
+        let input =
+            crate::services::editor_inline_generation::validate_editor_inline_input(input_val)
+                .map_err(|e| mutating_error(&e))?;
+        let Some(model_id) = obj.get("modelId").and_then(Value::as_str) else {
+            return Err(mutating_error("GENERATION_EDITOR_INPUT_INVALID"));
+        };
+
+        // 查询幂等性：查找相同 projectId 和 uiActionNonce 的已有 editor-inline 运行
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.run_id FROM generation_runs r
+                 JOIN generation_roots g ON g.root_action_id=r.root_action_id
+                 WHERE json_extract(g.action_json,'$.operation')='editor-inline'
+                   AND json_extract(g.action_json,'$.projectId')=?1
+                   AND json_extract(g.action_json,'$.uiActionNonce')=?2",
+            )
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        let run_ids = stmt
+            .query_map([&self.session.project_id, ui_action_nonce], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| mutating_error(&e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        drop(stmt);
+
+        if run_ids.len() > 1 {
+            return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
+        }
+        if let Some(run_id) = run_ids.first() {
+            let prior = self
+                .repository
+                .get(conn, run_id)
+                .map_err(|e| mutating_error(map_generation_error(&e)))?;
+            let prior_input = prior
+                .binding
+                .source_manifest
+                .get("editorInlineInput")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let input_value = serde_json::to_value(&input).unwrap_or(Value::Null);
+            let prior_model_id = prior
+                .binding
+                .source_manifest
+                .get("modelId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if prior_input != input_value || prior_model_id != model_id {
+                return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
+            }
+            let handle = serde_json::json!({
+                "projectId": prior.binding.project_id,
+                "rootActionId": prior.root_action_id,
+                "runId": prior.run_id,
+                "epoch": prior.binding.epoch,
+            });
+            return self.read_editor_inline_recovery(conn, &handle);
+        }
+
+        let selection = serde_json::json!({
+            "operation": "editor-inline",
+            "uiActionNonce": ui_action_nonce,
+            "modelId": model_id,
+            "selectedDraftIds": [],
+            "selectedFinalizedDraftIds": [],
+            "promptKeys": ["edit_selected_text"],
+            "skillStages": [],
+            "output": "visible-text",
+            "editorInlineInput": input_val,
+        });
+        let view = self.begin_internal(conn, &selection, false, false, true)?;
+        let handle = view
+            .get("handle")
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        self.read_editor_inline_recovery(conn, &handle)
+    }
+
+    pub fn read_editor_inline_recovery(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let run = self.require_run(conn, handle, false)?;
+        if run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            != Some("editor-inline")
+        {
+            return Err(mutating_error("GENERATION_EDITOR_HANDLE_INVALID"));
+        }
+        let context = crate::services::editor_inline_generation::read_editor_inline_context(&run)
+            .map_err(|e| mutating_error(&e))?;
+        let budget = self
+            .repository
+            .budget(conn, &run.root_action_id)
+            .map_err(|e| mutating_error(map_generation_error(&e)))?;
+        let is_not_cancelled = budget.root.status != "cancelled";
+        let is_current = if is_not_cancelled {
+            match self.rebuild_binding(conn, &run.binding) {
+                Ok(rebuilt) => run.binding == rebuilt,
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        let model_id = run
+            .binding
+            .source_manifest
+            .get("modelId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let view = self.view_of(conn, &run)?;
+
+        Ok(serde_json::json!({
+            "view": view,
+            "modelId": model_id,
+            "context": context,
+            "sourceStatus": if is_current { "current" } else { "conflict" },
+        }))
+    }
+
+    pub fn cancel_editor_inline(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
+        self.assert_current()?;
+        let run = self.require_run(conn, handle, false)?;
+        if run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            != Some("editor-inline")
+        {
+            return Err(mutating_error("GENERATION_EDITOR_HANDLE_INVALID"));
+        }
+        self.run_service
+            .cancel(conn, &run.root_action_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let run = self
+            .repository
+            .get(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.view_of(conn, &run)
+    }
+
+    pub(crate) fn prepare_editor_inline_execution(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+    ) -> Result<PreparedMainGenerationExecution, String> {
+        self.assert_current()?;
+        let run = self.require_run(conn, handle, true)?;
+        if run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            != Some("editor-inline")
+        {
+            return Err(mutating_error("GENERATION_EDITOR_HANDLE_INVALID"));
+        }
+        let task = crate::services::editor_inline_generation::read_editor_inline_task(&run)
+            .map_err(|e| mutating_error(&e))?;
+        let task_value = serde_json::to_value(&task).map_err(|e| mutating_error(&e.to_string()))?;
+
+        let attempt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?1",
+                [&run.run_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        if attempt_count != 0 {
+            return Err(mutating_error("GENERATION_EDITOR_ATTEMPT_CONFLICT"));
+        }
+
+        let view = self.view_of(conn, &run)?;
+        let non_replayable = view
+            .get("nonReplayable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let current_handle = if non_replayable {
+            let resumed_view = self.resume(conn, handle)?;
+            resumed_view
+                .get("handle")
+                .cloned()
+                .unwrap_or_else(|| handle.clone())
+        } else {
+            handle.clone()
+        };
+
+        let request = serde_json::json!({
+            "handle": current_handle,
+            "invocationNonce": "editor-inline:0",
+            "task": task_value,
+        });
+
+        self.prepare_execution_with_retry(conn, &request, false, true, None)
+    }
+
     pub fn cancel_legacy_roster_generation(
         &self,
         conn: &Connection,
@@ -13473,5 +13716,224 @@ data: [DONE]
         assert_eq!(snapshot["characters"], Value::Array(vec![]));
         assert_eq!(snapshot["aliases"], Value::Array(vec![]));
         assert_eq!(snapshot["relationships"], Value::Array(vec![]));
+    }
+
+    // ===== B94: editor-inline 单元测试 =====
+
+    #[test]
+    fn editor_inline_begin_rejects_invalid_inputs_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 非对象
+        assert_eq!(
+            owner.begin_editor_inline(&conn, &Value::Null).unwrap_err(),
+            mutating_error("GENERATION_EDITOR_INPUT_INVALID")
+        );
+
+        // 未知键
+        let bad_keys = json!({
+            "input": {
+                "action": "refine",
+                "documentText": "正文",
+                "from": 0,
+                "to": 2,
+                "selectedText": "正文",
+            },
+            "modelId": "model-1",
+            "uiActionNonce": "nonce-1",
+            "illegalKey": true,
+        });
+        assert_eq!(
+            owner.begin_editor_inline(&conn, &bad_keys).unwrap_err(),
+            mutating_error("GENERATION_EDITOR_INPUT_INVALID")
+        );
+
+        // 空 uiActionNonce
+        let empty_nonce = json!({
+            "input": {
+                "action": "refine",
+                "documentText": "正文",
+                "from": 0,
+                "to": 2,
+                "selectedText": "正文",
+            },
+            "modelId": "model-1",
+            "uiActionNonce": "   ",
+        });
+        assert_eq!(
+            owner.begin_editor_inline(&conn, &empty_nonce).unwrap_err(),
+            mutating_error("GENERATION_EDITOR_INPUT_INVALID")
+        );
+
+        // 超长 uiActionNonce (257 字符)
+        let long_nonce = json!({
+            "input": {
+                "action": "refine",
+                "documentText": "正文",
+                "from": 0,
+                "to": 2,
+                "selectedText": "正文",
+            },
+            "modelId": "model-1",
+            "uiActionNonce": "a".repeat(257),
+        });
+        assert_eq!(
+            owner.begin_editor_inline(&conn, &long_nonce).unwrap_err(),
+            mutating_error("GENERATION_EDITOR_INPUT_INVALID")
+        );
+
+        // 非法 input（负数 from / 越界 / 切片不匹配）
+        let bad_input = json!({
+            "input": {
+                "action": "refine",
+                "documentText": "正文",
+                "from": -1,
+                "to": 2,
+                "selectedText": "正文",
+            },
+            "modelId": "model-1",
+            "uiActionNonce": "nonce-1",
+        });
+        assert_eq!(
+            owner.begin_editor_inline(&conn, &bad_input).unwrap_err(),
+            mutating_error("GENERATION_EDITOR_INPUT_INVALID")
+        );
+    }
+
+    #[test]
+    fn editor_inline_general_begin_requires_admission_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        let selection = json!({
+            "operation": "editor-inline",
+            "uiActionNonce": "nonce-general",
+            "modelId": "model-1",
+            "selectedDraftIds": [],
+            "selectedFinalizedDraftIds": [],
+            "promptKeys": ["edit_selected_text"],
+            "skillStages": [],
+            "output": "visible-text",
+        });
+        // 通用 begin 未带 editor_inline_admission 必须拒绝
+        let err = owner.begin(&conn, &selection, false, false).unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_EDITOR_ADMISSION_REQUIRED"));
+    }
+
+    #[test]
+    fn editor_inline_read_recovery_and_cancel_rejects_wrong_operation_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("open run");
+        let owner = owner_with(&conn);
+        let handle = handle_of_run(&run);
+
+        // 对非 editor-inline 的 run 调用 read_editor_inline_recovery 必须返回 HANDLE_INVALID
+        let read_err = owner
+            .read_editor_inline_recovery(&conn, &handle)
+            .unwrap_err();
+        assert_eq!(read_err, mutating_error("GENERATION_EDITOR_HANDLE_INVALID"));
+
+        // 对非 editor-inline 的 run 调用 cancel_editor_inline 必须返回 HANDLE_INVALID
+        let cancel_err = owner.cancel_editor_inline(&conn, &handle).unwrap_err();
+        assert_eq!(
+            cancel_err,
+            mutating_error("GENERATION_EDITOR_HANDLE_INVALID")
+        );
+
+        // 对非 editor-inline 的 run 调用 prepare_editor_inline_execution 必须返回 HANDLE_INVALID
+        let prep_err = match owner.prepare_editor_inline_execution(&conn, &handle) {
+            Ok(_) => panic!("expected Err"),
+            Err(e) => e,
+        };
+        assert_eq!(prep_err, mutating_error("GENERATION_EDITOR_HANDLE_INVALID"));
+    }
+
+    #[test]
+    fn editor_inline_attempt_conflict_guard_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "editor-inline").expect("open run");
+        let owner = owner_with(&conn);
+        let handle = handle_of_run(&run);
+
+        // 构造合法的 inline context 和 task 以通过 read_editor_inline_task
+        let input_val = json!({
+            "action": "refine",
+            "documentText": "正文内容",
+            "from": 0,
+            "to": 2,
+            "selectedText": "正文",
+        });
+        let template = crate::services::prompt_system_role::PromptTemplate {
+            key: "edit_selected_text".to_string(),
+            writing_language: None,
+            name: "编辑".to_string(),
+            description: String::new(),
+            content: "{{edit_instruction}}\n{{selected_text}}".to_string(),
+            system_suffix: None,
+            system_role: None,
+            task_guidance: None,
+            variables: std::collections::HashMap::new(),
+            required_context_variables: None,
+        };
+        let context = crate::services::editor_inline_generation::build_editor_inline_context(
+            &input_val,
+            crate::services::prompt_system_role::WritingLanguage::ZhCn,
+            &template,
+        )
+        .unwrap();
+        let task = crate::services::editor_inline_generation::editor_inline_task(&context);
+        let context_json = serde_json::to_string(&context).unwrap();
+        let task_json = serde_json::to_string(&task).unwrap();
+        use sha2::{Digest, Sha256};
+        let hash = |s: &str| -> String { format!("{:x}", Sha256::digest(s.as_bytes())) };
+
+        let mut binding = run.binding.clone();
+        binding.source_manifest.insert(
+            "editorInlineContext".to_string(),
+            serde_json::to_value(&context).unwrap(),
+        );
+        binding.source_manifest.insert(
+            "editorInlineContextHash".to_string(),
+            Value::String(hash(&context_json)),
+        );
+        binding
+            .source_manifest
+            .insert("editorInlineInput".to_string(), input_val.clone());
+        binding.source_manifest.insert(
+            "editorInlineTask".to_string(),
+            serde_json::to_value(&task).unwrap(),
+        );
+        binding.source_manifest.insert(
+            "editorInlineTaskHash".to_string(),
+            Value::String(hash(&task_json)),
+        );
+        conn.execute(
+            "UPDATE generation_runs SET binding_json = ?1 WHERE run_id = ?2",
+            rusqlite::params![&serde_json::to_string(&binding).unwrap(), &run.run_id],
+        )
+        .unwrap();
+
+        // 在 generation_attempts 中插入一条伪造的尝试记录
+        conn.execute(
+            "INSERT INTO generation_attempts (
+                attempt_id, reservation_id, run_id, root_action_id, attempt_json, invocation_nonce
+            ) VALUES (
+                'attempt-1', 'res-1', ?1, ?2, '{}', 'editor-inline:0'
+            )",
+            [&run.run_id, &run.root_action_id],
+        )
+        .unwrap();
+
+        // 当存在尝试时，再次 prepare_editor_inline_execution 必须拦截并报 ATTEMPT_CONFLICT
+        let err = match owner.prepare_editor_inline_execution(&conn, &handle) {
+            Ok(_) => panic!("expected Err"),
+            Err(e) => e,
+        };
+        assert_eq!(err, mutating_error("GENERATION_EDITOR_ATTEMPT_CONFLICT"));
     }
 }

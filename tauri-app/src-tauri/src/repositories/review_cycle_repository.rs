@@ -3415,7 +3415,15 @@ pub fn get_by_review_id(
             "SELECT source_project_id,source_epoch,source_id,source_revision,source_content_hash
              FROM review_findings WHERE cycle_id=?1 LIMIT 1",
             [cycle_id.clone()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()
         .map_err(|error| format!("读取周期 findings 失败：{error}"))?;
@@ -3467,46 +3475,41 @@ pub fn get_by_review_id(
                 continue;
             }
             let objective = item.stable_fact_key.is_some() || goal.is_some();
-            let (
-                target_id,
-                quote,
-                expected_text,
-                anchored_status,
-                logical_identity,
-            ) = if let Some(goal) = goal {
-                (
-                    Some(goal.id.clone()),
-                    if goal.evidence.len() == 1 {
-                        Some(goal.evidence[0].quote.clone())
-                    } else {
-                        None
-                    },
-                    Some(format!("{}\n{}", goal.text, goal.description)),
-                    if goal.status == "unknown" {
-                        FindingStatus::Unknown
-                    } else {
-                        FindingStatus::Unresolved
-                    },
-                    format!("goal:{}", goal.id),
-                )
-            } else {
-                (
-                    item.stable_fact_key.clone(),
-                    item.quote.clone(),
-                    None,
-                    FindingStatus::Unresolved,
-                    if objective {
-                        format!(
-                            "preflight:{}",
-                            item.stable_fact_key
-                                .as_deref()
-                                .expect("objective 自由项必有稳定事实键")
-                        )
-                    } else {
-                        format!("free:{}", item.index)
-                    },
-                )
-            };
+            let (target_id, quote, expected_text, anchored_status, logical_identity) =
+                if let Some(goal) = goal {
+                    (
+                        Some(goal.id.clone()),
+                        if goal.evidence.len() == 1 {
+                            Some(goal.evidence[0].quote.clone())
+                        } else {
+                            None
+                        },
+                        Some(format!("{}\n{}", goal.text, goal.description)),
+                        if goal.status == "unknown" {
+                            FindingStatus::Unknown
+                        } else {
+                            FindingStatus::Unresolved
+                        },
+                        format!("goal:{}", goal.id),
+                    )
+                } else {
+                    (
+                        item.stable_fact_key.clone(),
+                        item.quote.clone(),
+                        None,
+                        FindingStatus::Unresolved,
+                        if objective {
+                            format!(
+                                "preflight:{}",
+                                item.stable_fact_key
+                                    .as_deref()
+                                    .expect("objective 自由项必有稳定事实键")
+                            )
+                        } else {
+                            format!("free:{}", item.index)
+                        },
+                    )
+                };
             let descriptor = finding(
                 &source,
                 &source_content,

@@ -2038,10 +2038,7 @@ pub(crate) fn read_legacy_roster_generation_proof(
         .map_err(|_| "GENERATION_LEGACY_CANDIDATE_INVALID".to_string())?;
     let entries = validate_legacy_roster_candidate(&candidate)
         .map_err(|_| "GENERATION_LEGACY_CANDIDATE_INVALID".to_string())?;
-    let candidate_entries = candidate["entries"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let candidate_entries = candidate["entries"].as_array().cloned().unwrap_or_default();
     let selection_key = |index: usize| format!("{}:entry:{}", artifact.artifact_id, index);
     let items: Vec<Value> = entries
         .iter()

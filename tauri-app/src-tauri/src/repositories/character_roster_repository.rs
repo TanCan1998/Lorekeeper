@@ -4114,8 +4114,7 @@ mod tests {
             "schemaVersion": 1,
             "entries": [entry_payload("林清玄", "protagonist")],
         });
-        let entries = validate_legacy_roster_candidate(&candidate)
-            .expect("合法候选应通过校验");
+        let entries = validate_legacy_roster_candidate(&candidate).expect("合法候选应通过校验");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "林清玄");
     }

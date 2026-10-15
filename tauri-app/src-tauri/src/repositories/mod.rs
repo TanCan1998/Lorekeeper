@@ -2,10 +2,10 @@
 //!
 //! 约定：仓储只接收 `&Connection`，不持有全局状态；命令层负责会话门禁与错误形状。
 
-pub mod project_overview_repository;
 pub mod blueprint_repository;
 pub mod chapter_deletion_repository;
 pub mod character_repository;
+pub mod project_overview_repository;
 // B2：角色身份六表（m02：origins/aliases/proposals/approvals/relationships/meta）
 pub mod character_identity_repository;
 pub mod character_roster_repository;

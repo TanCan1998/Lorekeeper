@@ -313,6 +313,11 @@ pub fn run() {
             commands::legacy_roster_execute,
             commands::legacy_roster_stage,
             commands::legacy_roster_cancel,
+            // 批次 B94：编辑器行内生成（editor-inline:* 4 频道）
+            commands::editor_inline_begin,
+            commands::editor_inline_read_recovery,
+            commands::editor_inline_execute,
+            commands::editor_inline_cancel,
             // 批次 G4-9a：角色提案（character-proposal:* 6 频道
             // + character-identity:read）
             commands::character_proposal_stage,

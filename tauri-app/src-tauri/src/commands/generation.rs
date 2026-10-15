@@ -2601,6 +2601,101 @@ pub async fn legacy_roster_cancel(
     state.with_project_db(|conn| owner.cancel_legacy_roster_generation(conn, &request))
 }
 
+// ===== B94: editor-inline 生成子域 =====
+
+pub(crate) fn execute_editor_inline_for_state(
+    state: &AppState,
+    request: &Value,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    let session = session.ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    let handle = request
+        .get("handle")
+        .cloned()
+        .unwrap_or_else(|| request.clone());
+    let database = GenerationExecutionDatabase {
+        state,
+        session,
+        handle: handle.clone(),
+    };
+    let execution = database.with_owner_connection(|owner, conn| {
+        let control =
+            state
+                .generation_owners
+                .register_execution_control(owner, conn, &database.handle)?;
+        let prepared = owner.prepare_editor_inline_execution(conn, &database.handle)?;
+        Ok(ControlledGenerationExecution {
+            prepared,
+            _control: control,
+        })
+    })?;
+    let result = execution
+        .prepared
+        .execute_blocking_with_database(&database)?;
+    let outcome = database.with_owner_connection(|owner, conn| {
+        owner.finish_prepared_execution(conn, &execution.prepared, &result)
+    });
+    drop(execution);
+    outcome
+}
+
+/// `editor-inline:begin` —— 编辑器行内生成开始
+#[tauri::command]
+pub async fn editor_inline_begin(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    state.with_project_db(|conn| owner.begin_editor_inline(conn, &request))
+}
+
+/// `editor-inline:read-recovery` —— 编辑器行内生成恢复读取
+#[tauri::command]
+pub async fn editor_inline_read_recovery(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    let handle = request.get("handle").cloned().unwrap_or(request);
+    state.with_project_db(|conn| owner.read_editor_inline_recovery(conn, &handle))
+}
+
+/// `editor-inline:cancel` —— 编辑器行内生成取消
+#[tauri::command]
+pub async fn editor_inline_cancel(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    let cache = &state.generation_owners;
+    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
+    let owner = guard.owner();
+    let handle = request.get("handle").cloned().unwrap_or(request);
+    state.with_project_db(|conn| owner.cancel_editor_inline(conn, &handle))
+}
+
+/// `editor-inline:execute` —— 编辑器行内生成执行
+#[tauri::command]
+pub async fn editor_inline_execute(
+    state: State<'_, AppState>,
+    request: Value,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    let state = state.inner();
+    tokio::task::block_in_place(|| {
+        execute_editor_inline_for_state(state, &request, project_session.as_ref())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
