@@ -84,6 +84,7 @@ pub struct DocumentMeta<'a> {
 pub struct SearchFilter<'a> {
     pub chapter_scope: Option<(i64, i64)>,
     pub excluded_corpus_kinds: &'a [String],
+    pub excluded_doc_ids: &'a [String],
 }
 
 // ==================== 时间戳 ====================
@@ -115,7 +116,7 @@ pub fn insert_document(
         meta.corpus_kind
     };
 
-    conn.execute_batch("BEGIN IMMEDIATE")
+    conn.execute_batch("SAVEPOINT kb_insert_document")
         .map_err(|error| error.to_string())?;
     let result = (|| -> Result<Vec<String>, String> {
         conn.execute(
@@ -174,12 +175,16 @@ pub fn insert_document(
 
     match result {
         Ok(ids) => {
-            conn.execute_batch("COMMIT")
-                .map_err(|error| error.to_string())?;
+            if let Err(error) = conn.execute_batch("RELEASE kb_insert_document") {
+                let _ = conn
+                    .execute_batch("ROLLBACK TO kb_insert_document; RELEASE kb_insert_document");
+                return Err(error.to_string());
+            }
             Ok(ids)
         }
         Err(error) => {
-            let _ = conn.execute_batch("ROLLBACK");
+            let _ =
+                conn.execute_batch("ROLLBACK TO kb_insert_document; RELEASE kb_insert_document");
             Err(error)
         }
     }
@@ -187,6 +192,48 @@ pub fn insert_document(
 
 // ==================== 读取 ====================
 
+/// 文档行投影（文档副本读/重建索引使用：副本判定 + 重建时保留的元数据）
+#[derive(Debug, Clone, PartialEq)]
+pub struct DocumentRow {
+    pub file_name: String,
+    pub file_path: String,
+    pub corpus_kind: String,
+    /// 章节号（取自 `chunk_index` 最小的块；无块时为 `None`）
+    pub chapter_number: Option<i64>,
+    /// 章节标题（同上前提）
+    pub chapter_title: Option<String>,
+}
+
+/// 读取文档行（文档不存在返回 `Ok(None)`）。
+///
+/// 章节元数据存于块表（`kb_documents` 无此列），故取 `chunk_index` 最小的块。
+pub fn document_row(conn: &Connection, doc_id: &str) -> Result<Option<DocumentRow>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT d.file_name, d.file_path, d.corpus_kind,
+                    (SELECT c.chapter_number FROM kb_chunks c
+                      WHERE c.doc_id = d.id ORDER BY c.chunk_index, c.id LIMIT 1),
+                    (SELECT c.chapter_title FROM kb_chunks c
+                      WHERE c.doc_id = d.id ORDER BY c.chunk_index, c.id LIMIT 1)
+             FROM kb_documents d WHERE d.id = ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let mut rows = statement
+        .query_map([doc_id], |row| {
+            Ok(DocumentRow {
+                file_name: row.get(0)?,
+                file_path: row.get(1)?,
+                corpus_kind: row.get(2)?,
+                chapter_number: row.get(3)?,
+                chapter_title: row.get(4)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    match rows.next() {
+        Some(row) => Ok(Some(row.map_err(|error| error.to_string())?)),
+        None => Ok(None),
+    }
+}
 /// 列出全部文档（按导入时间升序，对齐基线数组顺序）
 pub fn list_documents(conn: &Connection) -> Result<Vec<DocumentInfo>, String> {
     let mut statement = conn
@@ -372,7 +419,7 @@ pub fn matches_filter(row: &ChunkRow, filter: &SearchFilter<'_>) -> bool {
     {
         return false;
     }
-    true
+    !filter.excluded_doc_ids.contains(&row.doc_id)
 }
 
 /// 文本支路检索：FTS5 预分词召回 → 过滤 → 词命中度排序 → 按 (fileName, text) 去重 → topK。
@@ -390,7 +437,15 @@ pub fn search_text(
     }
     let terms = hybrid::extract_query_terms(query);
     // FTS5 OR 召回上限：足以覆盖后续按相关性重排的候选集。
-    let recall_limit = std::cmp::max(top_k.saturating_mul(20), 200);
+    let recall_limit = if filter.excluded_doc_ids.is_empty() {
+        std::cmp::max(top_k.saturating_mul(20), 200)
+    } else {
+        // 脏副本须在最终 topK 之前排除，不能让大量旧块耗尽候选窗口。
+        conn.query_row("SELECT COUNT(*) FROM kb_chunks", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| error.to_string())? as usize
+    };
     let hits = fts::search(conn, query, recall_limit).map_err(|error| error.to_string())?;
     if hits.is_empty() {
         return Ok(Vec::new());
@@ -683,13 +738,9 @@ pub fn remove_document_stable_id(conn: &Connection, doc_id: &str) -> Result<bool
     }
 }
 
-/// 按 stable-id 重写文档（对齐基线 `replacementMode: 'stable-id'`）：
-/// 先 [`remove_document_stable_id`]（存在才删，幂等），再复用
-/// [`insert_document`] 写入新块，返回新块 id 列表。
+/// 按 stable-id 原子重写文档；新块或 FTS 写入失败时恢复旧文档。
 ///
-/// 与基线的差异：基线由 `performReferenceTextImport` 先
-/// `removeDocFromStore` 再 `addChunks`；本函数把「先删后插」收口为
-/// 单点，供参照导入幂等路径使用。
+/// 插入使用内层保存点，外层事务统一覆盖删除与插入；向量由调用方在提交后清理。
 pub fn replace_document(
     conn: &Connection,
     doc_id: &str,
@@ -697,20 +748,19 @@ pub fn replace_document(
     chunks: &[String],
     meta: &DocumentMeta<'_>,
 ) -> Result<Vec<String>, String> {
-    // 「存在才删」守卫对齐基线 `if (existingIntegrity && ...)`：
-    // 文档行或任一 canonical 块存在即视为已存在（含残缺态）。
-    let exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM kb_documents WHERE id = ?1)
-                     OR EXISTS(SELECT 1 FROM kb_chunks WHERE doc_id = ?1)",
-            [doc_id],
-            |row| row.get(0),
-        )
+    let transaction = conn
+        .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    if exists && !remove_document_stable_id(conn, doc_id)? {
-        return Err("残缺参照文档无法安全清理".to_string());
-    }
-    insert_document(conn, doc_id, file_name, chunks, meta)
+    fts::delete_document(&transaction, doc_id).map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM kb_chunks WHERE doc_id = ?1", [doc_id])
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM kb_documents WHERE id = ?1", [doc_id])
+        .map_err(|error| error.to_string())?;
+    let ids = insert_document(&transaction, doc_id, file_name, chunks, meta)?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -840,6 +890,7 @@ mod tests {
         let filter = SearchFilter {
             chapter_scope: Some((1, 3)),
             excluded_corpus_kinds: &[],
+            ..Default::default()
         };
         let results = search_text(&conn, "明月", 5, &filter).unwrap();
         assert_eq!(results.len(), 1);
@@ -876,6 +927,7 @@ mod tests {
         let filter = SearchFilter {
             chapter_scope: None,
             excluded_corpus_kinds: &excluded,
+            ..Default::default()
         };
         let results = search_text(&conn, "明月", 5, &filter).unwrap();
         assert_eq!(results.len(), 1);
@@ -986,6 +1038,43 @@ mod tests {
 
         // 文档与块均不存在 → None（对齐基线 null 语义）
         assert!(document_integrity(&complete, "missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn replace_document_failure_preserves_previous_chunks_test() {
+        let conn = conn();
+        let old_ids = insert_document(
+            &conn,
+            "d1",
+            "原文.txt",
+            &["旧正文".to_string()],
+            &sample_meta(),
+        )
+        .unwrap();
+        // 仅拒绝新块，确保失败发生于旧块删除之后。
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER reject_new_chunk BEFORE INSERT ON kb_chunks
+             BEGIN SELECT RAISE(ABORT, '注入新块写入失败'); END;",
+        )
+        .unwrap();
+        assert!(replace_document(
+            &conn,
+            "d1",
+            "原文.txt",
+            &["新正文".to_string()],
+            &sample_meta(),
+        )
+        .is_err());
+        assert_eq!(document_chunk_ids(&conn, "d1").unwrap(), old_ids);
+        let fts_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM kb_fts WHERE doc_id = 'd1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_count, 1);
+        assert!(conn.is_autocommit());
     }
 
     #[test]

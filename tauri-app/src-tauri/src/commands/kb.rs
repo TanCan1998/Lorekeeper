@@ -46,7 +46,7 @@ use crate::app_paths;
 use crate::commands::db::guard_read;
 use crate::commands::project::file_path_to_string;
 use crate::commands::SimpleResult;
-use crate::db::kb::{chunks, hybrid, store, vectors};
+use crate::db::kb::{chunks, document_copy, hybrid, store, vectors};
 use crate::external_grant::{GrantOperation, KNOWLEDGE_BASE_GRANT_TTL};
 use crate::llm::chat::{build_client, proxy_from_config};
 use crate::llm::embedding;
@@ -450,6 +450,8 @@ async fn import_text_core(
     file_path: &str,
 ) -> Result<KbImportResult, String> {
     guard_read(state, project_root, session)?;
+    let _source_gate = crate::db::kb::source_gate::acquire(project_root).await?;
+    guard_read(state, project_root, session)?;
     if let Err(message) = preflight_or_error(project_root) {
         return Ok(KbImportResult::failure_code(
             message,
@@ -473,12 +475,13 @@ async fn import_text_core(
     let want_vectors = !fts_only && setup.as_ref().map(usable).unwrap_or(false);
 
     // 同步读：既有同名文档 + 是否允许增量写向量
-    let (existing_doc_id, can_incremental) = state.with_project_db(|conn| {
-        Ok((
-            store::find_document_id_by_file_name(conn, file_name)?,
-            can_write_incremental_vectors(conn)?,
-        ))
-    })?;
+    let (existing_doc_id, can_incremental) =
+        with_knowledge_db(state, project_root, session, |conn| {
+            Ok((
+                store::find_document_id_by_file_name(conn, file_name)?,
+                can_write_incremental_vectors(conn)?,
+            ))
+        })?;
 
     // 可选：生成向量（失败且非响应校验错误时降级为 FTS-only，对齐基线）
     let mut generated: Option<Vec<Vec<f32>>> = None;
@@ -498,6 +501,14 @@ async fn import_text_core(
 
     // 同步：空间计划 + 写文档
     let doc_id = crate::project_access::random_uuid_v4();
+    // 项目知识库文档：写入「完整原文」项目副本，并把 filePath 收为副本标记
+    // （对齐基线 importDocument / importText 的
+    // writeKnowledgeCopy + KNOWLEDGE_COPY_MARKER）
+    let meta_file_path = if corpus_kind == "project-knowledge" {
+        document_copy::marker_file_path(&doc_id)
+    } else {
+        file_path.to_string()
+    };
     let (chunk_ids, plan) = {
         let setup_fp = setup.as_ref().map(|setup| setup.fingerprint.clone());
         let generated_dim = generated.as_ref().map(|vectors| {
@@ -506,7 +517,7 @@ async fn import_text_core(
                 .map(|vector| vector.len() as i64)
                 .unwrap_or(0)
         });
-        state.with_project_db(|conn| {
+        with_knowledge_db(state, project_root, session, |conn| {
             let mut plan: Option<(i64, i64)> = None;
             if let (Some(vectors), Some(fingerprint), Some(dimension)) =
                 (generated.as_ref(), setup_fp.as_ref(), generated_dim)
@@ -526,12 +537,29 @@ async fn import_text_core(
                 }
             }
             let meta = store::DocumentMeta {
-                file_path,
+                file_path: &meta_file_path,
                 chapter_number,
                 chapter_title,
                 corpus_kind,
             };
-            let ids = store::insert_document(conn, &doc_id, file_name, &text_chunks, &meta)?;
+            let storage_root = document_copy::project_storage_root(project_root);
+            if corpus_kind == "project-knowledge" {
+                document_copy::write(
+                    &storage_root,
+                    &doc_id,
+                    &document_copy::KnowledgeCopy::fresh(text),
+                )?;
+            }
+            let ids = match store::insert_document(conn, &doc_id, file_name, &text_chunks, &meta) {
+                Ok(ids) => ids,
+                Err(error) => {
+                    if corpus_kind == "project-knowledge" {
+                        document_copy::remove(&storage_root, &doc_id)
+                            .map_err(|cleanup| format!("{error}；清理未入库副本失败：{cleanup}"))?;
+                    }
+                    return Err(error);
+                }
+            };
             Ok((ids, plan))
         })?
     };
@@ -548,7 +576,7 @@ async fn import_text_core(
                 vectors,
             )
             .await?;
-            state.with_project_db(|conn| {
+            with_knowledge_db(state, project_root, session, |conn| {
                 hybrid::activate_generation(conn, generation).map_err(|error| error.to_string())?;
                 Ok(())
             })?;
@@ -557,10 +585,14 @@ async fn import_text_core(
 
     // 同步：删除被替换的同名旧文档（含其向量）
     if let Some(existing) = existing_doc_id {
-        let removed = state.with_project_db(|conn| {
+        let removed = with_knowledge_db(state, project_root, session, |conn| {
             let ids = store::document_chunk_ids(conn, &existing)?;
             let spaces = hybrid::list_spaces(conn).map_err(|error| error.to_string())?;
             let hit = store::remove_document(conn, &existing)?;
+            document_copy::remove(
+                &document_copy::project_storage_root(project_root),
+                &existing,
+            )?;
             Ok((hit, ids, spaces))
         })?;
         let (_hit, ids, spaces) = removed;
@@ -579,6 +611,7 @@ async fn import_text_core(
 async fn vector_search(
     state: &AppState,
     project_root: &str,
+    session: Option<&ProjectSessionContext>,
     generation: i64,
     dimension: i64,
     query_vector: &[f32],
@@ -588,15 +621,22 @@ async fn vector_search(
     let index = state
         .kb_vector_index(project_root, generation, dimension as usize)
         .await?;
+    let limit = if filter.excluded_doc_ids.is_empty() {
+        top_k
+    } else {
+        top_k.max(index.live_doc_ids().await.len())
+    };
     let hits = index
-        .search_rag(query_vector, top_k)
+        .search_rag(query_vector, limit)
         .await
         .map_err(|error| error.to_string())?;
     if hits.is_empty() {
         return Ok(Vec::new());
     }
     let ids: Vec<String> = hits.iter().map(|(id, _)| id.clone()).collect();
-    let rows = state.with_project_db(|conn| store::chunk_rows(conn, &ids))?;
+    let rows = with_knowledge_db(state, project_root, session, |conn| {
+        store::chunk_rows(conn, &ids)
+    })?;
     let by_id: std::collections::HashMap<&str, &store::ChunkRow> =
         rows.iter().map(|row| (row.id.as_str(), row)).collect();
 
@@ -639,10 +679,6 @@ async fn search_core(
         Some(value) if value > 0 => value as usize,
         _ => DEFAULT_TOP_K as usize,
     };
-    let filter = store::SearchFilter {
-        chapter_scope,
-        excluded_corpus_kinds,
-    };
 
     // 可选：查询向量（有 apiKey 且查询非空）
     let setup = embedding_setup();
@@ -659,9 +695,20 @@ async fn search_core(
         }
     }
 
+    // 查询向量完成后再进入短读取边界；保存后尚未重建的副本不参与任一检索支路。
+    let _source_gate = crate::db::kb::source_gate::acquire(project_root).await?;
+    let stale_documents = with_knowledge_db(state, project_root, session, |conn| {
+        document_copy::stale_document_ids(conn, &document_copy::project_storage_root(project_root))
+    })?;
+    let filter = store::SearchFilter {
+        chapter_scope,
+        excluded_corpus_kinds,
+        excluded_doc_ids: &stale_documents,
+    };
+
     // 向量短路（仅当 active 空间身份匹配）
     if let Some(query_vector) = query_vector.as_ref() {
-        let active = state.with_project_db(|conn| {
+        let active = with_knowledge_db(state, project_root, session, |conn| {
             hybrid::active_space(conn).map_err(|error| error.to_string())
         })?;
         if let Some(space) = active {
@@ -673,6 +720,7 @@ async fn search_core(
                 if let Ok(results) = vector_search(
                     state,
                     project_root,
+                    session,
                     space.generation,
                     space.dimension,
                     query_vector,
@@ -690,7 +738,9 @@ async fn search_core(
     }
 
     // 文本支路
-    let results = state.with_project_db(|conn| store::search_text(conn, query, top_k, &filter))?;
+    let results = with_knowledge_db(state, project_root, session, |conn| {
+        store::search_text(conn, query, top_k, &filter)
+    })?;
     serde_json::to_value(results).map_err(|error| error.to_string())
 }
 
@@ -1094,6 +1144,8 @@ async fn reference_import_inner(
         .current_project_path()
         .ok_or_else(|| "项目数据库未打开".to_string())?;
     guard_read(state, &project_root, project_session)?;
+    let _source_gate = crate::db::kb::source_gate::acquire(&project_root).await?;
+    guard_read(state, &project_root, project_session)?;
     if let Err(message) = preflight_or_error(&project_root) {
         return Ok(KbImportResult::failure_code(
             message,
@@ -1104,7 +1156,7 @@ async fn reference_import_inner(
         serde_json::from_value(execution_authority)
             .map_err(|error| format!("导入执行授权无效：{error}"))?;
     // 授权解析失败 → 拒绝写入（基线：controller 层 throw → invoke 拒绝）。
-    let binding = state.with_project_db(|conn| {
+    let binding = with_knowledge_db(state, &project_root, project_session, |conn| {
         crate::repositories::import_run_repository::resolve_reference_import_authority(
             conn,
             run_id,
@@ -1136,8 +1188,9 @@ async fn reference_import_inner(
     let expected_chunk_count = text_chunks.len() as i64;
 
     // 幂等收据：任一业务列不符 → 拒绝；缺失 → 补写 `prepared`
-    let receipt = state
-        .with_project_db(|conn| store::read_reference_document(conn, &document_id, &key_hash))?;
+    let receipt = with_knowledge_db(state, &project_root, project_session, |conn| {
+        store::read_reference_document(conn, &document_id, &key_hash)
+    })?;
     if let Some(receipt) = receipt {
         if receipt.document_id != document_id
             || receipt.idempotency_key_hash != key_hash
@@ -1149,7 +1202,7 @@ async fn reference_import_inner(
             return Ok(KbImportResult::failure("参照导入幂等键已绑定不同内容"));
         }
     } else {
-        state.with_project_db(|conn| {
+        with_knowledge_db(state, &project_root, project_session, |conn| {
             store::upsert_reference_document(
                 conn,
                 &store::ReferenceDocumentReceipt {
@@ -1166,14 +1219,16 @@ async fn reference_import_inner(
     }
 
     // 完整性复核：完整且与期望一致 → 幂等短路（直接标记 committed）
-    let integrity = state.with_project_db(|conn| store::document_integrity(conn, &document_id))?;
+    let integrity = with_knowledge_db(state, &project_root, project_session, |conn| {
+        store::document_integrity(conn, &document_id)
+    })?;
     if let Some(integrity) = integrity {
         let consistent = integrity.complete
             && integrity.corpus_kind == "reference"
             && integrity.chunk_count == expected_chunk_count
             && integrity.chunk_set_hash == chunk_set_hash;
         if consistent && content_hash == binding.content_fingerprint {
-            state.with_project_db(|conn| {
+            with_knowledge_db(state, &project_root, project_session, |conn| {
                 store::mark_reference_document_state(conn, &document_id, "committed")
             })?;
             return Ok(KbImportResult {
@@ -1191,7 +1246,7 @@ async fn reference_import_inner(
         }
     }
 
-    state.with_project_db(|conn| {
+    with_knowledge_db(state, &project_root, project_session, |conn| {
         store::mark_reference_document_state(conn, &document_id, "prepared")
     })?;
 
@@ -1219,7 +1274,7 @@ async fn reference_import_inner(
                 .map(|vector| vector.len() as i64)
                 .unwrap_or(0)
         });
-        state.with_project_db(|conn| {
+        with_knowledge_db(state, &project_root, project_session, |conn| {
             let mut plan: Option<(i64, i64)> = None;
             if let (Some(vectors), Some(fingerprint), Some(dimension)) =
                 (generated.as_ref(), setup_fp.as_ref(), generated_dim)
@@ -1244,13 +1299,8 @@ async fn reference_import_inner(
                 chapter_title: Some(binding.title.as_str()),
                 corpus_kind: "reference",
             };
-            let ids = store::replace_document(
-                conn,
-                &document_id,
-                &display_name,
-                &text_chunks,
-                &meta,
-            )?;
+            let ids =
+                store::replace_document(conn, &document_id, &display_name, &text_chunks, &meta)?;
             Ok((ids, plan))
         })?
     };
@@ -1267,15 +1317,16 @@ async fn reference_import_inner(
                 vectors,
             )
             .await?;
-            state.with_project_db(|conn| {
+            with_knowledge_db(state, &project_root, project_session, |conn| {
                 hybrid::activate_generation(conn, generation).map_err(|error| error.to_string())
             })?;
         }
     }
 
     // 复核：完整性必须与期望一致，否则清理并失败
-    let committed_integrity =
-        state.with_project_db(|conn| store::document_integrity(conn, &document_id))?;
+    let committed_integrity = with_knowledge_db(state, &project_root, project_session, |conn| {
+        store::document_integrity(conn, &document_id)
+    })?;
     let committed_ok = committed_integrity
         .as_ref()
         .map(|integrity| {
@@ -1290,12 +1341,12 @@ async fn reference_import_inner(
         return Ok(KbImportResult::failure("参照文档完整性校验失败"));
     }
 
-    state.with_project_db(|conn| {
+    with_knowledge_db(state, &project_root, project_session, |conn| {
         store::mark_reference_document_state(conn, &document_id, "committed")
     })?;
 
     // 收据提交：失败即清理（「receipt 未提交即不留效果」取向）
-    if let Err(error) = state.with_project_db(|conn| {
+    if let Err(error) = with_knowledge_db(state, &project_root, project_session, |conn| {
         crate::repositories::import_run_repository::commit_reference_import_receipt(
             conn,
             run_id,
@@ -1422,6 +1473,178 @@ pub async fn kb_list_documents(
     serde_json::to_value(documents).map_err(|error| error.to_string())
 }
 
+/// 在数据库锁内复核会话与连接归属，避免排队/项目切换后写入另一个库。
+fn with_knowledge_db<T>(
+    state: &AppState,
+    project_root: &str,
+    session: Option<&ProjectSessionContext>,
+    operation: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let database = state
+        .project_db
+        .lock()
+        .map_err(|_| "项目数据库状态被污染".to_string())?;
+    guard_read(state, project_root, session)?;
+    let database = database.as_ref().ok_or("项目数据库未打开")?;
+    if crate::security::normalized_project_path(&database.root_path().to_string_lossy())
+        != crate::security::normalized_project_path(project_root)
+    {
+        return Err("项目数据库与请求会话不匹配".to_string());
+    }
+    operation(database.connection())
+}
+
+/// 读取完整原文项目副本；旧的仅分块文档保持 unavailable。
+#[tauri::command]
+pub async fn kb_read_document_copy(
+    state: State<'_, AppState>,
+    doc_id: String,
+    expected_project_path: String,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    read_document_copy_inner(
+        state.inner(),
+        &doc_id,
+        &expected_project_path,
+        project_session.as_ref(),
+    )
+    .await
+}
+
+async fn read_document_copy_inner(
+    state: &AppState,
+    doc_id: &str,
+    project_root: &str,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    guard_read(state, project_root, session)?;
+    if let Err(message) = preflight_or_error(project_root) {
+        return Ok(app_failure("PROJECT_STORAGE_PATH_UNSUPPORTED", message));
+    }
+    let _gate = crate::db::kb::source_gate::acquire(project_root).await?;
+    with_knowledge_db(state, project_root, session, |conn| {
+        document_copy::read_view(
+            conn,
+            &document_copy::project_storage_root(project_root),
+            doc_id,
+        )
+    })
+}
+
+/// 乐观哈希校验与副本写回共用串行边界；保存不修改现有索引。
+#[tauri::command]
+pub async fn kb_save_document_copy(
+    state: State<'_, AppState>,
+    doc_id: String,
+    content: String,
+    expected_content_hash: String,
+    expected_project_path: String,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    save_document_copy_inner(
+        state.inner(),
+        &doc_id,
+        content,
+        &expected_content_hash,
+        &expected_project_path,
+        project_session.as_ref(),
+    )
+    .await
+}
+
+async fn save_document_copy_inner(
+    state: &AppState,
+    doc_id: &str,
+    content: String,
+    expected_hash: &str,
+    project_root: &str,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    guard_read(state, project_root, session).map_err(crate::commands::db::mutating_error)?;
+    if let Err(message) = preflight_or_error(project_root) {
+        return Ok(app_failure("PROJECT_STORAGE_PATH_UNSUPPORTED", message));
+    }
+    let _gate = crate::db::kb::source_gate::acquire(project_root)
+        .await
+        .map_err(crate::commands::db::mutating_error)?;
+    let outcome = with_knowledge_db(state, project_root, session, |conn| {
+        document_copy::save(
+            conn,
+            &document_copy::project_storage_root(project_root),
+            doc_id,
+            content,
+            expected_hash,
+        )
+    });
+    match outcome {
+        Ok(()) => Ok(json!({"success": true})),
+        Err(error)
+            if error == document_copy::UNAVAILABLE
+                || error == "项目副本已变化，请重新打开后编辑" =>
+        {
+            Ok(json!({"success": false, "error": error}))
+        }
+        Err(error) => Err(crate::commands::db::mutating_error(error)),
+    }
+}
+
+/// 从当前副本重建本地索引，不发起模型请求。
+#[tauri::command]
+pub async fn kb_reindex_document_copy(
+    state: State<'_, AppState>,
+    doc_id: String,
+    expected_project_path: String,
+    project_session: Option<ProjectSessionContext>,
+) -> Result<Value, String> {
+    reindex_document_copy_inner(
+        state.inner(),
+        &doc_id,
+        &expected_project_path,
+        project_session.as_ref(),
+    )
+    .await
+}
+
+async fn reindex_document_copy_inner(
+    state: &AppState,
+    doc_id: &str,
+    project_root: &str,
+    session: Option<&ProjectSessionContext>,
+) -> Result<Value, String> {
+    guard_read(state, project_root, session).map_err(crate::commands::db::mutating_error)?;
+    if let Err(message) = preflight_or_error(project_root) {
+        return Ok(app_failure("PROJECT_STORAGE_PATH_UNSUPPORTED", message));
+    }
+    let _gate = crate::db::kb::source_gate::acquire(project_root)
+        .await
+        .map_err(crate::commands::db::mutating_error)?;
+    // 排队后会话失效不能伪装成领域失败。
+    guard_read(state, project_root, session).map_err(crate::commands::db::mutating_error)?;
+    let outcome = with_knowledge_db(state, project_root, session, |conn| {
+        document_copy::reindex(
+            conn,
+            &document_copy::project_storage_root(project_root),
+            doc_id,
+        )
+    });
+    let rebuilt = match outcome {
+        Ok(rebuilt) => rebuilt,
+        Err(error) => return Ok(json!({"success": false, "error": error})),
+    };
+    // 提交后旧块已不在 canonical 表，且全部向量空间失活；物理向量仅作清理。
+    for space in rebuilt.spaces {
+        purge_vectors(
+            state,
+            project_root,
+            space.generation,
+            space.dimension,
+            &rebuilt.previous_ids,
+        )
+        .await;
+    }
+    Ok(json!({"success": true, "docId": doc_id, "chunkCount": rebuilt.chunk_count}))
+}
+
 /// `kb:remove-document`（含向量清理）
 #[tauri::command]
 pub async fn kb_remove_document(
@@ -1432,6 +1655,8 @@ pub async fn kb_remove_document(
 ) -> Result<SimpleResult, String> {
     let state = state.inner();
     guard_read(state, &expected_project_path, project_session.as_ref())?;
+    let _source_gate = crate::db::kb::source_gate::acquire(&expected_project_path).await?;
+    guard_read(state, &expected_project_path, project_session.as_ref())?;
     if let Err(message) = preflight_or_error(&expected_project_path) {
         return Ok(SimpleResult {
             success: false,
@@ -1439,12 +1664,21 @@ pub async fn kb_remove_document(
         });
     }
 
-    let (ids, spaces, hit) = state.with_project_db(|conn| {
-        let ids = store::document_chunk_ids(conn, &doc_id)?;
-        let spaces = hybrid::list_spaces(conn).map_err(|error| error.to_string())?;
-        let hit = store::remove_document(conn, &doc_id)?;
-        Ok((ids, spaces, hit))
-    })?;
+    let (ids, spaces, hit) = with_knowledge_db(
+        state,
+        &expected_project_path,
+        project_session.as_ref(),
+        |conn| {
+            let ids = store::document_chunk_ids(conn, &doc_id)?;
+            let spaces = hybrid::list_spaces(conn).map_err(|error| error.to_string())?;
+            let hit = store::remove_document(conn, &doc_id)?;
+            document_copy::remove(
+                &document_copy::project_storage_root(&expected_project_path),
+                &doc_id,
+            )?;
+            Ok((ids, spaces, hit))
+        },
+    )?;
     for space in spaces {
         purge_vectors(
             state,
@@ -1477,13 +1711,28 @@ pub async fn kb_clear_all(
 ) -> Result<SimpleResult, String> {
     let state = state.inner();
     guard_read(state, &expected_project_path, project_session.as_ref())?;
+    let _source_gate = crate::db::kb::source_gate::acquire(&expected_project_path).await?;
+    guard_read(state, &expected_project_path, project_session.as_ref())?;
     if let Err(message) = preflight_or_error(&expected_project_path) {
         return Ok(SimpleResult {
             success: false,
             error: Some(message),
         });
     }
-    state.with_project_db(store::clear_all)?;
+    with_knowledge_db(
+        state,
+        &expected_project_path,
+        project_session.as_ref(),
+        |conn| {
+            let documents = store::list_documents(conn)?;
+            store::clear_all(conn)?;
+            let root = document_copy::project_storage_root(&expected_project_path);
+            for document in documents {
+                document_copy::remove(&root, &document.id)?;
+            }
+            Ok(())
+        },
+    )?;
     state.drop_kb_vectors(&expected_project_path);
     let snapshot_dir = vectors::snapshot_dir(&expected_project_path);
     if snapshot_dir.exists() {
@@ -1572,6 +1821,8 @@ pub async fn kb_backfill_vectors(
 ) -> Result<KbBackfillResult, String> {
     let state = state.inner();
     guard_read(state, &expected_project_path, project_session.as_ref())?;
+    let _source_gate = crate::db::kb::source_gate::acquire(&expected_project_path).await?;
+    guard_read(state, &expected_project_path, project_session.as_ref())?;
     if let Err(message) = preflight_or_error(&expected_project_path) {
         return Ok(KbBackfillResult {
             success: false,
@@ -1592,10 +1843,15 @@ pub async fn kb_backfill_vectors(
     };
 
     // 全量 canonical 块
-    let rows = state.with_project_db(|conn| {
-        let ids = store::all_chunk_ids(conn)?;
-        store::chunk_rows(conn, &ids)
-    })?;
+    let rows = with_knowledge_db(
+        state,
+        &expected_project_path,
+        project_session.as_ref(),
+        |conn| {
+            let ids = store::all_chunk_ids(conn)?;
+            store::chunk_rows(conn, &ids)
+        },
+    )?;
     if rows.is_empty() {
         return Ok(KbBackfillResult {
             success: true,
@@ -1645,27 +1901,33 @@ pub async fn kb_backfill_vectors(
     // 选定/新建代际
     let generation = {
         let fingerprint = setup.fingerprint.clone();
-        state.with_project_db(move |conn| {
-            let spaces = hybrid::list_spaces(conn).map_err(|error| error.to_string())?;
-            if let Some(space) = spaces.iter().find(|space| {
-                space.model_fingerprint == fingerprint && space.dimension == dimension
-            }) {
-                return Ok(space.generation);
-            }
-            let generation = hybrid::next_generation(conn).map_err(|error| error.to_string())?;
-            hybrid::upsert_space(
-                conn,
-                &hybrid::EmbeddingSpace {
-                    generation,
-                    dimension,
-                    model_fingerprint: fingerprint,
-                    distance_metric: "cosine".to_string(),
-                    status: "building".to_string(),
-                },
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(generation)
-        })?
+        with_knowledge_db(
+            state,
+            &expected_project_path,
+            project_session.as_ref(),
+            move |conn| {
+                let spaces = hybrid::list_spaces(conn).map_err(|error| error.to_string())?;
+                if let Some(space) = spaces.iter().find(|space| {
+                    space.model_fingerprint == fingerprint && space.dimension == dimension
+                }) {
+                    return Ok(space.generation);
+                }
+                let generation =
+                    hybrid::next_generation(conn).map_err(|error| error.to_string())?;
+                hybrid::upsert_space(
+                    conn,
+                    &hybrid::EmbeddingSpace {
+                        generation,
+                        dimension,
+                        model_fingerprint: fingerprint,
+                        distance_metric: "cosine".to_string(),
+                        status: "building".to_string(),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(generation)
+            },
+        )?
     };
 
     let index = state
@@ -1678,10 +1940,15 @@ pub async fn kb_backfill_vectors(
         .map(|row| (row.id.clone(), row.text.clone()))
         .collect();
     if missing.is_empty() {
-        state.with_project_db(|conn| {
-            hybrid::activate_generation(conn, generation).map_err(|error| error.to_string())?;
-            Ok(())
-        })?;
+        with_knowledge_db(
+            state,
+            &expected_project_path,
+            project_session.as_ref(),
+            |conn| {
+                hybrid::activate_generation(conn, generation).map_err(|error| error.to_string())?;
+                Ok(())
+            },
+        )?;
         return Ok(KbBackfillResult {
             success: true,
             processed: 0,
@@ -1728,10 +1995,15 @@ pub async fn kb_backfill_vectors(
         &generated,
     )
     .await?;
-    state.with_project_db(|conn| {
-        hybrid::activate_generation(conn, generation).map_err(|error| error.to_string())?;
-        Ok(())
-    })?;
+    with_knowledge_db(
+        state,
+        &expected_project_path,
+        project_session.as_ref(),
+        |conn| {
+            hybrid::activate_generation(conn, generation).map_err(|error| error.to_string())?;
+            Ok(())
+        },
+    )?;
 
     Ok(KbBackfillResult {
         success: true,
@@ -2118,5 +2390,186 @@ mod tests {
         assert_eq!(receipt_rows, 1);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn copy_import_edit_search_reindex_roundtrip_test() {
+        let (state, root, session) = activated_state("copy-roundtrip");
+        let imported = import_text_core(
+            &state,
+            "旧测试内容",
+            "测试.md",
+            &root,
+            Some(&session),
+            true,
+            "project-knowledge",
+            Some(2),
+            Some("测试章"),
+            "",
+        )
+        .await
+        .unwrap();
+        let id = imported.doc_id.unwrap();
+        let view = read_document_copy_inner(&state, &id, &root, Some(&session))
+            .await
+            .unwrap();
+        assert_eq!(view["content"], "旧测试内容");
+        assert_eq!(view["indexStatus"], "current");
+        let hash = view["contentHash"].as_str().unwrap();
+        let (first, second) = tokio::join!(
+            save_document_copy_inner(
+                &state,
+                &id,
+                "新测试内容甲".into(),
+                hash,
+                &root,
+                Some(&session)
+            ),
+            save_document_copy_inner(
+                &state,
+                &id,
+                "新测试内容乙".into(),
+                hash,
+                &root,
+                Some(&session)
+            ),
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(first["success"], second["success"]);
+        assert_eq!(
+            first["success"].as_bool().unwrap() as u8 + second["success"].as_bool().unwrap() as u8,
+            1
+        );
+        let hidden = search_core(&state, "测试", Some(5), None, &[], &root, Some(&session))
+            .await
+            .unwrap();
+        assert!(hidden.as_array().unwrap().is_empty());
+        assert_eq!(
+            reindex_document_copy_inner(&state, &id, &root, Some(&session))
+                .await
+                .unwrap()["success"],
+            true
+        );
+        let shown = search_core(&state, "测试", Some(5), None, &[], &root, Some(&session))
+            .await
+            .unwrap();
+        assert!(!shown.as_array().unwrap().is_empty());
+        let view = read_document_copy_inner(&state, &id, &root, Some(&session))
+            .await
+            .unwrap();
+        assert_eq!(view["indexStatus"], "current");
+        assert_eq!(view["edited"], true);
+        state.close_project_database().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_copy_save_rechecks_closed_session_test() {
+        let (state, root, session) = activated_state("copy-closed");
+        let gate = crate::db::kb::source_gate::acquire(&root).await.unwrap();
+        let save = save_document_copy_inner(
+            &state,
+            "doc",
+            "不应写入".into(),
+            "hash",
+            &root,
+            Some(&session),
+        );
+        tokio::pin!(save);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut save)
+                .await
+                .is_err()
+        );
+        state.close_project_database().unwrap();
+        drop(gate);
+        let error = save.await.unwrap_err();
+        assert!(error.starts_with("Error: "));
+        assert!(!document_copy::project_storage_root(&root)
+            .join("knowledge-copies")
+            .exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn copy_import_failure_leaves_no_orphan_sidecar_test() {
+        let (state, root, session) = activated_state("copy-failure");
+        state
+            .with_project_db(|conn| {
+                conn.execute_batch(
+                    "CREATE TEMP TRIGGER fail_kb BEFORE INSERT ON kb_documents
+             BEGIN SELECT RAISE(ABORT, '注入导入失败'); END;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(import_text_core(
+            &state,
+            "测试内容",
+            "测试.md",
+            &root,
+            Some(&session),
+            true,
+            "project-knowledge",
+            None,
+            None,
+            ""
+        )
+        .await
+        .is_err());
+        let directory = document_copy::project_storage_root(&root).join("knowledge-copies");
+        assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);
+        state.close_project_database().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn same_name_import_replaces_old_copy_test() {
+        let (state, root, session) = activated_state("copy-replace");
+        let old = import_text_core(
+            &state,
+            "旧测试",
+            "同名.md",
+            &root,
+            Some(&session),
+            true,
+            "project-knowledge",
+            None,
+            None,
+            "",
+        )
+        .await
+        .unwrap()
+        .doc_id
+        .unwrap();
+        let new = import_text_core(
+            &state,
+            "新测试",
+            "同名.md",
+            &root,
+            Some(&session),
+            true,
+            "project-knowledge",
+            None,
+            None,
+            "",
+        )
+        .await
+        .unwrap()
+        .doc_id
+        .unwrap();
+        assert_ne!(old, new);
+        let storage = document_copy::project_storage_root(&root);
+        assert!(document_copy::read(&storage, &old).unwrap().is_none());
+        assert_eq!(
+            document_copy::read(&storage, &new)
+                .unwrap()
+                .unwrap()
+                .content,
+            "新测试"
+        );
+        state.close_project_database().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

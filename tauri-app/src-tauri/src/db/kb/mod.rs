@@ -12,7 +12,9 @@
 //! 向量快照 `<project>/.lore/kb/`。**绝不触碰**基线的 `.vela/lancedb/` 与 `.vela/vectors.json`。
 
 pub mod chunks;
+pub mod document_copy;
 pub mod fts;
 pub mod hybrid;
+pub mod source_gate;
 pub mod store;
 pub mod vectors;
