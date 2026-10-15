@@ -22,6 +22,7 @@ import type { MainGenerationRunHandle } from '../services/generation/generation-
 import { AgentGenerationClient } from '../services/agent/agent-generation-client'
 import type { AgentGenerationRecovery } from '../shared/agent-generation'
 import { writingLanguageText } from '../shared/writing-language'
+import { sameProjectSessionContext } from '../shared/project-session-context'
 import { useLocaleStore } from './locale-store'
 import { useLLMStore } from './llm-store'
 import { useEditorStore } from './editor-store'
@@ -33,6 +34,18 @@ export const AGENT_GENERATION_BUDGET = Object.freeze({
   maxRequestedOutputTokensPerAttempt: 8192,
   deadlineMs: 20 * 60_000,
 })
+
+// 恢复只补齐导航，不重复追加同一登记；保留原收据状态及非工作流产物。
+function mergeAgentArtifacts(previous: readonly ToolArtifact[], incoming: readonly ToolArtifact[]): ToolArtifact[] {
+  const merged: ToolArtifact[] = []
+  for (const artifact of [...previous, ...incoming]) {
+    if (artifact.type === 'workflow_started' && merged.some(existing => existing.type === 'workflow_started'
+      && existing.runId === artifact.runId && existing.projectPath === artifact.projectPath
+      && sameProjectSessionContext(existing.projectSession, artifact.projectSession))) continue
+    merged.push(artifact)
+  }
+  return merged
+}
 
 // ===== 类型定义 =====
 
@@ -557,7 +570,7 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
               content: fullText,
               streaming: false,
               toolCalls,
-              artifacts: [...(existingAssistant?.artifacts ?? []), ...artifacts],
+              artifacts: mergeAgentArtifacts(existingAssistant?.artifacts ?? [], artifacts),
             }))
             set(state => ({
               generating: false,

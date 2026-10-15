@@ -233,6 +233,23 @@ describe('Agent GenerationRuntime boundary', () => {
       runId: 'synthetic-draft-registration', projectPath: session.projectPath, projectSession: session })])
     expect(lastMessage()?.toolCalls).toEqual([expect.objectContaining({ status: 'result_unknown' })])
     expect(lastMessage()?.content).toContain('写入结果待确认')
+    const artifact = lastMessage()!.artifacts![0]
+    if (artifact.type !== 'workflow_started') throw new Error('缺少工作流产物')
+    await useAgentStore.getState().resumeGeneration(handle)
+    expect(lastMessage()?.artifacts).toEqual([artifact])
+    const retained = [
+      { ...artifact, status: 'completed' as const },
+      { ...artifact, runId: 'different-registration' },
+      { ...artifact, projectSession: { ...session, leaseId: 'historical-lease' } },
+      { type: 'file_created' as const, name: '合成文件产物', projectPath: session.projectPath, projectSession: session, path: 'synthetic.txt' },
+    ]
+    const messageId = lastMessage()!.id
+    useAgentStore.setState(state => ({ conversations: state.conversations.map(conversation => ({ ...conversation,
+      messages: conversation.messages.map(message => message.id === messageId ? { ...message, artifacts: retained } : message),
+    })) }))
+    await useAgentStore.getState().resumeGeneration(handle)
+    expect(lastMessage()?.artifacts).toEqual(retained)
+
     for (const channel of ['agent-generation:begin', 'agent-generation:round', 'agent-generation:claim-tool',
       'agent-generation:finish-tool', 'agent-generation:register-workflow', 'agent-generation:resume'])
       expect(calls(channel)).toHaveLength(0)
