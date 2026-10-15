@@ -132,4 +132,51 @@ describe('助手恢复客户端身份约束', () => {
     expect(() => client.recovery).toThrow('GENERATION_AGENT_HANDLE_REQUIRED')
   })
 
+  describe('停止或关闭后的适配器', () => {
+    const beginRequest = { uiActionNonce: 'synthetic-nonce', modelId: 'model-a', input: {
+      mode: 'fast' as const, uiLocale: 'zh-CN' as const, historyMessages: [], userMessage: '合成输入', tools: [] } }
+
+    it('关闭后不得再发起新的 begin，也不创建新的服务端运行', async () => {
+      const client = new AgentGenerationClient(session)
+      client.close()
+      await expect(client.begin(beginRequest)).rejects.toThrow('GENERATION_AGENT_DETACHED')
+      expect(fixture.invoke).not.toHaveBeenCalled()
+      expect(() => client.recovery).toThrow('GENERATION_AGENT_HANDLE_REQUIRED')
+    })
+
+    it('关闭后不得再恢复既有句柄', async () => {
+      const client = new AgentGenerationClient(session)
+      client.close()
+      await expect(client.resume(fixture.recovery.handle)).rejects.toThrow('GENERATION_AGENT_DETACHED')
+      expect(fixture.invoke).not.toHaveBeenCalled()
+    })
+
+    it('已请求取消的客户端不得再创建新运行或恢复旧句柄', async () => {
+      const client = new AgentGenerationClient(session)
+      await client.cancel()
+      await expect(client.begin(beginRequest)).rejects.toThrow('GENERATION_AGENT_DETACHED')
+      await expect(client.resume(fixture.recovery.handle)).rejects.toThrow('GENERATION_AGENT_DETACHED')
+      expect(fixture.invoke).not.toHaveBeenCalled()
+    })
+
+    it('在途 begin 在取消返回后仍回收迟到收据，不留下未取消的新运行', async () => {
+      const client = new AgentGenerationClient(session)
+      const original = fixture.invoke.getMockImplementation()!
+      let release!: () => void
+      const pending = new Promise<void>(resolve => { release = resolve })
+      fixture.invoke.mockImplementation(async (command, args) => {
+        const result = await original(command, args)
+        if (command === 'agent_generation_begin') await pending
+        return result
+      })
+      const request = client.begin(beginRequest)
+      await client.cancel()
+      release()
+      await expect(request).rejects.toThrow('GENERATION_AGENT_CANCELLED')
+      const cancels = fixture.invoke.mock.calls.filter(([command]) => command === 'generation_cancel')
+      expect(cancels).toHaveLength(1)
+      expect(cancels[0][1]).toMatchObject({ handle: { rootActionId: 'agent-root' }, projectSession: session })
+      expect(fixture.recovery.run.status).toBe('cancelled')
+    })
+  })
 })

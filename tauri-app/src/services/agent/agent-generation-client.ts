@@ -51,7 +51,14 @@ export class AgentGenerationClient {
     if (this.recovery.sourceStatus !== 'current') throw new Error('GENERATION_SOURCE_CHANGED')
   }
 
+  // 已停止或已关闭的适配器不得再发起新的服务端工作；在首次 await 前就要求取消的调用同样拒绝。
+  // 在途 begin/resume 仍会在返回后由取消路径回收迟到收据。
+  private assertNotDetached() {
+    if (this.closed || this.cancelRequested) throw new Error('GENERATION_AGENT_DETACHED')
+  }
+
   async begin(request: AgentGenerationChannels['agent-generation:begin']['args'][0]) {
+    this.assertNotDetached()
     const recovery = this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:begin', request))
     if (this.cancelRequested) { await this.cancel(); throw new Error('GENERATION_AGENT_CANCELLED') }
     return recovery
@@ -63,6 +70,7 @@ export class AgentGenerationClient {
   }
 
   async resume(handle: MainGenerationRunHandle) {
+    this.assertNotDetached()
     const requested = { ...handle }
     const recovery = this.accept(await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:resume', { handle: requested }), requested.rootActionId)
     if (this.cancelRequested) { await this.cancel(); throw new Error('GENERATION_AGENT_CANCELLED') }
