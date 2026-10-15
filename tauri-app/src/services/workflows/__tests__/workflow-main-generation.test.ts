@@ -72,4 +72,57 @@ describe('草稿工作流主进程接线', () => {
     expect(f.invoke).not.toHaveBeenCalled()
     expect(f.context.mainGenerationRunHandle).toBeUndefined()
   })
+  it('恢复登记草稿只读取精确历史句柄并显式恢复，不再次 begin', async () => {
+    const f = setup('registered-draft')
+    const historical = { ...child, epoch: 'old-epoch' }
+    const original = f.invoke.getMockImplementation()!
+    let reads = 0
+    f.invoke.mockImplementation(async command => {
+      if (command === 'generation_read' && reads++ === 0)
+        return { ...view, handle: historical, status: 'paused', nonReplayable: true }
+      return original(command)
+    })
+    const runtime = await createWorkflowMainGenerationRuntime({ context: f.context, callbacks: f.callbacks,
+      selection: { operation: 'chapter-draft', chapterNumber: 3, resumeHandle: historical, promptKeys: [], skillStages: [], output: 'visible-text' } })
+    try {
+      expect(f.invoke).toHaveBeenCalledWith('generation_resume', { handle: historical, projectSession: session }, undefined)
+      expect(f.context.mainGenerationRunHandle).toEqual(child)
+      expect(f.invoke.mock.calls.map(([command]) => command)).toEqual(['generation_read', 'generation_resume', 'generation_read'])
+    } finally { await runtime.close() }
+    expect(f.unsubscribe).toHaveBeenCalledTimes(2)
+  })
+
+  it('打开后的读取故障暂停当前草稿并还原上下文和全部订阅', async () => {
+    const f = setup('registered-draft')
+    const root = f.context.mainGenerationRootHandle
+    const previousCancellation = vi.fn(async () => {})
+    f.context.requestMainGenerationCancellation = previousCancellation
+    const original = f.invoke.getMockImplementation()!
+    f.invoke.mockImplementation(async command => {
+      if (command === 'generation_read') throw new Error('合成读取故障')
+      return original(command)
+    })
+    await expect(createWorkflowMainGenerationRuntime({ context: f.context, callbacks: f.callbacks,
+      selection: { operation: 'chapter-draft', chapterNumber: 3, promptKeys: [], skillStages: [], output: 'visible-text' } }))
+      .rejects.toThrow('合成读取故障')
+    expect(f.invoke.mock.calls.map(([command]) => command)).toEqual(['generation_begin', 'generation_read', 'generation_pause'])
+    expect(f.unsubscribe).toHaveBeenCalledTimes(2)
+    expect(f.context.mainGenerationRootHandle).toBe(root)
+    expect(f.context.mainGenerationRunHandle).toBeUndefined()
+    expect(f.context.requestMainGenerationCancellation).toBe(previousCancellation)
+    expect(previousCancellation).not.toHaveBeenCalled()
+  })
+
+  it('恢复句柄跨父根时不恢复、不创建或取消任何运行', async () => {
+    const f = setup('registered-draft')
+    const historical = { ...child, epoch: 'old-epoch', rootActionId: 'other-root' }
+    f.invoke.mockResolvedValue({ ...view, handle: historical, status: 'paused', nonReplayable: true })
+    await expect(createWorkflowMainGenerationRuntime({ context: f.context, callbacks: f.callbacks,
+      selection: { operation: 'chapter-draft', chapterNumber: 3, resumeHandle: historical, promptKeys: [], skillStages: [], output: 'visible-text' } }))
+      .rejects.toThrow('GENERATION_WORKFLOW_ROOT_CHANGED')
+    expect(f.invoke.mock.calls.map(([command]) => command)).toEqual(['generation_read'])
+    expect(f.context.mainGenerationRunHandle).toBeUndefined()
+    expect(f.unsubscribe).not.toHaveBeenCalled()
+  })
+
 })
