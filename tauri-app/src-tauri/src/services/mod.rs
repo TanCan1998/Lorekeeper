@@ -88,3 +88,6 @@ pub mod main_generation_dispatcher;
 
 pub mod builtin_writing_skills;
 pub(crate) mod main_generation_sources;
+
+// ── B7 启动态子集：启动门禁（全局外观/皮肤状态 + 读回确认；命令层在 commands/startup.rs）──
+pub mod startup_gate;

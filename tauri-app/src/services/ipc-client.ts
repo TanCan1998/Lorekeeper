@@ -45,6 +45,9 @@ import { MIGRATED_CHANNELS } from '../shared/migrated-channels'
 const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'config:set': ['config'],
   'skin:execute': ['command'],
+  // B7 启动态子集：启动门禁（startup:get-state 无参不登记）
+  'startup:skin-snapshot': ['ready'],
+  'startup:appearance-ack': ['ack'],
   'window:resolve-close': ['requestId', 'decision'],
   'model-provider-resource:open': ['resource'],
   // 批次 B：项目文件系统（fs 基础 7 频道）

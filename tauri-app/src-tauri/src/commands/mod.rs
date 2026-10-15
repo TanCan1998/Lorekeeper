@@ -34,6 +34,8 @@ mod official_homepage; // 批次 A：官方主页
 pub mod project; // 批次 B：项目生命周期
 pub mod review_revision; // 批次 G4-3b：审稿修稿服务层（review-revision:* 4 频道）
 mod skin; // 批次 A：皮肤管理
+
+pub mod startup; // B7 启动态子集：启动门禁（startup:* 3 频道）
 pub mod update; // 批次 H（H3）：应用更新（update:* 6 频道 + update:state 事件）
 mod window; // 批次 A：窗口管理
 
@@ -61,6 +63,8 @@ pub use official_homepage::*;
 pub use project::*;
 pub use review_revision::*;
 pub use skin::*;
+
+pub use startup::*;
 pub use update::*;
 pub use window::*;
 

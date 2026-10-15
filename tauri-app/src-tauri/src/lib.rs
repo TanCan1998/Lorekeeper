@@ -96,6 +96,13 @@ pub fn run() {
             if let Err(error) = app_paths::ensure_lorekeeper_home() {
                 eprintln!("[Lorekeeper] {error}");
             }
+
+            // B7 启动态子集：确保数据根后再装载全局外观门禁（startup:* 3 频道）。
+            // 失败只让门禁进入阻塞态，渲染层启动页据此决定是否进入工作台。
+            // 别名刻意不含 `commands::`：频道覆盖扫描按 `commands::<name>` 采集已注册命令，
+            // 装载函数不是频道命令（同 `generation_events` 的既有处理）。
+            use crate::commands as startup_install;
+            startup_install::install_startup_gate(app.handle());
             // 主生成事件沿用既定广播/客户端身份过滤，领域服务只持纯 Rust 出口。
             generation_events::install_generation_events(
                 app.handle(),
@@ -122,6 +129,10 @@ pub fn run() {
             commands::skin_get_state,
             commands::skin_execute,
             commands::skin_read_custom_asset,
+            // B7 启动态子集：启动门禁（startup:* 3 频道）
+            commands::startup_get_state,
+            commands::startup_skin_snapshot,
+            commands::startup_appearance_ack,
             // 批次 A：官方主页
             commands::official_homepage_open,
             // 批次 A：模型资源

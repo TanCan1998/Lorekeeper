@@ -37,6 +37,9 @@ pub struct AppState {
     pub(crate) started_at_ms: u64,
     /// 批次 A：皮肤命令存储
     pub(crate) skin: Mutex<crate::commands::SkinCommandStore>,
+
+    /// B7 启动态子集：启动门禁（全局外观门禁状态；`lib.rs` 的 `setup` 装载）
+    pub(crate) startup_gate: Mutex<crate::services::startup_gate::StartupGate>,
     /// 批次 A 收口（2026-10-10）：两段式关窗守卫（对齐基线 `installWindowCloseGuard`）
     pub(crate) window_close_guard: Mutex<crate::commands::WindowCloseGuard>,
     /// 批次 B/C：活跃项目会话（None = 未打开项目；项目域命令一律拒绝）
@@ -85,6 +88,8 @@ impl AppState {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             skin: Mutex::new(crate::commands::SkinCommandStore::new()),
+
+            startup_gate: Mutex::new(crate::services::startup_gate::StartupGate::new()),
             window_close_guard: Mutex::new(crate::commands::WindowCloseGuard::default()),
             active_project: Mutex::new(None),
             project_db: Mutex::new(None),

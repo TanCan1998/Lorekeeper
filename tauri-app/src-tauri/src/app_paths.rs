@@ -70,6 +70,14 @@ pub fn recent_projects_path() -> PathBuf {
     recent_projects_path_at(&lorekeeper_home())
 }
 
+/// 外观门禁状态文件名（B7 启动态子集：生成号 + 皮肤修订 + 背景皮肤）。
+const APPEARANCE_STATE_FILE: &str = "appearance.json";
+
+/// `appearance.json` 路径（注入数据根，便于测试）。
+pub fn appearance_state_path_at(home: &Path) -> PathBuf {
+    home.join(APPEARANCE_STATE_FILE)
+}
+
 /// 对齐基线 `ensureVelaHome()`：保证数据根与 `prompts/`、`logs/` 目录存在。
 ///
 /// 基线在应用启动时调用一次；这里同样在 Tauri `setup` 中调用，使
@@ -172,5 +180,14 @@ mod tests {
         assert!(error.contains("无法创建数据目录"), "实际文案：{error}");
 
         let _ = std::fs::remove_file(&home);
+    }
+
+    #[test]
+    fn appearance_state_path_is_derived_from_home_test() {
+        let home = PathBuf::from("D:/data/lorekeeper");
+        assert_eq!(
+            appearance_state_path_at(&home),
+            PathBuf::from("D:/data/lorekeeper/appearance.json")
+        );
     }
 }
