@@ -319,6 +319,12 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'finalization-generation:execute': ['request'],
   'finalization-generation:commit': ['request'],
   'finalization-generation:cancel': ['request'],
+  // 批次 B97：剧情图生成（graph-generation:* 5 频道）
+  'graph-generation:read': ['request'],
+  'graph-generation:begin': ['request'],
+  'graph-generation:execute': ['request'],
+  'graph-generation:confirm': ['request'],
+  'graph-generation:cancel': ['request'],
   // 批次 G4-9a：角色提案（character-proposal:* 6 频道 +
   // character-identity:read；单对象参数频道统一登记 request
   // ——位置参数整体映射为命名参数 request，对齐基线 handler

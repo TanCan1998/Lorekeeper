@@ -1490,6 +1490,7 @@ impl MainGenerationOwner {
             agent_initialization,
             false,
             false,
+            false,
         )
     }
 
@@ -1501,6 +1502,7 @@ impl MainGenerationOwner {
         agent_initialization: bool,
         editor_inline_admission: bool,
         finalization_admission: bool,
+        graph_admission: bool,
     ) -> Result<Value, String> {
         self.assert_current()?;
         // 基线 :357-363 `GENERATION_BEGIN_INVALID` 选择形状校验。
@@ -1555,7 +1557,7 @@ impl MainGenerationOwner {
         ) {
             return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
         }
-        if GRAPH_OPERATIONS.contains(&operation) {
+        if GRAPH_OPERATIONS.contains(&operation) && !graph_admission {
             return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
         }
         if operation == "legacy-character-roster-repair" {
@@ -2066,7 +2068,16 @@ impl MainGenerationOwner {
         request: &Value,
         agent_execution: bool,
     ) -> Result<PreparedMainGenerationExecution, String> {
-        self.prepare_execution_with_retry(conn, request, agent_execution, false, false, false, None)
+        self.prepare_execution_with_retry(
+            conn,
+            request,
+            agent_execution,
+            false,
+            false,
+            false,
+            false,
+            None,
+        )
     }
 
     fn prepare_execution_with_retry(
@@ -2077,6 +2088,7 @@ impl MainGenerationOwner {
         editor_inline_admission: bool,
         import_admission: bool,
         finalization_admission: bool,
+        graph_admission: bool,
         retry_attempt_id: Option<&str>,
     ) -> Result<PreparedMainGenerationExecution, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
@@ -2114,7 +2126,7 @@ impl MainGenerationOwner {
         ) {
             return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
         }
-        if GRAPH_OPERATIONS.contains(&run_operation.as_str()) {
+        if GRAPH_OPERATIONS.contains(&run_operation.as_str()) && !graph_admission {
             return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
         }
         if run_operation == "legacy-character-roster-repair" {
@@ -3570,7 +3582,16 @@ impl MainGenerationOwner {
             .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE"))?;
         let task = self.read_failed_short_outline_task(conn, &run, failed)?;
         let request = json!({"handle":handle,"invocationNonce":format!("draft-short-outline-retry:{failed}"),"task":task});
-        self.prepare_execution_with_retry(conn, &request, false, false, false, false, Some(failed))
+        self.prepare_execution_with_retry(
+            conn,
+            &request,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(failed),
+        )
     }
 
     /// 直接调用方的兼容入口；生产命令走独立短连接执行器，不持数据库锁等待网络。
@@ -4462,7 +4483,7 @@ impl MainGenerationOwner {
             "output": "visible-text",
             "editorInlineInput": input_val,
         });
-        let view = self.begin_internal(conn, &selection, false, false, true, false)?;
+        let view = self.begin_internal(conn, &selection, false, false, true, false, false)?;
         let handle = view
             .get("handle")
             .cloned()
@@ -4591,7 +4612,7 @@ impl MainGenerationOwner {
             "task": task_value,
         });
 
-        self.prepare_execution_with_retry(conn, &request, false, true, false, false, None)
+        self.prepare_execution_with_retry(conn, &request, false, true, false, false, false, None)
     }
 
     // ===== B95: import-generation 生成子域 =====
@@ -4824,7 +4845,16 @@ impl MainGenerationOwner {
             "task": task,
         });
 
-        self.prepare_execution_with_retry(conn, &exec_request, false, false, true, false, None)
+        self.prepare_execution_with_retry(
+            conn,
+            &exec_request,
+            false,
+            false,
+            true,
+            false,
+            false,
+            None,
+        )
     }
 
     pub fn cancel_legacy_roster_generation(
@@ -5469,7 +5499,7 @@ impl MainGenerationOwner {
         }
 
         // 准入：finalization_admission = true
-        let view = self.begin_internal(conn, &selection, false, false, false, true)?;
+        let view = self.begin_internal(conn, &selection, false, false, false, true, false)?;
         let handle = view
             .get("handle")
             .cloned()
@@ -5599,7 +5629,16 @@ impl MainGenerationOwner {
             "task": task_val
         });
 
-        self.prepare_execution_with_retry(conn, &exec_request, false, false, false, true, None)
+        self.prepare_execution_with_retry(
+            conn,
+            &exec_request,
+            false,
+            false,
+            false,
+            true,
+            false,
+            None,
+        )
     }
 
     /// finalization-generation:commit 频道处理器
@@ -5815,6 +5854,406 @@ impl MainGenerationOwner {
         )
         .map_err(|e| mutating_error(&e))?;
 
+        self.cancel(conn, handle)?;
+        let updated = self
+            .repository
+            .get(conn, &run.run_id)
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        self.view_of(conn, &updated)
+    }
+
+    // ========================================================================
+    // 批次 B97：剧情图生成（graph-generation 5 频道）
+    // ========================================================================
+
+    /// 基线 graphRecovery 等价物：组装 GraphGenerationRecovery
+    pub fn graph_recovery(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let context = crate::services::graph_generation_source::read_graph_generation_context(run)
+            .map_err(|e| mutating_error(&e))?;
+        let graphs = crate::services::graph_generation::GraphGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+        );
+        let effects = graphs.effects(run).map_err(|e| mutating_error(&e))?;
+        let mut stmt = conn
+            .prepare("SELECT attempt_id FROM generation_attempts WHERE run_id=? ORDER BY rowid")
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        let attempts: Vec<String> = stmt
+            .query_map([&run.run_id], |r| r.get(0))
+            .map_err(|e| mutating_error(&e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        if attempts.len() > 1 {
+            return Err(mutating_error("GENERATION_GRAPH_ATTEMPT_CONFLICT"));
+        }
+        let mut artifact_val = None;
+        let mut result_val = None;
+        if let Some(att_id) = attempts.first() {
+            let receipt = self.repository.receipt(conn, att_id, None).ok();
+            if let Some(candidate) = receipt.and_then(|r| r.artifact) {
+                let art_ref = json!({
+                    "artifactId": candidate.artifact_id,
+                    "revision": candidate.revision,
+                    "textHash": candidate.text_hash,
+                });
+                if let Ok(res) = graphs.result(run, &art_ref) {
+                    result_val = Some(
+                        serde_json::to_value(&res).map_err(|e| mutating_error(&e.to_string()))?,
+                    );
+                    artifact_val = Some(art_ref);
+                }
+            }
+        }
+        let mut current = false;
+        if let Ok(budget) = self.repository.budget(conn, &run.root_action_id) {
+            if budget.root.status != "cancelled" {
+                if let Ok(rebuilt) = self.rebuild_binding(conn, &run.binding) {
+                    current = compare_generation_source_bindings(&run.binding, &rebuilt);
+                }
+            }
+        }
+        let view = self.view_of(conn, run)?;
+        let model_id = run
+            .binding
+            .source_manifest
+            .get("modelReceipt")
+            .and_then(|m| m.get("modelId"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let mut recovery = json!({
+            "view": view,
+            "modelId": model_id,
+            "context": context,
+            "effects": effects,
+            "attemptCount": attempts.len(),
+            "sourceStatus": if current { "current" } else { "conflict" },
+        });
+        if let (Some(art), Some(res)) = (artifact_val, result_val) {
+            recovery["artifact"] = art;
+            recovery["result"] = res;
+        }
+        Ok(recovery)
+    }
+
+    /// graph-generation:read 频道处理器
+    pub fn read_graph_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        if obj.keys().any(|k| k != "handle") {
+            return Err(mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
+        }
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        let graphs = crate::services::graph_generation::GraphGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+        );
+        let run = graphs.require(handle).map_err(|e| mutating_error(&e))?;
+        self.graph_recovery(conn, &run)
+    }
+
+    /// graph-generation:begin 频道处理器
+    pub fn begin_graph_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_INPUT_INVALID"))?;
+        if obj
+            .keys()
+            .any(|k| !["input", "modelId", "uiActionNonce"].contains(&k.as_str()))
+        {
+            return Err(mutating_error("GENERATION_GRAPH_INPUT_INVALID"));
+        }
+        let nonce = obj
+            .get("uiActionNonce")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if nonce.trim().is_empty() || nonce.len() > 256 {
+            return Err(mutating_error("GENERATION_GRAPH_INPUT_INVALID"));
+        }
+        let input_val = obj
+            .get("input")
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_INPUT_INVALID"))?;
+        let model_id = obj
+            .get("modelId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_INPUT_INVALID"))?;
+        let input =
+            crate::services::graph_generation_source::validate_graph_generation_input(input_val)
+                .map_err(|e| mutating_error(&e))?;
+
+        // 查重：同一 uiActionNonce
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.run_id FROM generation_runs r \
+                 JOIN generation_roots g ON g.root_action_id=r.root_action_id \
+                 WHERE json_extract(g.action_json,'$.projectId')=? \
+                   AND json_extract(g.action_json,'$.uiActionNonce')=? \
+                   AND json_extract(r.binding_json,'$.sourceManifest.graphGenerationContext') IS NOT NULL",
+            )
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        let rows: Vec<String> = stmt
+            .query_map(rusqlite::params![&self.session.project_id, nonce], |r| {
+                r.get(0)
+            })
+            .map_err(|e| mutating_error(&e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| mutating_error(&e.to_string()))?;
+
+        if rows.len() > 1 {
+            return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
+        }
+        if let Some(r_id) = rows.first() {
+            let run = self
+                .repository
+                .get(conn, r_id)
+                .map_err(|e| mutating_error(&e.to_string()))?;
+            let ctx = crate::services::graph_generation_source::read_graph_generation_context(&run)
+                .map_err(|e| mutating_error(&e))?;
+            if serde_json::to_value(&ctx.input()).unwrap_or(Value::Null)
+                != serde_json::to_value(&input).unwrap_or(Value::Null)
+            {
+                return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
+            }
+            return self.graph_recovery(conn, &run);
+        }
+
+        let operation = match input.kind().as_str() {
+            "plot" => "plot-tree-snapshot",
+            "plan" => "narrative-thread-plan-candidate",
+            "event" => "narrative-thread-event-candidate",
+            _ => return Err(mutating_error("GENERATION_GRAPH_INPUT_INVALID")),
+        };
+
+        let prompt_key = format!("graph-{}", input.kind().as_str());
+        let selection = json!({
+            "operation": operation,
+            "uiActionNonce": nonce,
+            "modelId": model_id,
+            "selectedDraftIds": [],
+            "selectedFinalizedDraftIds": [],
+            "promptKeys": [prompt_key],
+            "skillStages": [],
+            "output": "structured-data",
+            "graphGenerationInput": input_val,
+        });
+
+        // 准入：graph_admission = true
+        let view = self.begin_internal(conn, &selection, false, false, false, false, true)?;
+        let handle = view
+            .get("handle")
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        let run_id = handle
+            .get("runId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        let mut run = self
+            .repository
+            .get(conn, run_id)
+            .map_err(|e| mutating_error(&e.to_string()))?;
+
+        let scope = crate::services::graph_generation_source::GraphGenerationScope {
+            project_id: self.session.project_id.clone(),
+            epoch: self.session.lease_id.clone(),
+        };
+        let key = format!("graph:{}:{}", nonce, owner_now_ms());
+        let captured = crate::services::graph_generation_source::capture_graph_generation_context(
+            conn,
+            input_val,
+            &scope,
+            &key,
+            None,
+            &[],
+        )
+        .map_err(|e| mutating_error(&e))?;
+
+        let task = crate::services::graph_generation_source::graph_generation_task(&captured)
+            .map_err(|e| mutating_error(&e))?;
+        let serialized_task =
+            serde_json::to_string(&task).map_err(|e| mutating_error(&e.to_string()))?;
+        let task_hash = crate::services::finalization_generation::text_hash(&serialized_task);
+
+        run.binding.source_manifest.insert(
+            "graphGenerationContext".to_string(),
+            serde_json::to_value(&captured).unwrap(),
+        );
+        run.binding.source_manifest.insert(
+            "graphGenerationKey".to_string(),
+            Value::String(captured.key().to_string()),
+        );
+        run.binding.source_manifest.insert(
+            "graphGenerationTask".to_string(),
+            serde_json::to_value(&task).unwrap(),
+        );
+        run.binding.source_manifest.insert(
+            "graphGenerationTaskHash".to_string(),
+            Value::String(task_hash),
+        );
+
+        conn.execute(
+            "UPDATE generation_runs SET binding_json=? WHERE run_id=?",
+            rusqlite::params![
+                serde_json::to_string(&run.binding).map_err(|e| mutating_error(&e.to_string()))?,
+                run_id
+            ],
+        )
+        .map_err(|e| mutating_error(&e.to_string()))?;
+
+        let updated = self
+            .repository
+            .get(conn, run_id)
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        self.graph_recovery(conn, &updated)
+    }
+
+    /// graph-generation:execute 频道处理器（执行准备）
+    pub(crate) fn prepare_graph_generation_execution(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<PreparedMainGenerationExecution, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        if obj.keys().any(|k| k != "handle") {
+            return Err(mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
+        }
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        let graphs = crate::services::graph_generation::GraphGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+        );
+        let run = graphs.require(handle).map_err(|e| mutating_error(&e))?;
+        let task = graphs.task(&run).map_err(|e| mutating_error(&e))?;
+        graphs
+            .assert_mutable(&run)
+            .map_err(|e| mutating_error(&e))?;
+
+        let attempt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?",
+                [&run.run_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if attempt_count != 0 {
+            return Err(mutating_error("GENERATION_GRAPH_ATTEMPT_CONFLICT"));
+        }
+
+        let invocation_nonce = "graph:0".to_string();
+        let exec_request = json!({
+            "handle": handle,
+            "invocationNonce": invocation_nonce,
+            "task": task
+        });
+
+        self.prepare_execution_with_retry(
+            conn,
+            &exec_request,
+            false,
+            false,
+            false,
+            false,
+            true,
+            None,
+        )
+    }
+
+    /// graph-generation:confirm 频道处理器
+    pub fn confirm_graph_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        if obj
+            .keys()
+            .any(|k| !["handle", "artifact", "index"].contains(&k.as_str()))
+        {
+            return Err(mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
+        }
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        let artifact_val = obj
+            .get("artifact")
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        let index = obj
+            .get("index")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        // artifact checked in graphs.confirm
+
+        let graphs = crate::services::graph_generation::GraphGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+        );
+        let effect = graphs
+            .confirm(handle, artifact_val, index, |run| {
+                let budget = self
+                    .repository
+                    .budget(conn, &run.root_action_id)
+                    .map_err(|e| mutating_error(&e.to_string()))?;
+                if budget.root.status == "cancelled" {
+                    return Err(mutating_error("GENERATION_ACTION_CANCELLED"));
+                }
+                Ok(())
+            })
+            .map_err(|e| mutating_error(&e))?;
+
+        serde_json::to_value(&effect).map_err(|e| mutating_error(&e.to_string()))
+    }
+
+    /// graph-generation:cancel 频道处理器
+    pub fn cancel_graph_generation(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        if obj.keys().any(|k| k != "handle") {
+            return Err(mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
+        }
+        let handle = obj
+            .get("handle")
+            .ok_or_else(|| mutating_error("GENERATION_GRAPH_REQUEST_INVALID"))?;
+        let graphs = crate::services::graph_generation::GraphGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+        );
+        let run = graphs.require(handle).map_err(|e| mutating_error(&e))?;
         self.cancel(conn, handle)?;
         let updated = self
             .repository
@@ -15148,5 +15587,97 @@ data: [DONE]
             .cancel_finalization_generation(&conn, &bad_handle_req)
             .unwrap_err();
         assert_eq!(err, mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"));
+    }
+
+    // ===== B97: graph-generation 单元测试 =====
+
+    #[test]
+    fn graph_generation_read_rejects_missing_handle_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 缺少 handle
+        let bad_request = json!({ "wrong": 123 });
+        let err = owner
+            .read_graph_generation(&conn, &bad_request)
+            .unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
+    }
+
+    #[test]
+    fn graph_generation_general_begin_requires_admission_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        let selection = json!({
+            "operation": "plot-tree-snapshot",
+            "uiActionNonce": "graph:plot:1",
+            "modelId": "mock-model",
+            "selectedDraftIds": [],
+            "selectedFinalizedDraftIds": [],
+            "promptKeys": ["graph-plot"],
+            "skillStages": [],
+            "output": "structured-data"
+        });
+
+        // 通用 begin 未带 graph_admission 必须拒绝
+        let err = owner.begin(&conn, &selection, false, false).unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
+    }
+
+    #[test]
+    fn graph_generation_general_execute_requires_admission_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "plot-tree-snapshot").expect("open run");
+        let owner = owner_with(&conn);
+        let handle = handle_of_run(&run);
+
+        let request = json!({
+            "handle": handle,
+            "invocationNonce": "graph:0",
+            "task": {
+                "purpose": "plot-tree-snapshot",
+                "output": "structured-data",
+                "messages": []
+            }
+        });
+        // 通用 prepare_execution 未带 graph_admission 必须拒绝
+        let err = match owner.prepare_execution(&conn, &request, false) {
+            Ok(_) => panic!("expected Err"),
+            Err(e) => e,
+        };
+        assert_eq!(err, mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
+    }
+
+    #[test]
+    fn graph_generation_begin_rejects_empty_nonce_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        let request = json!({
+            "input": { "kind": "plot" },
+            "modelId": "mock-model",
+            "uiActionNonce": "   "
+        });
+        let err = owner.begin_graph_generation(&conn, &request).unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_GRAPH_INPUT_INVALID"));
+    }
+
+    #[test]
+    fn graph_generation_cancel_rejects_invalid_request_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 缺少 handle
+        let bad_request = json!({ "somethingElse": 123 });
+        let err = owner
+            .cancel_graph_generation(&conn, &bad_request)
+            .unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
     }
 }

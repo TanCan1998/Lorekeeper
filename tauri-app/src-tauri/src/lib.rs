@@ -327,6 +327,12 @@ pub fn run() {
             commands::finalization_generation_execute,
             commands::finalization_generation_commit,
             commands::finalization_generation_cancel,
+            // 批次 B97：剧情图生成（graph-generation:* 5 频道）
+            commands::graph_generation_read,
+            commands::graph_generation_begin,
+            commands::graph_generation_execute,
+            commands::graph_generation_confirm,
+            commands::graph_generation_cancel,
             // 批次 G4-9a：角色提案（character-proposal:* 6 频道
             // + character-identity:read）
             commands::character_proposal_stage,
