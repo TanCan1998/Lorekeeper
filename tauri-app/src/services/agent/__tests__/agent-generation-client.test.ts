@@ -115,4 +115,12 @@ describe('助手恢复客户端身份约束', () => {
     })
   })
 
+  it.each(['projectId', 'leaseId', 'projectPath'] as const)('调用方改写构造参数的 %s 不得替换已冻结的项目会话', async field => {
+    const mutableSession = { ...session }
+    const client = new AgentGenerationClient(mutableSession)
+    mutableSession[field] = 'different-session-value'
+    await expect(client.read(fixture.recovery.handle)).resolves.toEqual(fixture.recovery)
+    expect(fixture.invoke.mock.calls.at(-1)?.[1].projectSession).toEqual(session)
+  })
+
 })

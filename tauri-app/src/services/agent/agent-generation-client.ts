@@ -25,8 +25,12 @@ export class AgentGenerationClient {
   private current?: AgentGenerationRecovery
   private closed = false
   private cancelRequested = false
-  constructor(private readonly projectSession: ProjectSessionContext,
-    private readonly onRecovery: (recovery: AgentGenerationRecovery) => void = () => {}) {}
+  private readonly projectSession: Readonly<ProjectSessionContext>
+  constructor(projectSession: ProjectSessionContext,
+    private readonly onRecovery: (recovery: AgentGenerationRecovery) => void = () => {}) {
+    // 客户端始终绑定创建时的租约，不跟随调用方持有的可变会话对象。
+    this.projectSession = Object.freeze({ ...projectSession })
+  }
 
   get recovery(): AgentGenerationRecovery {
     if (!this.current) throw new Error('GENERATION_AGENT_HANDLE_REQUIRED')
