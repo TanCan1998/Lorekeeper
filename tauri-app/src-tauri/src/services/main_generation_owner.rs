@@ -2063,11 +2063,14 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_MATERIAL_DECISION_REQUIRED"));
         }
-        // 基线 :538-590 的材料决策提示哈希族（短细纲块编解码、生成前
-        // 定稿对账输出重算与逐字哈希比对）尚未迁移：一旦运行绑定了材料
-        // 决策，这里必须 fail-closed，绝不带着未经校验的提示词进入分发。
-        if material_decision.is_some() {
-            return Err(mutating_error("GENERATION_MATERIAL_PROMPT_UNVERIFIED"));
+        if let Some(decision) = material_decision {
+            // 派发前撤销不能让首稿哈希检查失效，也不能借父根其他运行绕过检查。
+            let started = self
+                .repository
+                .has_non_cancelled_attempt(conn, &run.run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+            verify_material_prompt(&run_operation, decision, &task, started)
+                .map_err(mutating_error)?;
         }
         // 基线 :585-590 输出合同一致性（task.output 必须与绑定输出
         // 合同——字符串主合同或 purpose 覆盖合同——逐字一致）。
@@ -4312,6 +4315,54 @@ fn text_hash(text: &str) -> String {
 /// `contextSnapshotHash` 本就被排除）、`sources` 剔除
 /// `draft:` / `finalized:` 前缀（+ `excludeKnowledge`
 /// 时 `kb:` 前缀与 `knowledge-selection`）。
+/// 普通首稿只接受收据绑定的唯一用户正文；复合注入合同仍待独立迁移。
+fn verify_material_prompt(
+    operation: &str,
+    decision: &Value,
+    task: &Value,
+    has_prior: bool,
+) -> Result<(), &'static str> {
+    if ["shortOutlinePromptHash", "reconciliationPromptHash"]
+        .iter()
+        .any(|key| decision.get(*key).is_some())
+    {
+        return Err("GENERATION_MATERIAL_PROMPT_UNVERIFIED");
+    }
+    let purpose = task
+        .get("purpose")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if matches!(
+        purpose,
+        DRAFT_SHORT_OUTLINE_PURPOSE | DRAFT_RECONCILE_PURPOSE
+    ) {
+        return Err("GENERATION_MATERIAL_PROMPT_MISMATCH");
+    }
+    if has_prior {
+        return Ok(());
+    }
+    let messages = task
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or("GENERATION_MATERIAL_PROMPT_MISMATCH")?;
+    let mut users = messages
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"));
+    let prompt = users
+        .next()
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str);
+    if purpose != operation
+        || users.next().is_some()
+        || prompt.is_none_or(|text| {
+            Some(text_hash(text).as_str()) != decision.get("promptHash").and_then(Value::as_str)
+        })
+    {
+        return Err("GENERATION_MATERIAL_PROMPT_MISMATCH");
+    }
+    Ok(())
+}
+
 /// 材料绑定允许改变上下文材料身份，不允许重写任何既有事实来源或模型合同。
 fn material_decision_projection(binding: &RunBinding) -> Value {
     let mut manifest = binding.source_manifest.clone();
@@ -5904,11 +5955,156 @@ mod tests {
             let error = owner.prepare_execution(&conn,&json!({"handle":handle_of(&run),"invocationNonce":"material-guard",
                 "task":{"purpose":"brainstorm","output":"visible-text","messages":[{"role":"user","content":"合成材料请求"}]}}),false)
                 .err().unwrap();
+            assert_eq!(error, mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH"));
+        }
+    }
+
+    #[test]
+    fn material_prompt_first_request_hashes_exact_utf8_and_requires_one_user_test() {
+        let prompt = "合成提示\r\n😀";
+        let mut receipt = material_binding_receipt();
+        receipt["promptHash"] = json!(text_hash(prompt));
+        let task = json!({"purpose":"review-chapter","output":"visible-text","messages":[
+            {"role":"system","content":"语言与输出合同保持不变"},{"role":"user","content":prompt}]});
+        assert_eq!(
+            verify_material_prompt("review-chapter", &receipt, &task, false),
+            Ok(())
+        );
+        let mut wrong_text = task.clone();
+        wrong_text["messages"][1]["content"] = json!("合成提示\n😀");
+        let mut wrong_purpose = task.clone();
+        wrong_purpose["purpose"] = json!("refine-draft");
+        let mut multiple_users = task.clone();
+        multiple_users["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role":"user","content":prompt}));
+        let mut missing_user = task.clone();
+        missing_user["messages"] = json!([{"role":"system","content":prompt}]);
+        for bad in [wrong_text, wrong_purpose, multiple_users, missing_user] {
             assert_eq!(
-                error,
-                mutating_error("GENERATION_MATERIAL_PROMPT_UNVERIFIED")
+                verify_material_prompt("review-chapter", &receipt, &bad, false),
+                Err("GENERATION_MATERIAL_PROMPT_MISMATCH")
             );
         }
+        // 普通后续调用不冒充首稿重验；既有 nonce、输出、来源和租约围栏仍由执行准备处理。
+        let later = json!({"purpose":"review-continuation","messages":[{"role":"user","content":"后续合成提示"}]});
+        assert_eq!(
+            verify_material_prompt("review-chapter", &receipt, &later, true),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn material_prompt_complex_contract_and_unbound_special_purposes_stay_closed_test() {
+        let receipt = material_binding_receipt();
+        let task =
+            json!({"purpose":"chapter-draft","messages":[{"role":"user","content":"合成正文"}]});
+        for key in ["shortOutlinePromptHash", "reconciliationPromptHash"] {
+            let mut complex = receipt.clone();
+            complex[key] = json!("b".repeat(64));
+            for prior in [false, true] {
+                assert_eq!(
+                    verify_material_prompt("chapter-draft", &complex, &task, prior),
+                    Err("GENERATION_MATERIAL_PROMPT_UNVERIFIED")
+                );
+            }
+        }
+        for purpose in [DRAFT_SHORT_OUTLINE_PURPOSE, DRAFT_RECONCILE_PURPOSE] {
+            let mut special = task.clone();
+            special["purpose"] = json!(purpose);
+            for prior in [false, true] {
+                assert_eq!(
+                    verify_material_prompt("chapter-draft", &receipt, &special, prior),
+                    Err("GENERATION_MATERIAL_PROMPT_MISMATCH")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn material_prompt_verified_preparation_keeps_no_physical_request_test() {
+        for operation in ["review-chapter", "refine-draft", "refine-from-review"] {
+            let (_temp, conn, owner, run) = material_binding_fixture(operation);
+            let prompt = "合成材料提示\n😀";
+            let mut receipt = material_binding_receipt();
+            receipt["promptHash"] = json!(text_hash(prompt));
+            owner
+                .bind_material_decision(&conn, &handle_of(&run), &receipt)
+                .unwrap();
+            owner
+                .repository
+                .pause(&conn, &run.root_action_id, false)
+                .unwrap();
+            owner.resume(&conn, &handle_of(&run)).unwrap();
+            let task = json!({"purpose":operation,"output":"visible-text","messages":[
+                {"role":"system","content":"保留合成输出合同"},{"role":"user","content":prompt}]});
+            let request =
+                json!({"handle":handle_of(&run),"invocationNonce":"verified-material","task":task});
+            let _prepared = owner.prepare_execution(&conn, &request, false).unwrap();
+            assert!(owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .attempts
+                .is_empty());
+            assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+            drop(_prepared);
+            assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn material_prompt_cancelled_before_dispatch_does_not_bypass_first_hash_test() {
+        let (_temp, conn, owner, run) = material_binding_fixture("review-chapter");
+        let mut receipt = material_binding_receipt();
+        receipt["promptHash"] = json!(text_hash("最初的合成提示"));
+        owner
+            .bind_material_decision(&conn, &handle_of(&run), &receipt)
+            .unwrap();
+        owner
+            .repository
+            .reserve(
+                &conn,
+                &run.run_id,
+                "cancel-before-dispatch",
+                &fake_content_hash(),
+                100,
+                10,
+                None,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        owner
+            .repository
+            .pause(&conn, &run.root_action_id, false)
+            .unwrap();
+        owner.resume(&conn, &handle_of(&run)).unwrap();
+        let budget = owner.repository.budget(&conn, &run.root_action_id).unwrap();
+        assert_eq!(budget.attempts.len(), 1);
+        assert_eq!(budget.attempts[0].status, "cancelled-before-dispatch");
+        let request = json!({"handle":handle_of(&run),"invocationNonce":"wrong-material",
+            "task":{"purpose":"review-chapter","output":"visible-text","messages":[{"role":"user","content":"被替换的提示"}]}});
+        assert_eq!(
+            owner
+                .prepare_execution(&conn, &request, false)
+                .err()
+                .unwrap(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+        );
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .attempts
+                .len(),
+            1
+        );
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
     }
 
     #[test]
