@@ -5100,15 +5100,10 @@ impl MainGenerationOwner {
     ///   envelope 刷新（pending 时 revision / items 同步）在 `approve`
     ///   前提交——该刷新为幂等收敛操作（下次 `read` 同样执行），
     ///   `approve` 失败时仅影响写入时序、不影响正确性。
-    /// - **finalized-generation 分支**：基线 `proveFinalizedCharacterGeneration`
-    ///   未迁移（B1 待移植叶函数，见 `services/character_proposal.rs`
-    ///   头注）——服务层 `read_envelope` 按基线 `readEnvelope` 的
-    ///   catch 语义把未移植证明的失败折叠为
-    ///   `CHARACTER_PROPOSAL_SOURCE_CHANGED`，故 finalized-generation
-    ///   提案在 `read` 步即 fail-closed；本方法的
-    ///   `CHARACTER_PROPOSAL_PROOF_PORT_PENDING` 分支为证明函数
-    ///   移植后的结构占位（迁移占位码、非基线码），待证明函数
-    ///   移植后活化 handle 解析。
+    /// - **finalized-generation 分支**：基线 :1261 的
+    ///   `proveFinalizedCharacterGeneration(...).currentHandle` 由
+    ///   `finalized_character_proof` 承担（B99 起已移植），证明失败
+    ///   按基线传播其错误码。
     /// - **withChildEffect**：基线事务门禁（agent-generation.ts:345）
     ///   由调用方结构保证（见 [`MainGenerationOwner::with_agent_child_effect`]
     ///   头注）；G4-10d 活化——运行身份（`require_run`）/ 服务层
@@ -5134,10 +5129,19 @@ impl MainGenerationOwner {
         // / generation / directory 四分支；import / 其他 → undefined）
         let source = batch["source"].clone();
         let handle = match source["kind"].as_str() {
-            // 基线 :1261 proveFinalizedCharacterGeneration(...).currentHandle ——
-            // 证明函数未迁移（B1），fail-closed（见方法头注）。
+            // 基线 :1261 `proveFinalizedCharacterGeneration(...).currentHandle`。
             Some("finalized-generation") => {
-                return Err(mutating_error("CHARACTER_PROPOSAL_PROOF_PORT_PENDING"));
+                let runs = GenerationRunRepository::default();
+                let proof = crate::services::finalized_character_proof::
+                    prove_finalized_character_generation(
+                        conn,
+                        &runs,
+                        &self.session.project_id,
+                        &source["handle"],
+                        &source["artifact"],
+                    )
+                    .map_err(|error| mutating_error(&error))?;
+                Some(proof.current_handle.clone())
             }
             // 基线 :1262 readLegacyRosterGenerationProof(...).currentHandle
             Some("legacy-roster-generation") => {
