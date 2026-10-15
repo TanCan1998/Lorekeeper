@@ -10,6 +10,9 @@ import { skillRegistry } from '../../services/agent/skill-registry'
 import { promptCatalog } from '../../services/prompt-templates'
 import { ipcPromptPersistence } from '../../services/prompt-catalog'
 import { useAgentStore } from '../agent-store'
+import { useLayoutStore } from '../layout-store'
+import { openArtifactInEditor } from '../../components/panels/agent/artifact-open'
+import * as artifactAlerts from '../../components/ui/AlertDialog'
 
 const session = { projectId: 'project-a', leaseId: 'lease-a', projectPath: 'C:/synthetic/agent-a' }
 const project = { id: session.projectId, sessionLease: session.leaseId, path: session.projectPath, name: '合成项目',
@@ -249,6 +252,23 @@ describe('Agent GenerationRuntime boundary', () => {
     })) }))
     await useAgentStore.getState().resumeGeneration(handle)
     expect(lastMessage()?.artifacts).toEqual(retained)
+
+    // 串起恢复后的真实打开入口：旧 lease 同登记仍拒绝，当前会话只导航。
+    const alert = vi.spyOn(artifactAlerts, 'alertError').mockResolvedValue(undefined)
+    const beforeOpenCalls = fixture.invoke.mock.calls.length
+    const { aiPanelOpen, rightView } = useLayoutStore.getState()
+    try {
+      useLayoutStore.setState({ aiPanelOpen: false, rightView: 'agent' })
+      expect(await openArtifactInEditor(retained[2])).toBe(false)
+      expect(useLayoutStore.getState()).toMatchObject({ aiPanelOpen: false, rightView: 'agent' })
+      expect(alert).toHaveBeenCalledOnce()
+      expect(await openArtifactInEditor(retained[0])).toBe(true)
+      expect(useLayoutStore.getState()).toMatchObject({ aiPanelOpen: true, rightView: 'ai-output' })
+      expect(fixture.invoke.mock.calls).toHaveLength(beforeOpenCalls)
+      expect(lastMessage()?.artifacts).toEqual(retained)
+    } finally {
+      useLayoutStore.setState({ aiPanelOpen, rightView })
+    }
 
     for (const channel of ['agent-generation:begin', 'agent-generation:round', 'agent-generation:claim-tool',
       'agent-generation:finish-tool', 'agent-generation:register-workflow', 'agent-generation:resume'])
