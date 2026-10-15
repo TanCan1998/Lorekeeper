@@ -12,13 +12,11 @@
 //!   （错误提前返回时 `tx` drop 即回滚，与基线一致）。
 //! - 提案信封 / 批次 / 决策 / 选择项一律 `serde_json::Value` 动态表示（对齐上游动态风格）。
 //!
-//! ⚠️ 待移植叶函数（本栈尚未迁移，双栈隔离约定下不要求与 Node 逐字节一致）：
-//! `proveCharacterProposal` 的 legacy-roster-generation / finalized-generation /
-//! generation(architecture|planning-material) 分支与 import 分支的推理解码
-//! （`readLegacyRosterGenerationProof` / `proveFinalizedCharacterGeneration` /
-//! `parseArchitectureCharacterProposal` / `parsePlanningMaterialCharacterProposal` /
-//! `decodeImportInferenceJson` 等）以 `CHARACTER_PROPOSAL_PROOF_PORT_PENDING`
-//! 错误码显式桩住（非上游错误码），待后续批次接线。`directory` 分支完整可用。
+//! 五个来源分支（legacy-roster-generation / finalized-generation / generation
+//! (architecture|planning-material) / import / directory）均已接线；叶函数分别移植于
+//! `finalized_character_proof`、`character_proposal_parser`、
+//! `import_inference_contract` 与 `legacy_roster_generation`（双栈隔离约定下
+//! 不要求与 Node 逐字节一致）。
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -57,9 +55,6 @@ const CHARACTER_PROPOSAL_FIELDS: [&str; 11] = [
 
 /// 角色定位白名单（对齐 `src/shared/character-role.ts` 的 `CHARACTER_ROLES`）。
 const CHARACTER_ROLES: [&str; 4] = ["protagonist", "antagonist", "supporting", "minor"];
-
-/// 待移植叶函数的统一错误码（**非上游错误码**，仅用于本迁移栈内部标记）。
-const PENDING_MIGRATION_CODE: &str = "CHARACTER_PROPOSAL_PROOF_PORT_PENDING";
 
 /// JS `Number.MAX_SAFE_INTEGER` 边界。
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
@@ -1300,7 +1295,7 @@ pub fn find_character_proposal_evidence(
 
 /// `proveCharacterProposal` —— 五分支证明结构。
 ///
-/// 未移植叶函数以 [`PENDING_MIGRATION_CODE`] 显式桩住（`directory` 分支完整可用）。
+/// 五个来源分支均由已移植叶函数提供服务。
 #[allow(clippy::too_many_arguments)]
 pub fn prove_character_proposal(
     conn: &Connection,
@@ -2333,9 +2328,8 @@ fn artifact_from_value(
 
 /// `importCharacterEntriesFromArtifacts` —— 推理产物回放。
 ///
-/// 产物校验部分已平移；`preservesStructuredJsonEvidence` /
-/// `decodeImportInferenceJson` / `decodeImportInferenceWithEndpointDelta`
-/// 待移植，以 [`PENDING_MIGRATION_CODE`] 桩住。
+/// 产物校验、语法修复证据保持（`preservesStructuredJsonEvidence`）与端点补卡解码
+/// （`decodeImportInferenceWithEndpointDelta`）分别委托 `import_inference_contract`。
 fn import_character_entries_from_artifacts(
     conn: &Connection,
     runs: &GenerationRunRepository,
@@ -2390,16 +2384,32 @@ fn import_character_entries_from_artifacts(
         }
         Ok(artifact.text)
     };
-    let original = output(inference[0])?;
-    if !syntax.is_empty() || !endpoint.is_empty() {
-        // TODO(B1 后续批次)：移植 `preservesStructuredJsonEvidence`（语法修复证据保持）
-        // 与 `decodeImportInferenceWithEndpointDelta`（端点卡片增量解码）。
-        let _ = original;
-        return Err(PENDING_MIGRATION_CODE.to_string());
+    let mut original = output(inference[0])?;
+    if let Some(repaired_row) = syntax.first() {
+        let repaired = output(repaired_row)?;
+        if !crate::services::import_inference_contract::preserves_structured_json_evidence(
+            &original, &repaired,
+        ) {
+            return Ok(None);
+        }
+        original = repaired;
     }
-    // TODO(B1 后续批次)：移植 `decodeImportInferenceJson`（import-inference-contract）。
-    let _ = original;
-    Err(PENDING_MIGRATION_CODE.to_string())
+    let delta = match endpoint.first() {
+        Some(row) => Some(output(row)?),
+        None => None,
+    };
+    // 解码失败一律回落「无产物回放结果」（基线 try/catch → null）。
+    let decoded = match delta {
+        Some(delta) => {
+            crate::services::import_inference_contract::decode_import_inference_with_endpoint_delta(
+                &original, &delta,
+            )
+        }
+        None => crate::services::import_inference_contract::decode_import_inference_json(&original),
+    };
+    Ok(decoded
+        .ok()
+        .and_then(|result| result.get("characterCards").cloned()))
 }
 
 /// `resolveScopedCharacterIdentity` —— 精确、作用域化、版本化的别名解析

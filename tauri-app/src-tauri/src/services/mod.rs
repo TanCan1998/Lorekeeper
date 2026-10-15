@@ -1,4 +1,4 @@
-﻿//! services —— 领域服务的纯 Rust 逻辑层（批次 B5 起）。
+//! services —— 领域服务的纯 Rust 逻辑层（批次 B5 起）。
 //!
 //! 首批成员：`avatar_image`（自 `electron/services/avatar-image.ts` 移植的头像压缩）。
 //! B1-W3 起：`main_generation_owner`（主生成 owner 骨架——per-database
@@ -25,6 +25,7 @@ pub mod graph_generation;
 pub mod graph_generation_source;
 pub mod import_generation;
 pub mod import_generation_source;
+pub mod import_inference_contract;
 pub mod legacy_roster_generation;
 pub mod legacy_roster_generation_context;
 pub mod legacy_roster_generation_pure;
