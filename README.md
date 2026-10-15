@@ -22,9 +22,9 @@
 >
 > - **历史频道覆盖**：242/290（约83%），另有48个未迁移频道；沿用 `a1884ac9` 的历史盘点，**不代表产品完成度或 GUI 验收比例**。
 > - **已接通**：生产短锁与关闭围栏、事件、Agent 轮次/恢复、材料/短细纲/对账、普通重启；仅开放已登记的 `generate_draft → chapter-draft` 工作流。
-> - **最近验证**：代码 `90792744` 的 Rust 全量 **1381通过、0失败**，`cargo check --all-targets` 零告警；本地合成 HTTP 已覆盖草稿保存到父 Agent 续轮。
+> - **最近验证**：代码 `87c43d87` 的前端定向 **3文件60项通过**，typecheck/lint通过；最近前端全量仍有 **7文件123项失败**（`f15a1b71`）。Rust全量沿用 `90792744` 的1381项通过，其后1个Rust切片仅做定向及全目标编译检查。
 > - **仍待完成**：前端既存失败、真实模型与完整 GUI 验收；其他工作流和特殊域未开放。B3仍在进行中，不宣称完整端到端完成。
-> - **接续入口**：[迁移总览](docs-fork/README.md)、[当前交接](docs-fork/handoffs/CURRENT.md)、[第51次快照](docs-fork/handoffs/2026-10-15-tauri-migration-status.md)。开发已收口，待下次接续。
+> - **接续入口**：[迁移总览](docs-fork/README.md)、[当前交接](docs-fork/handoffs/CURRENT.md)、[第52次快照](docs-fork/handoffs/2026-10-15-tauri-migration-status.md)。开发已收口，待下次接续。
 >
 > 以下内容与原项目一致。
 

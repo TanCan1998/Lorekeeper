@@ -1,47 +1,58 @@
 # Tauri 迁移进度快照（2026-10-15）
 
-> 第 51 次；按用户“更新进度后收口”要求更新。仅主会话实施，未派发开发子代理。
-> 当前入口：[CURRENT.md](CURRENT.md)；维护规则：[开发指南 §9](../agents/pi-development.md#9-交接状态与快照维护)。旧日期快照冻结，不改写其历史结论。
+> 第 52 次；按用户“收口交接”要求停止开发并更新。同日替换当前摘要，第51次内容保留于 Git 历史（`d4ea9dfd`）；旧日期快照冻结。
+> 当前入口：[CURRENT.md](CURRENT.md)；维护规则：[开发指南 §9](../agents/pi-development.md#9-交接状态与快照维护)。本轮由主会话实施，没有派发子代理。
 
-## 已验证状态
+## 已验证状态（第52次）
 
-代码基线：`907927446c7cb15da7204dd7c1e45badf4359687` / `master`，已推送 `origin/master`。收口前工作区干净；本次提交仅更新 fork 文档，最终 HEAD 以 Git 为准。本机核验截至 2026-10-15 16:12 +08:00。
+最新代码：`87c43d87b23081f6e8990b66b1e2bb2d7f694afe` / `master`，已推送 `origin/master`（首次推送 TLS EOF，重试成功）。文档更新前工作区干净；最终文档 HEAD 以 Git 为准。以下结果均核对自本机日志，日期为 2026-10-15。
 
-| 指标 | 结果 | 验证版本 / 范围 | 证据（本机，不入库） |
+| 指标 | 结果 | 验证版本 / 范围 / 时间 | 证据（本机，不入库） |
 |---|---|---|---|
-| 最近全量 Rust | **1381 passed / 0 failed，56.01s** | `90792744`，`cargo test`，2026-10-15 本轮阶段收口 | `.pi/tmp/b53-workflow-full.log` |
-| 本轮同域定向 | owner 153、Agent 42、草稿 effects 2、运行服务 38，全部通过 | `90792744`；不能加总为另一份全量结果 | `.pi/tmp/b53-workflow-{owner,agent,draft-effects,service}.log` |
-| 编译检查 | `cargo check --all-targets` 通过，零告警 | `90792744` | `.pi/tmp/b53-workflow-check.log` |
-| 格式 / 差异 / 提交检查 | 定向 rustfmt、diff、提交消息及泄漏扫描通过 | 代码提交；本次纯文档另做链接及差异检查 | `.pi/tmp/b53-workflow-format-check.log`、提交输出 |
-| 频道 / 事件计数 | 沿用历史：243 注册、242 invoke 覆盖、48 未迁移；契约 invoke 290、事件 7 | `a1884ac9` 的 2026-10-14 历史检查；此后本批无频道注册或契约数量改动，**未重新实测** | [频道盘点](../plans/tauri-migration-channel-inventory.md) |
-| TS / 前端 | 本轮 Rust 切片无前端改动，未重跑 typecheck/lint/前端 | 早期定向前端 23 项通过不属于最新代码整体验收；既存误跑全量仍有 22 文件失败、219 测试失败及 75 错误，未修复或宣称通过 | `.pi/tmp/b45-short-retry-vitest.log`；早期证据见本机状态 |
-| GUI / 真实模型 / MCP | 未验收 | 本地 HTTP 使用合成供应商；不代表完整应用端到端通过 | 本轮不新增此类结论 |
+| 最新前端定向 | **3文件、60测试通过**；typecheck、lint 退出0 | `87c43d87`；助手客户端、Agent store、草稿主生成工作流；17:35 +08:00 | `.pi/tmp/b83-{target,typecheck,lint}.log` |
+| 前一批前端组合 | 4文件、64测试通过；含恢复产物打开会话隔离；typecheck、lint通过 | `f8fbb83d`；17:32 +08:00；不与最新60项加总 | `.pi/tmp/b82-{target,typecheck,lint}.log` |
+| 最近前端全量扫描 | **170文件中7文件失败；2019测试：1895通过、123失败、1待定**；退出1，未全绿 | `f15a1b71`；17:24 +08:00；后续切片仅做定向，不冒充最新HEAD全量 | `.pi/tmp/b78-results.json`、`.pi/tmp/b78-full.log` |
+| 本轮 Rust 定向 | 序列化合同2项、对账5项通过；`cargo check --all-targets` 零告警；定向rustfmt通过 | `f3be4dd3`；17:14 +08:00；本轮唯一Rust切片 | `.pi/tmp/b73-{serialization,reconciliation,check,rustfmt,contract}.log` |
+| 最近全量 Rust（沿用） | **1381 passed / 0 failed，56.01s** | `90792744`，此前草稿链路阶段收口；此后累计Rust切片 **1**，未重跑全量 | `.pi/tmp/b53-workflow-full.log` |
+| 频道 / 事件计数（沿用） | 243注册、242 invoke覆盖、48未迁移；契约invoke290、事件7 | `a1884ac9` 的2026-10-14历史实测；本轮未改变注册或契约数，未重新计数 | [频道盘点](../plans/tauri-migration-channel-inventory.md) |
+| 传输 / 静态合同 | 已修复工作流命名参数、Rust入参驼峰与前端静态合同；明确区分Rust已注册和渲染层已开放 | `27f24383` 至 `56eca579`；各批定向/typecheck/lint通过 | `.pi/tmp/b72-*` 至 `.pi/tmp/b79-*` |
+| GUI / 真实模型 / MCP | 未验收 | 合成Tauri传输和本地HTTP不能替代真实模型、主进程SQLite或完整产品端到端证据 | 本轮无新增验收结论 |
 
-运行 Rust 验证的目录为 `tauri-app/src-tauri/`，显式设置 `RUSTUP_HOME=D:/Environment/rust/rustup`、`CARGO_HOME=D:/Environment/rust/cargo`。全量基线已更新至上述代码，此后 Rust 切片累计 0；本次文档不计数、不重复运行代码测试。
+Rust验证目录为 `tauri-app/src-tauri/`，显式设置 `RUSTUP_HOME=D:/Environment/rust/rustup`、`CARGO_HOME=D:/Environment/rust/cargo`；前端在 `tauri-app/` 执行 `pnpm exec vitest run <文件>`、`pnpm typecheck`、`pnpm run lint`。本次收口为纯文档，不重复运行代码测试。差异、链接、版本、提交消息和泄漏扫描另行核验。
 
-## 本次文档同步
+## 本轮交付与关键决策
 
-- 前次进度文档提交为 `b898c976`；本次补齐根 `README.md` 的迁移摘要，纠正 Rust 目录为 `tauri-app/src-tauri/`，同步 fork README 和 CURRENT 的接续入口。
-- 同日沿用第51次快照；没有新增开发进展或代码验证，不增加迁移计数。约83%仅指历史频道覆盖率，不是产品完成度；本次仅检查文档链接、指针与差异。
-- 收口和权限边界不变：代码测试基线仍为 `90792744`；待续任务不自动恢复，不派发代理，不扩大其他工作流或定稿权限。
+1. **草稿真实Tauri传输接线**：草稿命令、工作流登记、父根恢复、历史句柄和暂停/订阅清理回归接到下划线命令名及命名参数。`generation:begin` 使用 `selection`，对象命令使用 `request`，携带冻结项目会话。关键提交：`e6291a70`、`991cce34`、`fd87e00d`、`21f8cf9e`、`56d3f93c`、`6cdb08fb`、`27f24383`。
+2. **未知结果只补导航、不重放写入**：running/unknown动作保留已登记草稿导航，仍标记 `result_unknown`；按登记、项目和完整会话去重，保留既有收据、其他登记和历史lease。产物点击只打开持久候选面板，不开始任务、不读文件；旧lease不借用新会话。关键提交：`c0ddffb7`、`6c7ce201`、`e2b3daa1`、`88727b14`；证据 `.pi/tmp/b80-*`。
+3. **恢复身份与工具回执分别校验**：恢复允许同父根历史epoch/runId，但首次read/resume也必须匹配请求父根，空父根不关闭匹配。工具claim/finish回执精确比较projectId、epoch、rootActionId、runId、attemptId、toolCallId。请求在首次await前复制身份，构造时复制冻结会话，防调用方突变漂移。关键提交：`e665c760`、`e57811dc`、`b9260577`、`f8fbb83d`、`87c43d87`；在途突变14项、会话突变3项、空父根2项均先复现失败再修复。证据 `.pi/tmp/b81-before.log`、`.pi/tmp/b82-before.log`、`.pi/tmp/b83-before.log` 及各批定向日志。
+4. **取消与事件生命周期**：认领在途取消、同项目更换lease后不调用工具、不进入下一轮；同步工具异常也清理abort监听。事件取消立即封闭排队回调，幂等释放；异步注册失败显式记录。关键提交：`66524e69`、`5f923337`。
+5. **休眠契约修复，不等于开放特殊域**：Rust的修稿提交请求及连续性视图补齐camelCase，对账原始结构体补显式声明；修复角色提案/蓝图/首轮参数断言，静态合同改查Rust命令和仓储；品牌核对Lorekeeper身份，Storybook仅静态引用保留的上游文档。关键提交：`f3be4dd3`、`0041ae03`、`20374c2b`、`f15a1b71`。没有更改schema、权限、依赖、CI、ADR或正式生命周期。
+6. **守住未开放边界**：四个review-revision频道虽已在Rust登记，前端仍无命名参数映射；图谱、定稿派生等特殊域仍拒绝。新增真实适配器零传输断言，不以补齐映射来让失败测试通过。关键提交：`2a45b765`、`56eca579`。
 
-## 本批已完成
+此前生产短锁、关闭围栏、快照/推理事件、Agent首/后轮与恢复、材料/短细纲/对账、普通重启，以及已登记 `generate_draft → chapter-draft` 的有限准入与草稿保存到父Agent续轮保持原范围。真实SQLite与本地HTTP证据仍以 `90792744` 的阶段验证为准，本轮前端测试桩不扩大这些结论。
 
-1. **生产短锁与关闭围栏**：网络等待不持 owner/业务数据库守卫，短回调重新认证完整项目、会话、epoch 和连接；关闭先中止并等待执行退出，再挂起及关库，保留未保存尾和失败重试保护。事件出口广播快照及易失推理，保持身份过滤和关闭围栏。关键提交：`b547e7af`、`dfee2cbc`。
-2. **Agent 首轮、后轮与恢复**：生产执行、父预算复用、已完成回复控制纪元移交、未开始阶段恢复、真实重开及共享等待者停止接通；unknown 不重新派发，取消根不恢复。Agent 前端八个频道此前已接线（`06e59b70`），但不代表本轮前端全量复验。关键提交：`cec790d3`、`dabc01f1`、`a7ee6a3a`、`c0757d80`、`0079495f`。
-3. **材料、短细纲与对账**：真实模型/来源核验、材料最小投影与首稿提示哈希、短细纲完成产物及内部专属重试、对账编解码及注入/恢复接通；事务内重验预留，完成产物按 run 隔离。短细纲与对账同时绑定是基线明确禁止的组合，不作为待迁移项。关键提交：`8eefef1f`、`54b90304`、`55e6a7ab`、`c3ef3d15`、`a33e3859`、`9e78bb8b`。
-4. **普通重启**：`brainstorm` / `chapter-draft` 先接纳替代根再取消旧根；拒绝的新请求不损原运行；取消失败保留替代租约，同 nonce 重试收敛；新根不继承旧细纲产物或物理预算。关键提交：`1b49d461`；同父根多运行停止隔离回归：`6f7b991f`。
-5. **有限草稿工作流准入**：经用户单独确认，仅开放主进程真实登记并校验通过的 `generate_draft → chapter-draft`。事务内重验登记、创建子运行、激活父根并登记 child，失败全回滚；准备比较仅对已认证草稿登记排除登记标记，落库仍保留。拒绝未登记、错误父根/模型/章节、来源漂移及其他工作流。关键提交：`ba9d8570`。
-6. **关闭重开合同**：真实 AppState 关闭后以新 epoch 重开，未开始草稿保留 run/root 身份并可恢复执行；父工具 running 恢复 unknown，不自动重做。完成草稿也须显式恢复当前纪元后才允许同 nonce 重放；历史 attempt/usage 保持，取消/来源漂移仍拒绝且无租约泄漏。关键提交：`faa46f42`。
-7. **草稿提交到父轮接续**：修复来源变迁按结构体算哈希、按 JSON Value 落库导致的字段顺序不一致；子效应及域效应两处写入统一口径，不放宽坏哈希或来源校验，不改写旧收据。真实本地 HTTP 三次调用覆盖父轮登记、子草稿生成/合成/保存、工具完成、父后轮；三次共用父预算，草稿幂等保存。来源变迁写入故障、外层事务回滚、作者来源漂移均保持草稿/正文/收据原子性。关键提交：`90792744`。
+## 尚未解除的失败与阻塞
 
-本轮差异审查 SHA256：`215cd56a7d49edb1fb07c552d40f0ac0b61f75e92387104119e956908764ca06`，原始证据为 `.pi/tmp/b53-workflow-reviewed.diff`。`agent_domain_tool_effect::tests` 过滤执行为 0 项，不作为真实域效应验收证据；没有把合成 HTTP、合成旧收据或调用方自述当成真实模型验收。
+最近全量扫描仍有以下 **7文件 / 123失败**，未删除、跳过或放开生产边界来制造全绿：
 
-## 下一次接续与未解除边界
+| 测试文件（相对 `tauri-app/src/`） | 失败数 | 主要断点 |
+|---|---|---|
+| `services/__tests__/export-service-integration.test.ts` | 1 | 仍引入Electron控制器；`ipcMain.handle`不可用，未证明Tauri真实SQLite/授权写出 |
+| `services/__tests__/narrative-thread-candidate-generator.test.ts` | 2 | `graph-generation:begin`前端未迁移 |
+| `services/__tests__/plot-tree-generator.test.ts` | 1 | 同上，不擅自开放图谱 |
+| `services/workflows/commands/__tests__/finalize-chapter.blueprint-entities.test.ts` | 1 | 后处理失败分支触达未适配的mock命令；需先核对特殊域链路 |
+| `services/workflows/commands/__tests__/finalize-postprocess-character.integration.test.ts` | 15 | 定稿角色后处理特殊域及回执测试缺口，未声称真实持久化通过 |
+| `services/workflows/commands/__tests__/mutation-failure-boundary.test.ts` | 63 | 全部受 `finalized-character:read-context` 或 `review-revision:prepare` 未开放阻断 |
+| `services/workflows/commands/__tests__/refine-draft.command.test.ts` | 40 | `review-revision:prepare`前端拒绝；Rust已注册不等于完整迁移 |
 
-1. 优先核对 Tauri 前端草稿工作流接线及相关 mock/会话参数回归，保留既存前端失败证据；按影响范围运行对应 typecheck、定向测试、lint，不把旧定向成功当作前端全量通过。
-2. 继续已登记草稿在途/unknown 收据与关闭重开组合、工具状态和父根生命周期合同；已有通用运行层回归不能替代完整草稿工作流或 GUI 验收。最新源码为准，不追溯改写旧快照中当时未完成的描述。
-3. `generate_blueprint`、`generate_architecture`、其他普通父根工作流、规划续作、知识采集及未迁移特殊域仍未开放；新准入、schema、依赖、定稿/文件权限、CI/发布及 ADR 按项目规则另行确认。**开发子代理派发仍禁止**，普通持续迁移授权不解除这些边界。
-4. 真实模型、完整 GUI 工作流、Windows 更新、dirty 关窗及整屏瞬黑等专项尚未验收，B3 不能标记为完整端到端完成。
+计数来自 `b78-results.json`，不是最新HEAD重跑。此前旧快照的22文件/219失败不再作为最近扫描结果，但仍保留其历史日志。约83%仅为历史频道覆盖率，不是产品完成度；B3仍未完成完整端到端验收。
 
-收口后不继续修改代码、不留下本会话主动执行任务；待续队列及本机证据仍见 `.pi/tmp/pipeline-state.md`。Electron、根 `src/`、上游 `docs/`、根配置与锁文件保持隔离；没有新增依赖/schema/权限/CI/ADR。
+## 交接给下次会话
+
+- 分支 `master`；最新代码 `87c43d87` 已推送，文档提交前无未提交代码。当前活动/待续入口：`.pi/tmp/pipeline-state.md`（本机，不入库）。未创建代理run；收口后无本会话主动开发任务。
+- **首要待续**：核对 `AgentGenerationClient.close()` / `cancel()` 后是否还允许新的 `begin()` / `resume()`；仅开始读取源码和定位，**尚未写测试或修改实现，问题未确认**。保留迟到启动收据的取消能力，不把必要结算误封闭。会话todo #31待续。
+- 继续已登记草稿在途/unknown、父根生命周期、恢复导航的组合回归；按修改范围运行定向/typecheck/lint。前端全量剩余失败应先判断是测试适配、真实迁移缺口还是尚未开放域，不能直接补映射绕过拒绝。
+- `generate_blueprint`、`generate_architecture`、其他普通父根工作流、规划续作、知识采集、图谱/审稿/定稿派生特殊域不因持续迁移自动开放；新准入、schema、依赖、定稿/文件权限、CI/发布和ADR仍先确认。开发子代理派发仍禁止。
+- 真实模型、完整GUI、MCP、Windows更新、dirty关窗、整屏瞬黑等未验收。Electron、根 `src/`、上游 `docs/`、根配置及锁文件保持隔离。
+
+本次已按用户要求停止开发。仅完成交接文档检查、提交和推送；之后等待新的接续指令。
