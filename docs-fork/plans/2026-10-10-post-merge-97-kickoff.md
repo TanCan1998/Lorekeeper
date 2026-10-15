@@ -52,7 +52,7 @@
 |---|---|---|
 | `agent-generation.ts` | 8 | `begin` / `read` / `resume` / `round` / `claim-tool` / `finish-tool` / `register-workflow` / `commit-domain-tool` |
 | `editor-inline-generation.ts` | 4 | `begin` / `read-recovery` / `execute` / `cancel` |
-| `finalization-generation.ts` | 5 | `read` / `begin` / `execute` / `commit` / `cancel` |
+| `finalization-generation.ts` | 5 | `read` / `begin` / `execute` / `commit` / `cancel` ✅（2026-10-15 B96 已迁移） |
 | `graph-generation.ts` | 5 | `begin` / `read` / `execute` / `confirm` / `cancel` |
 | `legacy-roster-generation.ts` | 7 | `read-source` / `adopt-existing` / `begin` / `read` / `execute` / `stage` / `cancel` |
 | `finalized-character-generation.ts` | 5 | `read-context` / `commit` / `list-state-candidates` / `read-state-candidate` / `decide-state-candidate` |
