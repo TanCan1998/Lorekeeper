@@ -2337,6 +2337,23 @@ pub fn refresh_character_identity_projection(conn: &Connection) -> Result<(), St
     Ok(())
 }
 
+/// 刷新动态状态投影（对齐 `refreshCharacterStateProjection`，
+/// character-roster-repository.ts:888-891）：动态状态刷新只推进 revision
+/// 与 fact_hash，不重写作者/静态兼容正文。必须在事务内调用。
+pub fn refresh_character_state_projection(conn: &Connection) -> Result<(), String> {
+    if conn.is_autocommit() || !characters::has_character_identity_schema(conn) {
+        return Err("CHARACTER_ID_TRANSACTION_REQUIRED".to_string());
+    }
+    let entries = identity_projection_entries(conn, false)?;
+    conn.execute(
+        "UPDATE character_roster_meta SET revision = revision + 1, fact_hash = ?1, 
+         updated_at = datetime('now') WHERE id = 'main'",
+        rusqlite::params![full_fact_hash(&entries)?],
+    )
+    .map_err(|error| format!("更新角色名单元数据失败: {error}"))?;
+    Ok(())
+}
+
 /// 清空旧架构文本（对齐 `clearLegacyCharacterArchitecture`）。
 /// 必须在事务内调用。
 pub fn clear_legacy_character_architecture(conn: &Connection) -> Result<(), String> {

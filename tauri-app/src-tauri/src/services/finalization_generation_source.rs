@@ -195,20 +195,20 @@ pub struct FinalizationGenerationContext {
 /// 冻结角色快照（`character_identity_proposals.raw_value` 的存储形态）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FrozenCharacterSnapshot {
-    kind: String,
-    source: FinalizedSourceIdentity,
-    identity_revision: i64,
-    characters: Vec<FrozenCharacterReference>,
+pub(crate) struct FrozenCharacterSnapshot {
+    pub(crate) kind: String,
+    pub(crate) source: FinalizedSourceIdentity,
+    pub(crate) identity_revision: i64,
+    pub(crate) characters: Vec<FrozenCharacterReference>,
 }
 
 /// 冻结角色引用（`FinalizedCharacterReference`，不含 fields）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FrozenCharacterReference {
-    character_id: String,
-    display_name_snapshot: String,
-    aliases: Vec<String>,
+pub(crate) struct FrozenCharacterReference {
+    pub(crate) character_id: String,
+    pub(crate) display_name_snapshot: String,
+    pub(crate) aliases: Vec<String>,
 }
 
 /// `readFinalizedSourceFromDb` 的行投影。
@@ -227,15 +227,15 @@ struct FinalizedSourceSnapshot {
 
 /// `characters` 表的状态列投影（`stateSnapshot` 的 `row`）。
 #[derive(Debug)]
-struct CharacterStateRow {
-    character_id: String,
-    cs_location: Option<String>,
-    cs_power_level: Option<String>,
-    cs_physical_state: Option<String>,
-    cs_mental_state: Option<String>,
-    cs_key_items: Option<String>,
-    cs_recent_events: Option<String>,
-    cs_provenance: Option<String>,
+pub(crate) struct CharacterStateRow {
+    pub(crate) character_id: String,
+    pub(crate) cs_location: Option<String>,
+    pub(crate) cs_power_level: Option<String>,
+    pub(crate) cs_physical_state: Option<String>,
+    pub(crate) cs_mental_state: Option<String>,
+    pub(crate) cs_key_items: Option<String>,
+    pub(crate) cs_recent_events: Option<String>,
+    pub(crate) cs_provenance: Option<String>,
 }
 
 impl CharacterStateRow {
@@ -553,11 +553,12 @@ fn immutable_identity(context: &FinalizedCharacterContext) -> Value {
 }
 
 /// `SummaryRepository.readFinalizedCharacterContext`（基线
-/// `electron/repositories/summary-repository.ts:400-420`）的私有移植。
+/// `electron/repositories/summary-repository.ts:400-420`）的 1:1 移植。
 ///
-/// **收口待办**：`character_proposal.rs:1958` 的同名 PENDING 桩解除后，
-/// 评估提升为 `pub` 与本模块复用（本文件禁改，故暂存于此）。
-fn read_finalized_character_context(
+/// **复用边界**：B98 起本函数提升为 `pub`，供
+/// `finalized_character_service` 的 `finalized-character:read-context` 频道复用；
+/// `character_proposal.rs:1958` 的同名 PENDING 桩解除后可一并切换。
+pub fn read_finalized_character_context(
     conn: &Connection,
     draft_id: i64,
     scope: &ProjectEpoch,
@@ -709,7 +710,7 @@ fn read_finalized_source_from_db(
 }
 
 /// `readFrozenCharacterSnapshot`（基线 `summary-repository.ts:62-76`）。
-fn read_frozen_character_snapshot(
+pub(crate) fn read_frozen_character_snapshot(
     conn: &Connection,
     source: &FinalizedSourceIdentity,
 ) -> Result<Option<FrozenCharacterSnapshot>, String> {
@@ -759,7 +760,7 @@ fn read_frozen_character_snapshot(
 }
 
 /// `stateSnapshot`（基线 `summary-repository.ts:77-87`）。
-fn state_snapshot(
+pub(crate) fn state_snapshot(
     row: &CharacterStateRow,
     field: CharacterStateTextField,
     scope: &ProjectEpoch,

@@ -179,17 +179,17 @@ pub struct SaveFinalizedCharacterStateCandidatesRequest {
 /// 候选决策收据（对齐 `StoredCharacterStateDecision`，不含 `idempotent`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredCharacterStateDecisionReceipt {
-    candidate_key: String,
-    operation_id: String,
-    payload_hash: String,
-    decision: CharacterStateDecision,
-    source: FinalizedSourceIdentity,
+pub(crate) struct StoredCharacterStateDecisionReceipt {
+    pub(crate) candidate_key: String,
+    pub(crate) operation_id: String,
+    pub(crate) payload_hash: String,
+    pub(crate) decision: CharacterStateDecision,
+    pub(crate) source: FinalizedSourceIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum CharacterStateDecision {
+pub(crate) enum CharacterStateDecision {
     Accept,
     Decline,
 }
@@ -197,10 +197,10 @@ enum CharacterStateDecision {
 /// 候选持久化形态：`{version: 2, pending, receipts}`（旧纯数组格式读时兼容）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CharacterStateCandidateStore {
-    version: i64,
-    pending: Vec<FinalizedCharacterStateCandidate>,
-    receipts: Vec<StoredCharacterStateDecisionReceipt>,
+pub(crate) struct CharacterStateCandidateStore {
+    pub(crate) version: i64,
+    pub(crate) pending: Vec<FinalizedCharacterStateCandidate>,
+    pub(crate) receipts: Vec<StoredCharacterStateDecisionReceipt>,
 }
 
 impl CharacterStateCandidateStore {
@@ -239,7 +239,7 @@ fn is_finalized_source_json(value: &serde_json::Value) -> bool {
             .is_some_and(|hash| is_lowercase_hex64(hash))
 }
 
-fn is_lowercase_hex64(hash: &str) -> bool {
+pub(crate) fn is_lowercase_hex64(hash: &str) -> bool {
     hash.len() == 64
         && hash
             .chars()
@@ -527,7 +527,7 @@ fn parse_preserved_receipt(
 
 /// 对齐基线 `parseCharacterStateCandidateStore`：旧数组与 v2 store 两种持久化
 /// 格式均可解析；非法形态降级为空 store（不报错）。
-fn parse_character_state_candidate_store(value: &str) -> CharacterStateCandidateStore {
+pub(crate) fn parse_character_state_candidate_store(value: &str) -> CharacterStateCandidateStore {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) else {
         return CharacterStateCandidateStore::empty();
     };

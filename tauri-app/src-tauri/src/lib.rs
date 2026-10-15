@@ -333,6 +333,11 @@ pub fn run() {
             commands::graph_generation_execute,
             commands::graph_generation_confirm,
             commands::graph_generation_cancel,
+            // 批次 B98：定稿角色状态候选（finalized-character:* 4 频道）
+            commands::finalized_character_read_context,
+            commands::finalized_character_list_state_candidates,
+            commands::finalized_character_read_state_candidate,
+            commands::finalized_character_decide_state_candidate,
             // 批次 G4-9a：角色提案（character-proposal:* 6 频道
             // + character-identity:read）
             commands::character_proposal_stage,

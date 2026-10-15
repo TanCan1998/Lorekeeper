@@ -128,6 +128,9 @@ const PREPARATION_ALLOWED_KEYS: [&str; 8] = [
 /// 基线 `preparations` LRU 容量上限
 /// （main-generation-owner.ts:350：超限逐出最旧条目）。
 const PREPARATION_CAPACITY: usize = 64;
+/// 基线 `FinalizedCharacterGeneration.contexts` 的 LRU 容量上限
+/// （finalized-character-generation.ts:15/26：超限逐出最旧条目）。
+const FINALIZED_CHARACTER_CONTEXT_CAPACITY: usize = 64;
 /// 基线 `preparationProjection` 的 manifest 剔除键集
 /// （main-generation-owner.ts:296；`excludeKnowledge`
 /// 为真时追加 `knowledgeSnapshot`）。
@@ -559,6 +562,11 @@ pub struct MainGenerationOwner {
     /// 强类型；IPC 边界为 `Value`，基线 `structuredClone`
     /// 的等价物为 `Value::clone` 深拷贝）。
     preparations: Vec<(String, PreparationEntry)>,
+    /// 基线 `FinalizedCharacterGeneration.contexts`
+    /// （finalized-character-generation.ts:15）——定稿角色上下文缓存：
+    /// `readContext` 签发 `contextId`，`commit` 按 id 取回；容量 64 且按
+    /// 插入序逐出最旧（:26），项目关闭时清空（:136）。
+    finalized_character_contexts: Vec<(String, Value)>,
     /// 不依赖业务锁的事件出口与当前 owner 生命周期围栏。
     events: Arc<OwnerEventDelivery>,
     /// 基线 `closed` 标志（main-generation-owner.ts:116）。
@@ -700,6 +708,7 @@ impl MainGenerationOwner {
             run_leases: Mutex::new(HashMap::new()),
             pending_invocations: Arc::new(Mutex::new(HashMap::new())),
             preparations: Vec::new(),
+            finalized_character_contexts: Vec::new(),
             closed: false,
         }
     }
@@ -1421,8 +1430,10 @@ impl MainGenerationOwner {
         // 基线 :1391 `preparations.clear()`——草稿上下文
         // 准备缓存清空（G4-6c：`prepareDraftContext` 已迁移）。
         self.preparations.clear();
-        // TODO(B3+)：`finalizedCharacters.close()` / `reviewRevisions.close()`
-        //   （main-generation-owner.ts:1392-1393；子生成器迁移后接入）。
+        // 基线 :1392 `finalizedCharacters.close()`——定稿角色上下文缓存清空。
+        self.finalized_character_contexts.clear();
+        // TODO(B3+)：`reviewRevisions.close()`
+        //   （main-generation-owner.ts:1393；子生成器迁移后接入）。
         if self.closed {
             return;
         }
@@ -6260,6 +6271,128 @@ impl MainGenerationOwner {
             .get(conn, &run.run_id)
             .map_err(|e| mutating_error(&e.to_string()))?;
         self.view_of(conn, &updated)
+    }
+
+    // ========================================================================
+    // 批次 B98：定稿角色状态候选读面与决策（finalized-character 4 频道）
+    // ========================================================================
+
+    /// 基线 `FinalizedCharacterGeneration.readContext`
+    /// （`finalized-character:read-context`，generation-controller.ts:191）：
+    /// `contextId` 由 `randomUUID()` 签发，上下文按插入序 LRU 缓存（容量 64），
+    /// `originProjectId` 来自已验证的便携转移权威。
+    pub fn read_finalized_character_context(
+        &mut self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("GENERATION_CHARACTER_DRAFT_INVALID"))?;
+        if obj.keys().any(|key| key != "draftId") {
+            return Err(mutating_error("GENERATION_CHARACTER_DRAFT_INVALID"));
+        }
+        let draft_id = obj
+            .get("draftId")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| mutating_error("GENERATION_CHARACTER_DRAFT_INVALID"))?;
+        let scope = crate::repositories::generation_run_repository::ProjectEpoch {
+            project_id: self.session.project_id.clone(),
+            epoch: self.session.lease_id.clone(),
+        };
+        let context =
+            crate::services::finalized_character_service::read_context(conn, &scope, draft_id)
+                .map_err(|error| mutating_error(&error))?;
+        let context_id = crate::project_access::random_uuid_v4();
+        if self.finalized_character_contexts.len() >= FINALIZED_CHARACTER_CONTEXT_CAPACITY {
+            if let Some((oldest, _)) = self.finalized_character_contexts.first().cloned() {
+                self.finalized_character_contexts
+                    .retain(|(id, _)| *id != oldest);
+            }
+        }
+        self.finalized_character_contexts
+            .push((context_id.clone(), context.clone()));
+        let origin_project_id = self.transfer_origin(conn)?;
+        let mut view = json!({ "contextId": context_id, "context": context });
+        if let Some(origin) = origin_project_id {
+            view["originProjectId"] = Value::String(origin);
+        }
+        Ok(view)
+    }
+
+    /// `finalized-character:list-state-candidates` 频道处理器（controller:193，arity 0）。
+    pub fn list_pending_finalized_character_state_candidates(
+        &self,
+        conn: &Connection,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        crate::services::finalized_character_service::list_pending_state_candidates(conn)
+            .map_err(|error| mutating_error(&error))
+    }
+
+    /// `finalized-character:read-state-candidate` 频道处理器（controller:194）。
+    pub fn read_pending_finalized_character_state_candidate(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let obj = request
+            .as_object()
+            .ok_or_else(|| mutating_error("FINALIZED_CHARACTER_STATE_CANDIDATE_INVALID"))?;
+        if obj
+            .keys()
+            .any(|key| key != "draftId" && key != "candidateKey")
+        {
+            return Err(mutating_error(
+                "FINALIZED_CHARACTER_STATE_CANDIDATE_INVALID",
+            ));
+        }
+        let draft_id = obj
+            .get("draftId")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| mutating_error("FINALIZED_CHARACTER_STATE_CANDIDATE_INVALID"))?;
+        let candidate_key = obj
+            .get("candidateKey")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("FINALIZED_CHARACTER_STATE_CANDIDATE_INVALID"))?;
+        crate::services::finalized_character_service::read_pending_state_candidate(
+            conn,
+            draft_id,
+            candidate_key,
+        )
+        .map_err(|error| mutating_error(&error))
+    }
+
+    /// `finalized-character:decide-state-candidate` 频道处理器（controller:195）。
+    pub fn decide_finalized_character_state_candidate(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        crate::services::finalized_character_service::decide_state_candidate(conn, request)
+            .map_err(|error| mutating_error(&error))
+    }
+
+    /// 基线 controller 的 `transferOrigin`（generation-controller.ts:110）：
+    /// 读取已验证的便携转移权威；无冻结守卫时为 `None`，读取失败向上传播
+    /// （`PORTABLE_CURRENT_AUTHORITY_INVALID`）。
+    fn transfer_origin(&self, conn: &Connection) -> Result<Option<String>, String> {
+        let storage_root =
+            crate::db::kb::document_copy::project_storage_root(&self.session.project_path);
+        let storage_root = storage_root.to_string_lossy().into_owned();
+        crate::services::portable_current_authority::read_portable_current_authority(
+            &crate::services::portable_current_authority::ReadPortableCurrentAuthorityInput {
+                database: conn,
+                project_storage_root: &storage_root,
+                project_id: &self.session.project_id,
+                test_hooks: None,
+            },
+        )
+        .map(|authority| authority.map(|authority| authority.origin_project_id))
+        .map_err(|error| error.code().to_string())
     }
 }
 
@@ -15679,5 +15812,76 @@ data: [DONE]
             .cancel_graph_generation(&conn, &bad_request)
             .unwrap_err();
         assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
+    }
+    // ===== B98: finalized-character 单元测试 =====
+
+    #[test]
+    fn finalized_character_read_context_rejects_invalid_request_shape_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let mut owner = owner_with(&conn);
+
+        // 非对象 / 缺键 / 多余键 / 键类型不符：一律 GENERATION_CHARACTER_DRAFT_INVALID。
+        for bad in [
+            json!("draftId"),
+            json!({}),
+            json!({ "draftId": 1, "extra": true }),
+            json!({ "draftId": "1" }),
+        ] {
+            let err = owner
+                .read_finalized_character_context(&conn, &bad)
+                .unwrap_err();
+            assert_eq!(err, mutating_error("GENERATION_CHARACTER_DRAFT_INVALID"));
+        }
+
+        // draftId < 1 由服务层拒绝（同一错误码）。
+        let err = owner
+            .read_finalized_character_context(&conn, &json!({ "draftId": 0 }))
+            .unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_CHARACTER_DRAFT_INVALID"));
+    }
+
+    #[test]
+    fn finalized_character_state_candidates_delegate_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 空库：列表为空数组；读取 / 决策按服务层错误码拒绝。
+        assert_eq!(
+            owner
+                .list_pending_finalized_character_state_candidates(&conn)
+                .unwrap(),
+            json!([])
+        );
+        let err = owner
+            .read_pending_finalized_character_state_candidate(&conn, &json!({ "wrong": 1 }))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            mutating_error("FINALIZED_CHARACTER_STATE_CANDIDATE_INVALID")
+        );
+        let err = owner
+            .decide_finalized_character_state_candidate(&conn, &json!({ "draftId": 1 }))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            mutating_error("FINALIZED_CHARACTER_STATE_DECISION_INVALID")
+        );
+    }
+
+    #[test]
+    fn finalized_character_suspend_clears_context_cache_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let mut owner = owner_with(&conn);
+        owner
+            .finalized_character_contexts
+            .push(("ctx-1".to_string(), json!({ "projectId": "project-1" })));
+        assert_eq!(owner.finalized_character_contexts.len(), 1);
+
+        // 基线 :1392 `finalizedCharacters.close()`：项目关闭清空上下文缓存。
+        owner.suspend_for_project_close();
+        assert!(owner.finalized_character_contexts.is_empty());
     }
 }

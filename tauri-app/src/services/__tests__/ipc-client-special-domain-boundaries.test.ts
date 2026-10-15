@@ -8,10 +8,6 @@ import { installTauriInternals, type TauriInternalsHandle } from '../../../test/
 const session: ProjectSessionContext = {
   projectId: 'synthetic-project', leaseId: 'synthetic-lease', projectPath: 'C:/synthetic-project',
 }
-const slot = {
-  source: { draftId: 7, finalizationId: 'synthetic-finalization', chapterNumber: 2, contentHash: 'a'.repeat(64) },
-  stepKey: 'chapter_notes' as const,
-}
 let tauri: TauriInternalsHandle
 let priorSession: ProjectSessionContext | null
 beforeEach(() => {
@@ -25,17 +21,25 @@ afterEach(() => {
 })
 
 // 使用真实适配器而非 ipc mock，证明前端不会把未迁移特殊域送到主进程。
+// 已成为正式迁移面的频道（graph-generation / finalization-generation /
+// finalized-character 读面）不再属于本回归；改用仍未迁移的域：
+// finalized-character:commit（源证明准入）与 character-avatar 头像域。
 const cases = [
-  { channel: 'graph-generation:begin',
-    invoke: () => ipc.invokeWithProjectSession(session, 'graph-generation:begin',
-      { input: { kind: 'plot' }, modelId: 'synthetic-model', uiActionNonce: 'synthetic-action' }) },
-  { channel: 'finalized-character:read-context',
-    invoke: () => ipc.invokeWithProjectSession(session, 'finalized-character:read-context', { draftId: 7 }) },
-  { channel: 'finalized-character:list-state-candidates',
-    invoke: () => ipc.invokeWithProjectSession(session, 'finalized-character:list-state-candidates') },
-  { channel: 'finalization-generation:begin',
-    invoke: () => ipc.invokeWithProjectSession(session, 'finalization-generation:begin',
-      { slot, modelId: 'synthetic-model' }) },
+  { channel: 'finalized-character:commit',
+    invoke: () => ipc.invokeWithProjectSession(session, 'finalized-character:commit', {
+      contextId: 'synthetic-context',
+      handle: {
+        projectId: 'synthetic-project',
+        epoch: 'synthetic-lease',
+        rootActionId: 'synthetic-root',
+        runId: 'synthetic-run',
+      },
+      artifact: { artifactId: 'synthetic-artifact', revision: 1, textHash: 'a'.repeat(64) },
+    }) },
+  { channel: 'character-avatar:choose',
+    invoke: () => ipc.invokeWithProjectSession(session, 'character-avatar:choose', 'synthetic-character') },
+  { channel: 'character-avatar:read-batch',
+    invoke: () => ipc.invokeWithProjectSession(session, 'character-avatar:read-batch', ['synthetic-character']) },
 ] as const
 
 describe('未开放特殊域的 Tauri 传输边界', () => {
