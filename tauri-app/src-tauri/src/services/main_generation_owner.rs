@@ -4095,23 +4095,30 @@ impl MainGenerationOwner {
         self.assert_sources_current(conn, &handle, None)
     }
 
-    /// 基线 `readRecovery` 的 `sourcesMatch`：
-    /// `compareGenerationSourceBindings(run.binding, rebuildBinding(run.binding,
-    /// currentModelReceipt(run.binding)))`。模型缺失或源漂移导致无法重建时按不一致处理。
+    /// 源现状探针（基线 `rebuildBinding(run.binding, currentModelReceipt(run.binding))`
+    /// + `compareGenerationSourceBindings`）：重建失败（模型缺失 / 源漂移）即视为不一致。
+    pub(crate) fn binding_is_current(
+        &self,
+        conn: &Connection,
+        binding: &crate::repositories::generation_run_repository::RunBinding,
+    ) -> bool {
+        match self.rebuild_binding(conn, binding) {
+            Ok(rebuilt) => {
+                crate::services::generation_source_binding::compare_generation_source_bindings(
+                    binding, &rebuilt,
+                )
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// 基线 `readRecovery` 的 `sourcesMatch`。
     pub fn review_revision_sources_match(
         &self,
         conn: &Connection,
         run: &crate::repositories::generation_run_repository::DurableGenerationRun,
     ) -> bool {
-        match self.rebuild_binding(conn, &run.binding) {
-            Ok(rebuilt) => {
-                crate::services::generation_source_binding::compare_generation_source_bindings(
-                    &run.binding,
-                    &rebuilt,
-                )
-            }
-            Err(_) => false,
-        }
+        self.binding_is_current(conn, &run.binding)
     }
 
     /// 基线 `viewOf(run).candidates?.at(-1)`：恢复读面的候选快照投影。
@@ -16149,6 +16156,8 @@ data: [DONE]
             .assert_binding_current(&conn, &run.binding)
             .unwrap_err();
         assert!(error.contains("GENERATION_MODEL_MISSING"), "{error}");
+        // 同一判定也供规划续作与大纲恢复投影复用。
+        assert!(!owner.binding_is_current(&conn, &run.binding));
     }
 
     // ===== B102: review-revision 恢复投影 =====

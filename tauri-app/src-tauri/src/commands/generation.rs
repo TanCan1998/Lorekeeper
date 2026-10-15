@@ -574,7 +574,7 @@ pub(crate) fn read_recovery_context(
     let plot_outline = repository
         .read_plot_outline(conn, &run.run_id, None)
         .map_err(|error| mutating_error(map_generation_error(&error)))?;
-    let continuation = planning_continuation(conn, repository, &run)?;
+    let continuation = planning_continuation(conn, owner, repository, &run)?;
     let blueprint_saved = if manifest.get("operation").and_then(Value::as_str)
         == Some("chapter-blueprint-directory")
     {
@@ -744,7 +744,7 @@ pub(crate) fn read_recovery_context(
     };
     let plot_outline_recovery = match &plot_outline {
         Some(outline) => Some(plot_outline_recovery(
-            conn, repository, &run, &view, outline, epoch,
+            conn, owner, repository, &run, &view, outline, epoch,
         )?),
         None => None,
     };
@@ -925,6 +925,7 @@ pub(crate) fn read_recovery_context(
 /// 前缀）→ `ready`。
 fn planning_continuation(
     conn: &Connection,
+    owner: &crate::services::main_generation_owner::MainGenerationOwner,
     repository: &crate::repositories::generation_run_repository::GenerationRunRepository,
     run: &crate::repositories::generation_run_repository::DurableGenerationRun,
 ) -> Result<Option<PlanningContinuationProjection>, String> {
@@ -1065,14 +1066,9 @@ fn planning_continuation(
             next_handle: None,
         }));
     }
-    // 基线源现状探针（:722-735）：以 `rebuildBinding` +
-    // `compareGenerationSourceBindings` 重构绑定并逐字段
-    // 比对。`rebuildBinding` / `loadModel` 依赖尚未迁移
-    // （见本文件头注「刻意偏离」），按 review_revision 批次
-    // 既定范式以保守占位（判定为一致）注入——可计算的
-    // 分支（`continued` / `in-flight` / `complete` /
-    // `save-prefix`）不受影响。
-    let current = true;
+    // 基线源现状探针（:722-735）：`rebuildBinding` +
+    // `compareGenerationSourceBindings` 重构并逐字段比对；不一致 → `source-changed`。
+    let current = owner.binding_is_current(conn, &run.binding);
     if !current {
         return Ok(Some(PlanningContinuationProjection {
             source_handle,
@@ -1125,12 +1121,15 @@ fn planning_continuation(
 /// 失败候选文本 / 作者已存大纲 / 源现状判别。
 fn plot_outline_recovery(
     conn: &Connection,
+    owner: &crate::services::main_generation_owner::MainGenerationOwner,
     repository: &crate::repositories::generation_run_repository::GenerationRunRepository,
     run: &crate::repositories::generation_run_repository::DurableGenerationRun,
     view: &Value,
     outline: &PlotOutlineProgress,
     epoch: &str,
 ) -> Result<PlotOutlineRecoveryProjection, String> {
+    // 基线 `plotOutlineTargetCurrent` 的源现状比对：源漂移或模型缺失即视为不一致。
+    let source_current = owner.binding_is_current(conn, &run.binding);
     let saved = repository
         .read_plot_outline_author_edit(conn, &run.run_id)
         .map_err(|error| mutating_error(map_generation_error(&error)))?;
@@ -1172,26 +1171,23 @@ fn plot_outline_recovery(
     // （「Frozen proposals remain readable」）。
     let mut write_state = json!({ "kind": "blocked", "reason": "source-changed" });
     if let Some(saved) = &saved {
-        // 基线可计算前缀：当前摘要存在且哈希与作者存档一致
-        // （`plotOutlineTargetCurrent` 的剩余比对依赖
-        // `rebuildBinding`，见本文件头注「刻意偏离」，按
-        // 保守占位判定为一致）。
+        // 基线可计算前缀：当前摘要存在、哈希与作者存档一致，且源现状未漂移。
         let synopsis = project_core::get(conn)
             .map_err(|error| mutating_error(map_generation_error(&error)))?
             .map(|core| core.synopsis);
         if let Some(synopsis) = synopsis {
-            if text_hash(&synopsis) == saved.synopsis_hash {
+            if source_current && text_hash(&synopsis) == saved.synopsis_hash {
                 draft = synopsis;
                 write_state = json!({ "kind": "blocked", "reason": "author-saved" });
             }
         }
-    } else if repository
-        .read_planning_continuation(conn, &run.run_id)
-        .map_err(|error| mutating_error(map_generation_error(&error)))?
-        .is_none()
+    } else if source_current
+        && repository
+            .read_planning_continuation(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .is_none()
     {
-        // 基线 `compareGenerationSourceBindings` 探针同上以
-        // 保守占位（判定为一致）注入。
+        // 基线 `compareGenerationSourceBindings` 探针：源一致且无续作登记。
         write_state = if project_generation_in_flight(conn)
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?
         {
