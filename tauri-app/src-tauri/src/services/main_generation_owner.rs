@@ -1872,9 +1872,8 @@ impl MainGenerationOwner {
     /// （controller:226）——已完成轮次走控制纪元写入，
     /// 否则 host.resume（LLM 续跑）。
     ///
-    /// ⚠️ 本波占位：主体依赖分发核心迁移，当前
-    /// fail-closed 于 `GENERATION_AGENT_RESUME_UNMIGRATED`
-    /// （迁移占位码、非基线码，经错误映射透传）。
+    /// 未完成阶段仅经内部 AgentHost 恢复授权与账本；此方法自身不派发模型。
+    /// 未知调用仍由轮次准备阶段只读重放，不因恢复而变成新请求。
     pub fn agent_resume(
         &self,
         conn: &Connection,
@@ -2716,6 +2715,16 @@ impl MainGenerationOwner {
     /// 普通运行恢复：真实源重建、临时模型租约校验、服务授权与账本恢复。
     /// 保守跳过规划早退优化；未迁移特殊域仍按准入码拒绝。执行重分发入口另行接线。
     pub fn resume(&self, conn: &Connection, handle: &Value) -> Result<Value, String> {
+        self.resume_with_agent_admission(conn, handle, false)
+    }
+
+    /// 仅 AgentHost 可恢复未完成的 Agent 阶段；普通 IPC 不继承这个豁免。
+    fn resume_with_agent_admission(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        agent_initialization: bool,
+    ) -> Result<Value, String> {
         let run = self.require_run(conn, handle, false)?;
         self.repository
             .assert_plot_outline_writable(conn, &run.run_id)
@@ -2726,12 +2735,20 @@ impl MainGenerationOwner {
             .get("operation")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if agent_initialization && operation != "agent-round" {
+            return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+        }
+        // 未完成阶段的租约移交只在独立写入边界成功后生效。
+        if agent_initialization && !conn.is_autocommit() {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
         let blocked = if operation == "editor-inline" {
             Some("GENERATION_EDITOR_ADMISSION_REQUIRED")
-        } else if operation == "agent-round"
-            || ["agentInput", "agentSession", "agentAdmission"]
-                .iter()
-                .any(|key| manifest.get(*key).is_some_and(|value| !value.is_null()))
+        } else if !agent_initialization
+            && (operation == "agent-round"
+                || ["agentInput", "agentSession", "agentAdmission"]
+                    .iter()
+                    .any(|key| manifest.get(*key).is_some_and(|value| !value.is_null())))
         {
             Some("GENERATION_AGENT_ADMISSION_REQUIRED")
         } else if manifest
@@ -4187,7 +4204,7 @@ impl AgentHost for MainGenerationOwner {
     fn resume(&self, conn: &Connection, handle: &MainGenerationRunHandle) -> Result<Value, String> {
         // 基线 `resume` 闭包捕获：owner.resume(handle)。
         let handle_value = serde_json::to_value(handle).map_err(|error| error.to_string())?;
-        self.resume(conn, &handle_value)
+        self.resume_with_agent_admission(conn, &handle_value, true)
     }
 
     fn execute(
@@ -6855,6 +6872,101 @@ mod tests {
         assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
     }
 
+    #[test]
+    fn agent_resume_unstarted_reopen_rebinds_epoch_without_dispatch_or_second_budget_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let parent = owner
+            .begin(&conn, &parent_budget_agent_selection(0), false, true)
+            .unwrap();
+        let handle = parent["handle"].clone();
+        let root_id = handle["rootActionId"].as_str().unwrap();
+        owner.repository.pause(&conn, root_id, false).unwrap();
+        let mut next_session = owner.session.clone();
+        next_session.lease_id = "reopened-agent-epoch".to_string();
+        let mut reopened = MainGenerationOwner::new(next_session);
+        reopened.global_data_root = owner.global_data_root.clone();
+        assert_eq!(
+            reopened.resume(&conn, &handle).unwrap_err(),
+            mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED")
+        );
+        let recovery = reopened.agent_resume(&conn, &handle).unwrap();
+        assert_eq!(recovery.handle.epoch, "reopened-agent-epoch");
+        assert_eq!(recovery.handle.root_action_id, root_id);
+        assert_eq!(recovery.handle.run_id, handle["runId"].as_str().unwrap());
+        assert_eq!(recovery.rounds[0].status, "not-started");
+        assert_eq!(recovery.next_round, Some(0));
+        assert_eq!(recovery.source_status, "current");
+        assert!(reopened
+            .repository
+            .budget(&conn, root_id)
+            .unwrap()
+            .attempts
+            .is_empty());
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(reopened.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert!(matches!(
+            reopened
+                .prepare_agent_round(&conn, &json!({"handle":recovery.handle,"index":0}))
+                .unwrap(),
+            crate::services::agent_generation::PreparedAgentRound::Execute(_)
+        ));
+    }
+
+    #[test]
+    fn agent_resume_unstarted_failure_rolls_back_and_releases_lease_then_retries_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let parent = owner
+            .begin(&conn, &parent_budget_agent_selection(0), false, true)
+            .unwrap();
+        let handle = &parent["handle"];
+        let root_id = handle["rootActionId"].as_str().unwrap();
+        owner.repository.pause(&conn, root_id, false).unwrap();
+        let original_lease = owner.run_leases.lock().unwrap().clone();
+        conn.execute_batch("CREATE TEMP TRIGGER reject_agent_resume BEFORE UPDATE OF binding_json ON generation_runs
+            BEGIN SELECT RAISE(ABORT,'synthetic-agent-resume-failure'); END;").unwrap();
+        assert!(owner.agent_resume(&conn, handle).is_err());
+        assert_eq!(
+            owner.repository.budget(&conn, root_id).unwrap().root.status,
+            "paused"
+        );
+        assert_eq!(*owner.run_leases.lock().unwrap(), original_lease);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        conn.execute_batch("DROP TRIGGER reject_agent_resume")
+            .unwrap();
+        let recovery = owner.agent_resume(&conn, handle).unwrap();
+        assert_eq!(recovery.handle.root_action_id, root_id);
+        assert_eq!(
+            owner.repository.budget(&conn, root_id).unwrap().root.status,
+            "active"
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+    }
+
+    #[test]
+    fn agent_resume_unstarted_keeps_nested_and_other_domain_admission_closed_test() {
+        let (_temp, conn, owner, ordinary) = source_owner_fixture();
+        let ordinary_handle: MainGenerationRunHandle =
+            serde_json::from_value(handle_of(&ordinary)).unwrap();
+        assert_eq!(
+            AgentHost::resume(&owner, &conn, &ordinary_handle).unwrap_err(),
+            mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED")
+        );
+        let parent = owner
+            .begin(&conn, &parent_budget_agent_selection(0), false, true)
+            .unwrap();
+        let handle = &parent["handle"];
+        let root_id = handle["rootActionId"].as_str().unwrap();
+        owner.repository.pause(&conn, root_id, false).unwrap();
+        let transaction = conn.unchecked_transaction().unwrap();
+        assert!(owner.agent_resume(&transaction, handle).is_err());
+        transaction.commit().unwrap();
+        assert_eq!(
+            owner.repository.budget(&conn, root_id).unwrap().root.status,
+            "paused"
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+    }
+
     fn parent_budget_agent_selection(index: i64) -> Value {
         json!({
             "operation":"agent-round", "uiActionNonce":format!("parent-budget-round-{index}"),
@@ -7502,6 +7614,89 @@ mod tests {
             .unwrap()
             .is_empty());
         fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn production_agent_resume_unknown_never_dispatches_again_and_cancel_stays_refused_test() {
+        for cancel in [false, true] {
+            let fixture = ProductionExecutionFixture::new(false).for_agent();
+            let (execution, result) = fixture.start_agent();
+            let handle = handle_of(&fixture.run);
+            crate::commands::generation::stop_generation_for_state(
+                &fixture.state,
+                &serde_json::from_value(handle.clone()).unwrap(),
+                Some(&fixture.session),
+                cancel,
+            )
+            .unwrap();
+            let stopped = result
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            execution.join().unwrap();
+            assert_eq!(stopped["rounds"][0]["status"], "unknown");
+            {
+                let mut guard = fixture
+                    .state
+                    .generation_owners
+                    .authorized_owner_current(&fixture.session, || {
+                        fixture.state.active_project_snapshot()
+                    })
+                    .unwrap();
+                let owner = guard.owner();
+                fixture
+                    .state
+                    .with_project_db(|conn| {
+                        let resumed = owner.agent_resume(conn, &handle);
+                        if cancel {
+                            assert!(resumed.is_err());
+                        } else {
+                            let resumed = resumed?;
+                            assert_eq!(resumed.rounds[0].status, "unknown");
+                            assert!(resumed.next_round.is_none());
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            // 若意外重新分发，合成 provider 会再次进入等待，超时断言将失败。
+            let state = fixture.state.clone();
+            let session = fixture.session.clone();
+            let request = fixture.request.clone();
+            let (done, replayed) = std::sync::mpsc::channel();
+            let replaying = std::thread::spawn(move || {
+                done.send(crate::commands::generation::execute_agent_round_for_state(
+                    &state,
+                    &request,
+                    Some(&session),
+                ))
+                .unwrap();
+            });
+            let replay = replayed
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap()
+                .unwrap();
+            replaying.join().unwrap();
+            assert_eq!(replay["rounds"], stopped["rounds"]);
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let budget = GenerationRunRepository::default()
+                        .budget(conn, &fixture.run.root_action_id)?;
+                    assert_eq!(budget.attempts.len(), 1);
+                    assert_eq!(budget.attempts[0].status, "unknown");
+                    Ok(())
+                })
+                .unwrap();
+            assert!(fixture
+                .state
+                .generation_owners
+                .execution_controls
+                .lock()
+                .unwrap()
+                .is_empty());
+            fixture.state.close_project_database().unwrap();
+        }
     }
 
     #[test]
