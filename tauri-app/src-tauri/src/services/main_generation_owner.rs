@@ -4133,10 +4133,8 @@ impl MainGenerationOwner {
     /// `requireRun` + budget 取消态检查 →
     /// `CHARACTER_PROPOSAL_SOURCE_CHANGED`。
     ///
-    /// ⚠️ 基线 :676-677 的 `rebuildBinding(run.binding,
-    /// currentModelReceipt(run.binding))` 深比较 —— fail-closed
-    /// 占位（`currentModelReceipt → loadModel` 依赖未迁移，
-    /// G4-6c-1 既定范式）：闭包内保守判定为一致。
+    /// 基线 :676-677 的 `rebuildBinding(run.binding, currentModelReceipt(run.binding))`
+    /// 深比较由 [`Self::assert_binding_current`] 承担：源漂移或模型缺失即拒绝提交。
     fn character_proposal_service<'a>(
         &'a self,
         conn: &'a Connection,
@@ -4165,8 +4163,8 @@ impl MainGenerationOwner {
                         {
                             return Err(mutating_error("CHARACTER_PROPOSAL_SOURCE_CHANGED"));
                         }
-                        // 基线 :676-677 rebuildBinding 深比较 —— fail-closed 占位（见方法头注）。
-                        Ok(())
+                        // 基线 :676-677 —— 重建绑定并深比较，源漂移即拒绝。
+                        self.assert_binding_current(conn, &run.binding)
                     },
                     version,
                 )
@@ -16137,6 +16135,22 @@ data: [DONE]
             .unwrap_err();
         assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
     }
+    // ===== B103: 角色提案源现状探针 =====
+
+    #[test]
+    fn assert_binding_current_rejects_missing_model_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("open run");
+
+        // 源现状探针不再恒真：模型缺失 / 源漂移时明确失败。
+        let error = owner
+            .assert_binding_current(&conn, &run.binding)
+            .unwrap_err();
+        assert!(error.contains("GENERATION_MODEL_MISSING"), "{error}");
+    }
+
     // ===== B102: review-revision 恢复投影 =====
 
     #[test]
