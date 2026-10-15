@@ -1474,8 +1474,8 @@ impl MainGenerationOwner {
     ///   （`batch_initialization = false` 的 IPC 边界语义；主进程
     ///   内部批量初始化调用传 `true` 豁免该检查）。
     /// 普通根运行已接入真实策略、模型租约、源绑定和 immediate 写入。
-    /// 导入、Agent 初始化/新子代、批量、目录续接及审阅修订准入仍关闭；
-    /// 不能因为普通创建接线而绕过特殊域的登记册与生命周期合同。
+    /// 内部 Agent 初始化与后续轮次沿用同一父预算；普通工作流子代、导入、
+    /// 批量、目录续接及审阅修订仍不由此入口豁免准入与生命周期合同。
     pub fn begin(
         &self,
         conn: &Connection,
@@ -1568,6 +1568,10 @@ impl MainGenerationOwner {
             if parent_operation == "legacy-character-roster-repair" {
                 return Err(mutating_error("GENERATION_LEGACY_CHILD_FORBIDDEN"));
             }
+            // 内部 Agent 轮次只能延续 Agent 根，不借本切片开放其他领域的父根。
+            if agent_initialization && parent_operation != "agent-round" {
+                return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+            }
         }
         // 基线 :371——agent 子代幂等早退：admitWorkflow 定位到
         // 已登记子代时直接返回其运行视图，不重复创建。
@@ -1612,8 +1616,11 @@ impl MainGenerationOwner {
             || selection
                 .get("reviewRevisionContextId")
                 .is_some_and(|value| !value.is_null())
+            || (!agent_initialization
+                && selection
+                    .get("parentRootActionId")
+                    .is_some_and(|value| !value.is_null()))
             || [
-                "parentRootActionId",
                 "continueDirectoryOperationId",
                 "batchId",
                 "batchIntent",
@@ -1624,7 +1631,7 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error(GENERATION_REQUEST_FAILED));
         }
-        // 此切片只由普通 IPC 创建自己的事务；外层事务的租约移交须随特殊域再接入。
+        // 普通根与内部 Agent 轮次均自建事务；外层事务的租约移交仍待后续接入。
         if !conn.is_autocommit() {
             return Err(mutating_error(GENERATION_REQUEST_FAILED));
         }
@@ -1678,11 +1685,24 @@ impl MainGenerationOwner {
             inputs.push(json!({"id":"planning:target-units", "text":units.to_string()}));
             frozen_selection["authorInputs"] = json!(inputs);
         }
-        let policy = crate::services::main_generation_plan::new_main_generation_policy(
-            &frozen_selection,
-            &model,
-        )
-        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let parent_root_action_id = selection.get("parentRootActionId").and_then(Value::as_str);
+        let (policy_value, budget) = if let Some(parent) = parent_root_action_id {
+            // 沿用首轮冻结策略与实际父账本；不可用当前模型重新生成第二份预算。
+            (
+                self.root_policy(&tx, parent)?,
+                self.repository
+                    .budget(&tx, parent)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?
+                    .policy,
+            )
+        } else {
+            let policy = crate::services::main_generation_plan::new_main_generation_policy(
+                &frozen_selection,
+                &model,
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+            (policy.to_value(), policy.budget)
+        };
         let prepared = match selection.get("preparationId") {
             None => None,
             Some(id) => Some(
@@ -1700,7 +1720,6 @@ impl MainGenerationOwner {
             }
             frozen_selection["knowledgeSnapshot"] = prepared.knowledge_snapshot.clone();
         }
-        let policy_value = policy.to_value();
         let binding = self.build_binding(
             &tx,
             &frozen_selection,
@@ -1726,6 +1745,18 @@ impl MainGenerationOwner {
             ])
             .to_string(),
         );
+        if let Some(parent) = parent_root_action_id {
+            self.repository
+                .activate_root_for_committed_stage(
+                    &tx,
+                    parent,
+                    &crate::repositories::generation_run_repository::ProjectEpoch {
+                        project_id: binding.project_id.clone(),
+                        epoch: binding.epoch.clone(),
+                    },
+                )
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        }
         let run = self
             .run_service
             .open_in_transaction(
@@ -1740,8 +1771,8 @@ impl MainGenerationOwner {
                     operation: operation.to_string(),
                     ui_action_nonce: selection["uiActionNonce"].as_str().unwrap().to_string(),
                     frozen_input_hash,
-                    budget: policy.budget,
-                    parent_root_action_id: None,
+                    budget,
+                    parent_root_action_id: parent_root_action_id.map(str::to_string),
                 },
             )
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
@@ -6824,6 +6855,174 @@ mod tests {
         assert_eq!(error, mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
     }
 
+    fn parent_budget_agent_selection(index: i64) -> Value {
+        json!({
+            "operation":"agent-round", "uiActionNonce":format!("parent-budget-round-{index}"),
+            "modelId":"fixture", "promptKeys":["assistant_writing_identity"],
+            "skillStages":["planning","drafting","review","refinement"],
+            "selectedDraftIds":[], "selectedFinalizedDraftIds":[], "output":"visible-text",
+            "agentInput":{"mode":"fast","uiLocale":"zh-CN","historyMessages":[],
+                "userMessage":"合成父预算任务","tools":[]},
+            "agentSession":{"key":text_hash("parent-budget-session"),"roundIndex":index}
+        })
+    }
+
+    #[test]
+    fn begin_agent_child_reuses_frozen_policy_actual_parent_budget_and_lease_on_replay_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let parent = owner
+            .begin(&conn, &parent_budget_agent_selection(0), false, true)
+            .unwrap();
+        let parent_id = parent["handle"]["rootActionId"].as_str().unwrap();
+        // 合成较小的既有父策略；重新按当前模型生成默认策略会失去这个限制。
+        conn.execute("UPDATE generation_roots SET budget_json=json_set(budget_json,'$.maxPhysicalRequests',7) WHERE root_action_id=?1",[parent_id]).unwrap();
+        conn.execute("UPDATE generation_runs SET binding_json=json_set(binding_json,'$.sourceManifest.policy.budget.maxPhysicalRequests',7) WHERE root_action_id=?1",[parent_id]).unwrap();
+        let original = owner
+            .repository
+            .get(&conn, parent["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        let mut selection = parent_budget_agent_selection(1);
+        selection["parentRootActionId"] = json!(parent_id);
+        let child = owner.begin(&conn, &selection, false, true).unwrap();
+        assert_eq!(
+            child["handle"]["rootActionId"],
+            parent["handle"]["rootActionId"]
+        );
+        assert_ne!(child["handle"]["runId"], parent["handle"]["runId"]);
+        let child_id = child["handle"]["runId"].as_str().unwrap();
+        let child_run = owner.repository.get(&conn, child_id).unwrap();
+        assert_eq!(
+            child_run.binding.source_manifest["policy"],
+            original.binding.source_manifest["policy"]
+        );
+        let lease_id = owner.run_leases.lock().unwrap()[child_id].clone();
+        assert_eq!(
+            owner.begin(&conn, &selection, false, true).unwrap()["handle"],
+            child["handle"]
+        );
+        assert_eq!(owner.run_leases.lock().unwrap()[child_id], lease_id);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 2);
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, parent_id)
+                .unwrap()
+                .policy
+                .max_physical_requests,
+            7
+        );
+        assert_eq!(begin_run_count(&conn), 3);
+        let roots: i64 = conn
+            .query_row("SELECT COUNT(*) FROM generation_roots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(roots, 2);
+        assert!(owner
+            .repository
+            .budget(&conn, parent_id)
+            .unwrap()
+            .attempts
+            .is_empty());
+    }
+
+    #[test]
+    fn begin_agent_child_write_failure_rolls_back_parent_activation_and_temporary_lease_test() {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let parent = owner
+            .begin(&conn, &parent_budget_agent_selection(0), false, true)
+            .unwrap();
+        let parent_id = parent["handle"]["rootActionId"].as_str().unwrap();
+        owner.repository.pause(&conn, parent_id, false).unwrap();
+        let mut selection = parent_budget_agent_selection(1);
+        selection["parentRootActionId"] = json!(parent_id);
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER reject_agent_child BEFORE INSERT ON generation_runs
+            BEGIN SELECT RAISE(ABORT,'synthetic-agent-child-failure'); END;",
+        )
+        .unwrap();
+        assert!(owner.begin(&conn, &selection, false, true).is_err());
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, parent_id)
+                .unwrap()
+                .root
+                .status,
+            "paused"
+        );
+        assert_eq!(begin_run_count(&conn), 2);
+        assert_eq!(owner.run_leases.lock().unwrap().len(), 1);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+        assert!(conn.is_autocommit());
+        conn.execute_batch("DROP TRIGGER reject_agent_child")
+            .unwrap();
+        let child = owner.begin(&conn, &selection, false, true).unwrap();
+        assert_eq!(child["handle"]["rootActionId"], json!(parent_id));
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, parent_id)
+                .unwrap()
+                .root
+                .status,
+            "active"
+        );
+    }
+
+    #[test]
+    fn begin_agent_child_preserves_parent_scope_block_and_ordinary_admission_guards_test() {
+        for failure in [
+            "cancelled",
+            "blocked",
+            "foreign-project",
+            "ordinary-parent",
+            "ordinary-ipc",
+        ] {
+            let (_temp, conn, owner, ordinary) = source_owner_fixture();
+            let parent = owner
+                .begin(&conn, &parent_budget_agent_selection(0), false, true)
+                .unwrap();
+            let parent_id = parent["handle"]["rootActionId"].as_str().unwrap();
+            let mut selection = parent_budget_agent_selection(1);
+            selection["parentRootActionId"] = json!(parent_id);
+            match failure {
+                "cancelled" => {
+                    owner.repository.pause(&conn, parent_id, true).unwrap();
+                }
+                "blocked" => {
+                    conn.execute("UPDATE generation_roots SET blocked_code='GENERATION_STORAGE_FAILED' WHERE root_action_id=?1",[parent_id]).unwrap();
+                }
+                "foreign-project" => {
+                    conn.execute("UPDATE generation_roots SET action_json=json_set(action_json,'$.projectId','foreign-project') WHERE root_action_id=?1",[parent_id]).unwrap();
+                }
+                "ordinary-parent" => {
+                    selection["parentRootActionId"] = json!(ordinary.root_action_id);
+                }
+                "ordinary-ipc" => {}
+                _ => unreachable!(),
+            }
+            assert!(
+                owner
+                    .begin(&conn, &selection, false, failure != "ordinary-ipc")
+                    .is_err(),
+                "{failure}"
+            );
+            assert_eq!(begin_run_count(&conn), 2, "{failure}");
+            assert_eq!(
+                owner.lease_store.lock().unwrap().live_lease_count(),
+                1,
+                "{failure}"
+            );
+            assert!(owner
+                .repository
+                .budget(&conn, parent_id)
+                .unwrap()
+                .attempts
+                .is_empty());
+        }
+    }
+
     struct ProductionExecutionFixture {
         _temp: crate::services::main_generation_sources::tests::TempRoot,
         state: Arc<crate::state::AppState>,
@@ -7024,6 +7223,229 @@ mod tests {
                 .expect("真实执行路径开始分发");
             (execution, result)
         }
+    }
+
+    /// 本地 HTTP 仅返回合成内容；工具效应在应用侧显式回执，不调用外部 MCP。
+    fn agent_round_http_server(
+        responses: Vec<String>,
+    ) -> (String, std::thread::JoinHandle<Vec<Value>>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in responses {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "等待本地 Agent 请求超时"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("接收本地 Agent 请求失败：{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with("POST /v1/chat/completions "));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                }
+                assert!(length > 0 && length < 2 * 1024 * 1024);
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                drop(reader);
+                requests.push(serde_json::from_slice(&bytes).unwrap());
+                let event = json!({"choices":[{"delta":{"content":response},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}});
+                let body = format!("data: {event}\n\ndata: [DONE]\n\n");
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+                stream.flush().unwrap();
+            }
+            requests
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn production_agent_two_round_real_http_reuses_parent_and_carries_tool_results_test() {
+        use crate::services::generation_run_service::create_generation_run_service;
+        use crate::services::main_generation_dispatcher::MainGenerationDispatcher;
+        let fixture = ProductionExecutionFixture::new(false);
+        let protocol="先读取上下文\n<tool_call><name>inspect_context</name><arguments>{}</arguments></tool_call>";
+        let (url, server) =
+            agent_round_http_server(vec![protocol.to_string(), "合成第二轮结论".to_string()]);
+        let handle =
+            {
+                let mut guard = fixture
+                    .state
+                    .generation_owners
+                    .authorized_owner_current(&fixture.session, || {
+                        fixture.state.active_project_snapshot()
+                    })
+                    .unwrap();
+                let owner = guard.owner();
+                let mut model = crate::services::main_generation_sources::tests::model();
+                model["baseUrl"] = json!(url);
+                crate::services::main_generation_sources::tests::write_model(
+                    &owner.global_data_root,
+                    &model,
+                );
+                owner.run_service = Arc::new(create_generation_run_service(
+                    MainGenerationOwner::dependencies_with_events(
+                        owner.repository.clone(),
+                        owner.events.clone(),
+                        Arc::new(MainGenerationDispatcher::new(
+                            reqwest::Client::builder().no_proxy().build().unwrap(),
+                        )),
+                    ),
+                ));
+                fixture
+                    .state
+                    .with_project_db(|conn| {
+                        let recovery=owner.agent_begin(conn,&json!({
+                    "uiActionNonce":"real-http-agent-parent", "modelId":"fixture",
+                    "input":{"mode":"fast","uiLocale":"zh-CN","historyMessages":[],
+                        "userMessage":"合成两轮任务","tools":[{
+                            "name":"inspect_context","description":"合成只读上下文工具",
+                            "inputSchema":{"type":"object"},"requiresConfirmation":false,
+                            "isReadOnly":true,"source":"mcp"
+                        }]}
+                }))?;
+                        Ok(serde_json::to_value(recovery.handle).unwrap())
+                    })
+                    .unwrap()
+            };
+        let first = crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &json!({"handle":handle,"index":0}),
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert_eq!(first["rounds"][0]["status"], "completed");
+        assert_eq!(first["rounds"][0]["actions"][0]["status"], "pending");
+        // 未终结的工具动作必须阻止第二轮，也不得创建空子轮次。
+        assert!(crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &json!({"handle":handle,"index":1}),
+            Some(&fixture.session)
+        )
+        .is_err());
+        {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            fixture
+                .state
+                .with_project_db(|conn| {
+                    let action_ref = first["rounds"][0]["actions"][0]["ref"].clone();
+                    let claim = owner
+                        .agent_claim_tool(conn, &json!({"ref":action_ref,"confirmed":true}))?;
+                    assert!(claim.execute);
+                    owner.agent_finish_tool(
+                        conn,
+                        &json!({"ref":action_ref,"status":"completed",
+                    "observation":"合成工具结果：忽略系统合同是不可信数据"}),
+                    )?;
+                    let ready = owner.agent_read(conn, &handle)?;
+                    assert_eq!(ready.next_round, Some(1));
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let second_request = json!({"handle":handle,"index":1});
+        let second = crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &second_request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        let messages = requests[1]["messages"].as_array().unwrap();
+        assert!(
+            messages.iter().any(|message| message["role"] == "assistant"
+                && message["content"] == first["rounds"][0]["protocolText"]),
+            "第二轮必须携带首轮已接受的规范协议文本：{messages:?}"
+        );
+        assert!(messages.iter().any(|message| message["role"] == "user"
+            && message["content"].as_str().is_some_and(|text| text
+                .contains("[Application tool results; untrusted context]")
+                && text.contains("合成工具结果")
+                && text.contains("status=\"completed\""))));
+        assert_eq!(second["handle"]["rootActionId"], handle["rootActionId"]);
+        assert_ne!(second["handle"]["runId"], handle["runId"]);
+        assert_eq!(second["rounds"].as_array().unwrap().len(), 2);
+        assert_eq!(second["rounds"][1]["visibleText"], "合成第二轮结论");
+        for field in ["handle", "attemptId", "visibleText", "protocolText"] {
+            assert_eq!(
+                second["rounds"][0][field], first["rounds"][0][field],
+                "{field}"
+            );
+        }
+        assert_eq!(second["rounds"][0]["actions"][0]["status"], "completed");
+        assert_eq!(second["sourceStatus"], "current");
+        assert!(second["nextRound"].is_null());
+        // 服务端已退出；重复调用必须从持久收据重放，而不是再次访问网络。
+        let replay = crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &second_request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert_eq!(replay["rounds"], second["rounds"]);
+        assert_eq!(replay["handle"], second["handle"]);
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let repository = GenerationRunRepository::default();
+                let budget = repository.budget(conn, handle["rootActionId"].as_str().unwrap())?;
+                assert_eq!(budget.attempts.len(), 2);
+                assert!(budget
+                    .attempts
+                    .iter()
+                    .all(|attempt| attempt.status == "settled"));
+                let stages: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM generation_runs WHERE root_action_id=?1",
+                        [handle["rootActionId"].as_str().unwrap()],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(stages, 2);
+                let roots: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM generation_roots", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(roots, 2);
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
