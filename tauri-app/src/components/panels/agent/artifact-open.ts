@@ -2,6 +2,7 @@ import type { ToolArtifact } from '../../../services/agent/tool-registry'
 import { appErrorMessage } from '../../../i18n/app-errors'
 import { ipc } from '../../../services/ipc-client'
 import { useEditorStore } from '../../../stores/editor-store'
+import { useLayoutStore } from '../../../stores/layout-store'
 import { useLocaleStore } from '../../../stores/locale-store'
 import { useProjectStore } from '../../../stores/project-store'
 import {
@@ -41,10 +42,9 @@ function reportProjectChangedWhileReadingArtifact(): void {
 
 export async function openArtifactInEditor(artifact: ToolArtifact): Promise<boolean> {
   const { type, name, path, projectPath, projectSession } = artifact
-  if (
-    !path
-    || (type !== 'file_created' && type !== 'file_modified' && type !== 'tab_opened')
-  ) {
+  if (type === 'workflow_started' ? !artifact.runId?.trim() : (
+    !path || (type !== 'file_created' && type !== 'file_modified' && type !== 'tab_opened')
+  )) {
     return false
   }
 
@@ -73,6 +73,13 @@ export async function openArtifactInEditor(artifact: ToolArtifact): Promise<bool
     )
     return false
   }
+
+  if (type === 'workflow_started') {
+    // 点击只导航到持久候选和任务输出；恢复与继续生成仍需用户另行确认。
+    useLayoutStore.getState().openRightPanel('ai-output')
+    return true
+  }
+  if (!path) return false
 
   // 只信任工具执行时冻结在产物上的项目身份，绝不借用点击时的当前项目。
   let content: string

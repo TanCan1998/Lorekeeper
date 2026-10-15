@@ -11,6 +11,7 @@ vi.mock('../../../ui/AlertDialog', () => ({
 import { openArtifactInEditor } from '../artifact-open'
 import { setActiveProjectSessionContext } from '../../../../shared/project-session-context'
 import { useEditorStore } from '../../../../stores/editor-store'
+import { useLayoutStore } from '../../../../stores/layout-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import { installTauriInternals, type TauriInternalsHandle } from '../../../../../test/helpers/tauri-internals'
@@ -32,6 +33,7 @@ function projectWithLease(leaseId: string) {
 let tauriInternals: TauriInternalsHandle
 beforeEach(() => {
   mocks.alertError.mockReset()
+  useLayoutStore.setState({ aiPanelOpen: false, rightView: 'agent' })
   useLocaleStore.setState({ locale: 'en-US' })
   useEditorStore.getState().clearTabs()
   useProjectStore.setState({ currentProject: projectWithLease('lease-B') })
@@ -99,4 +101,26 @@ describe('agent artifact open session ownership', () => {
     expect(useEditorStore.getState().tabs).toEqual([])
     expect(mocks.alertError).toHaveBeenCalledOnce()
   })
+  it('同会话的工作流产物只打开持久候选面板，不重启任务或读取文件', async () => {
+    tauriInternals = installTauriInternals({})
+    expect(await openArtifactInEditor({ type: 'workflow_started', name: 'generate_draft',
+      runId: 'synthetic-registration', status: 'waiting', projectPath,
+      projectSession: { projectId: 'same-project-id', leaseId: 'lease-B', projectPath },
+    })).toBe(true)
+    expect(useLayoutStore.getState()).toMatchObject({ aiPanelOpen: true, rightView: 'ai-output' })
+    expect(tauriInternals.invoke).not.toHaveBeenCalled()
+    expect(useEditorStore.getState().tabs).toEqual([])
+    expect(mocks.alertError).not.toHaveBeenCalled()
+  })
+
+  it.each(['lease-A', ''])('工作流产物不借用旧会话或缺失的登记身份：%s', async leaseId => {
+    tauriInternals = installTauriInternals({})
+    expect(await openArtifactInEditor({ type: 'workflow_started', name: 'generate_draft',
+      runId: leaseId ? 'synthetic-registration' : '', status: 'waiting', projectPath,
+      projectSession: { projectId: 'same-project-id', leaseId: leaseId || 'lease-B', projectPath },
+    })).toBe(false)
+    expect(useLayoutStore.getState()).toMatchObject({ aiPanelOpen: false, rightView: 'agent' })
+    expect(tauriInternals.invoke).not.toHaveBeenCalled()
+  })
+
 })
