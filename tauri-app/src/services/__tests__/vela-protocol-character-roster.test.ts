@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
 import { ipc } from '../ipc-client'
 import { readCoreContent, writeCoreContent } from '../resource-protocol'
+import { normalizeSourceEol } from '../../../test/source-contract'
 
 vi.mock('../ipc-client', () => ({
   ipc: {
@@ -19,7 +20,7 @@ const projectSession: ProjectSessionContext = {
 }
 
 function source(file: string): string {
-  return readFileSync(resolve(process.cwd(), file), 'utf8')
+  return normalizeSourceEol(readFileSync(resolve(process.cwd(), file), 'utf8'))
 }
 
 describe('vela core character roster seam', () => {
@@ -66,10 +67,10 @@ describe('vela core character roster seam', () => {
 describe('structured character roster static contract', () => {
   it('keeps retired mutation IPC, generic projection writes, and normal extraction paths closed', () => {
     const protocol = source('src/shared/ipc-channels.ts')
-    const controller = source('electron/controllers/db-controller.ts')
-    const projectCore = source('electron/repositories/project-core-repository.ts')
-    const projectClear = source('electron/repositories/project-clear-repository.ts')
-    const roster = source('electron/repositories/character-roster-repository.ts')
+    const controller = source('src-tauri/src/commands/db.rs')
+    const projectCore = source('src-tauri/src/repositories/project_core_repository.rs').split('#[cfg(test)]')[0]
+    const projectClear = source('src-tauri/src/repositories/project_clear_repository.rs').split('#[cfg(test)]')[0]
+    const roster = source('src-tauri/src/repositories/character_roster_repository.rs').split('#[cfg(test)]')[0]
     const workflow = source('src/services/workflows/architecture-workflow.ts')
     const projectTree = source('src/components/panels/sidebar/ProjectTree.tsx')
     const worldBuilding = source('src/components/editor/WorldBuildingEditor.tsx')
@@ -82,18 +83,23 @@ describe('structured character roster static contract', () => {
       'db:character-update-state',
     ]) {
       expect(protocol).not.toContain(channel)
-      expect(controller).not.toContain(channel)
+      const command = channel.replace(/[:-]/gu, '_')
+      expect(controller).not.toContain('pub fn ' + command + '(')
+      expect(source('src-tauri/src/lib.rs')).not.toContain('commands::' + command + ',')
     }
     expect(protocol).toContain("'db:character-roster-commit'")
-    expect(controller).toContain("ipcMain.handle('db:character-roster-commit'")
-    expect(projectCore).toContain("Object.hasOwn(data, 'charactersArch')")
-    expect(projectCore).not.toContain("charactersArch: 'characters_arch'")
+    expect(controller).toContain('pub fn db_character_roster_commit(')
+    expect(source('src-tauri/src/lib.rs')).toContain('commands::db_character_roster_commit,')
+    expect(projectCore).toContain('const READONLY_FIELDS: [&str; 1] = ["charactersArch"]')
+    expect(projectCore).toContain('for field in READONLY_FIELDS {\n        if data.contains_key(field) {\n            return Err(CHARACTERS_ARCH_READONLY_MESSAGE.to_string());')
+    expect(projectCore).not.toContain('("charactersArch", "characters_arch")')
     // 清空创作字段经作者退休路径删除角色卡，不直接写 roster 表或 characters_arch 投影。
     expect(projectClear).not.toContain('characters_arch')
     expect(projectClear).not.toContain('DELETE FROM character')
-    // The ID projection and the guarded pre-M02 writer remain in the same repository.
+    expect(projectClear).toContain('roster::commit_author_character_roster(')
+    // 身份投影和升级前的受保护写入路径仍共处同一 Rust 仓储。
     expect(roster.match(/SET characters_arch\s*=/g)).toHaveLength(2)
-    expect(roster).toContain("if (hasCharacterIdentitySchema(db)) throw new Error('CHARACTER_ID_WRITE_REQUIRED')")
+    expect(roster).toContain('if characters::has_character_identity_schema(conn) {\n        return Err("CHARACTER_ID_WRITE_REQUIRED".to_string());')
     expect(workflow).not.toContain('runArchCharacterExtract')
     expect(workflow).not.toContain('createCharacterExtractSteps')
     expect(workflow).not.toContain('runPostProcessPipeline')
