@@ -9,6 +9,7 @@
 
 pub mod avatar_image;
 pub mod character_proposal;
+pub mod draft_short_outline;
 pub mod main_generation_owner;
 
 // ── 批次 G4-1：生成采集器与纯逻辑面（移植自 electron/services/）──

@@ -2069,8 +2069,12 @@ impl MainGenerationOwner {
                 .repository
                 .has_non_cancelled_attempt(conn, &run.run_id)
                 .map_err(|error| mutating_error(map_generation_error(&error)))?;
-            verify_material_prompt(&run_operation, decision, &task, started)
-                .map_err(mutating_error)?;
+            if decision.get("shortOutlinePromptHash").is_some() {
+                self.verify_short_outline_material(conn, &run, decision, &task)?;
+            } else {
+                verify_material_prompt(&run_operation, decision, &task, started)
+                    .map_err(mutating_error)?;
+            }
         }
         // 基线 :585-590 输出合同一致性（task.output 必须与绑定输出
         // 合同——字符串主合同或 purpose 覆盖合同——逐字一致）。
@@ -2227,11 +2231,79 @@ impl MainGenerationOwner {
         }
     }
 
+    /// 短细纲只从当前运行的持久化完成收据重建，不能由渲染层指定输出。
+    fn verify_short_outline_material(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        decision: &Value,
+        task: &Value,
+    ) -> Result<(), String> {
+        if decision.get("reconciliationPromptHash").is_some() {
+            return Err(mutating_error("GENERATION_MATERIAL_PROMPT_UNVERIFIED"));
+        }
+        let view = self
+            .repository
+            .read_run_view(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let mut completed_output = None;
+        let mut initial_task = None;
+        let mut found_first_draft = false;
+        for item in &view.attempts {
+            let receipt = &item.receipt;
+            if receipt.run.run_id != run.run_id
+                || receipt.attempt.status == "cancelled-before-dispatch"
+            {
+                continue;
+            }
+            if item.usage.purpose.as_deref() == Some(DRAFT_SHORT_OUTLINE_PURPOSE)
+                && completed_output.is_none()
+                && receipt.failure_code.is_none()
+                && receipt
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.finish_reason.as_deref())
+                    == Some("stop")
+            {
+                completed_output = receipt
+                    .artifact
+                    .as_ref()
+                    .filter(|artifact| !artifact.text.trim().is_empty())
+                    .map(|artifact| artifact.text.clone());
+            }
+            if item.usage.purpose.as_deref() == Some("chapter-draft") && !found_first_draft {
+                found_first_draft = true;
+                let usage: String = conn
+                    .query_row(
+                        "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?1",
+                        [&receipt.attempt.attempt_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+                let usage: Value = serde_json::from_str(&usage)
+                    .map_err(|_| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID"))?;
+                initial_task = usage.get("replayTask").cloned();
+                // 首个正文缺失原任务不能退而使用后续正文的任务。
+            }
+        }
+        verify_short_outline_prompt(
+            run.binding
+                .source_manifest
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            decision,
+            task,
+            completed_output.as_deref(),
+            initial_task.as_ref(),
+        )
+        .map_err(mutating_error)
+    }
+
     /// 准备阶段：幂等读回 → 短细纲准入 → 源重建比对 → 运行租约 →
     /// 策略 / 预算 / 能力证据 → 冻结计划与 provider 请求；不执行网络 Future。
     ///
-    /// ⚠️ 诚实化边界（B3-3e 切片）：材料决策提示哈希族未迁移（已在
-    /// [`Self::prepare_execution`] fail-closed），短细纲重试准入在此显式拒绝；
+    /// 普通材料与短细纲提示已复核；对账复合提示、短细纲专属重试仍保守拒绝。
     /// 子生成器可变性断言所属域（`reviewRevisions` / `imports` /
     /// `finalizations` / `graphs` / `legacyRosters`）的 `begin` 准入仍未
     /// 开放，运行不可能到达此处。快照在持久 flush 和最终收据时投影；推理只走易失出口。
@@ -2261,10 +2333,17 @@ impl MainGenerationOwner {
                     .map(PreparedExecutionPlan::Replay);
             }
         }
-        // 基线 :611-616——短细纲重试准入（`assertShortOutlineRetryAvailable`
-        // 与任务逐字比对）随短细纲块编解码波次迁移；此前显式拒绝。
-        if task_purpose == DRAFT_SHORT_OUTLINE_PURPOSE {
-            return Err(mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_UNVERIFIED"));
+        // 首次短细纲可派发；再次尝试须经专属失败重试合同，目前仍保守拒绝。
+        if task_purpose == DRAFT_SHORT_OUTLINE_PURPOSE
+            && self
+                .repository
+                .attempt_count(conn, &run.run_id)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?
+                > 0
+        {
+            return Err(mutating_error(
+                "GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED",
+            ));
         }
         // ① 基线 :626-630——真实模型证据重建源并逐字比对。
         let current = self.rebuild_binding(conn, &run.binding)?;
@@ -4363,6 +4442,89 @@ fn verify_material_prompt(
     Ok(())
 }
 
+/// 短细纲消息必须与完成产物、原始材料以及首稿冻结任务保持一致。
+fn verify_short_outline_prompt(
+    operation: &str,
+    decision: &Value,
+    task: &Value,
+    completed_output: Option<&str>,
+    initial_task: Option<&Value>,
+) -> Result<(), &'static str> {
+    use crate::services::draft_short_outline::{
+        draft_short_outline_block, strip_draft_short_outline_block,
+    };
+    let mismatch = "GENERATION_MATERIAL_PROMPT_MISMATCH";
+    if operation != "chapter-draft" {
+        return Err(mismatch);
+    }
+    let purpose = task
+        .get("purpose")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let messages = task
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or(mismatch)?;
+    let users: Vec<&str> = messages
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+        .filter_map(|message| message.get("content").and_then(Value::as_str))
+        .collect();
+    if purpose == DRAFT_SHORT_OUTLINE_PURPOSE {
+        if users.len() != 1
+            || Some(text_hash(users[0]).as_str())
+                != decision
+                    .get("shortOutlinePromptHash")
+                    .and_then(Value::as_str)
+        {
+            return Err(mismatch);
+        }
+        return Ok(());
+    }
+    let output = completed_output.ok_or("GENERATION_DRAFT_SHORT_OUTLINE_REQUIRED")?;
+    if purpose == "chapter-draft" {
+        let original = (users.len() == 1)
+            .then(|| strip_draft_short_outline_block(users[0], output))
+            .flatten()
+            .ok_or(mismatch)?;
+        if Some(text_hash(original).as_str()) != decision.get("promptHash").and_then(Value::as_str)
+            || initial_task.is_some_and(|original| original != task)
+        {
+            return Err(mismatch);
+        }
+    } else {
+        let original = initial_task.ok_or(mismatch)?;
+        let systems = |task: &Value| {
+            task.get("messages")
+                .and_then(Value::as_array)
+                .map(|messages| {
+                    messages
+                        .iter()
+                        .filter(|message| {
+                            message.get("role").and_then(Value::as_str) == Some("system")
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+        };
+        let has_block = [false, true]
+            .into_iter()
+            .filter_map(|english| draft_short_outline_block(english, output).ok())
+            .any(|block| users.iter().any(|prompt| prompt.contains(&block)));
+        if !matches!(
+            purpose,
+            "chapter-draft-continuation"
+                | "chapter-draft-no-progress-recovery"
+                | "chapter-draft-condense"
+        ) || !has_block
+            || systems(task) != systems(original)
+        {
+            return Err(mismatch);
+        }
+    }
+    Ok(())
+}
+
 /// 材料绑定允许改变上下文材料身份，不允许重写任何既有事实来源或模型合同。
 fn material_decision_projection(binding: &RunBinding) -> Value {
     let mut manifest = binding.source_manifest.clone();
@@ -5904,6 +6066,215 @@ mod tests {
         json!({"version":1,"verdict":"admitted","promptHash":"a".repeat(64),
             "capacity":{"maxInputUnits":1000,"methodVersion":"utf8-bytes-v1","admittedUnits":0},
             "coverage":{"required":0,"included":0,"complete":true},"included":[],"omitted":[]})
+    }
+
+    fn outline_material_fixture() -> (
+        crate::services::main_generation_sources::tests::TempRoot,
+        Connection,
+        MainGenerationOwner,
+        DurableGenerationRun,
+        Value,
+    ) {
+        let (temp, conn, owner, _ordinary) = source_owner_fixture();
+        conn.execute(
+            "INSERT INTO blueprints(chapter_number,title) VALUES (1,'合成蓝图')",
+            [],
+        )
+        .unwrap();
+        let task = json!({"purpose":DRAFT_SHORT_OUTLINE_PURPOSE,"output":"visible-text","messages":[
+            {"role":"system","content":"合成语言与输出合同"},{"role":"user","content":"合成短细纲请求"}]});
+        let mut decision = material_binding_receipt();
+        decision["promptHash"] = json!(text_hash("合成原始材料"));
+        decision["shortOutlinePromptHash"] = json!(text_hash("合成短细纲请求"));
+        decision["capacity"]["admittedUnits"] = json!(12);
+        decision["coverage"] = json!({"required":1,"included":1,"complete":true});
+        decision["included"] = json!([{"sourceId":"author:required","revision":1,"contentHash":text_hash("合成作者"),
+            "category":"author","required":true,"units":12}]);
+        let view = owner
+            .begin(
+                &conn,
+                &json!({"operation":"chapter-draft","modelId":"fixture",
+                    "uiActionNonce":"outline-material","promptKeys":["edit_selected_text"],"chapterNumber":1,
+                    "selectedDraftIds":[],"selectedFinalizedDraftIds":[],"selectedBlueprintChapterNumbers":[],"skillStages":[],
+                    "output":"visible-text","materialDecision":decision}),
+                false,
+                false,
+            )
+            .unwrap();
+        let run = owner
+            .repository
+            .get(&conn, view["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        (temp, conn, owner, run, task)
+    }
+
+    fn record_outline_fixture(
+        conn: &Connection,
+        owner: &MainGenerationOwner,
+        run: &DurableGenerationRun,
+        task: &Value,
+        output: &str,
+        finish: &str,
+    ) -> String {
+        let receipt = owner
+            .repository
+            .reserve(
+                conn,
+                &run.run_id,
+                "outline-seed",
+                &fake_content_hash(),
+                100,
+                10,
+                None,
+                Some(DRAFT_SHORT_OUTLINE_PURPOSE),
+                Some(task),
+                None,
+                false,
+            )
+            .unwrap();
+        let id = receipt.attempt.attempt_id.clone();
+        owner.repository.mark_dispatched(conn, &id).unwrap();
+        owner
+            .repository
+            .snapshot(conn, &id, receipt.artifact.unwrap().revision, output)
+            .unwrap();
+        owner
+            .repository
+            .settle(conn, &id, None, Some(finish.to_string()), None, None)
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn short_outline_material_verifies_first_request_and_requires_completed_plan_test() {
+        let (_temp, conn, owner, run, task) = outline_material_fixture();
+        let request =
+            json!({"handle":handle_of(&run),"invocationNonce":"first-outline","task":task});
+        let prepared = owner.prepare_execution(&conn, &request, false).unwrap();
+        drop(prepared);
+        assert!(owner
+            .repository
+            .budget(&conn, &run.root_action_id)
+            .unwrap()
+            .attempts
+            .is_empty());
+        let draft = json!({"purpose":"chapter-draft","output":"visible-text","messages":[{"role":"user","content":"合成原始材料"}]});
+        assert_eq!(owner.prepare_execution(&conn,&json!({"handle":handle_of(&run),"invocationNonce":"missing-outline","task":draft}),false).err().unwrap(),
+            mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_REQUIRED"));
+        let mut invalid = request.clone();
+        invalid["task"]["messages"][1]["content"] = json!("替换过的细纲提示");
+        assert_eq!(
+            owner
+                .prepare_execution(&conn, &invalid, false)
+                .err()
+                .unwrap(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+        );
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn short_outline_material_uses_completed_receipt_and_freezes_first_draft_task_test() {
+        use crate::services::draft_short_outline::draft_short_outline_block;
+        for english in [false, true] {
+            let (_temp, conn, owner, run, outline_task) = outline_material_fixture();
+            record_outline_fixture(&conn, &owner, &run, &outline_task, "合成计划😀", "stop");
+            let block = draft_short_outline_block(english, "合成计划😀").unwrap();
+            let task = json!({"purpose":"chapter-draft","output":"visible-text","messages":[
+                {"role":"system","content":"合成语言与输出合同"},{"role":"user","content":format!("合成原始材料\n\n{block}")}]});
+            let request =
+                json!({"handle":handle_of(&run),"invocationNonce":"first-draft","task":task});
+            drop(owner.prepare_execution(&conn, &request, false).unwrap());
+            let first = owner
+                .repository
+                .reserve(
+                    &conn,
+                    &run.run_id,
+                    "first-draft-seed",
+                    &fake_content_hash(),
+                    100,
+                    10,
+                    None,
+                    Some("chapter-draft"),
+                    Some(&task),
+                    None,
+                    false,
+                )
+                .unwrap();
+            let mut altered = request.clone();
+            altered["task"]["messages"][0]["content"] = json!("篡改系统合同");
+            assert_eq!(
+                owner
+                    .prepare_execution(&conn, &altered, false)
+                    .err()
+                    .unwrap(),
+                mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+            );
+            // 后续提示可以变化，但必须携带相同计划并逐字保留首稿系统消息。
+            let mut later = task.clone();
+            later["purpose"] = json!("chapter-draft-continuation");
+            later["messages"][1]["content"] = json!(format!("合成续写\n{block}"));
+            owner
+                .verify_short_outline_material(
+                    &conn,
+                    &run,
+                    run.binding.source_manifest.get("materialDecision").unwrap(),
+                    &later,
+                )
+                .unwrap();
+            later["messages"][0]["content"] = json!("不同系统合同");
+            assert!(owner
+                .verify_short_outline_material(
+                    &conn,
+                    &run,
+                    run.binding.source_manifest.get("materialDecision").unwrap(),
+                    &later
+                )
+                .is_err());
+            assert_eq!(
+                owner
+                    .repository
+                    .budget(&conn, &run.root_action_id)
+                    .unwrap()
+                    .attempts
+                    .len(),
+                2
+            );
+            assert_eq!(first.attempt.status, "reserved");
+        }
+    }
+
+    #[test]
+    fn short_outline_material_truncated_plan_and_repeated_outline_stay_refused_test() {
+        let (_temp, conn, owner, run, task) = outline_material_fixture();
+        record_outline_fixture(&conn, &owner, &run, &task, "未完整结束的合成计划", "length");
+        let draft = json!({"purpose":"chapter-draft","output":"visible-text","messages":[{"role":"user","content":"合成原始材料"}]});
+        let decision = run.binding.source_manifest.get("materialDecision").unwrap();
+        assert_eq!(
+            owner
+                .verify_short_outline_material(&conn, &run, decision, &draft)
+                .unwrap_err(),
+            mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_REQUIRED")
+        );
+        assert_eq!(owner.prepare_execution(&conn,&json!({"handle":handle_of(&run),"invocationNonce":"second-outline","task":task}),false).err().unwrap(),
+            mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED"));
+        let mut complex = decision.clone();
+        complex["reconciliationPromptHash"] = json!("b".repeat(64));
+        assert_eq!(
+            owner
+                .verify_short_outline_material(&conn, &run, &complex, &draft)
+                .unwrap_err(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_UNVERIFIED")
+        );
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .attempts
+                .len(),
+            1
+        );
     }
 
     #[test]
