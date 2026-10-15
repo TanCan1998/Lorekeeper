@@ -2059,7 +2059,7 @@ impl MainGenerationOwner {
         request: &Value,
         agent_execution: bool,
     ) -> Result<PreparedMainGenerationExecution, String> {
-        self.prepare_execution_with_retry(conn, request, agent_execution, false, None)
+        self.prepare_execution_with_retry(conn, request, agent_execution, false, false, None)
     }
 
     fn prepare_execution_with_retry(
@@ -2068,6 +2068,7 @@ impl MainGenerationOwner {
         request: &Value,
         agent_execution: bool,
         editor_inline_admission: bool,
+        import_admission: bool,
         retry_attempt_id: Option<&str>,
     ) -> Result<PreparedMainGenerationExecution, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
@@ -2086,6 +2087,7 @@ impl MainGenerationOwner {
         if manifest
             .get("importSlot")
             .is_some_and(|slot| !slot.is_null())
+            && !import_admission
         {
             return Err(mutating_error("GENERATION_IMPORT_ADMISSION_REQUIRED"));
         }
@@ -3554,7 +3556,7 @@ impl MainGenerationOwner {
             .ok_or_else(|| mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE"))?;
         let task = self.read_failed_short_outline_task(conn, &run, failed)?;
         let request = json!({"handle":handle,"invocationNonce":format!("draft-short-outline-retry:{failed}"),"task":task});
-        self.prepare_execution_with_retry(conn, &request, false, false, Some(failed))
+        self.prepare_execution_with_retry(conn, &request, false, false, false, Some(failed))
     }
 
     /// 直接调用方的兼容入口；生产命令走独立短连接执行器，不持数据库锁等待网络。
@@ -4575,7 +4577,240 @@ impl MainGenerationOwner {
             "task": task_value,
         });
 
-        self.prepare_execution_with_retry(conn, &request, false, true, None)
+        self.prepare_execution_with_retry(conn, &request, false, true, false, None)
+    }
+
+    // ===== B95: import-generation 生成子域 =====
+
+    pub fn read_import_generation(
+        &self,
+        conn: &Connection,
+        slot_value: &Value,
+    ) -> Result<Value, String> {
+        self.assert_current()?;
+        let slot: crate::services::import_generation::ImportGenerationSlot =
+            serde_json::from_value(slot_value.clone())
+                .map_err(|e| mutating_error(&e.to_string()))?;
+        crate::services::import_generation_source::validate_import_generation_slot(&slot)
+            .map_err(|e| mutating_error(&e))?;
+        let slot_key = crate::services::import_generation_source::import_generation_slot_key(&slot)
+            .map_err(|e| mutating_error(&e))?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id FROM generation_runs
+                 WHERE json_extract(binding_json, '$.sourceManifest.importSlotKey') = ?1",
+            )
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        let run_ids = stmt
+            .query_map([&slot_key], |r| r.get::<_, String>(0))
+            .map_err(|e| mutating_error(&e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        drop(stmt);
+
+        let matching_runs = run_ids
+            .into_iter()
+            .filter_map(|id| self.repository.get(conn, &id).ok())
+            .filter(|run| run.binding.project_id == self.session.project_id)
+            .collect::<Vec<_>>();
+
+        if matching_runs.len() > 1 {
+            return Err(mutating_error("GENERATION_IMPORT_SLOT_AMBIGUOUS"));
+        }
+        let Some(run) = matching_runs.first() else {
+            return Ok(Value::Null);
+        };
+
+        let context = run
+            .binding
+            .source_manifest
+            .get("importContext")
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_IMPORT_CONTEXT_REQUIRED"))?;
+        let model_id = run
+            .binding
+            .source_manifest
+            .get("modelReceipt")
+            .and_then(|m| m.get("modelId"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                run.binding
+                    .source_manifest
+                    .get("modelId")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or_default();
+        let view = self.view_of(conn, run)?;
+
+        Ok(serde_json::json!({
+            "view": view,
+            "modelId": model_id,
+            "frozenContext": context,
+        }))
+    }
+
+    pub(crate) fn prepare_import_generation_execution(
+        &self,
+        conn: &Connection,
+        request: &Value,
+    ) -> Result<PreparedMainGenerationExecution, String> {
+        self.assert_current()?;
+        let handle = request
+            .get("handle")
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_RUN_IDENTITY_MISMATCH"))?;
+        let run = self.require_run(conn, &handle, true)?;
+
+        let ordinal = request
+            .get("ordinal")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| mutating_error("GENERATION_IMPORT_ORDINAL_INVALID"))?;
+        let budget = self
+            .repository
+            .budget(conn, &run.root_action_id)
+            .map_err(|e| mutating_error(map_generation_error(&e)))?;
+        if ordinal < 0 || ordinal >= budget.policy.max_physical_requests {
+            return Err(mutating_error("GENERATION_IMPORT_ORDINAL_INVALID"));
+        }
+
+        let context_val = run
+            .binding
+            .source_manifest
+            .get("importContext")
+            .ok_or_else(|| mutating_error("GENERATION_IMPORT_CONTEXT_REQUIRED"))?;
+        let slot_val = context_val
+            .get("slot")
+            .ok_or_else(|| mutating_error("GENERATION_IMPORT_CONTEXT_REQUIRED"))?;
+        let slot_key = run
+            .binding
+            .source_manifest
+            .get("importSlotKey")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let slot: crate::services::import_generation::ImportGenerationSlot =
+            serde_json::from_value(slot_val.clone())
+                .map_err(|_| mutating_error("GENERATION_IMPORT_CONTEXT_REQUIRED"))?;
+        if crate::services::import_generation_source::import_generation_slot_key(&slot).as_deref()
+            != Ok(slot_key)
+        {
+            return Err(mutating_error("GENERATION_IMPORT_CONTEXT_REQUIRED"));
+        }
+
+        // assertMutable: 已有提交的 effect receipt 则不可变
+        let stage_str = match slot.stage {
+            crate::services::import_generation::ImportGenerationSlotStage::Global => "global",
+            crate::services::import_generation::ImportGenerationSlotStage::Style => "style",
+            crate::services::import_generation::ImportGenerationSlotStage::Blueprints => {
+                "blueprints"
+            }
+        };
+        if crate::repositories::import_run_repository::get_effect_receipt(
+            conn,
+            &slot.run_id,
+            stage_str,
+            &slot.batch_id,
+        )
+        .is_ok_and(|opt| opt.is_some())
+        {
+            return Err(mutating_error("GENERATION_IMPORT_EFFECT_SEALED"));
+        }
+
+        // assertExecution: 必须提供 execution 且校验租约
+        let execution_val = request.get("execution");
+        if execution_val.is_none() || execution_val == Some(&Value::Null) {
+            return Err(mutating_error("GENERATION_IMPORT_EXECUTION_REQUIRED"));
+        }
+        let authority: crate::repositories::import_run_repository::ImportRunExecutionAuthority =
+            serde_json::from_value(execution_val.unwrap().clone())
+                .map_err(|_| mutating_error("GENERATION_IMPORT_EXECUTION_REQUIRED"))?;
+
+        // 校验 import_runs 状态
+        let state: Option<(String, String, i64)> = conn
+            .query_row(
+                "SELECT stage, status, cancel_requested FROM import_runs WHERE id = ?1",
+                [&slot.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        let Some((cur_stage, cur_status, cancel_req)) = state else {
+            return Err(mutating_error("GENERATION_IMPORT_EXECUTION_STALE"));
+        };
+        if cur_stage != stage_str || cur_status != "running" || cancel_req != 0 {
+            return Err(mutating_error("GENERATION_IMPORT_EXECUTION_STALE"));
+        }
+
+        let run_row = crate::repositories::import_run_repository::read_run_row(conn, &slot.run_id)
+            .map_err(|e| mutating_error(&e))?
+            .ok_or_else(|| mutating_error("GENERATION_IMPORT_EXECUTION_STALE"))?;
+        if run_row.execution_owner != authority.owner || run_row.execution_epoch != authority.epoch
+        {
+            return Err(mutating_error("GENERATION_IMPORT_EXECUTION_STALE"));
+        }
+
+        // 检查 attempt count 是否连续
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM generation_attempts WHERE run_id = ?1",
+                [&run.run_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        if count != ordinal {
+            return Err(mutating_error("GENERATION_IMPORT_ORDINAL_GAP"));
+        }
+
+        // 检查该 run 之前的 attempt 是否有未完成的（finish_reason != 'stop'）
+        let mut prev_stmt = conn
+            .prepare("SELECT usage_receipt_json FROM generation_attempts WHERE run_id = ?1")
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        let prev_receipts = prev_stmt
+            .query_map([&run.run_id], |r| r.get::<_, Option<String>>(0))
+            .map_err(|e| mutating_error(&e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| mutating_error(&e.to_string()))?;
+        drop(prev_stmt);
+        for receipt_json in prev_receipts.into_iter().flatten() {
+            if let Ok(v) = serde_json::from_str::<Value>(&receipt_json) {
+                if let Some(reason) = v.get("finishReason").and_then(Value::as_str) {
+                    if reason != "stop" {
+                        return Err(mutating_error(
+                            "GENERATION_IMPORT_PREVIOUS_ATTEMPT_INCOMPLETE",
+                        ));
+                    }
+                }
+            }
+        }
+
+        let task = request
+            .get("task")
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_IMPORT_TASK_INVALID"))?;
+        let invocation_nonce = format!("import:{}", ordinal);
+
+        let view = self.view_of(conn, &run)?;
+        let non_replayable = view
+            .get("nonReplayable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let current_handle = if non_replayable {
+            let resumed_view = self.resume(conn, &handle)?;
+            resumed_view
+                .get("handle")
+                .cloned()
+                .unwrap_or_else(|| handle.clone())
+        } else {
+            handle.clone()
+        };
+
+        let exec_request = serde_json::json!({
+            "handle": current_handle,
+            "invocationNonce": invocation_nonce,
+            "task": task,
+        });
+
+        self.prepare_execution_with_retry(conn, &exec_request, false, false, true, None)
     }
 
     pub fn cancel_legacy_roster_generation(
@@ -13935,5 +14170,138 @@ data: [DONE]
             Err(e) => e,
         };
         assert_eq!(err, mutating_error("GENERATION_EDITOR_ATTEMPT_CONFLICT"));
+    }
+
+    // ===== B95: import-generation 单元测试 =====
+
+    #[test]
+    fn import_generation_read_returns_null_when_not_found_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        let slot = json!({
+            "runId": "import-nonexistent",
+            "stage": "global",
+            "batchId": "done"
+        });
+        let result = owner
+            .read_import_generation(&conn, &slot)
+            .expect("read should succeed");
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn import_generation_read_rejects_invalid_slot_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 空 runId
+        let bad_slot = json!({
+            "runId": "",
+            "stage": "global",
+            "batchId": "done"
+        });
+        let err = owner.read_import_generation(&conn, &bad_slot).unwrap_err();
+        assert_eq!(err, mutating_error("GENERATION_IMPORT_SLOT_INVALID"));
+    }
+
+    #[test]
+    fn import_generation_execute_rejects_missing_execution_authority_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "import-global-facts").expect("open run");
+        let owner = owner_with(&conn);
+        let handle = handle_of_run(&run);
+
+        let slot = crate::services::import_generation::ImportGenerationSlot {
+            run_id: "import-run-1".to_string(),
+            stage: crate::services::import_generation::ImportGenerationSlotStage::Global,
+            batch_id: "done".to_string(),
+        };
+        let slot_key =
+            crate::services::import_generation_source::import_generation_slot_key(&slot).unwrap();
+        let mut binding = run.binding.clone();
+        binding.source_manifest.insert(
+            "importSlot".to_string(),
+            serde_json::to_value(&slot).unwrap(),
+        );
+        binding
+            .source_manifest
+            .insert("importSlotKey".to_string(), Value::String(slot_key));
+        binding.source_manifest.insert(
+            "importContext".to_string(),
+            json!({
+                "slot": slot,
+                "manifestFingerprint": "fp-1",
+                "totalChapters": 10,
+                "totalWords": 1000,
+                "core": {},
+                "prompts": {},
+                "chapters": []
+            }),
+        );
+        conn.execute(
+            "UPDATE generation_runs SET binding_json = ?1 WHERE run_id = ?2",
+            rusqlite::params![&serde_json::to_string(&binding).unwrap(), &run.run_id],
+        )
+        .unwrap();
+
+        // 缺少 execution 字段
+        let request = json!({
+            "handle": handle,
+            "ordinal": 0,
+            "task": {
+                "purpose": "import-global",
+                "output": "structured-data",
+                "messages": []
+            }
+        });
+        let err = match owner.prepare_import_generation_execution(&conn, &request) {
+            Ok(_) => panic!("expected Err"),
+            Err(e) => e,
+        };
+        assert_eq!(err, mutating_error("GENERATION_IMPORT_EXECUTION_REQUIRED"));
+    }
+
+    #[test]
+    fn import_generation_general_execute_requires_admission_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "import-global-facts").expect("open run");
+        let owner = owner_with(&conn);
+        let handle = handle_of_run(&run);
+
+        let mut binding = run.binding.clone();
+        binding.source_manifest.insert(
+            "importSlot".to_string(),
+            json!({
+                "runId": "import-1",
+                "stage": "global",
+                "batchId": "done"
+            }),
+        );
+        conn.execute(
+            "UPDATE generation_runs SET binding_json = ?1 WHERE run_id = ?2",
+            rusqlite::params![&serde_json::to_string(&binding).unwrap(), &run.run_id],
+        )
+        .unwrap();
+
+        let request = json!({
+            "handle": handle,
+            "invocationNonce": "import:0",
+            "task": {
+                "purpose": "import-global",
+                "output": "structured-data",
+                "messages": []
+            }
+        });
+        // 通用 prepare_execution 未带 import_admission 必须拒绝
+        let err = match owner.prepare_execution(&conn, &request, false) {
+            Ok(_) => panic!("expected Err"),
+            Err(e) => e,
+        };
+        assert_eq!(err, mutating_error("GENERATION_IMPORT_ADMISSION_REQUIRED"));
     }
 }

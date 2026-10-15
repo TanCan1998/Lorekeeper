@@ -174,6 +174,8 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'generation:restart',
   'generation:resume',
   'generation:retry-draft-short-outline',
+  'import-generation:execute',
+  'import-generation:read',
   'kb:backfill-vectors',
   'kb:clear-all',
   'kb:get-vector-rebuild-status',

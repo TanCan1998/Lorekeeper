@@ -318,6 +318,9 @@ pub fn run() {
             commands::editor_inline_read_recovery,
             commands::editor_inline_execute,
             commands::editor_inline_cancel,
+            // 批次 B95：导入生成（import-generation:* 2 频道）
+            commands::import_generation_read,
+            commands::import_generation_execute,
             // 批次 G4-9a：角色提案（character-proposal:* 6 频道
             // + character-identity:read）
             commands::character_proposal_stage,
