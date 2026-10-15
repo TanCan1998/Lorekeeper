@@ -7,6 +7,14 @@ import type { AgentTool } from './tool-registry'
 type ClaimRequest = AgentGenerationChannels['agent-generation:claim-tool']['args'][0]
 type FinishRequest = AgentGenerationChannels['agent-generation:finish-tool']['args'][0]
 
+// 工具回执不能借用同父根的另一轮次、尝试或动作身份。
+function assertSameActionRef(expected: AgentToolActionRef, actual: AgentToolActionRef): void {
+  if (expected.attemptId !== actual.attemptId || expected.toolCallId !== actual.toolCallId
+    || (['projectId', 'epoch', 'rootActionId', 'runId'] as const).some(key => expected.handle[key] !== actual.handle[key])) {
+    throw new Error('GENERATION_AGENT_TOOL_IDENTITY_MISMATCH')
+  }
+}
+
 /** No provider or renderer-owned generation budget exists in this adapter. */
 export class AgentGenerationClient {
   private current?: AgentGenerationRecovery
@@ -76,15 +84,19 @@ export class AgentGenerationClient {
     }
   }
 
-  claimTool(ref: AgentToolActionRef, confirmed: boolean, authorBlueprintProposals?: Readonly<NonNullable<ClaimRequest['authorBlueprintProposals']>>) {
+  async claimTool(ref: AgentToolActionRef, confirmed: boolean, authorBlueprintProposals?: Readonly<NonNullable<ClaimRequest['authorBlueprintProposals']>>) {
     this.assertActive()
-    return ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:claim-tool', {
+    const result = await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:claim-tool', {
       ref, confirmed, ...(authorBlueprintProposals?.length ? { authorBlueprintProposals: [...authorBlueprintProposals] } : {}),
     })
+    assertSameActionRef(ref, result.action.ref)
+    return result
   }
 
-  finishTool(request: FinishRequest) {
-    return ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:finish-tool', request)
+  async finishTool(request: FinishRequest) {
+    const result = await ipc.invokeWithProjectSession(this.projectSession, 'agent-generation:finish-tool', request)
+    assertSameActionRef(request.ref, result.ref)
+    return result
   }
 
   async cancel() {

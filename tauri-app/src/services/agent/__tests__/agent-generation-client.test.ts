@@ -37,4 +37,36 @@ describe('助手恢复客户端身份约束', () => {
     expect(client.recovery).toBe(original)
     expect(accepted).toHaveBeenCalledTimes(1)
   })
+  describe.each(['claim', 'finish'] as const)('%s 工具回执', method => {
+    it.each(['projectId', 'epoch', 'rootActionId', 'runId', 'attemptId', 'toolCallId'] as const)('拒绝错配 %s 的动作，不把其他动作的回执交给执行层', async field => {
+      const client = new AgentGenerationClient(session)
+      const ref = { handle: { ...fixture.recovery.handle }, attemptId: 'synthetic-attempt', toolCallId: 'synthetic-tool' }
+      fixture.recovery.rounds[0].actions = [{ ref, name: 'synthetic-probe', arguments: {}, status: 'running' }]
+      await client.read(fixture.recovery.handle)
+      const original = fixture.invoke.getMockImplementation()!
+      fixture.invoke.mockImplementation(async (command, args) => {
+        const result = await original(command, args)
+        if (command !== (method === 'claim' ? 'agent_generation_claim_tool' : 'agent_generation_finish_tool')) return result
+        const mismatched = structuredClone(result) as { ref?: typeof ref; action?: { ref: typeof ref } }
+        const target = method === 'claim' ? mismatched.action!.ref : mismatched.ref!
+        if (field === 'attemptId' || field === 'toolCallId') target[field] = 'different-action'
+        else target.handle[field] = 'different-handle'
+        return mismatched
+      })
+      const request = method === 'claim' ? client.claimTool(ref, true)
+        : client.finishTool({ ref, status: 'completed', observation: '合成完成回执' })
+      await expect(request).rejects.toThrow('GENERATION_AGENT_TOOL_IDENTITY_MISMATCH')
+    })
+  })
+
+  it('同一父根的历史动作句柄仍可原样认领和完成', async () => {
+    const client = new AgentGenerationClient(session)
+    const ref = { handle: { ...fixture.recovery.handle, epoch: 'historical-epoch', runId: 'historical-round' },
+      attemptId: 'synthetic-attempt', toolCallId: 'synthetic-tool' }
+    fixture.recovery.rounds[0].actions = [{ ref, name: 'synthetic-probe', arguments: {}, status: 'pending' }]
+    await client.read(fixture.recovery.handle)
+    await expect(client.claimTool(ref, true)).resolves.toMatchObject({ execute: true, action: { ref, status: 'running' } })
+    await expect(client.finishTool({ ref, status: 'completed', observation: '合成完成回执' })).resolves.toMatchObject({ ref, status: 'completed' })
+  })
+
 })

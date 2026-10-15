@@ -255,4 +255,22 @@ describe('Agent GenerationRuntime boundary', () => {
       expect(calls(channel)).toHaveLength(0)
   })
 
+  it('认领返回另一动作时停止，不使用错配参数执行写工具', async () => {
+    const execute = vi.fn(async () => ({ success: true, content: '不应执行' }))
+    toolRegistry.register({ name: 'synthetic_identity_probe', description: '合成身份探针', source: 'builtin',
+      inputSchema: { type: 'object', properties: {} }, requiresConfirmation: false, isReadOnly: false, execute })
+    fixture.response = async () => '<tool_call>{"name":"synthetic_identity_probe","arguments":{}}</tool_call>'
+    fixture.claimOverride = action => ({ execute: true, action: { ...action,
+      ref: { ...action.ref, toolCallId: 'different-claimed-tool' }, status: 'running' } })
+    try {
+      await useAgentStore.getState().sendMessage('核对动作身份')
+      expect(execute).not.toHaveBeenCalled()
+      expect(calls('agent-generation:claim-tool')).toHaveLength(1)
+      expect(calls('agent-generation:finish-tool')).toHaveLength(0)
+      expect(calls('agent-generation:round')).toHaveLength(1)
+      expect(lastMessage()?.content).toBe('生成失败，请重试。')
+      expect(useAgentStore.getState().generating).toBe(false)
+    } finally { toolRegistry.unregister('synthetic_identity_probe') }
+  })
+
 })
