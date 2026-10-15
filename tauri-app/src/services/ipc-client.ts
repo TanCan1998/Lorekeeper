@@ -472,19 +472,23 @@ export const ipc = {
     channel: C,
     callback: (data: AllEventChannels[C]) => void,
   ): (() => void) => {
-    const unlisten = tauriListen(channel, (event) => {
-      callback(event.payload as AllEventChannels[C])
-    })
-    // Tauri listen 是异步注册；返回同步取消函数，与 Electron 版语义对齐
     let cancelled = false
+    const unlisten = tauriListen(channel, (event) => {
+      if (!cancelled) callback(event.payload as AllEventChannels[C])
+    })
+    // 注册异步完成，但取消必须立即封闭已排队事件，且只释放一次底层订阅。
     let actualUnlisten: (() => void) | null = null
     unlisten.then((fn) => {
       if (cancelled) fn()
       else actualUnlisten = fn
+    }).catch((error) => {
+      console.error('[ipc-client.on] 事件监听注册失败:', channel, error)
     })
     return () => {
-      if (actualUnlisten) actualUnlisten()
-      else cancelled = true
+      if (cancelled) return
+      cancelled = true
+      actualUnlisten?.()
+      actualUnlisten = null
     }
   },
 
