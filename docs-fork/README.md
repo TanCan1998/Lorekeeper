@@ -7,11 +7,11 @@
 ## 迁移总进度（收口时更新）
 
 ```text
-迁移总进度  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨⬜⬜  242/290 ≈83%
+迁移总进度  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩⬜⬜  245/290 ≈84%
 ```
 
-> 🟩 已迁移242（历史频道实测） · 🟨 B3仍进行中：仅开放已登记草稿工作流；助手客户端停止/关闭后不再发起新运行，在途取消后恢复只重放持久轮次。代码 `d5a3fc97` 的 Rust 全量1383项通过、前端组合417项通过；最近全量扫描仍有7文件123项失败（`f15a1b71`） · ⬜ 未迁移48；事件7。证据见 [CURRENT](handoffs/CURRENT.md)。
-> **注意**：约83%仅为历史频道覆盖率，不是产品完成度或GUI验收比例；真实模型/GUI/MCP未验收，不将合成传输或本地HTTP视作完整端到端完成。前端剩余失败中两项已复核为未开放特殊域与 Electron 运行时导入，未补映射绕过。
+> 🟩 已迁移245（本机 check:channels 实测） · 🟨 B3仍进行中：已登记草稿工作流 + **B7 启动态子集**（启动门禁三频道、外观/皮肤状态落 `~/.lorekeeper`）。代码 `74ea2200` 的 Rust 全量1397项通过、`cargo check --all-targets` 零告警 · ⬜ 未迁移45；事件7。证据见 [CURRENT](handoffs/CURRENT.md)。
+> **注意**：约84%仅为历史频道覆盖率，不是产品完成度或GUI验收比例；真实模型/GUI/MCP未验收，不将合成传输或本地HTTP视作完整端到端完成。前端剩余失败中两项已复核为未开放特殊域与 Electron 运行时导入，未补映射绕过。
 > 口径：当前已合并上游（@ `21d67211`，2026-10-10）为全集，**上游新提交不计入**；权威实测值见 [当前交接入口](handoffs/CURRENT.md) 指标表，频道明细见 [频道盘点](plans/tauri-migration-channel-inventory.md)。
 
 
@@ -19,7 +19,7 @@
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第53次快照（2026-10-15）](handoffs/2026-10-15-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第54次快照（2026-10-15）](handoffs/2026-10-15-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |

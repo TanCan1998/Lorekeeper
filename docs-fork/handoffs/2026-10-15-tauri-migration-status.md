@@ -1,53 +1,47 @@
 # Tauri 迁移进度快照（2026-10-15）
 
-> 第 53 次；按用户“继续迁移、不派发、一批接一批”的指令由主会话直接实施，未派发子代理。
-> 同日替换当前摘要，第52次内容保留于 Git 历史（文档提交 `f7135bd1` 之前）；旧日期快照冻结。
+> 第 54 次；用户确认「继续迁移、不派发、一批接一批」并批准开工 **B7 启动态子集**（A 方案 + 皮肤/生成号落 Lorekeeper 全局根）。主会话直接实施，未派发子代理。
+> 同日替换当前摘要，第53次内容保留于 Git 历史；旧日期快照冻结。
 > 当前入口：[CURRENT.md](CURRENT.md)；维护规则：[开发指南 §9](../agents/pi-development.md#9-交接状态与快照维护)。
 
-## 已验证状态（第53次）
+## 已验证状态（第54次）
 
-最新代码：`d5a3fc97` / `master`，已推送 `origin/master`；文档更新前工作区干净。以下结果均核对自本机日志，日期为 2026-10-15。
+最新代码：`74ea2200` / `master`，已推送 `origin/master`；文档更新前工作区干净（另有浏览器测试遗留 artifact 未跟踪，见文末）。日期 2026-10-15。
 
-| 指标 | 结果 | 验证版本 / 范围 / 时间 | 证据（本机，不入库） |
+| 指标 | 结果 | 验证版本 / 范围 | 证据（本机，不入库） |
 |---|---|---|---|
-| 本轮 Rust 全量 | **1383 passed / 0 failed，58.54s**；全目标 0 失败 | `d5a3fc97`，`cargo test`，18:00 +08:00 阶段复核 | `.pi/tmp/b86-rust-full.log` |
-| 本轮前端定向（助手客户端） | **40项通过**；新增4项关闭/取消守卫回归，去掉守卫时3项先复现失败 | `8175e4d0`；17:51 +08:00 | `.pi/tmp/b84-client-detached-{before,target}.log` |
-| 本轮前端定向（Agent store） | **20项通过**；新增2项在途取消组合回归 | `d5a3fc97`；17:58 +08:00 | `.pi/tmp/b85-inflight-replay-target.log` |
-| 本轮前端组合套件 | 42文件 **417通过 / 1跳过**；typecheck、lint 退出0 | `d5a3fc97`；`src/services/agent` + `src/stores` + `src/components/panels/agent` | `.pi/tmp/b85-inflight-replay-{suite,typecheck,lint}.log` |
-| 最近前端全量扫描（沿用） | 170文件中7文件失败；2019测试：1895通过、123失败、1待定 | `f15a1b71`；本轮未重跑全量 | `.pi/tmp/b78-results.json` |
-| 失败分类复核（本轮抽查） | `finalize-chapter.blueprint-entities` 单点失败已定位为前端按合同拒绝未登记命名参数的 `finalization-generation:read`；`export-service-integration` 为运行时导入 `@baseline/controllers\|database` | `d5a3fc97` 本机复跑 | `.pi/tmp/b87-finalize-chapter-target.log`、`.pi/tmp/b87-export-integration.log` |
-| 频道 / 事件计数（沿用） | 243注册、242 invoke覆盖、48未迁移；契约invoke290、事件7 | `a1884ac9` 的2026-10-14历史实测；本轮未改变注册或契约数，未重新计数 | [频道盘点](../plans/tauri-migration-channel-inventory.md) |
-| GUI / 真实模型 / MCP | 未验收 | 合成Tauri传输、合成fixture与本地HTTP不能替代真实模型、主进程SQLite或完整产品端到端证据 | 本轮无新增验收结论 |
+| 本轮 Rust 全量 | **1397 passed / 0 failed，57.56s** | `74ea2200`，`cargo test` | `.pi/tmp/b89-rust-full.log` |
+| 编译检查 | `cargo check --all-targets` 零告警；定向 rustfmt `--check` 通过 | `74ea2200` | `.pi/tmp/b89-check.log`、`.pi/tmp/b89-startup-gate-target.log` |
+| 启动门禁定向 | `startup_gate` **9项**、`commands::startup` 1项、`commands::skin` **8项** 全通过 | `74ea2200` | `.pi/tmp/b89-{startup-gate-target,startup-commands,skin-target}.log` |
+| 前端启动传输 | 新 `startup-transport` **4项**、会话网关/主题 **28项** 通过；typecheck、lint 退出0 | `74ea2200` | `.pi/tmp/b89-{startup-transport,startup-frontend-target,typecheck,lint}.log` |
+| 频道计数（本轮实测） | 契约 invoke 290、事件 7；**已注册 246 → 覆盖 245**；**未迁移 45**（原 48） | `74ea2200`，`pnpm run check:channels` | `.pi/tmp/b89-channels.log`、`.pi/tmp/b89-channels-emit.log` |
+| 浏览器套件（逐项失败） | 48文件：39通过 / 9失败；357测试：319通过 / 38失败 | `74ea2200` 的整仓浏览器配置运行；失败集中在图谱/编辑器/批量工作流等未迁移域 | `.pi/tmp/b89-startup-browser.log` |
+| GUI / 真实模型 / MCP | 未验收 | 启动门禁已可回 ready，但未在真实窗口跑通；合成传输不等于端到端 | 本轮无 GUI 结论 |
 
-Rust验证目录为 `tauri-app/src-tauri/`，显式设置 `RUSTUP_HOME=D:/Environment/rust/rustup`、`CARGO_HOME=D:/Environment/rust/cargo`；前端在 `tauri-app/` 执行 `pnpm exec vitest run <文件>`、`pnpm typecheck`、`pnpm run lint`。差异、链接、版本、提交消息与泄漏扫描另行核验。
+Rust验证目录 `tauri-app/src-tauri/`（显式 `RUSTUP_HOME`/`CARGO_HOME`）；前端在 `tauri-app/` 用 `pnpm exec vitest run <文件>`、`pnpm typecheck`、`pnpm run lint`；浏览器配置为 `pnpm run test:browser`。
 
-## 本轮交付与关键决策（第52次 → 第53次）
+## 本轮交付与关键决策（第53次 → 第54次）
 
-1. **停止或关闭的助手客户端不再发起新运行**（`8175e4d0`）：`AgentGenerationClient.begin()` / `resume()` 现在在首次 await 前执行 `assertNotDetached()`；`close()` 或已请求 `cancel()` 的客户端以 `GENERATION_AGENT_DETACHED` 直接拒绝，不再向主进程创建新 run、更新纪元，或在不通知的情况下替换恢复上下文。在途 begin/resume 返回后仍由取消路径回收迟到收据（`GENERATION_AGENT_CANCELLED` + `generation:cancel`），不把必要结算误封闭。新增4项定向回归；去掉守卫时其中3项复现失败（`.pi/tmp/b84-client-detached-before.log`）。
-2. **在途取消后的恢复只重放持久轮次**（`d5a3fc97`）：新增2项 store 组合回归。(a) 取消在途模型轮次后不再认领/完成工具、不再请求新一轮，句柄与导航保留；恢复只重放主进程已保存的第0轮，模型响应仍只被调用一次，`begin/round/resume/claim/finish` 全部零传输。(b) 取消后主进程仍把在途工具记为 `running`、并保留已登记草稿子代时，恢复只补 `workflow_started` 导航并标记 `result_unknown`，不重新认领也不重派。
-3. **失败分类复核，不放宽边界**：`finalize-chapter.blueprint-entities.test.ts` 的单点失败已定位为前端按合同拒绝“命名参数未登记”的频道 `finalization-generation:read`（定稿派生生成为未开放特殊域），不是可顺手补映射的 mock 笔误；`export-service-integration.test.ts` 在运行时导入 `@baseline/controllers`、`@baseline/database`（Electron 主进程 + 基线 DB），无法在 Tauri 栈成立。两者保持失败与拒绝：未删除测试、未放开权限、未补映射绕过。
+1. **启动门禁三频道接通**（`74ea2200`）：新增 `services/startup_gate.rs`（状态机 + 全局根持久化）与 `commands/startup.rs`（`startup_get_state` / `startup_skin_snapshot` / `startup_appearance_ack`）。渲染层启动页此前因三频道未登记而**恒停在「启动尚未完成」**，工作台无法加载；现在三频道的语义与基线 `electron/controllers/startup-controller.ts` 对齐：未就绪回 `pending`、阻塞回 `blocked`（可带码）、快照漂移以错误拒绝、非法读回回 `false`。
+2. **持久化位置**：`AI_NOVEL_LOREKEEPER_HOME` / `~/.lorekeeper/appearance.json` 保存 `{version, skinRevision, backgroundSkin}`；`globalGeneration` 取该文件的内容修订（FNV-1a 64，含版本与皮肤），皮肤修订为独立单调计数。首次装载写入初值；文件不可读 / JSON 非法 / 版本不认识 → `GLOBAL_DATA_BLOCKED` 且**不覆盖**作者文件；皮肤取值非法 → `SKIN_NOT_READY`。
+3. **皮肤状态单一权威**：activeSkin 改由门禁状态持有，`skin:get-state` 按需组合，`activate` 现在**持久化**并前移皮肤修订（重启后仍生效）。`import-custom` 的占位实现不再报告假成功，改为 `CUSTOM_SKIN_UNAVAILABLE`；`remove-custom` 行为不变。
+4. **发送方等价物**：只允许标签为 `main` 的窗口、且其当前 URL 属于本应用自身 origin（`tauri://localhost`、`http://tauri.localhost`、开发服务器 `localhost|127.0.0.1`）的调用；不信任发送方的 `get-state` 只回 `{state:'blocked'}`（不泄漏快照、不回码）。
+5. **刻意偏离（已记录）**：Tauri 两栈隔离，不读基线目录，故 `GLOBAL_MODEL_CREDENTIALS_DIFFER` 永不产生、`migrationNotice` 恒为 `None`；外观档案仍由渲染层 `localStorage` 持有，读回修订按窗口在内存中记录（不落盘，避免作者存储被清空/替换后锁死启动）。
+6. **守护测试**：`startup_gate` 9项（内容修订前移/恢复、坏文件不覆盖、皮肤非法阻塞、快照漂移、读回形状与单调性、未装载 pending）、`commands::startup` 信任发送方 URL 黑白名单、`commands::skin` 8项（持久化、非法皮肤、未装载、占位不假成功）、前端 `startup-transport` 4项（已迁移登记、命令名与命名参数、无项目会话注入、其它未迁移频道仍被拦截）。
+7. **修复一处真实死锁**：`match` 直接以 `Mutex::lock()` 为 scrutinee 时临时守卫活到整个 match，分支内二次上锁即自死锁；改为先绑定结果再匹配（`commands/skin.rs`）。
 
-第52次交付（草稿真实传输接线、unknown 只补导航、恢复身份与工具回执校验、取消与事件生命周期、休眠契约修复、守住未开放边界）结论不变；更早的生产短锁、关闭围栏、快照/推理事件、Agent 首/后轮与恢复、材料/短细纲/对账、普通重启，以及已登记 `generate_draft → chapter-draft` 有限准入与草稿保存到父 Agent 续轮仍在原范围。真实 SQLite 与本地 HTTP 证据以 `90792744` 的阶段验证为准；前端测试桩不扩大这些结论。
+第52/53次交付（草稿真实传输接线、unknown只补导航、恢复身份与工具回执校验、在途取消后只重放、助手客户端停止/关闭后不再发起新运行、失败分类复核）结论不变。
 
 ## 尚未解除的失败与阻塞
 
-最近全量扫描仍有以下 **7文件 / 123失败**，未删除、跳过或放开生产边界来制造全绿：
-
-| 测试文件（相对 `tauri-app/src/`） | 失败数 | 主要断点 |
-|---|---|---|
-| `services/__tests__/export-service-integration.test.ts` | 1 | 运行时导入 Electron 主进程与基线 DB（`@baseline/controllers\|database`），Tauri 栈无对应运行时；本轮已复核 |
-| `services/__tests__/narrative-thread-candidate-generator.test.ts` | 2 | `graph-generation:begin` 前端未迁移，不擅自开放图谱 |
-| `services/__tests__/plot-tree-generator.test.ts` | 1 | 同上，不擅自开放图谱 |
-| `services/workflows/commands/__tests__/finalize-chapter.blueprint-entities.test.ts` | 1 | 后处理失败分支触达 `finalization-generation:read`，命名参数未登记即按合同拒绝；本轮已复核为未开放特殊域 |
-| `services/workflows/commands/__tests__/finalize-postprocess-character.integration.test.ts` | 15 | 定稿角色后处理特殊域及回执测试缺口，未声称真实持久化通过 |
-| `services/workflows/commands/__tests__/mutation-failure-boundary.test.ts` | 63 | 全部受 `finalized-character:read-context` 或 `review-revision:prepare` 未开放阻断 |
-| `services/workflows/commands/__tests__/refine-draft.command.test.ts` | 40 | `review-revision:prepare` 前端拒绝；Rust 已注册不等于完整迁移 |
-
-计数来自 `b78-results.json`，不是最新 HEAD 重跑。约83%仅为历史频道覆盖率，不是产品完成度；B3 仍未完成完整端到端验收。
+- **B7 其余部分仍未迁移**：`project:overview-current` / `project:peek-overview` / `project:archive-*` / `project:import-legacy-copy` / `kb:*-document-copy` / `dialog:select-{legacy-project,project-archive,project-archive-export,project-restore-target}` / `character-avatar:4` / `cloud-backup:8` / `import-generation:2`，以及特殊域 `finalization-generation:5` / `finalized-character:5` / `graph-generation:5` / `editor-inline:4`。归档类需要新 crate 与 schema，仍须先确认。
+- **前端全量**：最近一次非浏览器全量扫描仍为 `f15a1b71` 的 170文件 / 7文件失败 / 123项失败；浏览器套件 9文件 / 38项失败（本轮实测，未修复）。剩余失败应先分类为测试适配、真实迁移缺口或未开放域，**不得补映射绕过**。
+- 前端浏览器测试遗留 `tauri-app/.vitest-attachments/`（38个失败附件）与若干空 `__screenshots__` 目录为未跟踪 artifact，尚未清理（删除属破坏性操作，待用户确认）。
+- 真实模型、完整 GUI 窗口、MCP、Windows 更新、dirty 关窗、整屏瞬黑未验收；约83%仅为历史频道覆盖率，不是产品完成度。
 
 ## 交接给下次会话
 
-- 分支 `master`；最新代码 `d5a3fc97` 已推送。活动/待续入口：`.pi/tmp/pipeline-state.md`（本机，不入库）。未创建代理 run；开发子代理派发仍禁止。
-- **首要待续**：继续按“先复现失败再修复”核对助手与草稿链路尚未覆盖的组合（在途收据 × 关闭重开 × 多会话导航、工具结果 unknown × 父根生命周期），并按修改范围跑定向/typecheck/lint。前端全量剩余失败要先判断是测试适配、真实迁移缺口还是尚未开放域，不能直接补映射绕过拒绝。
-- **不得触碰的拒绝面**：`finalized-character:read-context`、`review-revision:prepare`、`graph-generation:*`、`finalization-generation:*` 等未开放域，以及 `generate_blueprint`、`generate_architecture`、其他普通父根工作流、规划续作、知识采集；新准入、schema、依赖、定稿/文件权限、CI/发布与 ADR 仍须先确认。
-- 真实模型、完整 GUI、MCP、Windows 更新、dirty 关窗、整屏瞬黑等未验收。Electron、根 `src/`、上游 `docs/`、根配置及锁文件保持隔离。
+- 分支 `master`；最新代码 `74ea2200` 已推送。活动/待续入口：`.pi/tmp/pipeline-state.md`（本机，不入库）。开发子代理派发仍禁止。
+- **启动门禁首验未做**：请先在真实 `tauri dev`/`build` 窗口确认 `~/.lorekeeper/appearance.json` 初值与「能进入工作台」；若皮肤或全局根异常，应看到阻塞页而不是默认值覆盖。
+- 次优先：B7 的 `project:*` 概览/归档、`kb` 文档副本、`dialog:select-*` 授权、`cloud-backup`、`character-avatar`；其中新 crate / schema 仍先确认。特殊域与 `generate_blueprint` / `generate_architecture` 等继续关闭。
+- 真实模型、完整 GUI、MCP、Windows 更新、dirty 关窗、整屏瞬黑未验收；Electron、根 `src/`、上游 `docs/`、根配置与锁文件保持隔离。
