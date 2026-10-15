@@ -5,6 +5,16 @@ import { fileURLToPath } from 'node:url'
 import { MIGRATED_CHANNELS } from '../src/shared/migrated-channels'
 import { collectContractChannels } from '../scripts/channel-contract.mjs'
 import { readNormalizedSource } from './source-contract'
+import { ipc } from '../src/services/ipc-client'
+import { installTauriInternals } from './helpers/tauri-internals'
+
+// Rust 已登记不代表渲染层已开放；这些频道暂不登记命名参数，保持传输前拒绝。
+const DEFERRED_RENDERER_CHANNELS = [
+  'review-revision:prepare',
+  'review-revision:commit-review',
+  'review-revision:commit-revision',
+  'review-revision:read-recovery',
+] as const
 
 /** `tauri-app/` 根目录（本文件位于 `tauri-app/test/`）。 */
 const appRoot = path.resolve(
@@ -16,8 +26,7 @@ const appRoot = path.resolve(
  * 本测试重算同样的映射并比对，保证：
  *   1. 生成物不会过期（迁移新频道后忘了重新生成 → 测试失败）；
  *   2. 生成物不会被手改（手改会与 lib.rs / 契约不一致 → 测试失败）；
- *   3. 已迁移集合 ⊆ 全量契约 invoke 频道（上游合并新增 97 个未迁移，
- *      待新批次迁移；清单见 docs-fork/plans/）。
+ *   3. 已迁移集合 ⊆ 全量契约 invoke 频道；不把历史数量当成准入依据。
  */
 /**
  * 契约里的 invoke 频道（按所属 interface 名排除事件频道）。
@@ -124,18 +133,19 @@ describe('channel migration coverage', () => {
     expect(unresolved).toEqual([])
   })
 
-  it('已迁移集合包含于契约 invoke 频道全集（未迁移 97 个待新批次迁移）', () => {
+  it('已迁移集合包含于契约全集，剩余频道没有已注册命令', () => {
     const invoke = collectInvokeChannels()
     expect(MIGRATED_CHANNELS.size).toBeGreaterThan(0)
     // 已迁移频道必须全部仍在契约里（子集关系）。
     for (const channel of MIGRATED_CHANNELS) {
       expect(invoke.has(channel), `${channel} 不在契约 invoke 频道中`).toBe(true)
     }
-    // 上游合并新增，待新批次迁移；清单见 docs-fork/plans/（共 97 个频道）。
+    // 按当前命令登记验证剩余边界，不使用会随迁移失效的历史总数。
     const unmigrated = [...invoke].filter(
       (channel) => !MIGRATED_CHANNELS.has(channel),
     )
-    expect(unmigrated.length).toBe(97)
+    const registered = collectRegisteredCommands()
+    expect(unmigrated.filter(channel => registered.has(commandName(channel)))).toEqual([])
   })
   it('迁移状态断言：已迁频道在集合内，批次 G2 依赖的频道仍被前置拦截', () => {
     // 批次 G1：作者原稿导入已迁移
@@ -235,11 +245,15 @@ describe('channel migration coverage', () => {
    * 这类漏登记只有落到真机点开对应功能时才会暴露。此测试把契约的参数个数与登记表机械比对，
    * 使漏登记 / 多登记 / 参数个数不符在 `pnpm test` 阶段即失败。
    */
-  it('已迁移且带参的频道都登记了正确数量的 invoke 参数名', () => {
+  it('开放前端且带参的频道都登记了正确数量的 invoke 参数名', () => {
     const registered = collectRegisteredArgNames()
     const problems: string[] = []
     for (const [channel, arity] of collectMigratedArgCounts()) {
       const names = registered.get(channel)
+      if (DEFERRED_RENDERER_CHANNELS.some(deferred => deferred === channel)) {
+        if (names) problems.push(`${channel}：审稿渲染层仍关闭，不得悄悄登记参数名`)
+        continue
+      }
       if (arity === 0) {
         if (names) problems.push(`${channel}：无参频道不应登记（登记了 ${names.length} 个）`)
         continue
@@ -253,6 +267,20 @@ describe('channel migration coverage', () => {
       }
     }
     expect(problems).toEqual([])
+  })
+
+  it.each(DEFERRED_RENDERER_CHANNELS)('%s 在真实 Tauri 传输前拒绝，不因 Rust 已注册而开放', async channel => {
+    const tauri = installTauriInternals()
+    try {
+      expect(MIGRATED_CHANNELS.has(channel)).toBe(true)
+      // 占位载荷只验证适配器拒绝，不代表合法的领域请求。
+      await expect(ipc.invokeWithProjectSession({ projectId: 'synthetic-project', leaseId: 'synthetic-lease',
+        projectPath: 'C:/synthetic-project' }, channel, {} as never))
+        .rejects.toThrow(`频道 ${channel} 尚未迁移（参数名未登记），已拒绝调用`)
+      expect(tauri.invoke).not.toHaveBeenCalled()
+    } finally {
+      tauri.uninstall()
+    }
   })
 
   it('参数名登记表不得包含未迁移频道或非法参数名', () => {
