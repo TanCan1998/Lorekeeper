@@ -114,7 +114,7 @@ beforeEach(() => {
           legacyHash: 'a'.repeat(64), identityRevision: 3, factsHash: 'b'.repeat(64),
         }
         if (channel === 'legacy_roster_adopt_existing') {
-          expect(request).toMatchObject({ expectedRevision: 7, expectedLegacyHash: 'a'.repeat(64), expectedIdentityRevision: 3, expectedFactsHash: 'b'.repeat(64) })
+          expect(request).toMatchObject({ request: { expectedRevision: 7, expectedLegacyHash: 'a'.repeat(64), expectedIdentityRevision: 3, expectedFactsHash: 'b'.repeat(64) }, projectSession: PROJECT_SESSION })
           expect(useWorkflowStore.getState().activeRuns[0]?.resourceKeys).toContain('character-roster')
           return { success: true, snapshot: { renderedMarkdown: '合成既有角色卡的只读图谱' } }
         }

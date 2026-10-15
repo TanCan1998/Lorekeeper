@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ipc } from '../../ipc-client'
 import type { MainGenerationRunView } from '../../generation/generation-runtime'
 import type { GenerationTask } from '../../generation/generation-harness'
 import { assertSemanticGenerationTask } from '@baseline/services/main-generation-plan'
@@ -15,6 +16,8 @@ const originalLocale = useLocaleStore.getState().locale
 const originalDefaultModelId = useLLMStore.getState().defaultModelId
 const originalGenerateStream = useLLMStore.getState().generateStream
 
+beforeEach(() => { vi.spyOn(ipc, 'on').mockReturnValue(() => {}) })
+
 afterEach(() => {
   useProjectStore.setState({ currentProject: null })
   useLocaleStore.setState({ locale: originalLocale })
@@ -23,6 +26,7 @@ afterEach(() => {
     generateStream: originalGenerateStream,
   })
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 const validGeneratedConfig = {
@@ -104,7 +108,7 @@ describe('architecture workflow project context', () => {
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
       // Tauri 语义：频道名下划线化；位置参数经 buildNamedArgs 打包为
       // 命名参数对象（单对象参数登记为 `request`）并追加 projectSession 尾参。
-      if (command === 'generation_begin') { begins.push((args as { request: BeginGenerationRequest }).request); throw new Error('captured-first-begin') }
+      if (command === 'generation_begin') { begins.push((args as { selection: BeginGenerationRequest }).selection); throw new Error('captured-first-begin') }
       if (command === 'fs_check_exists') return false
       throw new Error(`unexpected IPC ${command}`)
     })
@@ -354,7 +358,7 @@ describe('config generation full journey completion contract', () => {
     const begin = journey.invoke.mock.calls.filter(([channel]) => channel === 'generation_begin')
     expect(begin).toHaveLength(1)
     expect(begin[0][1]).toMatchObject({
-      request: {
+      selection: {
         output: 'structured-data',
         outputOverrides: [{ purpose: 'generate-global-guidance-replacement', output: 'visible-text' }],
       },
@@ -430,6 +434,7 @@ describe('恢复按钮确认的运行身份', () => {
       resumeWorldBuilding: true, expectedRecoveryHandle: expected })
     expected.runId = '后来覆盖的运行'
     journey.invoke.mockImplementation(async () => ({ success: true, data: {
+      world_building_incomplete: true, world_building_generation_handle: { ...expected },
     } }))
     await expect(workflow.steps[0].executor({ id: '恢复', name: '恢复', description: '', status: 'running', logs: [] },
       { runId: '恢复动作', projectPath: 'C:/projects/A', projectSession: workflow.projectSession,
