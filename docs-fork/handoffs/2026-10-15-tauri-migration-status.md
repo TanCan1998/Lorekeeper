@@ -16,6 +16,7 @@
 | 前端启动传输 | 新 `startup-transport` **4项**、会话网关/主题 **28项** 通过；typecheck、lint 退出0 | `74ea2200` | `.pi/tmp/b89-{startup-transport,startup-frontend-target,typecheck,lint}.log` |
 | 频道计数（本轮实测） | 契约 invoke 290、事件 7；**已注册 246 → 覆盖 245**；**未迁移 45**（原 48） | `74ea2200`，`pnpm run check:channels` | `.pi/tmp/b89-channels.log`、`.pi/tmp/b89-channels-emit.log` |
 | 浏览器套件（逐项失败） | 48文件：39通过 / 9失败；357测试：319通过 / 38失败 | `74ea2200` 的整仓浏览器配置运行；失败集中在图谱/编辑器/批量工作流等未迁移域 | `.pi/tmp/b89-startup-browser.log` |
+| 前端全量（非浏览器） | **172文件/2053项：1929通过 / 123失败 / 1跳过**（7文件失败） | `74ea2200`，`vitest run`（JSON 报告） | `.pi/tmp/b91-results.json`、`.pi/tmp/b91-full.log` |
 | GUI / 真实模型 / MCP | 未验收 | 启动门禁已可回 ready，但未在真实窗口跑通；合成传输不等于端到端 | 本轮无 GUI 结论 |
 
 Rust验证目录 `tauri-app/src-tauri/`（显式 `RUSTUP_HOME`/`CARGO_HOME`）；前端在 `tauri-app/` 用 `pnpm exec vitest run <文件>`、`pnpm typecheck`、`pnpm run lint`；浏览器配置为 `pnpm run test:browser`。
@@ -36,8 +37,8 @@ Rust验证目录 `tauri-app/src-tauri/`（显式 `RUSTUP_HOME`/`CARGO_HOME`）�
 
 - **B7 其余部分仍未迁移**：`project:overview-current` / `project:peek-overview` / `project:archive-*` / `project:import-legacy-copy` / `kb:*-document-copy` / `dialog:select-{legacy-project,project-archive,project-archive-export,project-restore-target}` / `character-avatar:4` / `cloud-backup:8` / `import-generation:2`，以及特殊域 `finalization-generation:5` / `finalized-character:5` / `graph-generation:5` / `editor-inline:4`。归档类需要新 crate 与 schema，仍须先确认。
 - **前端全量**：最近一次非浏览器全量扫描仍为 `f15a1b71` 的 170文件 / 7文件失败 / 123项失败；浏览器套件 9文件 / 38项失败（本轮实测，未修复）。剩余失败应先分类为测试适配、真实迁移缺口或未开放域，**不得补映射绕过**。
-- 前端浏览器测试遗留 `tauri-app/.vitest-attachments/`（38个失败附件）与若干空 `__screenshots__` 目录为未跟踪 artifact，尚未清理（删除属破坏性操作，待用户确认）。
-- 真实模型、完整 GUI 窗口、MCP、Windows 更新、dirty 关窗、整屏瞬黑未验收；约83%仅为历史频道覆盖率，不是产品完成度。
+- **前端全量（本轮实测）**：非浏览器全量在 `74ea2200` 下为 172文件 / 7文件失败 / 2053项（1929通过 / 123失败 / 1跳过），失败文件与其逐项数量与 `f15a1b71` **完全一致**，本轮改动未新增失败；浏览器套件 48文件 / 9文件失败 / 38项失败（未修复）。剩余失败应先分类为测试适配、真实迁移缺口或未开放域，**不得补映射绕过**。
+- 真实模型、完整 GUI 窗口、MCP、Windows 更新、dirty 关窗、整屏瞬黑未验收；约84%仅为历史频道覆盖率，不是产品完成度。
 
 ## 交接给下次会话
 

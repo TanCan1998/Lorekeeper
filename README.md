@@ -22,7 +22,7 @@
 >
 > - **历史频道覆盖**：245/290（约84%），另有45个未迁移频道；本机 `pnpm run check:channels` 实测（已注册 246 → 覆盖 245），**不代表产品完成度或 GUI 验收比例**。
 > - **已接通**：生产短锁与关闭围栏、事件、Agent 轮次/恢复、材料/短细纲/对账、普通重启、启动门禁（`startup:*` 3 频道）；仅开放已登记的 `generate_draft → chapter-draft` 工作流。
-> - **最近验证**：代码 `74ea2200` 的 Rust 全量 **1397通过/0失败（57.56s）**、`cargo check --all-targets` 零告警；前端启动传输4项与会话网关/主题28项通过，typecheck/lint 退出0；**B7 启动态子集已接通**（`startup:*` 3 频道 + `~/.lorekeeper/appearance.json`）。
+> - **最近验证**：代码 `74ea2200` 的 Rust 全量 **1397通过/0失败（57.56s）**、`cargo check --all-targets` 零告警；前端非浏览器全量 **2053项：1929通过/123失败/1跳过**（失败集合与 `f15a1b71` 完全一致，未新增），启动传输4项与会话网关/主题28项通过，typecheck/lint 退出0；**B7 启动态子集已接通**（`startup:*` 3 频道 + `~/.lorekeeper/appearance.json`）。
 > - **仍待完成**：前端既存失败、真实模型与完整 GUI 验收；其他工作流和特殊域未开放。B3仍在进行中，不宣称完整端到端完成。
 > - **接续入口**：[迁移总览](docs-fork/README.md)、[当前交接](docs-fork/handoffs/CURRENT.md)、[第54次快照](docs-fork/handoffs/2026-10-15-tauri-migration-status.md)。按“继续迁移”推进，开发子代理仍禁止派发。
 >
