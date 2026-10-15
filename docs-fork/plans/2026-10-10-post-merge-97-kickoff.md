@@ -56,7 +56,7 @@
 | `graph-generation.ts` | 5 | `begin` / `read` / `execute` / `confirm` / `cancel` |
 | `legacy-roster-generation.ts` | 7 | `read-source` / `adopt-existing` / `begin` / `read` / `execute` / `stage` / `cancel` |
 | `finalized-character-generation.ts` | 5 | `read-context` / `commit` / `list-state-candidates` / `read-state-candidate` / `decide-state-candidate` |
-| `import-generation.ts` | 2 | `read` / `execute` |
+| `import-generation.ts` | 2 | `read` / `execute` ✅（2026-10-15 B95 已迁移） |
 | `review-revision-generation.ts` | 4 | `prepare` / `commit-review` / `commit-revision` / `read-recovery` |
 
 ### 1.3 角色与云备份（19）
