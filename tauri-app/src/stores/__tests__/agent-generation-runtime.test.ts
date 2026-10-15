@@ -217,4 +217,25 @@ describe('Agent GenerationRuntime boundary', () => {
     expect(calls('agent-generation:round')).toHaveLength(1)
     expect(calls('agent-generation:resume')).toHaveLength(0)
   })
+  it.each(['running', 'unknown'] as const)('恢复 %s 工具时保留已启动草稿的导航，不重新认领或派发', async status => {
+    await useAgentStore.getState().sendMessage('检查项目')
+    const handle = fixture.recovery.handle
+    const round = fixture.recovery.rounds[0]
+    round.actions = [{ ref: { handle, attemptId: 'synthetic-attempt', toolCallId: 'synthetic-workflow-action' },
+      name: 'start_workflow', arguments: { workflow: 'generate_draft', chapter_number: 1 }, status,
+      workflow: { registrationId: 'synthetic-draft-registration', workflow: 'generate_draft', chapterNumber: 1,
+        parentHandle: handle, modelId: 'model-a', state: 'started', childHandles: [{ ...handle, runId: 'child-draft' }] } }]
+    fixture.recovery.nextRound = null
+    useAgentStore.getState().clearAll()
+    fixture.invoke.mockClear()
+    await useAgentStore.getState().resumeGeneration(handle)
+    expect(lastMessage()?.artifacts).toEqual([expect.objectContaining({ type: 'workflow_started',
+      runId: 'synthetic-draft-registration', projectPath: session.projectPath, projectSession: session })])
+    expect(lastMessage()?.toolCalls).toEqual([expect.objectContaining({ status: 'result_unknown' })])
+    expect(lastMessage()?.content).toContain('写入结果待确认')
+    for (const channel of ['agent-generation:begin', 'agent-generation:round', 'agent-generation:claim-tool',
+      'agent-generation:finish-tool', 'agent-generation:register-workflow', 'agent-generation:resume'])
+      expect(calls(channel)).toHaveLength(0)
+  })
+
 })

@@ -418,7 +418,8 @@ async function runHostedAgentLoop(generate: LLMGenerateFn, callbacks: AgentEngin
         }
         if (action.status === 'unknown' || action.status === 'running') {
           info.status = 'result_unknown'; info.commitState = 'unknown'
-          callbacks.onToolCallStart(info); callbacks.onToolCallComplete(info); done(true); return
+          // 工具结果未知不等于子工作流未启动：仅恢复主进程已登记的导航，绝不重派。
+          callbacks.onToolCallStart(info); callbacks.onToolCallComplete(info); restoreWorkflow(action); done(true); return
         }
         if (tool) host.assertTool(tool)
         let decision: ToolConfirmationDecision = { confirmed: true }
