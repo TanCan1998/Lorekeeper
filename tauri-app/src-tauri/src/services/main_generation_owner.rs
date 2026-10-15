@@ -2599,6 +2599,7 @@ impl MainGenerationOwner {
             agent_tool_names,
             replay_task: replay_task.then(|| task.clone()),
             reconciliation_injected,
+            short_outline_retry_attempt_id: retry_attempt_id.map(str::to_string),
         };
         Ok(PreparedExecutionPlan::Dispatch(Box::new(execution_request)))
     }
@@ -6485,7 +6486,7 @@ mod tests {
         );
         let receipt = owner
             .repository
-            .reserve(
+            .reserve_for_execution(
                 conn,
                 &run.run_id,
                 nonce,
@@ -6497,6 +6498,7 @@ mod tests {
                 Some(task),
                 None,
                 false,
+                nonce.strip_prefix("draft-short-outline-retry:"),
             )
             .unwrap();
         let id = receipt.attempt.attempt_id.clone();
@@ -6525,7 +6527,7 @@ mod tests {
         let PreparedExecutionPlan::Dispatch(request) = &prepared.plan else {
             panic!("必须是未分发准备")
         };
-        owner.repository.reserve(
+        owner.repository.reserve_for_execution(
             conn,
             &request.run_id,
             &request.invocation_nonce,
@@ -6537,6 +6539,7 @@ mod tests {
             request.replay_task.as_ref(),
             request.budget_decision.as_ref(),
             request.reconciliation_injected,
+            request.short_outline_retry_attempt_id.as_deref(),
         )
     }
 
@@ -6662,6 +6665,127 @@ mod tests {
     }
 
     #[test]
+    fn short_outline_reservation_race_rejects_second_nonce_without_poisoning_root_test() {
+        let (_temp, conn, owner, run, task) = outline_material_fixture();
+        let request =
+            json!({"handle":handle_of(&run),"invocationNonce":"first-outline","task":task});
+        let first = owner.prepare_execution(&conn, &request, false).unwrap();
+        let mut other = request.clone();
+        other["invocationNonce"] = json!("second-outline");
+        // 伪造的 IPC 字段不能跨过内部重试凭据边界。
+        other["shortOutlineRetryAttemptId"] = json!("forged");
+        let second = owner.prepare_execution(&conn, &other, false).unwrap();
+        let receipt = reserve_prepared_fixture(&conn, &owner, &first).unwrap();
+        assert_eq!(
+            second.execute_blocking(&conn).err().unwrap(),
+            mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED")
+        );
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            1
+        );
+        assert!(owner
+            .repository
+            .budget(&conn, &run.root_action_id)
+            .unwrap()
+            .blocked_code
+            .is_none());
+        assert_eq!(
+            reserve_prepared_fixture(&conn, &owner, &first)
+                .unwrap()
+                .attempt
+                .attempt_id,
+            receipt.attempt.attempt_id
+        );
+        drop(first);
+        drop(second);
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn short_outline_reservation_retry_requires_internal_proof_and_original_failed_task_test() {
+        let (_temp, conn, owner, run, task) = outline_material_fixture();
+        let failed = record_outline_fixture(&conn, &owner, &run, &task, "合成截断", "length");
+        let request = json!({"handle":handle_of(&run),"failedAttemptId":failed});
+        let mut forged = owner
+            .prepare_short_outline_retry_execution(&conn, &request)
+            .unwrap();
+        let PreparedExecutionPlan::Dispatch(plan) = &mut forged.plan else {
+            panic!("必须准备重试")
+        };
+        assert_eq!(
+            plan.short_outline_retry_attempt_id.as_deref(),
+            Some(failed.as_str())
+        );
+        plan.short_outline_retry_attempt_id = None;
+        assert_eq!(
+            forged.execute_blocking(&conn).err().unwrap(),
+            mutating_error("GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED")
+        );
+        drop(forged);
+        assert!(owner
+            .repository
+            .budget(&conn, &run.root_action_id)
+            .unwrap()
+            .blocked_code
+            .is_none());
+        let mut tampered = owner
+            .prepare_short_outline_retry_execution(&conn, &request)
+            .unwrap();
+        let PreparedExecutionPlan::Dispatch(plan) = &mut tampered.plan else {
+            panic!("必须准备重试")
+        };
+        plan.replay_task.as_mut().unwrap()["messages"][1]["content"] = json!("被篡改的计划任务");
+        assert_eq!(
+            reserve_prepared_fixture(&conn, &owner, &tampered).unwrap_err(),
+            "GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID"
+        );
+        drop(tampered);
+        let retry = owner
+            .prepare_short_outline_retry_execution(&conn, &request)
+            .unwrap();
+        let receipt = reserve_prepared_fixture(&conn, &owner, &retry).unwrap();
+        drop(retry);
+        let replay = owner
+            .prepare_short_outline_retry_execution(&conn, &request)
+            .unwrap();
+        assert!(matches!(replay.plan, PreparedExecutionPlan::Replay(_)));
+        drop(replay);
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            2
+        );
+        assert_ne!(receipt.attempt.attempt_id, failed);
+        assert!(owner.pending_invocations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn material_short_outline_and_reconciliation_remain_mutually_exclusive_test() {
+        let (_temp, conn, owner, run, _task) = outline_material_fixture();
+        let mut decision = run.binding.source_manifest["materialDecision"].clone();
+        decision["reconciliationPromptHash"] = json!(text_hash("合成对账请求"));
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM generation_runs", [], |row| row.get(0))
+            .unwrap();
+        let leases = owner.lease_store.lock().unwrap().live_lease_count();
+        let request = json!({"operation":"chapter-draft","modelId":"fixture","uiActionNonce":"invalid-combined-material","promptKeys":["edit_selected_text"],"chapterNumber":1,
+            "selectedDraftIds":[],"selectedFinalizedDraftIds":[],"selectedBlueprintChapterNumbers":[],"skillStages":[],"output":"visible-text","materialDecision":decision});
+        assert_eq!(
+            owner.begin(&conn, &request, false, false).unwrap_err(),
+            mutating_error("GENERATION_MATERIAL_DECISION_INVALID")
+        );
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM generation_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), leases);
+        assert_eq!(
+            owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn reconciliation_material_first_prompt_replay_and_preparation_race_test() {
         let (_temp, conn, owner, run, task) = material_preflight_fixture(false, None);
         let request =
@@ -6683,6 +6807,16 @@ mod tests {
             owner.repository.attempt_count(&conn, &run.run_id).unwrap(),
             1
         );
+        assert_eq!(
+            second.execute_blocking(&conn).err().unwrap(),
+            mutating_error("GENERATION_MATERIAL_PROMPT_MISMATCH")
+        );
+        assert!(owner
+            .repository
+            .budget(&conn, &run.root_action_id)
+            .unwrap()
+            .blocked_code
+            .is_none());
         drop(first);
         drop(second);
         // 同 nonce、同任务重放仍走既有预留；不得产生第二次物理请求。
@@ -8166,7 +8300,7 @@ data: [DONE]
                 budget_decision: None,
                 agent_tool_names: None,
                 replay_task: None,
-                reconciliation_injected: false,
+                reconciliation_injected: false, short_outline_retry_attempt_id: None,
             }).unwrap();
                 done.send(receipt).unwrap();
             });
@@ -8310,7 +8444,7 @@ data: [DONE]
                 budget_decision: None,
                 agent_tool_names: None,
                 replay_task: None,
-                reconciliation_injected: false,
+                reconciliation_injected: false, short_outline_retry_attempt_id: None,
             }).unwrap();
                 done.send(receipt).unwrap();
             });

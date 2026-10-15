@@ -179,6 +179,8 @@ pub struct ExecuteGenerationRequest {
     /// 首稿提示经主进程复核确实带有生成前定稿对账注入块；
     /// 恢复据此决定续写/压缩是否沿用对账结果。
     pub reconciliation_injected: bool,
+    /// 仅 Rust owner 的专属入口赋值；不从 IPC 字段或原始任务反序列化。
+    pub(crate) short_outline_retry_attempt_id: Option<String>,
 }
 
 /// 基线 `GenerationRunServiceDependencies.onReasoning` 事件
@@ -398,6 +400,17 @@ fn is_budget_class_error(error: &str) -> bool {
         || error.contains("EPOCH")
         || error.contains("DISPATCH")
         || error.contains("INVOCATION")
+}
+
+/// 可预期的语义拒绝不是存储损坏，不得毒化同根其他合法执行或写入存储失败围栏。
+fn is_semantic_reservation_rejection(error: &str) -> bool {
+    matches!(
+        error,
+        "GENERATION_MATERIAL_PROMPT_MISMATCH"
+            | "GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED"
+            | "GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID"
+            | "GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE"
+    )
 }
 
 /// 基线 `/^(UND_ERR_|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ERR_STREAM_PREMATURE_CLOSE)/`
@@ -1212,9 +1225,9 @@ impl GenerationRunService {
             return Err("GENERATION_RESERVATION_INVALID".to_string());
         }
         // ⑥ 基线 :136-152——reserve。预算/预留类失败可重试，
-        // 不触发围栏；其余存储失败置围栏并 block。
+        // 和确定的语义拒绝不触发围栏；其余存储失败置围栏并 block。
         let receipt = match database.with_connection(|conn| {
-            self.repository.reserve(
+            self.repository.reserve_for_execution(
                 conn,
                 &request.run_id,
                 &request.invocation_nonce,
@@ -1226,11 +1239,12 @@ impl GenerationRunService {
                 request.replay_task.as_ref(),
                 request.budget_decision.as_ref(),
                 request.reconciliation_injected,
+                request.short_outline_retry_attempt_id.as_deref(),
             )
         }) {
             Ok(receipt) => receipt,
             Err(error) => {
-                if !is_budget_class_error(&error) {
+                if !is_budget_class_error(&error) && !is_semantic_reservation_rejection(&error) {
                     self.failed_roots
                         .lock()
                         .unwrap()
@@ -1964,6 +1978,7 @@ mod tests {
             agent_tool_names: None,
             replay_task: None,
             reconciliation_injected: false,
+            short_outline_retry_attempt_id: None,
         }
     }
 
@@ -2146,6 +2161,22 @@ mod tests {
         assert!(is_budget_class_error("GENERATION_DISPATCH_BLOCKED"));
         assert!(is_budget_class_error("GENERATION_INVOCATION_CONFLICT"));
         assert!(!is_budget_class_error("sqlite error: disk I/O"));
+    }
+
+    #[test]
+    fn semantic_reservation_rejection_is_not_storage_corruption_test() {
+        for code in [
+            "GENERATION_MATERIAL_PROMPT_MISMATCH",
+            "GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED",
+            "GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID",
+            "GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE",
+        ] {
+            assert!(is_semantic_reservation_rejection(code));
+        }
+        assert!(!is_semantic_reservation_rejection("sqlite error: disk I/O"));
+        assert!(!is_semantic_reservation_rejection(
+            "sqlite failure mentioning GENERATION_MATERIAL_PROMPT_MISMATCH"
+        ));
     }
 
     #[test]

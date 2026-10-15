@@ -2939,6 +2939,38 @@ impl GenerationRunRepository {
         budget_decision: Option<&Value>,
         reconciliation_injected: bool,
     ) -> Result<GenerationExecutionReceipt, String> {
+        self.reserve_for_execution(
+            conn,
+            run_id,
+            nonce,
+            request_hash,
+            reserved_tokens,
+            requested_output_tokens,
+            usage_policy,
+            purpose,
+            replay_task,
+            budget_decision,
+            reconciliation_injected,
+            None,
+        )
+    }
+
+    /// 只有内部 owner 可附加短细纲重试凭据；预留与次数/原任务校验共享事务。
+    pub(crate) fn reserve_for_execution(
+        &self,
+        conn: &Connection,
+        run_id: &str,
+        nonce: &str,
+        request_hash: &str,
+        reserved_tokens: i64,
+        requested_output_tokens: i64,
+        usage_policy: Option<&ProviderUsagePolicy>,
+        purpose: Option<&str>,
+        replay_task: Option<&Value>,
+        budget_decision: Option<&Value>,
+        reconciliation_injected: bool,
+        short_outline_retry_attempt_id: Option<&str>,
+    ) -> Result<GenerationExecutionReceipt, String> {
         in_transaction(conn, |tx| {
             self.assert_plot_outline_writable(tx, run_id)?;
             if let Some(prior) = self.find_invocation(tx, run_id, nonce, request_hash)? {
@@ -2965,6 +2997,54 @@ impl GenerationRunRepository {
                 && self.has_non_cancelled_attempt(tx, run_id)?
             {
                 return Err("GENERATION_MATERIAL_PROMPT_MISMATCH".to_string());
+            }
+            if purpose == Some("chapter-draft-short-outline")
+                && run
+                    .binding
+                    .source_manifest
+                    .get("materialDecision")
+                    .and_then(|decision| decision.get("shortOutlinePromptHash"))
+                    .is_some()
+            {
+                let count = self.attempt_count(tx, run_id)?;
+                if count > 0 {
+                    let failed = short_outline_retry_attempt_id
+                        .ok_or("GENERATION_DRAFT_SHORT_OUTLINE_ALREADY_ATTEMPTED")?;
+                    let (first,usage):(String,String)=tx.query_row(
+                        "SELECT attempt_id,usage_receipt_json FROM generation_attempts WHERE run_id=? ORDER BY rowid LIMIT 1",
+                        [run_id],|row|Ok((row.get(0)?,row.get(1)?))).map_err(|error|error.to_string())?;
+                    let usage: Value = parse_json(&usage)?;
+                    if count != 1
+                        || first != failed
+                        || nonce != format!("draft-short-outline-retry:{failed}")
+                        || usage.get("purpose").and_then(Value::as_str)
+                            != Some("chapter-draft-short-outline")
+                        || usage.get("requestHash").and_then(Value::as_str) != Some(request_hash)
+                        || replay_task.is_none()
+                        || usage.get("replayTask") != replay_task
+                    {
+                        return Err("GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID".to_string());
+                    }
+                    let receipt = self.receipt(tx, failed, None)?;
+                    let finish = receipt
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.finish_reason.as_deref());
+                    if receipt.attempt.status != "settled"
+                        || receipt.failure_code.is_some()
+                        || receipt.artifact.is_none()
+                        || !(finish == Some("length")
+                            || finish == Some("stop")
+                                && receipt.artifact.as_ref().is_some_and(|artifact| {
+                                    crate::services::draft_short_outline::trim_js(&artifact.text)
+                                        .is_empty()
+                                }))
+                    {
+                        return Err("GENERATION_DRAFT_SHORT_OUTLINE_RETRY_UNAVAILABLE".to_string());
+                    }
+                } else if short_outline_retry_attempt_id.is_some() {
+                    return Err("GENERATION_DRAFT_SHORT_OUTLINE_TASK_INVALID".to_string());
+                }
             }
             let budget = self.budget(tx, &run.root_action_id)?;
             if run.status != "running" || budget.blocked_code.is_some() {
