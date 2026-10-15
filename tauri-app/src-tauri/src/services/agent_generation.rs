@@ -43,12 +43,8 @@
 //!   `1.0` 解析为 f64，导航 `roundIndex` 等处按非整数拒绝（运行期
 //!   `roundIndex` 恒为整数写出，不可达）。
 //!
-//! 分发边界：轮次同步准备计划已实现；生产派发仍等待统一短锁生命周期接线。
-//! 子波次边界：命令注册（commands/agent_generation.rs）已随
-//! 子波次 C 落地；`resume` / `execute_round` 属后续波次
-//! （依赖分发核心与 LLM 双阶段执行循环迁移），本波以
-//! `*_UNMIGRATED` 占位码留空（对齐既有
-//! `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED` 先例，非基线码）；
+//! 分发边界：生产首轮已接统一短锁生命周期；直连 execute_round 仍保守关闭。
+//! resume 对已完成回复仅移交控制纪元，未完成阶段仍由宿主准入决定。
 //! `admit_workflow` 已随子波次 B 逐字移植（owner.begin 子代准入）；
 //! `commit_domain_tool` 已随子波次 C 逐字移植（基线 :377-404，
 //! 域工具效应提交，依赖 `agent_domain_tool_effect`）。
@@ -454,6 +450,38 @@ pub trait AgentHost {
 struct AgentNavigation {
     key: String,
     round_index: i64,
+}
+
+/// 控制纪元写入使用独立保存点，防止外层事务捕获错误后留下半次移交。
+struct AgentControlSavepoint<'a> {
+    conn: &'a Connection,
+    active: bool,
+}
+
+impl<'a> AgentControlSavepoint<'a> {
+    fn new(conn: &'a Connection) -> Result<Self, String> {
+        conn.execute_batch("SAVEPOINT lorekeeper_agent_control_resume")
+            .map_err(|error| error.to_string())?;
+        Ok(Self { conn, active: true })
+    }
+
+    fn release(&mut self) -> Result<(), String> {
+        self.conn
+            .execute_batch("RELEASE SAVEPOINT lorekeeper_agent_control_resume")
+            .map_err(|error| error.to_string())?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for AgentControlSavepoint<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.conn.execute_batch(
+                "ROLLBACK TO SAVEPOINT lorekeeper_agent_control_resume; RELEASE SAVEPOINT lorekeeper_agent_control_resume",
+            );
+        }
+    }
 }
 
 /// Agent 生成状态机（基线 `AgentGeneration` 类）。
@@ -1980,15 +2008,66 @@ impl<'a> AgentGeneration<'a> {
         Ok(())
     }
 
-    // ── 子波次 B/C 占位（方法签名预留，主体待对应波次实现）──────────────
+    // ── 控制恢复与轮次准备 ─────────────────────────────────────────
 
-    /// 基线 `resume(handle)`（:156-170）——随分发核心
-    /// （generation-run-service）波次实现
-
-    /// 占位码 `GENERATION_AGENT_RESUME_UNMIGRATED` 为迁移占位、非基线码
-    /// （对齐 `GENERATION_AGENT_CHILD_EFFECT_UNMIGRATED` 先例）。
-    pub fn resume(&self, _handle: &Value) -> Result<AgentGenerationRecovery, String> {
-        Err("GENERATION_AGENT_RESUME_UNMIGRATED".to_string())
+    /// 已完成回复只移交控制纪元，不重写历史绑定，也不派发第二个模型请求。
+    /// 未完成阶段仍由宿主恢复，其特殊域准入和不可重放保护不得绕过。
+    pub fn resume(&self, handle: &Value) -> Result<AgentGenerationRecovery, String> {
+        let recovery = self.read(handle)?;
+        if recovery.source_status != "current" {
+            return Err("GENERATION_SOURCE_CHANGED".to_string());
+        }
+        let last = recovery
+            .rounds
+            .last()
+            .ok_or_else(|| "GENERATION_AGENT_ROUND_INVALID".to_string())?;
+        if last.status != "completed" {
+            let view = self.host.resume(self.conn, &recovery.handle)?;
+            return self.read(view.get("handle").unwrap_or(&Value::Null));
+        }
+        let attempt_id = last
+            .attempt_id
+            .as_deref()
+            .ok_or_else(|| "GENERATION_AGENT_ROUND_INVALID".to_string())?;
+        let transaction = if self.conn.is_autocommit() {
+            Some(
+                rusqlite::Transaction::new_unchecked(
+                    self.conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
+        // 即使调用方捕获错误后提交外层事务，根纪元和控制收据也必须一起回滚。
+        let mut savepoint = AgentControlSavepoint::new(self.conn)?;
+        self.runs.activate_root_for_committed_stage(
+            self.conn,
+            &recovery.handle.root_action_id,
+            &crate::repositories::generation_run_repository::ProjectEpoch {
+                project_id: self.project_id.to_string(),
+                epoch: self.epoch.to_string(),
+            },
+        )?;
+        let raw: String = self.conn.query_row(
+            "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?1 AND run_id=?2",
+            [attempt_id, last.handle.run_id.as_str()], |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        let mut usage: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        usage
+            .as_object_mut()
+            .ok_or_else(|| "GENERATION_AGENT_ROUND_INVALID".to_string())?
+            .insert("agentControlEpoch".to_string(), json!(self.epoch));
+        self.conn.execute(
+            "UPDATE generation_attempts SET usage_receipt_json=?1 WHERE attempt_id=?2 AND run_id=?3",
+            rusqlite::params![usage.to_string(), attempt_id, last.handle.run_id],
+        ).map_err(|error| error.to_string())?;
+        savepoint.release()?;
+        if let Some(transaction) = transaction {
+            transaction.commit().map_err(|error| error.to_string())?;
+        }
+        self.read(&serde_json::to_value(&recovery.handle).map_err(|error| error.to_string())?)
     }
 
     /// 基线 `executeRound(request)`（:180-219）——随分发核心
@@ -4859,7 +4938,167 @@ mod tests {
         .unwrap()
     }
 
+    fn resume_completed_fixture(conn: &Connection) {
+        preparation_run(
+            conn,
+            Some(AttemptFixture {
+                attempt_id: "resume-attempt".to_string(),
+                attempt_status: "settled",
+                usage_receipt_json: completed_usage("合成已完成回复", json!([])),
+                artifact: Some(("合成已完成回复".to_string(), 1)),
+            }),
+        );
+    }
+
+    fn resume_epoch_agent<'a>(
+        conn: &'a Connection,
+        host: &'a PreparationHost,
+    ) -> AgentGeneration<'a> {
+        AgentGeneration::new(
+            conn,
+            GenerationRunRepository::default(),
+            "project-1",
+            "epoch-2",
+            &assert_current,
+            host,
+        )
+        .unwrap()
+    }
+
+    fn resume_epoch(conn: &Connection) -> String {
+        GenerationRunRepository::default()
+            .budget(conn, "root-1")
+            .unwrap()
+            .root
+            .epoch
+    }
+
     #[test]
+    fn resume_completed_transfers_control_without_rewriting_history_or_dispatch_test() {
+        let conn = test_connection();
+        resume_completed_fixture(&conn);
+        let host = PreparationHost::default();
+        let agent = resume_epoch_agent(&conn, &host);
+        let before = agent.read(&handle_of("run-0")).unwrap();
+        let history: (String, String, String) = conn
+            .query_row(
+                "SELECT r.binding_json,a.attempt_json,v.artifact_json FROM generation_runs r
+             JOIN generation_attempts a USING(run_id) JOIN generation_artifacts v USING(attempt_id)
+             WHERE r.run_id='run-0'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let after = agent.resume(&handle_of("run-0")).unwrap();
+        assert_eq!(after.handle, before.handle);
+        assert_eq!(after.rounds, before.rounds);
+        assert_eq!(after.handle.epoch, "epoch-1");
+        assert_eq!(resume_epoch(&conn), "epoch-2");
+        let preserved: (String, String, String) = conn
+            .query_row(
+                "SELECT r.binding_json,a.attempt_json,v.artifact_json FROM generation_runs r
+             JOIN generation_attempts a USING(run_id) JOIN generation_artifacts v USING(attempt_id)
+             WHERE r.run_id='run-0'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, history);
+        let epoch:String = conn.query_row(
+            "SELECT json_extract(usage_receipt_json,'$.agentControlEpoch') FROM generation_attempts WHERE attempt_id='resume-attempt'",
+            [],|row|row.get(0),
+        ).unwrap();
+        assert_eq!(epoch, "epoch-2");
+        assert_eq!(host.resumes.get(), 0);
+        assert_eq!(host.begins.get(), 0);
+        assert_eq!(
+            agent.runs.budget(&conn, "root-1").unwrap().attempts.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn resume_completed_conflict_and_cancelled_root_never_transfer_control_test() {
+        for conflict in [true, false] {
+            let conn = test_connection();
+            resume_completed_fixture(&conn);
+            let host = PreparationHost {
+                current: !conflict,
+                ..Default::default()
+            };
+            if !conflict {
+                conn.execute("UPDATE generation_roots SET action_json=json_set(action_json,'$.status','cancelled')",[]).unwrap();
+            }
+            let agent = resume_epoch_agent(&conn, &host);
+            assert!(agent.resume(&handle_of("run-0")).is_err());
+            assert_eq!(resume_epoch(&conn), "epoch-1");
+            assert_eq!(host.resumes.get(), 0);
+            let control:Option<String> = conn.query_row(
+                "SELECT json_extract(usage_receipt_json,'$.agentControlEpoch') FROM generation_attempts WHERE attempt_id='resume-attempt'",
+                [],|row|row.get(0),
+            ).unwrap();
+            assert!(control.is_none());
+        }
+    }
+
+    #[test]
+    fn resume_completed_receipt_failure_rolls_back_even_if_outer_transaction_commits_test() {
+        let conn = test_connection();
+        resume_completed_fixture(&conn);
+        conn.execute_batch("CREATE TEMP TRIGGER reject_agent_control BEFORE UPDATE OF usage_receipt_json ON generation_attempts
+            WHEN json_extract(NEW.usage_receipt_json,'$.agentControlEpoch')='epoch-2'
+            BEGIN SELECT RAISE(ABORT,'synthetic-control-failure'); END;").unwrap();
+        let host = PreparationHost::default();
+        let transaction = conn.unchecked_transaction().unwrap();
+        {
+            let agent = resume_epoch_agent(&transaction, &host);
+            assert!(agent.resume(&handle_of("run-0")).is_err());
+        }
+        transaction.commit().unwrap();
+        assert_eq!(resume_epoch(&conn), "epoch-1");
+        conn.execute_batch("DROP TRIGGER reject_agent_control")
+            .unwrap();
+        resume_epoch_agent(&conn, &host)
+            .resume(&handle_of("run-0"))
+            .unwrap();
+        assert_eq!(resume_epoch(&conn), "epoch-2");
+    }
+
+    #[test]
+    fn resume_completed_success_borrows_and_obeys_outer_rollback_test() {
+        let conn = test_connection();
+        resume_completed_fixture(&conn);
+        let host = PreparationHost::default();
+        let transaction = conn.unchecked_transaction().unwrap();
+        resume_epoch_agent(&transaction, &host)
+            .resume(&handle_of("run-0"))
+            .unwrap();
+        assert_eq!(resume_epoch(&transaction), "epoch-2");
+        assert!(!conn.is_autocommit());
+        transaction.rollback().unwrap();
+        assert_eq!(resume_epoch(&conn), "epoch-1");
+    }
+
+    #[test]
+    fn resume_unstarted_delegates_to_host_without_new_attempt_or_control_epoch_test() {
+        let conn = test_connection();
+        preparation_run(&conn, None);
+        let host = PreparationHost::default();
+        let agent = preparation_agent(&conn, &host);
+        let recovery = agent.resume(&handle_of("run-0")).unwrap();
+        assert_eq!(recovery.rounds[0].status, "not-started");
+        assert_eq!(host.resumes.get(), 1);
+        assert_eq!(host.begins.get(), 0);
+        assert!(agent
+            .runs
+            .budget(&conn, "root-1")
+            .unwrap()
+            .attempts
+            .is_empty());
+    }
+
+    #[test]
+
     fn prepare_round_freezes_request_without_dispatch_or_connection_borrow() {
         let conn = test_connection();
         preparation_run(&conn, None);
@@ -5112,12 +5351,12 @@ mod tests {
     }
 
     #[test]
-    fn wave_b_c_placeholders_fail_closed() {
+    fn unmigrated_dispatch_and_missing_resume_identity_fail_closed() {
         let conn = test_connection();
         let agent = agent_generation(&conn);
         assert_eq!(
             agent.resume(&handle_of("run-0")).unwrap_err(),
-            "GENERATION_AGENT_RESUME_UNMIGRATED"
+            "GENERATION_RUN_MISSING"
         );
         assert_eq!(
             agent.execute_round(&json!({})).unwrap_err(),
