@@ -14,9 +14,17 @@
 >
 > 此仓库是 [EthanYoQ/AI-Novel-Writer](https://github.com/EthanYoQ/AI-Novel-Writer) 的 **Fork**，目标是将其桌面应用**迁移到 Tauri 2 生态**，**主要为了减少内存占用**（相比 Electron）。
 >
-> - **迁移策略**：仅**新增** Tauri 支持（`src-tauri/`），保留原有 **Electron** 实现继续可运行，用于**同步上游仓库的修改**。
+> - **迁移策略**：在 `tauri-app/` 独立推进 Lorekeeper（设定司），Rust 后端位于 `tauri-app/src-tauri/`，保留原有 **Electron** 实现继续可运行，用于**同步上游仓库的修改**。
 > - **上游同步**：通过 `git remote add upstream https://github.com/EthanYoQ/AI-Novel-Writer.git` 关联原仓库，定期 `git fetch upstream` 合并上游演进，避免功能分叉。
 > - **文档**：迁移评估见 `docs-fork/research/2026-10-04-tauri-migration-evaluation.md`；pi agent 开发指南见 `docs-fork/agents/pi-development.md`。
+>
+> ### 迁移进度（2026-10-15）
+>
+> - **历史频道覆盖**：242/290（约83%），另有48个未迁移频道；沿用 `a1884ac9` 的历史盘点，**不代表产品完成度或 GUI 验收比例**。
+> - **已接通**：生产短锁与关闭围栏、事件、Agent 轮次/恢复、材料/短细纲/对账、普通重启；仅开放已登记的 `generate_draft → chapter-draft` 工作流。
+> - **最近验证**：代码 `90792744` 的 Rust 全量 **1381通过、0失败**，`cargo check --all-targets` 零告警；本地合成 HTTP 已覆盖草稿保存到父 Agent 续轮。
+> - **仍待完成**：前端既存失败、真实模型与完整 GUI 验收；其他工作流和特殊域未开放。B3仍在进行中，不宣称完整端到端完成。
+> - **接续入口**：[迁移总览](docs-fork/README.md)、[当前交接](docs-fork/handoffs/CURRENT.md)、[第51次快照](docs-fork/handoffs/2026-10-15-tauri-migration-status.md)。开发已收口，待下次接续。
 >
 > 以下内容与原项目一致。
 

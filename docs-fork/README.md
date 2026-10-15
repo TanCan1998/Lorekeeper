@@ -11,6 +11,7 @@
 ```
 
 > 🟩 已迁移 242（沿用历史频道实测） · 🟨 主生成 B3 仍进行中：生产短锁、关闭围栏、事件、Agent 轮次/恢复及材料已接通；仅开放已登记草稿工作流。本地 HTTP 已覆盖草稿保存到父轮接续，代码 `90792744` 的 Rust 全量 1381 项通过；前端既存失败及真实模型/GUI 验收待续，不能视为完整端到端完成 · ⬜ 未迁移 48；契约事件频道 7。最新范围与证据见 [CURRENT](handoffs/CURRENT.md)。
+> **注意**：上方约83%仅为历史频道覆盖率，不是产品完成度或 GUI 验收比例；本次仅同步 README 与交接文档，没有新增代码验证。
 > 口径：当前已合并上游（@ `21d67211`，2026-10-10）为全集，**上游新提交不计入**；权威实测值见 [当前交接入口](handoffs/CURRENT.md) 指标表，频道明细见 [频道盘点](plans/tauri-migration-channel-inventory.md)。
 
 
@@ -18,7 +19,7 @@
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [`handoffs/`](handoffs/)（按日期命名，最新日期即最新快照） |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第51次快照（2026-10-15）](handoffs/2026-10-15-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
