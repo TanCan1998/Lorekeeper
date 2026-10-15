@@ -1549,6 +1549,11 @@ impl MainGenerationOwner {
             self.admit_workflow(conn, selection)
                 .map_err(|error| mutating_error(&error))?
         };
+        // 仅开放本轮明确授权的已登记草稿工作流；登记器已校验其真实 workflow 类型。
+        let draft_workflow = agent_workflow.is_some() && operation == "chapter-draft";
+        if agent_workflow.is_some() && !draft_workflow {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
         // 基线 :379-383 根行动子代禁令（editor / graph / legacy 子代）。
         if let Some(parent_root_action_id) =
             selection.get("parentRootActionId").and_then(Value::as_str)
@@ -1617,17 +1622,17 @@ impl MainGenerationOwner {
                 .get("reviewRevisionContextId")
                 .is_some_and(|value| !value.is_null())
             || (!agent_initialization
+                && !draft_workflow
                 && selection
                     .get("parentRootActionId")
                     .is_some_and(|value| !value.is_null()))
-            || [
-                "continueDirectoryOperationId",
-                "batchId",
-                "batchIntent",
-                "agentWorkflowRegistrationId",
-            ]
-            .iter()
-            .any(|key| selection.get(*key).is_some_and(|value| !value.is_null()))
+            || ["continueDirectoryOperationId", "batchId", "batchIntent"]
+                .iter()
+                .any(|key| selection.get(*key).is_some_and(|value| !value.is_null()))
+            || (!draft_workflow
+                && selection
+                    .get("agentWorkflowRegistrationId")
+                    .is_some_and(|value| !value.is_null()))
         {
             return Err(mutating_error(GENERATION_REQUEST_FAILED));
         }
@@ -1652,6 +1657,20 @@ impl MainGenerationOwner {
         let tx =
             rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
                 .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        // 同一写事务内重新验证登记，避免预检到子代落库之间的身份/源竞态。
+        if draft_workflow {
+            let admitted = self
+                .admit_workflow(&tx, selection)
+                .map_err(|error| mutating_error(&error))?
+                .ok_or_else(|| mutating_error("GENERATION_AGENT_CHILD_NOT_AUTHORIZED"))?;
+            if let Some(existing) = admitted.existing {
+                let run = self
+                    .repository
+                    .get(&tx, &existing.run_id)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?;
+                return self.view_of(&tx, &run);
+            }
+        }
         let mut frozen_selection = selection.clone();
         let scope = crate::services::main_generation_plan::planning_generation_scope(selection)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
@@ -1730,8 +1749,17 @@ impl MainGenerationOwner {
         if binding.source_manifest.get("policy") != Some(&policy_value) {
             return Err(mutating_error("GENERATION_POLICY_BINDING_MISMATCH"));
         }
-        if prepared.is_some_and(|prepared| !preparation_matches(&prepared.binding, &binding, false))
-        {
+        // 准备期尚无登记标记；只有已通过真实登记校验的草稿子代可排除此单一身份字段。
+        // 不改变全局准备投影，也不放宽模型、策略、材料或作者来源合同。
+        let mut preparation_binding = binding.clone();
+        if draft_workflow {
+            preparation_binding
+                .source_manifest
+                .remove("agentWorkflowRegistrationId");
+        }
+        if prepared.is_some_and(|prepared| {
+            !preparation_matches(&prepared.binding, &preparation_binding, false)
+        }) {
             return Err(mutating_error("GENERATION_DRAFT_PREPARATION_CHANGED"));
         }
         if binding.project_id != self.session.project_id || binding.epoch != self.session.lease_id {
@@ -1776,6 +1804,15 @@ impl MainGenerationOwner {
                 },
             )
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if draft_workflow {
+            let assert_current = || self.assert_current();
+            self.agent_service(&tx, &assert_current)?
+                .record_workflow_child(
+                    selection["agentWorkflowRegistrationId"].as_str().unwrap(),
+                    &handle_of(&run),
+                )
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        }
         let view = self.view_of(&tx, &run)?;
         tx.commit()
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
@@ -6004,6 +6041,434 @@ mod tests {
         assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
         assert_eq!(begin_run_count(&conn), 2);
         assert!(conn.is_autocommit());
+    }
+
+    // 使用真实 AppState、HTTP 首轮、工具确认与主进程登记；不启动外部 MCP 或开发子代理。
+    fn registered_draft_workflow_fixture() -> (ProductionExecutionFixture, Value, Value) {
+        let (fixture, ref_, selection, server) = registered_draft_workflow_with_followup(None);
+        assert_eq!(server.join().unwrap().len(), 1);
+        (fixture, ref_, selection)
+    }
+
+    fn registered_draft_workflow_with_followup(
+        followup: Option<&str>,
+    ) -> (
+        ProductionExecutionFixture,
+        Value,
+        Value,
+        std::thread::JoinHandle<Vec<Value>>,
+    ) {
+        registered_workflow_with_followup(followup, "generate_draft")
+    }
+
+    fn registered_workflow_with_followup(
+        followup: Option<&str>,
+        workflow: &str,
+    ) -> (
+        ProductionExecutionFixture,
+        Value,
+        Value,
+        std::thread::JoinHandle<Vec<Value>>,
+    ) {
+        use crate::services::generation_run_service::create_generation_run_service;
+        use crate::services::main_generation_dispatcher::MainGenerationDispatcher;
+        let fixture = ProductionExecutionFixture::new(false);
+        let args = if workflow == "generate_draft" {
+            json!({"workflow":workflow,"chapter_number":1})
+        } else {
+            json!({"workflow":workflow,"start_chapter":1,"chapter_count":1,"target_units":700})
+        };
+        let protocol = format!(
+            "<tool_call><name>start_workflow</name><arguments>{args}</arguments></tool_call>"
+        );
+        let mut responses = vec![protocol.to_string()];
+        responses.extend(followup.map(str::to_string));
+        let (url, server) = agent_round_http_server(responses);
+        let handle = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            let mut model = crate::services::main_generation_sources::tests::model();
+            model["baseUrl"] = json!(url);
+            crate::services::main_generation_sources::tests::write_model(
+                &owner.global_data_root,
+                &model,
+            );
+            owner.run_service = Arc::new(create_generation_run_service(
+                MainGenerationOwner::dependencies_with_events(
+                    owner.repository.clone(),
+                    owner.events.clone(),
+                    Arc::new(MainGenerationDispatcher::new(
+                        reqwest::Client::builder().no_proxy().build().unwrap(),
+                    )),
+                ),
+            ));
+            fixture.state.with_project_db(|conn|{
+                conn.execute("INSERT INTO blueprints(chapter_number,title) VALUES(1,'合成工作流蓝图')",[])
+                    .map_err(|error|error.to_string())?;
+                conn.execute("UPDATE project_core SET total_chapters=6 WHERE id='main'",[]).map_err(|error|error.to_string())?;
+                let recovery=owner.agent_begin(conn,&json!({"uiActionNonce":"draft-workflow-parent","modelId":"fixture",
+                    "input":{"mode":"fast","uiLocale":"zh-CN","historyMessages":[],"userMessage":"合成工作流任务",
+                        "tools":[{"name":"start_workflow","description":"合成工作流","inputSchema":{"type":"object"},
+                            "requiresConfirmation":true,"isReadOnly":false,"source":"builtin"}]}}))?;
+                Ok(serde_json::to_value(recovery.handle).unwrap())
+            }).unwrap()
+        };
+        let result = crate::commands::generation::execute_agent_round_for_state(
+            &fixture.state,
+            &json!({"handle":handle,"index":0}),
+            Some(&fixture.session),
+        )
+        .unwrap();
+        let ref_ = result["rounds"][0]["actions"][0]["ref"].clone();
+        let selection = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            fixture.state.with_project_db(|conn|{
+                let claim=owner.agent_claim_tool(conn,&json!({"ref":ref_,"confirmed":true}))?;
+                assert!(claim.execute);
+                let registration=owner.agent_register_workflow(conn,&ref_)?;
+                let snapshot=json!({"version":1,"state":"empty","storageState":"absent","query":"合成查询",
+                    "topK":5,"canonicalRevision":null,"documentsRevision":null,"items":[]});
+                let prepared=owner.prepare_draft_context(conn,&json!({"chapterNumber":1,"modelId":"fixture",
+                    "promptKeys":["edit_selected_text"],"skillStages":[],"selectedDraftIds":[],"query":"合成查询"}),&snapshot,None)?;
+                let mut selection=begin_root_selection();
+                selection["uiActionNonce"]=json!("registered-draft-child");
+                selection["operation"]=json!("chapter-draft");
+                selection["chapterNumber"]=json!(1);
+                selection["selectedBlueprintChapterNumbers"]=json!([1,2,3,4,5,6]);
+                selection["parentRootActionId"]=handle["rootActionId"].clone();
+                selection["agentWorkflowRegistrationId"]=json!(registration.registration_id);
+                selection["preparationId"]=prepared["preparationId"].clone();
+                let mut material=material_binding_receipt();material["promptHash"]=json!(text_hash("合成工作流正文提示"));
+                material["capacity"]["admittedUnits"]=json!(12);
+                material["coverage"]=json!({"required":1,"included":1,"complete":true});
+                material["included"]=json!([{"sourceId":"author:required","revision":1,"contentHash":text_hash("合成作者"),
+                    "category":"author","required":true,"units":12}]);
+                selection["materialDecision"]=material;
+                Ok(selection)
+            }).unwrap()
+        };
+        (fixture, ref_, selection, server)
+    }
+
+    #[test]
+    fn registered_draft_workflow_admits_atomic_child_and_replays_without_new_lease_or_budget_test()
+    {
+        let (fixture, ref_, selection) = registered_draft_workflow_fixture();
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let root = selection["parentRootActionId"].as_str().unwrap();
+                let before = owner.repository.budget(conn, root)?;
+                let next = owner.begin(conn, &selection, false, false)?;
+                assert_eq!(
+                    next["handle"]["rootActionId"],
+                    selection["parentRootActionId"]
+                );
+                let run = owner
+                    .repository
+                    .get(conn, next["handle"]["runId"].as_str().unwrap())?;
+                assert_eq!(
+                    run.binding.source_manifest["agentWorkflowRegistrationId"],
+                    selection["agentWorkflowRegistrationId"]
+                );
+                let registration = owner.agent_register_workflow(conn, &ref_)?;
+                assert_eq!(registration.state, "started");
+                assert_eq!(registration.child_handles.len(), 1);
+                assert_eq!(registration.child_handles[0].run_id, run.run_id);
+                let leases = owner.lease_store.lock().unwrap().live_lease_count();
+                let mut replay = selection.clone();
+                replay["uiActionNonce"] = json!("different-ui-nonce");
+                assert_eq!(
+                    owner.begin(conn, &replay, false, false)?["handle"],
+                    next["handle"]
+                );
+                assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), leases);
+                let after = owner.repository.budget(conn, root)?;
+                assert_eq!(before.policy, after.policy);
+                assert_eq!(before.attempts.len(), after.attempts.len());
+                assert_eq!(after.attempts.len(), 1);
+                assert_eq!(begin_run_count(conn), 3);
+                Ok(())
+            })
+            .unwrap();
+        drop(guard);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_draft_workflow_wrong_registration_parent_model_chapter_and_special_fields_refused_test(
+    ) {
+        let (fixture, _ref, selection) = registered_draft_workflow_fixture();
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let leases = owner.lease_store.lock().unwrap().live_lease_count();
+                for (key, value) in [
+                    ("agentWorkflowRegistrationId", Value::Null),
+                    (
+                        "agentWorkflowRegistrationId",
+                        json!(format!("agent-workflow:{}", "f".repeat(64))),
+                    ),
+                    ("parentRootActionId", json!(fixture.run.root_action_id)),
+                    ("modelId", json!("another-model")),
+                    ("chapterNumber", json!(2)),
+                    ("operation", json!("chapter-blueprint-directory")),
+                    ("batchId", json!("batch")),
+                    ("batchIntent", json!({})),
+                    ("continueDirectoryOperationId", json!("directory")),
+                    ("reviewRevisionContextId", json!("review")),
+                    ("importSlot", json!({})),
+                    ("preparationId", json!("missing-preparation")),
+                    ("materialDecision", Value::Null),
+                ] {
+                    let mut bad = selection.clone();
+                    bad[key] = value;
+                    assert!(owner.begin(conn, &bad, false, false).is_err(), "{key}");
+                    assert_eq!(begin_run_count(conn), 2);
+                    assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), leases);
+                }
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                assert!(owner.begin(&tx, &selection, false, false).is_err());
+                tx.commit().map_err(|error| error.to_string())?;
+                assert_eq!(begin_run_count(conn), 2);
+                Ok(())
+            })
+            .unwrap();
+        drop(guard);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_draft_workflow_record_failure_rolls_back_child_and_parent_activation_test() {
+        let (fixture, ref_, selection) = registered_draft_workflow_fixture();
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        fixture.state.with_project_db(|conn|{
+            let root=selection["parentRootActionId"].as_str().unwrap();
+            owner.repository.pause(conn,root,false)?;
+            let leases=owner.lease_store.lock().unwrap().live_lease_count();
+            conn.execute_batch("CREATE TEMP TRIGGER reject_workflow_child BEFORE UPDATE OF usage_receipt_json ON generation_attempts
+                BEGIN SELECT RAISE(ABORT,'synthetic-child-record-failure'); END;").map_err(|error|error.to_string())?;
+            assert!(owner.begin(conn,&selection,false,false).is_err());
+            assert_eq!(begin_run_count(conn),2);
+            assert_eq!(owner.repository.budget(conn,root)?.root.status,"paused");
+            assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(),leases);
+            assert!(owner.agent_register_workflow(conn,&ref_)?.child_handles.is_empty());
+            conn.execute_batch("DROP TRIGGER reject_workflow_child;").map_err(|error|error.to_string())?;
+            owner.begin(conn,&selection,false,false)?;
+            assert_eq!(owner.repository.budget(conn,root)?.root.status,"active");
+            assert_eq!(owner.agent_register_workflow(conn,&ref_)?.child_handles.len(),1);
+            Ok(())
+        }).unwrap();
+        drop(guard);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_draft_workflow_real_http_child_shares_parent_liability_and_replays_test() {
+        let (fixture, ref_, selection, server) =
+            registered_draft_workflow_with_followup(Some("合成工作流草稿"));
+        let child = {
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            fixture
+                .state
+                .with_project_db(|conn| guard.owner().begin(conn, &selection, false, false))
+                .unwrap()
+        };
+        let request = json!({"handle":child["handle"],"invocationNonce":"workflow-draft-first",
+            "task":{"purpose":"chapter-draft","output":"visible-text",
+                "messages":[{"role":"user","content":"合成工作流正文提示"}]}});
+        let receipt = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert_eq!(receipt["outcome"]["content"], "合成工作流草稿");
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        // 服务端已关闭；完成收据只能重放，不能重新请求模型。
+        let replay = crate::commands::generation::execute_generation_for_state(
+            &fixture.state,
+            &request,
+            Some(&fixture.session),
+        )
+        .unwrap();
+        assert_eq!(replay["outcome"]["content"], receipt["outcome"]["content"]);
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                let budget = owner
+                    .repository
+                    .budget(conn, selection["parentRootActionId"].as_str().unwrap())?;
+                assert_eq!(budget.attempts.len(), 2);
+                assert!(budget
+                    .attempts
+                    .iter()
+                    .all(|attempt| attempt.status == "settled"));
+                let child_id = child["handle"]["runId"].as_str().unwrap();
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?",
+                        [child_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(count, 1);
+                assert_eq!(
+                    owner.agent_register_workflow(conn, &ref_)?.child_handles[0].run_id,
+                    child_id
+                );
+                Ok(())
+            })
+            .unwrap();
+        drop(guard);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_draft_workflow_cancelled_stale_foreign_or_changed_source_cannot_create_child_test(
+    ) {
+        for mode in ["cancelled", "epoch", "project", "source", "action"] {
+            let (fixture, ref_, selection) = registered_draft_workflow_fixture();
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            fixture.state.with_project_db(|conn|{
+                let root=selection["parentRootActionId"].as_str().unwrap();
+                let leases=owner.lease_store.lock().unwrap().live_lease_count();
+                match mode {
+                    "cancelled"=>owner.repository.pause(conn,root,true)?,
+                    "epoch"=>{conn.execute("UPDATE generation_roots SET action_json=json_set(action_json,'$.epoch','old-epoch') WHERE root_action_id=?",[root]).map_err(|error|error.to_string())?;}
+                    "project"=>{conn.execute("UPDATE generation_roots SET action_json=json_set(action_json,'$.projectId','foreign-project') WHERE root_action_id=?",[root]).map_err(|error|error.to_string())?;}
+                    "source"=>{conn.execute("UPDATE project_core SET genre='合成漂移' WHERE id='main'",[]).map_err(|error|error.to_string())?;}
+                    "action"=>{owner.agent_finish_tool(conn,&json!({"ref":ref_,"status":"failed","observation":"合成失败"}))?;}
+                    _=>unreachable!()
+                }
+                assert!(owner.begin(conn,&selection,false,false).is_err(),"{mode}");
+                assert_eq!(begin_run_count(conn),2,"{mode}");
+                assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(),leases,"{mode}");
+                Ok(())
+            }).unwrap();
+            drop(guard);
+            fixture.state.close_project_database().unwrap();
+        }
+    }
+
+    #[test]
+    fn registered_non_draft_workflow_remains_closed_after_real_registration_test() {
+        let (fixture, _ref, mut selection, server) =
+            registered_workflow_with_followup(None, "generate_blueprint");
+        assert_eq!(server.join().unwrap().len(), 1);
+        selection["operation"] = json!("chapter-blueprint-directory");
+        selection["chapterNumber"] = Value::Null;
+        selection["output"] = json!("structured-data");
+        selection["authorInputs"] = json!([
+            {"id":"directory:requested-range","text":"{\"startChapter\":1,\"endChapter\":1}"},
+            {"id":"planning:target-units","text":"700"}]);
+        let mut guard = fixture
+            .state
+            .generation_owners
+            .authorized_owner_current(&fixture.session, || fixture.state.active_project_snapshot())
+            .unwrap();
+        let owner = guard.owner();
+        fixture
+            .state
+            .with_project_db(|conn| {
+                assert!(
+                    owner.admit_workflow(conn, &selection)?.is_some(),
+                    "有效的非草稿登记需由本轮关闭守卫拒绝"
+                );
+                assert_eq!(
+                    owner.begin(conn, &selection, false, false).unwrap_err(),
+                    mutating_error(GENERATION_REQUEST_FAILED)
+                );
+                assert_eq!(begin_run_count(conn), 2);
+                Ok(())
+            })
+            .unwrap();
+        drop(guard);
+        fixture.state.close_project_database().unwrap();
+    }
+
+    #[test]
+    fn registered_draft_workflow_pending_or_blocked_parent_does_not_create_child_or_lease_test() {
+        for pending in [true, false] {
+            let (fixture, _ref, selection) = registered_draft_workflow_fixture();
+            let mut guard = fixture
+                .state
+                .generation_owners
+                .authorized_owner_current(&fixture.session, || {
+                    fixture.state.active_project_snapshot()
+                })
+                .unwrap();
+            let owner = guard.owner();
+            fixture.state.with_project_db(|conn|{
+                let root=selection["parentRootActionId"].as_str().unwrap();
+                if pending {
+                    let parent:String=conn.query_row("SELECT run_id FROM generation_runs WHERE root_action_id=? ORDER BY rowid LIMIT 1",[root],|row|row.get(0)).map_err(|error|error.to_string())?;
+                    owner.repository.reserve(conn,&parent,"synthetic-parent-reserved",&"a".repeat(64),100,10,None,None,None,None,false)?;
+                } else {
+                    conn.execute("UPDATE generation_roots SET blocked_code='GENERATION_STORAGE_FAILED' WHERE root_action_id=?",
+                        [root]).map_err(|error|error.to_string())?;
+                }
+                let leases=owner.lease_store.lock().unwrap().live_lease_count();
+                assert!(owner.begin(conn,&selection,false,false).is_err());
+                assert_eq!(begin_run_count(conn),2);
+                assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(),leases);
+                Ok(())
+            }).unwrap();
+            drop(guard);
+            fixture.state.close_project_database().unwrap();
+        }
     }
 
     #[test]
