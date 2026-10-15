@@ -1502,6 +1502,7 @@ impl MainGenerationOwner {
             false,
             false,
             false,
+            false,
         )
     }
 
@@ -1514,6 +1515,7 @@ impl MainGenerationOwner {
         editor_inline_admission: bool,
         finalization_admission: bool,
         graph_admission: bool,
+        legacy_initialization: bool,
     ) -> Result<Value, String> {
         self.assert_current()?;
         // 基线 :357-363 `GENERATION_BEGIN_INVALID` 选择形状校验。
@@ -1546,6 +1548,7 @@ impl MainGenerationOwner {
                     || (agent_initialization
                         && matches!(key.as_str(), "agentInput" | "agentSession"))
                     || (editor_inline_admission && key.as_str() == "editorInlineInput")
+                    || (legacy_initialization && key.as_str() == "legacyRosterKey")
             })
         });
         if !operation_valid || !prompt_keys_valid || parent_invalid || !nonce_valid || !keys_valid {
@@ -1565,7 +1568,7 @@ impl MainGenerationOwner {
         if GRAPH_OPERATIONS.contains(&operation) && !graph_admission {
             return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
         }
-        if operation == "legacy-character-roster-repair" {
+        if operation == "legacy-character-roster-repair" && !legacy_initialization {
             return Err(mutating_error("GENERATION_LEGACY_ADMISSION_REQUIRED"));
         }
         if operation == "agent-round" && !agent_initialization {
@@ -4339,10 +4342,45 @@ impl MainGenerationOwner {
             let artifact = roster.artifact_for(&run)?;
             return self.legacy_roster_recovery(conn, &run, proposal, artifact);
         }
-        // 基线 :972-973 运行创建核心（主生成策略规划器 `newMainGenerationPolicy`
-        // + 生成运行服务 `generation-run-service`）未迁移（B3）——fail-closed
-        // 于创建入口（占位码，见方法头注）。
-        Err(mutating_error("GENERATION_LEGACY_ROSTER_BEGIN_UNMIGRATED"))
+        // 基线 :973 运行创建：`begin({ operation: legacy-character-roster-repair,
+        // uiActionNonce, modelId, promptKeys: [legacy-roster], output: structured-data,
+        // legacyRosterKey }, ..., legacyInitialization = true)`——`legacyRosterKey` 由
+        // 源绑定展开为 `legacyRosterContext`（见 `generation_source_binding`）。
+        let selection = json!({
+            "operation": "legacy-character-roster-repair",
+            "uiActionNonce": ui_action_nonce,
+            "modelId": request.get("modelId").cloned().unwrap_or(Value::Null),
+            "selectedDraftIds": [],
+            "selectedFinalizedDraftIds": [],
+            "promptKeys": ["legacy-roster"],
+            "skillStages": [],
+            "output": "structured-data",
+            "legacyRosterKey": crate::project_access::random_uuid_v4(),
+        });
+        let view =
+            self.begin_internal(conn, &selection, false, false, false, false, false, true)?;
+        let handle = view
+            .get("handle")
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        let run_id = handle
+            .get("runId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
+        let run = self
+            .repository
+            .get(conn, run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let proposals = self.character_proposal_service(conn);
+        let roster = LegacyRosterGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &proposals,
+        );
+        let proposal = roster.proposal(&run)?;
+        let artifact = roster.artifact_for(&run)?;
+        self.legacy_roster_recovery(conn, &run, proposal, artifact)
     }
 
     /// 基线 `readLegacyRosterGeneration`（main-generation-owner.ts:976-980）：
@@ -4538,7 +4576,8 @@ impl MainGenerationOwner {
             "output": "visible-text",
             "editorInlineInput": input_val,
         });
-        let view = self.begin_internal(conn, &selection, false, false, true, false, false)?;
+        let view =
+            self.begin_internal(conn, &selection, false, false, true, false, false, false)?;
         let handle = view
             .get("handle")
             .cloned()
@@ -5574,7 +5613,8 @@ impl MainGenerationOwner {
         }
 
         // 准入：finalization_admission = true
-        let view = self.begin_internal(conn, &selection, false, false, false, true, false)?;
+        let view =
+            self.begin_internal(conn, &selection, false, false, false, true, false, false)?;
         let handle = view
             .get("handle")
             .cloned()
@@ -6193,7 +6233,8 @@ impl MainGenerationOwner {
         });
 
         // 准入：graph_admission = true
-        let view = self.begin_internal(conn, &selection, false, false, false, false, true)?;
+        let view =
+            self.begin_internal(conn, &selection, false, false, false, false, true, false)?;
         let handle = view
             .get("handle")
             .cloned()
@@ -16146,6 +16187,47 @@ data: [DONE]
             .unwrap_err();
         assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
     }
+    // ===== B106: legacy-roster 创建活化 =====
+
+    #[test]
+    fn legacy_roster_begin_reaches_real_run_creation_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 模型不可用时应在真实创建/租约步骤失败，而不是停在迁移占位码。
+        let error = owner
+            .begin_legacy_roster_generation(
+                &conn,
+                &json!({ "modelId": "missing-model", "uiActionNonce": "legacy:test:1" }),
+            )
+            .unwrap_err();
+        assert!(
+            !error.contains("GENERATION_LEGACY_ROSTER_BEGIN_UNMIGRATED"),
+            "{error}"
+        );
+        // 通用 begin 仍不得携带 legacy 初始化键（准入仍由专用入口独占）。
+        let error = owner
+            .begin(
+                &conn,
+                &json!({
+                    "operation": "legacy-character-roster-repair",
+                    "uiActionNonce": "legacy:test:2",
+                    "modelId": "missing-model",
+                    "selectedDraftIds": [],
+                    "selectedFinalizedDraftIds": [],
+                    "promptKeys": ["legacy-roster"],
+                    "skillStages": [],
+                    "output": "structured-data",
+                    "legacyRosterKey": "k"
+                }),
+                false,
+                false,
+            )
+            .unwrap_err();
+        assert_eq!(error, mutating_error("GENERATION_BEGIN_INVALID"));
+    }
+
     // ===== B103: 角色提案源现状探针 =====
 
     #[test]
