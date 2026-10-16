@@ -136,6 +136,12 @@ impl PortableRuntimeFreezeGuard {
         self.active
     }
 
+    /// 连接级门禁使用所有合法历史表名，不限于上游八表枚举。
+    pub(crate) fn is_frozen_record(&self, table: &str, record_id: &str) -> bool {
+        self.frozen
+            .contains(&(table.to_string(), record_id.to_string()))
+    }
+
     /// 上游 `isFrozen(table, recordId)`。
     pub fn is_frozen(&self, table: PortableRuntimeFreezeTable, record_id: &str) -> bool {
         self.frozen

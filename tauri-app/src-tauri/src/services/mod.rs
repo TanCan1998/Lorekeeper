@@ -39,6 +39,7 @@ pub mod portable_project_assets; // 批次 B112b-1：便携原始资产枚举（
 pub mod portable_project_export; // 批次 B112b-2b：便携项目导出服务
 pub mod portable_project_field_policy; // 批次 B112a：便携字段策略表与源 schema 对账
 pub mod portable_project_format;
+pub mod portable_project_guard; // 已批准的连接级临时冻结门禁
 pub mod portable_project_history; // 本项目冻结历史投影与恢复证据
 pub mod portable_project_restore; // 批次 B113a：便携恢复计划（清单校验与落点映射）
 pub mod portable_project_restore_install; // 批次 B113b：恢复安装段（所有权清单 / 安装日志 / 原子安装 / 派生索引重建）

@@ -1829,6 +1829,7 @@ mod tests {
         let database = storage.join(RESTORE_DATABASE_ENTRY);
         let conn = Connection::open(&database).unwrap();
         create_tables(&conn).unwrap();
+        conn.execute("INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json) VALUES ('old-root','old-key','{}','{}')", []).unwrap();
         conn.execute(
             "INSERT INTO kb_documents (id, file_name, file_path, corpus_kind, imported_at, chunk_count, content_hash)
              VALUES ('doc-1', '参考.md', '', 'reference', '2026-10-16T00:00:00.000Z', 1, 'hash')",
@@ -1939,6 +1940,38 @@ mod tests {
         let hits = crate::db::kb::fts::search(&conn, "alpha", 5).unwrap();
         assert!(!hits.is_empty(), "重建后的 FTS 必须可检索");
         drop(conn);
+
+        // 真正的项目连接必须自动安装冻结门禁；直接仓储 SQL 也不能绕过。
+        let project = crate::db::ProjectDatabase::open(&target).unwrap();
+        let conn = project.connection();
+        let error = conn
+            .execute(
+                "UPDATE generation_roots SET revision=1 WHERE root_action_id='old-root'",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("PORTABLE_RUNTIME_FROZEN"), "{error}");
+        conn.execute("INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json) VALUES ('fresh-root','fresh-key','{}','{}')", []).unwrap();
+        drop(project);
+        let reopened = crate::db::ProjectDatabase::open(&target).unwrap();
+        let error = reopened
+            .connection()
+            .execute(
+                "DELETE FROM generation_roots WHERE root_action_id='old-root'",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("PORTABLE_RUNTIME_FROZEN"), "{error}");
+        reopened
+            .connection()
+            .execute(
+                "UPDATE generation_roots SET revision=1 WHERE root_action_id='fresh-root'",
+                [],
+            )
+            .unwrap();
+        drop(reopened);
 
         // 目标根只有存储根；安装日志与标记已释放；暂存目录已回收
         assert_eq!(

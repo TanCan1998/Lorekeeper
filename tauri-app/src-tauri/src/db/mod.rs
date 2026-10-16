@@ -51,6 +51,8 @@ impl ProjectDatabase {
         conn.execute_batch("PRAGMA foreign_keys = ON")
             .map_err(|error| format!("启用外键约束失败：{error}"))?;
 
+        // 恢复项目先验身份与冻结历史，再安装临时门禁；未准入连接不进入建表/仓储路径。
+        crate::services::portable_project_guard::admit_connection(&conn, project_root)?;
         schema::create_tables(&conn).map_err(|error| format!("建表失败：{error}"))?;
 
         Ok(Self {
