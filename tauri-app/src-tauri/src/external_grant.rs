@@ -460,7 +460,7 @@ pub fn assert_single_segment_name(name: &str) -> Result<(), String> {
 
 /// Windows 保留设备名（对齐基线 `windowsReservedNames =
 /// /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i`）
-fn is_windows_reserved_name(segment: &str) -> bool {
+pub(crate) fn is_windows_reserved_name(segment: &str) -> bool {
     let stem = segment
         .split('.')
         .next()
