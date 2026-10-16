@@ -2,7 +2,11 @@
 
 > 入口 [CURRENT.md](./CURRENT.md)；规则见 [../agents/pi-development.md](../agents/pi-development.md) §9。
 
-## 已验证状态（第 66 次 —— DPAPI凭据基础层与Lorekeeper旧格式核查）
+## 已验证状态（第 66 次 —— DPAPI凭据基础层与输入范围核查）
+
+> **用户纠正**：当前没有已确认的旧版 Lorekeeper。下面的源码兼容结构核查不构成产品旧版输入。
+> 撤回旧库升级/临时来源UUID确认请求，暂缓上游遗留导入频道，继续实际云备份链路。
+> 纠正详情见 [核查结论](../research/2026-10-16-lorekeeper-legacy-copy-scope.md)。
 
 - 最新代码 `b9d18fad`：按用户确认复用windows-sys Cryptography feature，
   当前用户DPAPI加密、UI_FORBIDDEN；额外熵绑定Lorekeeper/账户/端点/用户名，
@@ -21,8 +25,8 @@
   - 定向rustfmt与diff/隔离检查通过；本轮未改TS、未重跑前端或频道脚本。
 - 频道沿用 `f42ae6f1` 的 **281/290**；剩余cloud-backup八频道与project:import-legacy-copy。
   凭据基础层完成**不等于云备份可用**：WebDAV网络、绑定状态、取消/并发与频道接线仍待迁移。
-- 下一边界：先确认仅在隔离副本运行现有schema补齐及无清单来源身份规则，
-  无法对账的旧结构必须blocked，不修改源目录、不新增旧库解码或LanceDB依赖。
+- 当前队列：云备份网络、绑定、取消/并发及八频道；旧版导入因无已确认输入暂缓。
+  不再要求用户为假设中的旧版Lorekeeper批准schema升级或来源身份分配。
 - GUI/真实模型/MCP仍未验收。
 
 ---
