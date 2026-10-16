@@ -34,6 +34,7 @@ pub mod legacy_roster_source;
 pub mod narrative_thread_generation_pure;
 pub mod plot_tree_generation_pure;
 pub mod portable_current_authority;
+pub mod portable_project_archive; // 批次 B111b：便携归档容器写入面
 pub mod portable_project_format;
 pub mod portable_runtime_freeze;
 pub mod portable_transfer_authority;
