@@ -11,8 +11,8 @@ Rust频道结构覆盖  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩
 生产前端频道开放  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨  285/290 ≈98.3%
 ```
 
-> 2026-10-17第76次：从已证明初审报告与源绑定重建完整finding集合，修复自洽重算篡改与未复核状态伪造。本轮审稿域定向64通过；最近全量仍为afe6321d的1581通过（非本轮重跑）。完整proveEffect审计未收口，四频道继续关闭。范围和证据见 [CURRENT](handoffs/CURRENT.md)。
-> **注意**：上述比例不是产品总完成率。审修/复核、多段续写、必现/豁免混合及finding来源/状态专项已验证；效果唯一性、剩余跨身份组合和历史版本仍须继续审计。真实模型/MCP/云供应商与完整GUI尚未验收，不因测试夹具通过开放频道。
+> 2026-10-17第77次：剩余范围决策已确认——首版不支持旧库导入、Windows优先、仅本机/模拟验收（不调用真实模型/MCP/云）。见[首版收尾决策](plans/2026-10-17-tauri-completion-decisions.md)。本次纯文档；最近代码定向64通过、最近全量1581通过均沿用历史，审稿四频道仍关闭。
+> **注意**：上述比例不是产品总完成率，也不因首版排除旧库导入而改分母。方案已确定不等于实现/验收完成；剩余证明审计、Windows合成GUI与旧库入口不可用边界待落实。真实模型/MCP/云验收当前未授权，不得宣称已验证。
 > 口径：当前已合并上游（@ `21d67211`，2026-10-10）为全集，**上游新提交不计入**；权威实测值见 [当前交接入口](handoffs/CURRENT.md) 指标表，频道明细见 [频道盘点](plans/tauri-migration-channel-inventory.md)。
 
 
@@ -20,7 +20,7 @@ Rust频道结构覆盖  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第76次快照（2026-10-17）](handoffs/2026-10-17-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第77次快照（2026-10-17）](handoffs/2026-10-17-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
