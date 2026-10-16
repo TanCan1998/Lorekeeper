@@ -415,14 +415,16 @@ pub fn assert_portable_source_schema(conn: &Connection) -> Result<PortableSchema
 
 /// 便携导出必须**整表排除**的可重建索引表（Tauri 特有，基线无同名对象）。
 ///
-/// 对应基线 `omittedItems` 的 `rebuild-stale` 语义（基线排除的是 `vectors` / `cache` 等派生面）：
-/// 这些表只承载可由项目事实重建的索引，进归档会既臃肿又让恢复端读到陈旧派生数据。
+/// 本项目口径（2026-10-16 用户确认「不与基线互通、按本项目方案存储恢复」）：
+/// 知识**事实**（`kb_documents` / `kb_chunks` / `kb_embedding_spaces`）属项目数据，随库副本入档；
+/// 只有**派生索引**不入档 —— FTS5 全文索引（`kb_fts`）在归档副本上整表删除，恢复端重建索引；
+/// 向量侧同理：`.lore/kb/*.hnsw.*` HNSW 快照是文件级派生面，由资产层按 `rebuild-stale` 省略
+/// （不进便携库，故不在此列）。
 ///
 /// `kb_fts` 是 FTS5 虚拟表，`DROP TABLE` 会连带删除其全部影子表（`kb_fts_data` 等），
 /// 因此无需逐个列举影子表；虚拟表与影子表在 `pragma_table_list` 中也不是 `table` 类型，
 /// 正是 [`assert_portable_source_schema`] 会拒绝的形态 —— 所以排除必须在**对账之前**完成。
-pub const PORTABLE_REBUILDABLE_TABLES: &[&'static str] =
-    &["kb_fts", "kb_documents", "kb_chunks", "kb_embedding_spaces"];
+pub const PORTABLE_REBUILDABLE_TABLES: &[&'static str] = &["kb_fts"];
 
 /// 在（脱敏副本的）连接上删除可重建索引表；返回实际删除的表名（供 `omittedItems` 记账）。
 ///
@@ -532,15 +534,7 @@ mod tests {
             "活跃库不得直接通过便携对账"
         );
         let dropped = drop_rebuildable_tables(&conn).unwrap();
-        assert_eq!(
-            dropped,
-            vec![
-                "kb_fts".to_string(),
-                "kb_documents".to_string(),
-                "kb_chunks".to_string(),
-                "kb_embedding_spaces".to_string(),
-            ]
-        );
+        assert_eq!(dropped, vec!["kb_fts".to_string()]);
         assert!(
             drop_rebuildable_tables(&conn).unwrap().is_empty(),
             "重复排除幂等"

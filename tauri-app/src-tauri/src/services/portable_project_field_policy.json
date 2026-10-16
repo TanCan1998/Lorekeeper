@@ -17,32 +17,7 @@
     "character_avatar_assets", "character_avatar_unresolved"
   ],
   "m06Tables": ["review_cycle_merges"],
-  "optionalFields": [
-    "characters.avatar",
-    "kb_documents.id",
-    "kb_documents.file_name",
-    "kb_documents.file_path",
-    "kb_documents.corpus_kind",
-    "kb_documents.imported_at",
-    "kb_documents.chunk_count",
-    "kb_documents.content_hash",
-    "kb_chunks.id",
-    "kb_chunks.doc_id",
-    "kb_chunks.file_name",
-    "kb_chunks.chapter_number",
-    "kb_chunks.chapter_title",
-    "kb_chunks.text",
-    "kb_chunks.chunk_index",
-    "kb_chunks.total_chunks",
-    "kb_chunks.imported_at",
-    "kb_chunks.corpus_kind",
-    "kb_embedding_spaces.generation",
-    "kb_embedding_spaces.dimension",
-    "kb_embedding_spaces.model_fingerprint",
-    "kb_embedding_spaces.distance_metric",
-    "kb_embedding_spaces.status",
-    "kb_embedding_spaces.created_at"
-  ],
+  "optionalFields": ["characters.avatar"],
   "deltaCharacterFields": ["character_id", "legacy_key", "static_provenance", "identity_revision", "retired"],
   "signedOverrides": {
     "chapter_deletion_operations.knowledge_status": "non-executable-history",
@@ -149,33 +124,33 @@
     "summary_snapshots": {"id":"D","draft_id":"D","chapter_number":"D","character_states":"D","chapter_notes":"D","continuity_facts":"D","character_state_candidates":"D","source_finalization_id":"D","source_content_hash":"D","projection_generation":"D","created_at":"D"},
     "text_metric_versions": {"metric":"B","version":"B","updated_at":"B"},
     "kb_documents": {
-      "id": "B",
-      "file_name": "B",
-      "file_path": "B",
-      "corpus_kind": "B",
-      "imported_at": "B",
-      "chunk_count": "B",
-      "content_hash": "B"
+      "id": "D",
+      "file_name": "D",
+      "file_path": "D",
+      "corpus_kind": "D",
+      "imported_at": "D",
+      "chunk_count": "D",
+      "content_hash": "D"
     },
     "kb_chunks": {
-      "id": "B",
-      "doc_id": "B",
-      "file_name": "B",
-      "chapter_number": "B",
-      "chapter_title": "B",
-      "text": "B",
-      "chunk_index": "B",
-      "total_chunks": "B",
-      "imported_at": "B",
-      "corpus_kind": "B"
+      "id": "D",
+      "doc_id": "D",
+      "file_name": "D",
+      "chapter_number": "D",
+      "chapter_title": "D",
+      "text": "D",
+      "chunk_index": "D",
+      "total_chunks": "D",
+      "imported_at": "D",
+      "corpus_kind": "D"
     },
     "kb_embedding_spaces": {
-      "generation": "B",
-      "dimension": "B",
-      "model_fingerprint": "B",
-      "distance_metric": "B",
-      "status": "B",
-      "created_at": "B"
+      "generation": "D",
+      "dimension": "D",
+      "model_fingerprint": "D",
+      "distance_metric": "D",
+      "status": "D",
+      "created_at": "D"
     }
   }
 }

@@ -36,6 +36,7 @@ pub mod plot_tree_generation_pure;
 pub mod portable_current_authority;
 pub mod portable_project_archive; // 批次 B111b：便携归档容器写入面
 pub mod portable_project_assets; // 批次 B112b-1：便携原始资产枚举（白名单 + 省略清单）
+pub mod portable_project_sanitize; // 批次 B112b-2a：便携脱敏副本（中和 + 派生索引删除）
 pub mod portable_project_field_policy; // 批次 B112a：便携字段策略表与源 schema 对账
 pub mod portable_project_format;
 pub mod portable_runtime_freeze;
