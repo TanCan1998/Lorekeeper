@@ -670,21 +670,31 @@ pub(crate) fn read_recovery_context(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let attempt_rows = run_attempts(conn, &run.run_id)?;
-    let last_composition_finish_reason = match composition
-        .as_ref()
-        .and_then(|item| item.artifact_ids.last().cloned())
-    {
-        Some(artifact_id) => {
-            let receipt = repository
-                .receipt(conn, &artifact_id, None)
-                .map_err(|error| mutating_error(map_generation_error(&error)))?;
-            receipt
-                .result
-                .as_ref()
-                .and_then(|result| result.finish_reason.clone())
-        }
-        None => None,
-    };
+    let last_composition_finish_reason =
+        match composition
+            .as_ref()
+            .and_then(|item| item.artifact_ids.last().cloned())
+        {
+            Some(artifact_id) => {
+                // 合成收据记录的是产物 ID；执行收据按 attempt_id 寻址。
+                // 仅在当前运行的物理归属内解析，不按同名或最后尝试猜测。
+                let attempt_id: String = conn.query_row(
+                "SELECT attempt_id FROM generation_artifacts WHERE artifact_id=? AND run_id=?",
+                rusqlite::params![artifact_id, run.run_id],
+                |row| row.get(0),
+            ).optional()
+                .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?
+                .ok_or_else(|| mutating_error("GENERATION_COMPOSITION_SOURCE_INVALID"))?;
+                let receipt = repository
+                    .receipt(conn, &attempt_id, None)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?;
+                receipt
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.finish_reason.clone())
+            }
+            None => None,
+        };
     let draft_short_outline = if material_decision
         .as_ref()
         .and_then(|decision| decision.get("shortOutlinePromptHash"))

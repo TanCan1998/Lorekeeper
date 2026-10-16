@@ -7876,6 +7876,37 @@ mod tests {
     use super::*;
     use crate::repositories::generation_run_repository::OpenGenerationRunRequest;
 
+    #[test]
+    fn recovery_context_resolves_composed_artifact_to_its_own_attempt() {
+        for finish in ["stop", "length"] {
+            let (_temp, conn, owner, request) = draft_commit_fixture("合成可见正文", finish, 100);
+            let handle = &request["handle"];
+            let composition = owner.read_visible_composition(&conn, handle).unwrap();
+            let artifact_id = composition["artifactIds"][0].as_str().unwrap();
+            let attempt_id: String = conn
+                .query_row(
+                    "SELECT attempt_id FROM generation_artifacts WHERE artifact_id=?",
+                    [artifact_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_ne!(artifact_id, attempt_id, "产物和执行尝试是不同身份域");
+            let recovery = crate::commands::generation::read_recovery_context(
+                &conn,
+                &owner,
+                handle["epoch"].as_str().unwrap(),
+                handle,
+            )
+            .unwrap();
+            assert_eq!(recovery["lastCompositionFinishReason"], finish);
+            assert_eq!(
+                recovery["composition"]["artifactIds"],
+                composition["artifactIds"]
+            );
+            assert_eq!(draft_count(&conn), 0, "恢复读取不得提前保存草稿");
+        }
+    }
+
     fn draft_commit_fixture(
         text: &str,
         finish: &str,
