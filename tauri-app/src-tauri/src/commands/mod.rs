@@ -32,6 +32,7 @@ pub mod mcp; // 批次 H（H4-2）：MCP（mcp:* 9 频道，传输层已落地�
 mod model_provider_resource; // 批次 A：模型资源
 mod official_homepage; // 批次 A：官方主页
 pub mod project; // 批次 B：项目生命周期
+pub mod project_archive; // 批次 B109：便携项目归档选择（dialog:select-project-archive* 3 频道）
 pub mod review_revision; // 批次 G4-3b：审稿修稿服务层（review-revision:* 4 频道）
 mod skin; // 批次 A：皮肤管理
 
@@ -61,6 +62,7 @@ pub use mcp::*;
 pub use model_provider_resource::*;
 pub use official_homepage::*;
 pub use project::*;
+pub use project_archive::*;
 pub use review_revision::*;
 pub use skin::*;
 

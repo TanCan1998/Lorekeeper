@@ -8,6 +8,8 @@
 //! | 基线 | 本实现 |
 //! |---|---|
 //! | `issueFile` / `issueDirectory`（签发前 `realpathSync` + 存在性校验） | [`ExternalGrantRegistry::issue_file`] / [`ExternalGrantRegistry::issue_directory`] |
+//! | `issueNewChild`（固定父目录 + 子项名，目标允许尚不存在） | [`ExternalGrantRegistry::issue_new_child`] |
+//! | `resolveExactPath`（精确文件授权 → 路径，供仍以路径为入参的归档服务使用） | [`ExternalGrantRegistry::resolve_exact_path`] |
 //! | `resolve`（校验操作集合 + 扣减 `usesRemaining`；归零后保留记录、再消费报「已用尽」） | [`ExternalGrantRegistry::resolve`] |
 //! | `revalidate`（只校验、不消费） | [`ExternalGrantRegistry::revalidate`] |
 //! | `revoke` | [`ExternalGrantRegistry::revoke`] |
@@ -81,12 +83,17 @@ pub enum GrantScope {
 pub struct GrantedPath {
     pub scope: GrantScope,
     pub path: PathBuf,
+    /// `Some(name)` = 「待创建子项」精确授权（基线 `issueNewChild`）：`path` 是父目录，
+    /// 最终目标为 `path.join(name)`；`None` = `path` 即目标本身。
+    pub pending_child: Option<String>,
 }
 
 #[derive(Debug)]
 struct GrantRecord {
     scope: GrantScope,
     path: PathBuf,
+    /// 见 [`GrantedPath::pending_child`]；`Some` 时 `path` 为父目录。
+    pending_child: Option<String>,
     operations: Vec<GrantOperation>,
     expires_at: Instant,
     /// `None` = 不限次数；`Some(n)` 每次 `resolve` 扣 1，归零即删除。
@@ -150,6 +157,7 @@ impl ExternalGrantRegistry {
         Ok(self.issue(
             GrantScope::File,
             canonical,
+            None,
             vec![GrantOperation::Read],
             ttl,
             max_uses,
@@ -183,13 +191,83 @@ impl ExternalGrantRegistry {
         if !canonical.is_dir() {
             return Err("外部文件授权目录必须是已存在的目录".to_string());
         }
-        Ok(self.issue(GrantScope::Directory, canonical, operations, ttl, max_uses))
+        Ok(self.issue(
+            GrantScope::Directory,
+            canonical,
+            None,
+            operations,
+            ttl,
+            max_uses,
+        ))
+    }
+
+    /// 为用户在保存对话框或「新建文件夹」选择器中选定、**可能尚不存在**的单一子项签发精确授权
+    /// （对齐基线 `issueNewChild`）。
+    ///
+    /// 授权固定**父目录**与**子项名称**：渲染进程既不能改名也不能追加子路径，目标由
+    /// `path.join(name)` 得出（允许尚不存在）。父目录必须已存在且为目录；目标本身的存在性
+    /// 由调用方业务层判定（基线的归档导出在此前单独检查「目标已存在」并报错）。
+    pub fn issue_new_child(
+        &mut self,
+        parent_directory: &Path,
+        child_name: &str,
+        operations: Vec<GrantOperation>,
+        ttl: Duration,
+        max_uses: Option<u32>,
+    ) -> Result<String, String> {
+        let canonical = canonical_existing(parent_directory)?;
+        if !canonical.is_dir() {
+            return Err("外部文件授权的父目录必须是已存在的目录".to_string());
+        }
+        assert_single_segment_name(child_name)?;
+        Ok(self.issue(
+            GrantScope::File,
+            canonical,
+            Some(child_name.to_string()),
+            operations,
+            ttl,
+            max_uses,
+        ))
+    }
+
+    /// 把精确文件授权解析成路径（对齐基线 `resolveExactPath`）。
+    ///
+    /// 仅主进程内仍以路径为入参、并自行做无跟随/防覆盖校验的服务使用（便携归档导出与恢复）：
+    /// 范围必须是 `file`（目录范围授权不能冒充精确授权），复核授权根仍有效后**消费**一次授权。
+    /// 渲染进程拿不到本注册表实例。
+    pub fn resolve_exact_path(
+        &mut self,
+        grant_id: &str,
+        operation: GrantOperation,
+    ) -> Result<PathBuf, String> {
+        if self.revalidate(grant_id, operation)?.scope != GrantScope::File {
+            return Err("外部文件授权范围不符".to_string());
+        }
+        let granted = self.resolve(grant_id, operation)?;
+        let root = match &granted.pending_child {
+            Some(_) => granted.path.clone(),
+            None => granted
+                .path
+                .parent()
+                .ok_or_else(|| "外部文件授权目标无效".to_string())?
+                .to_path_buf(),
+        };
+        // 复核授权根仍是同一个真实目录：对齐基线 `captureSecureRootIdentity` 的「根被替换」
+        // 防护；Tauri 侧以「重新 canonicalize 后与签发时一致」代替卷序列号 + 文件索引比对。
+        if canonical_existing(&root)? != root {
+            return Err("外部文件授权目标已变化".to_string());
+        }
+        Ok(match &granted.pending_child {
+            Some(name) => root.join(name),
+            None => granted.path,
+        })
     }
 
     fn issue(
         &mut self,
         scope: GrantScope,
         path: PathBuf,
+        pending_child: Option<String>,
         operations: Vec<GrantOperation>,
         ttl: Duration,
         max_uses: Option<u32>,
@@ -200,6 +278,7 @@ impl ExternalGrantRegistry {
             GrantRecord {
                 scope,
                 path,
+                pending_child,
                 operations,
                 expires_at: Instant::now() + ttl,
                 uses_remaining: max_uses,
@@ -236,10 +315,16 @@ impl ExternalGrantRegistry {
                 if !requested.is_empty() && requested != "." {
                     return Err("精确文件授权不接受子路径".to_string());
                 }
+                // 「待创建子项」精确授权：`path` 是父目录，目标固定为 `path.join(name)`
+                // （允许尚不存在）；普通文件授权则 `path` 即目标本身。
+                let target = match &granted.pending_child {
+                    Some(name) => granted.path.join(name),
+                    None => granted.path.clone(),
+                };
                 Ok(GrantedTarget {
                     scope: granted.scope,
-                    root: granted.path.clone(),
-                    path: granted.path,
+                    root: granted.path,
+                    path: target,
                 })
             }
             GrantScope::Directory => {
@@ -312,6 +397,7 @@ impl ExternalGrantRegistry {
                     Some(GrantedPath {
                         scope: record.scope,
                         path: record.path.clone(),
+                        pending_child: record.pending_child.clone(),
                     }),
                 )
             }
@@ -349,6 +435,45 @@ impl ExternalGrantRegistry {
     pub fn is_empty(&self) -> bool {
         self.grants.is_empty()
     }
+}
+
+/// 单段子项名校验（对齐基线 `issueNewChild` 的 `normalizedRelativePath(name) === name`
+/// 判定与 `assertSafeSegment`）：不得为空 / `.` / `..`、不得含 NUL、分隔符或 `:`、
+/// 不得以 `.` 或空格结尾、不得是 Windows 保留设备名。
+pub fn assert_single_segment_name(name: &str) -> Result<(), String> {
+    let invalid = || "外部文件授权的相对路径无效".to_string();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('\0')
+        || name.contains(':')
+        || name.contains('/')
+        || name.contains('\\')
+        || name.ends_with('.')
+        || name.ends_with(' ')
+        || is_windows_reserved_name(name)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// Windows 保留设备名（对齐基线 `windowsReservedNames =
+/// /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i`）
+fn is_windows_reserved_name(segment: &str) -> bool {
+    let stem = segment
+        .split('.')
+        .next()
+        .unwrap_or(segment)
+        .to_ascii_lowercase();
+    if matches!(stem.as_str(), "con" | "prn" | "aux" | "nul") {
+        return true;
+    }
+    let bytes = stem.as_bytes();
+    bytes.len() == 4
+        && (stem.starts_with("com") || stem.starts_with("lpt"))
+        && bytes[3].is_ascii_digit()
+        && bytes[3] != b'0'
 }
 
 /// `realpath` 并拒绝不存在 / 非法路径
@@ -610,6 +735,143 @@ mod tests {
             "无相对路径时解析结果即授权目录本身"
         );
         assert_eq!(registry.len(), 1, "只校验不消费，授权记录保留");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn issue_new_child_freezes_parent_and_name_test() {
+        let dir = temp_dir("new-child");
+        let parent = dir.join("parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        let canonical_parent = std::fs::canonicalize(&parent).unwrap();
+        let mut registry = ExternalGrantRegistry::default();
+
+        // 目标尚不存在也能签发（对齐基线 `issueNewChild`）
+        let grant_id = registry
+            .issue_new_child(
+                &parent,
+                "book.ainovel",
+                vec![GrantOperation::Create],
+                EXPORT_GRANT_TTL,
+                Some(1),
+            )
+            .unwrap();
+
+        // 调用方自带子路径一律拒绝（授权固定父目录 + 子名）
+        assert_eq!(
+            registry
+                .resolve_target(
+                    &grant_id,
+                    GrantOperation::Create,
+                    Some("other.ainovel"),
+                    true
+                )
+                .unwrap_err(),
+            "精确文件授权不接受子路径"
+        );
+        // 上面的拒绝路径已消费一次授权（既有语义：先消费、再判定范围），故重新签发验证解析面
+        let grant_id = registry
+            .issue_new_child(
+                &parent,
+                "book.ainovel",
+                vec![GrantOperation::Create],
+                EXPORT_GRANT_TTL,
+                Some(1),
+            )
+            .unwrap();
+        let target = registry
+            .resolve_target(&grant_id, GrantOperation::Create, None, true)
+            .unwrap();
+        assert_eq!(target.scope, GrantScope::File);
+        assert_eq!(target.root, canonical_parent, "授权根是父目录");
+        assert_eq!(
+            target.path.file_name().unwrap().to_string_lossy(),
+            "book.ainovel"
+        );
+        assert!(!target.path.exists(), "待创建目标允许尚不存在");
+
+        // `resolve_exact_path` 消费一次并返回目标路径；第二次报「已用尽」
+        let grant_id = registry
+            .issue_new_child(
+                &parent,
+                "copy",
+                vec![GrantOperation::Create],
+                EXPORT_GRANT_TTL,
+                Some(1),
+            )
+            .unwrap();
+        let exact = registry
+            .resolve_exact_path(&grant_id, GrantOperation::Create)
+            .unwrap();
+        assert_eq!(exact, canonical_parent.join("copy"));
+        assert_eq!(
+            registry
+                .resolve_exact_path(&grant_id, GrantOperation::Create)
+                .unwrap_err(),
+            "外部文件授权已用尽"
+        );
+
+        // 目录授权不能冒充精确文件授权；普通文件授权仍走原有语义
+        let dir_grant = registry
+            .issue_directory(&parent, KNOWLEDGE_BASE_GRANT_TTL, Some(1))
+            .unwrap();
+        assert_eq!(
+            registry
+                .resolve_exact_path(&dir_grant, GrantOperation::Read)
+                .unwrap_err(),
+            "外部文件授权范围不符"
+        );
+        let file = parent.join("existing.txt");
+        std::fs::write(&file, "x").unwrap();
+        let file_grant = registry
+            .issue_file(&file, KNOWLEDGE_BASE_GRANT_TTL, Some(1))
+            .unwrap();
+        assert_eq!(
+            registry
+                .resolve_exact_path(&file_grant, GrantOperation::Read)
+                .unwrap(),
+            std::fs::canonicalize(&file).unwrap()
+        );
+
+        // 非法子名与不存在的父目录一律拒绝
+        for name in [
+            "", ".", "..", "a/b", "a\\b", "a.", "a ", "CON", "con.txt", "com1.log", "a:b",
+        ] {
+            assert!(
+                registry
+                    .issue_new_child(
+                        &parent,
+                        name,
+                        vec![GrantOperation::Create],
+                        EXPORT_GRANT_TTL,
+                        Some(1),
+                    )
+                    .is_err(),
+                "{name} 应被拒绝"
+            );
+        }
+        assert!(registry
+            .issue_new_child(
+                &parent.join("missing"),
+                "book.ainovel",
+                vec![GrantOperation::Create],
+                EXPORT_GRANT_TTL,
+                Some(1),
+            )
+            .is_err());
+        assert!(
+            registry
+                .issue_new_child(
+                    &file,
+                    "book.ainovel",
+                    vec![GrantOperation::Create],
+                    EXPORT_GRANT_TTL,
+                    Some(1),
+                )
+                .is_err(),
+            "父目录必须是目录"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

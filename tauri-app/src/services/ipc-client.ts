@@ -200,6 +200,11 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   // 注：`dialog:select-novel-files` 是能力域频道（不自动注入项目会话），
   // 因此 `projectSession` 由调用点显式作为第 2 个定位参数传入。
   'dialog:select-novel-files': ['request', 'projectSession'],
+  // 批次 B109：便携归档与旧版项目选择（能力域，不注入项目会话）
+  // 注：返回不透明授权 `{ grantId, displayName }`，路径不经过 IPC；
+  // 无参频道（select-project-archive / select-legacy-project）无需登记。
+  'dialog:select-project-archive-export': ['suggestedName'],
+  'dialog:select-project-restore-target': ['suggestedName'],
   'db:import-run-author-preview': ['inspectionId', 'expectedProjectPath'],
   // 批次 G2a：导入运行读面（3 频道）
   'db:import-run-get': ['runId', 'expectedProjectPath'],

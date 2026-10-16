@@ -162,6 +162,11 @@ pub fn run() {
             // 弹窗能力已就绪，仍需批次 H 的 grant 签发，暂为取消骨架）
             commands::dialog_select_folder,
             commands::dialog_select_export_directory,
+            // 批次 B109：便携归档与旧版项目选择（dialog 域 4 频道）
+            commands::dialog_select_project_archive_export,
+            commands::dialog_select_project_archive,
+            commands::dialog_select_project_restore_target,
+            commands::dialog_select_legacy_project,
             // 批次 B：外部文件授权（骨架：等 tauri-plugin-dialog）
             commands::fs_grant_read_file,
             commands::fs_grant_write_file,

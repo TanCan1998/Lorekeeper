@@ -430,6 +430,62 @@ pub async fn dialog_select_folder(
     }))
 }
 
+// ===== dialog:select-legacy-project =====
+
+/// 旧版小说项目文件夹选择标题（对齐基线 `project-controller.ts:330`）
+const SELECT_LEGACY_PROJECT_TITLE: &str = "选择旧版小说项目文件夹";
+
+/// `dialog:select-legacy-project` —— 选择旧版小说项目文件夹并签发 `legacy-import` 目录授权。
+///
+/// 迁移自 `electron/controllers/project-controller.ts:327`：取消返回 `null`；选中后签发
+/// 一次性（`maxUses = 1`，对齐基线 `issueDirectory` 的默认值）`legacy-import` 用途目录授权，
+/// 返回 `{ grantId, displayName }`。渲染层随后凭该 `grantId` 调用 `project:import-legacy-copy`
+/// （该频道尚未迁移），路径不经过 IPC。
+#[tauri::command]
+pub async fn dialog_select_legacy_project(
+    app: tauri::AppHandle,
+) -> Result<Option<ProjectDirectoryGrant>, String> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut builder = app.dialog().file().set_title(SELECT_LEGACY_PROJECT_TITLE);
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        builder = builder.set_parent(&window);
+    }
+    builder.pick_folder(move |selection| {
+        let _ = sender.send(selection);
+    });
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        receiver.recv_timeout(SELECT_FOLDER_TIMEOUT).ok().flatten()
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(path) = picked else {
+        return Ok(None);
+    };
+    let Some(directory) = file_path_to_string(path) else {
+        return Ok(None);
+    };
+    let display_name = std::path::Path::new(&directory)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| directory.clone());
+    let state = app.state::<AppState>();
+    let mut registry = state
+        .external_grants
+        .lock()
+        .map_err(|_| GRANT_REGISTRY_POISONED.to_string())?;
+    let grant_id = registry.issue_directory_with_operations(
+        std::path::Path::new(&directory),
+        vec![GrantOperation::LegacyImport],
+        PROJECT_DIRECTORY_GRANT_TTL,
+        Some(1),
+    )?;
+    Ok(Some(ProjectDirectoryGrant {
+        grant_id,
+        display_name,
+    }))
+}
+
 // ===== 骨架占位（批次 C 数据库层接入后启用）=====
 
 #[derive(Debug, Clone, Serialize)]
