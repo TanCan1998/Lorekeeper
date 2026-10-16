@@ -181,3 +181,190 @@ fn effect_proof_binds_root_action_json_identity_and_operation() {
         assert!(review_cycle::verify_m03_review_cycle(&f.conn));
     }
 }
+
+#[test]
+fn effect_proof_rejects_project_epoch_and_artifact_identity_mismatches() {
+    // 三条链分别创建真实初审、修稿和复核；单一身份字段篡改必须失败关闭。
+    for stage in ["review", "revision", "recheck"] {
+        let f = match stage {
+            "review" => {
+                let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+                f.review().unwrap();
+                f
+            }
+            "revision" => merged_fixture().0,
+            _ => rechecked_fixture(Some(false)).0,
+        };
+        let kind = if stage == "revision" {
+            "revision"
+        } else {
+            "review"
+        };
+        let (attempt_id, run_id, artifact_id): (String, String, String) = f.conn.query_row(
+            "SELECT a.attempt_id,a.run_id,json_extract(a.usage_receipt_json,'$.reviewRevisionEffect.artifact.artifactId')
+             FROM generation_attempts a WHERE json_extract(a.usage_receipt_json,'$.reviewRevisionEffect.kind')=?1
+             ORDER BY a.rowid DESC LIMIT 1",
+            [kind], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        for (table, column, key, id, pointer, replacement) in [
+            (
+                "generation_runs",
+                "binding_json",
+                "run_id",
+                run_id.as_str(),
+                "/projectId",
+                json!("foreign-project"),
+            ),
+            (
+                "generation_runs",
+                "binding_json",
+                "run_id",
+                run_id.as_str(),
+                "/epoch",
+                json!(""),
+            ),
+            (
+                "generation_artifacts",
+                "artifact_json",
+                "artifact_id",
+                artifact_id.as_str(),
+                "/projectId",
+                json!("foreign-project"),
+            ),
+            (
+                "generation_artifacts",
+                "artifact_json",
+                "artifact_id",
+                artifact_id.as_str(),
+                "/epoch",
+                json!(""),
+            ),
+            (
+                "generation_artifacts",
+                "artifact_json",
+                "artifact_id",
+                artifact_id.as_str(),
+                "/artifactId",
+                json!("foreign-artifact"),
+            ),
+            (
+                "generation_artifacts",
+                "artifact_json",
+                "artifact_id",
+                artifact_id.as_str(),
+                "/revision",
+                json!(999),
+            ),
+            (
+                "generation_artifacts",
+                "artifact_json",
+                "artifact_id",
+                artifact_id.as_str(),
+                "/fingerprint/templateHash",
+                json!("9".repeat(64)),
+            ),
+            (
+                "generation_attempts",
+                "usage_receipt_json",
+                "attempt_id",
+                attempt_id.as_str(),
+                "/artifactIdentity/artifactId",
+                json!("foreign-artifact"),
+            ),
+            (
+                "generation_attempts",
+                "usage_receipt_json",
+                "attempt_id",
+                attempt_id.as_str(),
+                "/artifactIdentity/epoch",
+                json!("foreign-epoch"),
+            ),
+            (
+                "generation_attempts",
+                "usage_receipt_json",
+                "attempt_id",
+                attempt_id.as_str(),
+                "/artifactIdentity/fingerprint/templateHash",
+                json!("9".repeat(64)),
+            ),
+            (
+                "generation_attempts",
+                "usage_receipt_json",
+                "attempt_id",
+                attempt_id.as_str(),
+                "/reviewRevisionEffect/artifact/revision",
+                json!(999),
+            ),
+            (
+                "generation_attempts",
+                "usage_receipt_json",
+                "attempt_id",
+                attempt_id.as_str(),
+                "/reviewRevisionEffect/artifact/textHash",
+                json!("9".repeat(64)),
+            ),
+        ] {
+            let raw: String = f
+                .conn
+                .query_row(
+                    &format!("SELECT {column} FROM {table} WHERE {key}=?1"),
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut value: Value = serde_json::from_str(&raw).unwrap();
+            *value
+                .pointer_mut(pointer)
+                .expect("测试路径必须属于真实收据合同") = replacement;
+            let update = format!("UPDATE {table} SET {column}=?1 WHERE {key}=?2");
+            f.conn
+                .execute(&update, rusqlite::params![value.to_string(), id])
+                .unwrap();
+            assert!(
+                !review_cycle::verify_m03_review_cycle(&f.conn),
+                "{stage} 未拒绝 {table}{pointer}"
+            );
+            f.conn.execute(&update, rusqlite::params![raw, id]).unwrap();
+            assert!(
+                review_cycle::verify_m03_review_cycle(&f.conn),
+                "{stage} 恢复后仍拒绝 {table}{pointer}"
+            );
+        }
+    }
+}
+
+#[test]
+fn effect_proof_preserves_historical_artifact_epoch_after_legitimate_resume() {
+    let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    // 在提交前暂停恢复；已提交效果会封存root，不能假设它仍可恢复执行。
+    f.service
+        .runs
+        .pause(&f.conn, &f.run.root_action_id, false)
+        .unwrap();
+    let mut next = f.run.binding.clone();
+    next.epoch = "resumed-synthetic-epoch".into();
+    f.service
+        .runs
+        .resume(&f.conn, &f.run.run_id, &next)
+        .unwrap();
+    let resumed = f.service.runs.get(&f.conn, &f.run.run_id).unwrap();
+    assert_eq!(resumed.binding.epoch, next.epoch);
+    assert_ne!(f.artifact.epoch, next.epoch);
+    f.service
+        .commit_review(
+            &f.conn,
+            &ReviewGenerationCommitRequest {
+                context_id: f.prepared.context_id.clone(),
+                handle: ReviewRevisionGeneration::handle_of(&resumed),
+                artifact: ReviewArtifactRef {
+                    artifact_id: f.artifact.artifact_id.clone(),
+                    revision: f.artifact.revision,
+                    text_hash: f.artifact.text_hash.clone(),
+                },
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(review_cycle::verify_m03_review_cycle(&f.conn));
+    assert!(f.service.saved(&f.conn, &resumed).unwrap().is_some());
+}
