@@ -2,7 +2,34 @@
 
 > 入口 [CURRENT.md](./CURRENT.md)；规则见 [../agents/pi-development.md](../agents/pi-development.md) §9。
 
-## 已验证状态（第 65 次 —— 冻结连接门禁与归档恢复频道）
+## 已验证状态（第 66 次 —— DPAPI凭据基础层与Lorekeeper旧格式核查）
+
+- 最新代码 `b9d18fad`：按用户确认复用windows-sys Cryptography feature，
+  当前用户DPAPI加密、UI_FORBIDDEN；额外熵绑定Lorekeeper/账户/端点/用户名，
+  防密文换绑。没有新增crate或改锁文件，其他平台明确不支持。
+- 凭据文档严格解析，保存/解析/清除只在Lorekeeper全局根；明文不落盘，不记日志，
+  不随项目归档；加密失败仅会话保留并警告，损坏文件拒绝覆盖。
+- 用户已确认旧版导入只考虑Lorekeeper；核查发现现有 .lore 无清单指纹及补列/补表，
+  但不能断言覆盖全部早期格式。原地adopt会写源目录，不能用于只读副本导入。
+  [核查与下一确认](../research/2026-10-16-lorekeeper-legacy-copy-scope.md)。
+- **本轮最新验证**（`b9d18fad` 对应工作区）：
+  - Rust全量 **1539 passed / 0 failed**，库测试57.00s；
+    `.pi/tmp/b114-credentials-full.log`，main/doc tests无测试；全量后累计Rust切片 **0**。
+  - `cargo check --all-targets` 无告警：`.pi/tmp/b114-credentials-check.log`。
+  - DPAPI与凭据定向4项：`.pi/tmp/b114-credentials.log`，包含真实Windows DPAPI往返、
+    密文/绑定上下文篡改拒绝、持久文件不含测试明文、仅会话降级及损坏文件保护。
+  - 定向rustfmt与diff/隔离检查通过；本轮未改TS、未重跑前端或频道脚本。
+- 频道沿用 `f42ae6f1` 的 **281/290**；剩余cloud-backup八频道与project:import-legacy-copy。
+  凭据基础层完成**不等于云备份可用**：WebDAV网络、绑定状态、取消/并发与频道接线仍待迁移。
+- 下一边界：先确认仅在隔离副本运行现有schema补齐及无清单来源身份规则，
+  无法对账的旧结构必须blocked，不修改源目录、不新增旧库解码或LanceDB依赖。
+- GUI/真实模型/MCP仍未验收。
+
+---
+
+以下为前次收口历史。第65次“云凭据方案未定”现已由用户DPAPI选择与本切片替代。
+
+## 历史状态（第 65 次 —— 冻结连接门禁与归档恢复频道）
 
 - 代码提交：`f4ef5e00`（连接级冻结门禁）、`f42ae6f1`（恢复频道），均已推送。
 - 用户已确认启用 rusqlite 的 functions feature 与连接级 TEMP schema；
