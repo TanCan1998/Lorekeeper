@@ -158,6 +158,15 @@ fn install_connection_guard(
     Ok(())
 }
 
+/// 测试专用：复用正式触发器实现；不绕过生产连接的权威准入。
+#[cfg(test)]
+pub(crate) fn install_guard_for_test(
+    conn: &Connection,
+    guard: PortableRuntimeFreezeGuard,
+) -> Result<(), String> {
+    install_connection_guard(conn, guard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

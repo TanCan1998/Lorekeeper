@@ -2,52 +2,50 @@
 
 > 入口 [CURRENT.md](./CURRENT.md)；规则见 [开发指南 §9](../agents/pi-development.md)。
 
-## 已验证状态（第 72 次 —— 审稿证据哈希与初审篡改回归）
+## 已验证状态（第 73 次 —— 真实审稿复核链与合并事务接线）
 
-- 核对时间：2026-10-16；分支 master，HEAD 与本地 origin/master 均为 `34662f72`（完整 SHA：34662f726aa71d2b0ca2e0967c1fa41ba8550312）。
-- **本轮没有提交或推送**。保留此前三个 Rust 文件的未提交迁移逻辑并继续增补；完整 proveEffect 尚未完成。
-- 主会话直接操作，没有启动子代理，无登记在飞工作。
+- 提交前核对时间：2026-10-16；master，基线 HEAD 为 `49b91ee0`，本地 origin/master 为 `34662f72`。此前检查点已提交，旧交接指针已纠正。
+- 本轮修改五个 Rust 文件（含新增链路测试文件）；用户本次明确要求提交并推送，按进行中检查点保存。完整 proveEffect 的跨身份与多段续写专项审计仍未结束，最终提交/推送结果见本机 pipeline。
+- 主会话直接执行，无子代理、无登记在飞工作；生产审稿四频道继续关闭。
 
-| 检查 | 本轮结果 | 验证范围/版本 | 证据（本机，不入库） |
-|---|---|---|---|
-| 周期仓储定向 | 4 通过，0 失败 | HEAD + 当前三个 Rust 文件 diff | .pi/tmp/recovery/evidence-cycle.log |
-| 生成提交与恢复定向 | 19 通过，0 失败 | 同一工作区 | .pi/tmp/recovery/evidence-directed.log |
-| Rust 全量 | **1575 通过，0 失败**；库 65.42 秒 | 本轮最终 Rust 工作区，指纹见 pipeline | .pi/tmp/recovery/evidence-full.log |
-| all-targets | 通过，无告警 | 同一工作区 | .pi/tmp/recovery/evidence-check.log |
-| 格式与差异 | 三文件定向 rustfmt、git diff --check 通过 | 全量后仅更新交接文档 | .pi/tmp/recovery/evidence-format.log；工具输出 |
-| 前端、GUI、频道覆盖 | 本轮未重测 | 历史基线，不归于本轮代码 | 见下方沿用范围 |
+| 检查 | 本轮结果 | 范围与证据（本机，不入库） |
+|---|---|---|
+| Rust 全量 | **1581 通过，0 失败**；库 62.27 秒 | HEAD + 本轮五文件工作区；.pi/tmp/recovery/chain-full.log |
+| 扩大编译 | cargo check --all-targets 通过，无告警 | 同一最终代码；.pi/tmp/recovery/chain-check.log |
+| 审稿域定向 | 中间版本 42 通过 | 后续新增来源篡改、冻结历史两项，均由最终全量覆盖 |
+| 修稿仓储定向 | 10 通过 | .pi/tmp/recovery/chain-revision.log；后续仅增加冻结测试辅助 |
+| 格式与差异 | 五文件 rustfmt --check、git diff --check 通过 | 最终 Rust 工作区，工具输出 |
+| 前端与 GUI | 未重测 | 无 TS/频道开放改动；不沿用为本轮验收 |
 
 ## 本次更新
 
-- 对照 `electron/migrations/m03-review-cycle.ts` 审计现有证明链；保留上一轮已修复的 UTF-8 源码，不再从 HEAD 覆盖迁移改动。
-- 初审效果证明新增精确字段集合检查、reportVersion 域检查，以及 artifact JSON revision 与数据库 revision 的交叉检查。
-- 提取 `recheck_evidence_hash`，写入与历史校验共用有序证据负载；复核按 findingId、targetId、reviewItemIndex、报告条目与 resolved 重算 evidenceHash，不再只检查哈希格式。该项不等于完成复核资格和状态映射校验。
-- 新增真实内存 SQLite 篡改矩阵：额外回执字段、错误报告版本、上下文哈希、产物版本、正文、attempt/root 身份；逐项验证拒绝，恢复原值后重新通过。
-- 新增两个各自绑定独立产物的重复效果 attempt 测试，验证匹配数必须为一；新增证据负载字段顺序及每个字段影响哈希的测试。
-- 全量较上轮 1572 增加 3 项，现为 1575。定向 19 项含既有恢复/来源漂移测试，但不是新增脱敏归档冻结历史的专用回归。
+- 以真实 SQLite、生成账本和服务构建初审 → 人工确认 → 修稿 → 合并 → 复核合法链。测试材料全部为合成数据。
+- 发现并修复合并接线缺口：将基线 commitMergedRevision 补入周期仓储，由修稿合并事务同步推进周期、保存不可变合并快照；重复合并也验证周期一致性。
+- 新增快照写入失败回滚测试：作者正文、草稿状态、修稿 pending 状态和周期同时恢复，重试可成功。
+- 从持久 finding 和合并快照重建复核准入/context，逐项比较冻结集合、报告身份与完整回执映射，校验最终 finding 状态、evidenceHash 和 confirmation_item_index。
+- 复核历史来源版本改为读取审稿冻结字段，不再依赖后来可能改变的当前草稿版本。
+- 强化修稿完整来源字段、确认 snapshot 与正文、authorInputs/冻结上下文一致性及 attempt/root 身份；补产物 revision、epoch、各段来源收据及正文有效增长检查。
+- 新增六项链路回归：合法复核、模型声称解决/无效证据保持 unknown、缺失/重复/伪造映射与持久状态篡改、合并回滚、自洽重算哈希后的来源伪造、脱敏冻结历史不可重放。
+- 脱敏专项使用真实 sanitize、freeze_document 与正式连接触发器实现；仅增加 cfg(test) 安装辅助，不改变生产权限/准入规则。保留作者正文与三份审稿可读事实，originalReceiptVerified 始终 false。
 
-### 未完成与安全边界
+### 尚未解除的边界
 
-1. 继续审计 review/revision/recheck 的完整 root、run binding、attempt 唯一绑定；本轮初审重复效果回归不覆盖所有跨 root/run 组合。
-2. recheck 仍缺完整合法端到端样例，以及从数据库重新构建 eligible findings/context、receipt 与持久化 finding 状态/evidenceHash 对应的正反回归。新增哈希重算已接入，但尚未用完整复核 SQLite 场景证明兼容性。
-3. revision 冻结确认上下文、完整来源字段、续写来源身份及有效文本增长约束仍须补齐和验证。
-4. 脱敏恢复冻结历史专用回归未补齐；不得伪造 originalReceiptVerified、重放历史执行、删除作者可读事实或绕过冻结。
-5. **审稿四个生产前端频道继续关闭**；未改 schema、依赖、权限、ADR、根配置、根锁文件、Electron 或上游 docs。未完成完整切片前不提交或推送。
+1. **尚不宣布完整 proveEffect 等价**：继续补多段修稿续写的独立正反回归、跨 root/run 组合、历史策略版本及必现/豁免混合场景。
+2. 已新增脱敏链路专项，但不等同于 GUI 导入恢复全链验收或真实模型验收。
+3. 审稿四个生产前端频道继续关闭；本次明确授权仅保存并推送进行中检查点，不代表完整切片验收。未改 schema、依赖、生产权限、ADR、根配置/锁文件、Electron 或上游 docs。
 
 ### 沿用范围（非本轮新验证）
 
-- 结构覆盖 289/290（99.7%）、注册 290、事件 7；前端开放 285/290（98.3%），沿用 b116 口径，不是产品完成率。
-- 前端全量沿用 `4c03d515`：186 文件、2101 通过/0 失败/1 跳过，b118-final.json/log；typecheck/lint 同版本通过。本轮无 TS 改动。
-- GUI/build 沿用 `a6655558` 与 B117 证据，不是当前 Rust 工作区的原生窗口复验。
-- 真实模型/MCP/云供应商与完整 GUI 未验收；旧版导入等待已确认的 Lorekeeper 输入。
+- 结构覆盖 289/290、前端开放 285/290 沿用历史口径，不是产品完成率。
+- 前端全量沿用 `4c03d515`：2101 通过/0 失败/1 跳过；GUI/build 沿用 `a6655558`，均非当前 Rust 工作区的新验收。
 
-## 交接给下次会话
+## 下一步
 
-1. 读 AGENTS.md、CURRENT.md、.pi/tmp/pipeline-state.md，核对 HEAD、工作区及三个 Rust 文件 SHA256；不要丢弃未提交迁移改动。
-2. 优先构造完整 review → confirmation → revision → merge → recheck 的真实 SQLite 合法链，再补资格/context、finding 状态映射及篡改拒绝；继续 revision 来源链与脱敏冻结恢复专用验证。
-3. 本轮全量不代表完整 proveEffect 验收，不开放频道；完整切片完成后再自检、提交及推送。
+1. 核对最新 HEAD、工作区和 pipeline 指纹，本轮全量覆盖的 Rust 文件指纹不变。
+2. 优先补双段/重叠/无增长续写与首段来源篡改测试，再覆盖历史策略、必现及作者豁免混合场景。
+3. 继续完成效果证明审计并按既有授权自检、提交及推送；完整验收前不开放频道。
 
-活动状态与文件指纹见 `.pi/tmp/pipeline-state.md`。最新全量基线为当前未提交工作区；全量后 Rust 语义切片累计 0。
+活动状态与文件指纹见 `.pi/tmp/pipeline-state.md`。最新全量为本轮最终代码，之后仅交接文档变化；全量后 Rust 语义切片累计 0。
 
 ---
 

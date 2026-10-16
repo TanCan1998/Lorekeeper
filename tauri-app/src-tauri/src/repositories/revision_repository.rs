@@ -441,6 +441,15 @@ fn merge_into_draft_inner(
         {
             return Err("修订稿已经合并，但目标草稿随后发生变化；已拒绝再次覆盖".to_string());
         }
+        crate::repositories::review_cycle_repository::commit_merged_revision(
+            tx,
+            request.revision_id,
+            &format!(
+                "{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(request.merged_content.as_bytes())
+            ),
+        )?;
+
         return Ok(MergeRevisionReceipt {
             revision_id: request.revision_id,
             target_draft_id: request.target_draft_id,
@@ -506,6 +515,15 @@ fn merge_into_draft_inner(
     if revision_update != 1 {
         return Err("修订稿状态已变化，已拒绝合并".to_string());
     }
+
+    crate::repositories::review_cycle_repository::commit_merged_revision(
+        tx,
+        request.revision_id,
+        &format!(
+            "{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(request.merged_content.as_bytes())
+        ),
+    )?;
 
     Ok(MergeRevisionReceipt {
         revision_id: request.revision_id,

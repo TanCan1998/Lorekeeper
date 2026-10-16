@@ -2238,6 +2238,8 @@ fn prove_review_effect(
             .and_then(Value::as_str)
             != Some("stop")
             || usage.pointer("/result/failureCode").is_some()
+            || attempt.get("attemptId").and_then(Value::as_str) != Some(attempt_id.as_str())
+            || attempt.get("rootActionId").and_then(Value::as_str) != Some(root_action_id.as_str())
         {
             return false;
         }
@@ -2496,6 +2498,11 @@ fn prove_revision_effect(
             Ok(v) => v,
             Err(_) => return false,
         };
+        if attempt.get("attemptId").and_then(Value::as_str) != Some(attempt_id.as_str())
+            || attempt.get("rootActionId").and_then(Value::as_str) != Some(root_id.as_str())
+        {
+            return false;
+        }
         if !matches!(
             attempt.get("status").and_then(Value::as_str),
             Some("settled" | "unknown")
@@ -2530,6 +2537,11 @@ fn prove_revision_effect(
             || owner_run != *run_id
             || status == "discarded"
             || artifact_ref.get("revision").and_then(Value::as_i64) != Some(rev)
+            || art.get("revision").and_then(Value::as_i64) != Some(rev)
+            || art
+                .get("epoch")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
             || artifact_ref.get("textHash").and_then(Value::as_str)
                 != art.get("textHash").and_then(Value::as_str)
             || art.get("artifactId").and_then(Value::as_str) != Some(artifact_id)
@@ -2583,11 +2595,23 @@ fn prove_revision_effect(
                 Ok(v) => v,
                 Err(_) => return false,
             };
+        if authors.len() != 1
+            || authors[0].as_object().is_none_or(|v| v.len() != 2)
+            || serde_json::to_value(&ctx).ok().as_ref() != Some(context)
+            || &ctx.source != source
+            || ctx.recheck.is_some()
+        {
+            return false;
+        }
         let Some(confirm) = ctx.confirmation else {
             return false;
         };
         if confirm.review_source_id != confirmation_review_id
             || confirm.content != confirmation_body
+            || serde_json::from_str::<Value>(confirmation_body).ok()
+                != serde_json::to_value(&confirm.snapshot).ok()
+            || confirm.snapshot.source_review_id != cycle.review_id
+            || confirm.snapshot.source_draft.as_ref() != Some(source)
             || confirm.original_review_content_hash != cycle.review_content_hash
             || hash(text)
                 != effect
@@ -2662,7 +2686,20 @@ fn prove_revision_effect(
                     .pointer("/result/finishReason")
                     .and_then(Value::as_str),
                 Some("stop" | "length")
-            ) {
+            ) || receipt.pointer("/result/failureCode").is_some()
+                || physical.get("attemptId").and_then(Value::as_str) != Some(aid.as_str())
+                || physical.get("rootActionId").and_then(Value::as_str) != Some(root_id.as_str())
+                || receipt
+                    .pointer("/artifactIdentity/artifactId")
+                    .and_then(Value::as_str)
+                    != Some(id)
+                || receipt.pointer("/artifactIdentity/epoch") != art.get("epoch")
+                || receipt.pointer("/artifactIdentity/fingerprint") != art.get("fingerprint")
+                || art
+                    .get("epoch")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+            {
                 return false;
             }
             let Some(chunk) = art.get("text").and_then(Value::as_str) else {
@@ -2674,6 +2711,7 @@ fn prove_revision_effect(
             if hash(chunk) != chunk_hash {
                 return false;
             }
+            let previous_units = count_visible_prose_units_for_proof(&text_acc);
             if n == 0 {
                 text_acc = chunk.trim().to_string();
             } else {
@@ -2681,6 +2719,9 @@ fn prove_revision_effect(
                     crate::repositories::generation_run_repository::compose_visible_continuation(
                         &text_acc, chunk,
                     );
+            }
+            if count_visible_prose_units_for_proof(&text_acc) <= previous_units {
+                return false;
             }
             if art.get("artifactId").and_then(Value::as_str) != Some(id)
                 || art.get("attemptId").and_then(Value::as_str) != Some(aid.as_str())
@@ -2716,6 +2757,125 @@ fn prove_revision_effect(
     }
     matched == 1
 }
+fn count_visible_prose_units_for_proof(text: &str) -> usize {
+    text.chars().filter(|ch| ch.is_alphanumeric()).count()
+}
+
+/// 从持久 finding 与合并快照重建准入集合；不信任回执自述的覆盖范围和状态。
+fn verify_recheck_projection(
+    conn: &Connection,
+    cycle: &CycleVerifyRow,
+    source_content: &str,
+    merged_body: &str,
+    attempt_id: &str,
+    receipt: &Map<String, Value>,
+    report: &Value,
+) -> bool {
+    let rebuilt = match recheck_context(
+        &RecheckCycleRow {
+            cycle_id: cycle.cycle_id.clone(),
+            root_action_id: cycle.root_action_id.clone(),
+            review_id: cycle.review_id,
+            finding_set_hash: cycle.finding_set_hash.clone(),
+            comparison_version: cycle.comparison_version,
+            revision_status: cycle.revision_status.clone(),
+            merged_hash: cycle.merged_hash.clone(),
+            recheck_count: cycle.recheck_count,
+            recheck_attempt_id: cycle.recheck_attempt_id.clone(),
+            source_content: Some(source_content.to_string()),
+            merged_body: merged_body.to_string(),
+        },
+        conn,
+    ) {
+        Ok(context) => context,
+        Err(_) => return false,
+    };
+    let raw: String = match conn.query_row(
+        "SELECT r.binding_json FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id
+         WHERE a.attempt_id=?1", [attempt_id], |r| r.get(0),
+    ) { Ok(raw) => raw, Err(_) => return false };
+    let binding: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let Some(frozen) = binding.pointer("/sourceManifest/reviewRevisionContext/recheck") else {
+        return false;
+    };
+    let mut expected = match serde_json::to_value(&rebuilt) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    // 历史策略版本仍由回执决定，来源集合与证据定位不得随版本降级而变化。
+    expected["version"] = frozen.get("version").cloned().unwrap_or(Value::Null);
+    if !matches!(expected["version"].as_i64(), Some(1 | 2)) || &expected != frozen {
+        return false;
+    }
+    let Some(items) = report.get("items").and_then(Value::as_array) else {
+        return false;
+    };
+    if items.len() != rebuilt.findings.len() {
+        return false;
+    }
+    let mut mappings = Vec::new();
+    for (index, (finding, item)) in rebuilt.findings.iter().zip(items).enumerate() {
+        if item.get("findingId").and_then(Value::as_str) != Some(finding.finding_id.as_str())
+            || item.get("targetId").and_then(Value::as_str) != Some(finding.target_id.as_str())
+        {
+            return false;
+        }
+        let known = matches!(
+            item.get("severity").and_then(Value::as_str),
+            Some("pass" | "warning")
+        );
+        let resolved = item
+            .get("resolved")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let evidence = if known {
+            let evidence = crate::services::review_revision_generation::recheck_evidence_hash(
+                &finding.finding_id,
+                &finding.target_id,
+                index as i64,
+                item,
+                resolved,
+            );
+            mappings.push(serde_json::json!({
+                "findingId":finding.finding_id, "targetId":finding.target_id,
+                "reviewItemIndex":index, "evidenceHash":evidence, "resolved":resolved
+            }));
+            Some(evidence)
+        } else {
+            None
+        };
+        if finding.must_show == Some(true) {
+            continue;
+        }
+        let persisted: Option<(String, Option<String>, Option<i64>)> = match conn
+            .query_row(
+                "SELECT status,evidence_hash,confirmation_item_index FROM review_findings
+             WHERE cycle_id=?1 AND finding_id=?2",
+                rusqlite::params![cycle.cycle_id, finding.finding_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+        {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let expected_status = if !known {
+            "unknown"
+        } else if resolved {
+            "resolved"
+        } else {
+            "unresolved"
+        };
+        if persisted != Some((expected_status.to_string(), evidence, None)) {
+            return false;
+        }
+    }
+    receipt.len() == 6 && receipt.get("findings") == Some(&Value::Array(mappings))
+}
+
 pub(crate) fn verify_m03_review_cycle(conn: &Connection) -> bool {
     if !verify_foreign_keys(conn) {
         return false;
@@ -3316,60 +3476,20 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
                 {
                     return false;
                 }
-                let findings = receipt.get("findings").and_then(Value::as_array).unwrap();
                 let report: Value = match serde_json::from_str(&recheck_body) {
                     Ok(v) => v,
                     Err(_) => return false,
                 };
-                let Some(report_items) = report.get("items").and_then(Value::as_array) else {
+                if !verify_recheck_projection(
+                    conn,
+                    cycle,
+                    source.content.as_str(),
+                    merged_body.as_deref().unwrap_or(""),
+                    attempt_id,
+                    receipt,
+                    &report,
+                ) {
                     return false;
-                };
-                let mut mapped_ids = std::collections::HashSet::new();
-                let mut mapped_indexes = std::collections::HashSet::new();
-                for item in findings {
-                    let Some(fid) = item.get("findingId").and_then(Value::as_str) else {
-                        return false;
-                    };
-                    let Some(target) = item.get("targetId").and_then(Value::as_str) else {
-                        return false;
-                    };
-                    let Some(idx) = item.get("reviewItemIndex").and_then(Value::as_u64) else {
-                        return false;
-                    };
-                    let Some(resolved) = item.get("resolved").and_then(Value::as_bool) else {
-                        return false;
-                    };
-                    let Some(ehash) = item.get("evidenceHash").and_then(Value::as_str) else {
-                        return false;
-                    };
-                    if idx as usize >= report_items.len()
-                        || !is_content_hash(ehash)
-                        || !mapped_ids.insert(fid.to_string())
-                        || !mapped_indexes.insert(idx)
-                        || (receipt.get("version").and_then(Value::as_i64) == Some(2) && resolved)
-                    {
-                        return false;
-                    }
-                    let ri = &report_items[idx as usize];
-                    if ri.get("resolved").and_then(Value::as_bool) != Some(resolved)
-                        || i64::try_from(idx).ok().is_none_or(|index| {
-                            crate::services::review_revision_generation::recheck_evidence_hash(
-                                fid, target, index, ri, resolved,
-                            ) != ehash
-                        })
-                    {
-                        return false;
-                    }
-                    let persisted:Option<(Option<String>,String)>=match conn.query_row("SELECT target_id,status FROM review_findings WHERE cycle_id=?1 AND finding_id=?2",rusqlite::params![cycle.cycle_id,fid],|r|Ok((r.get(0)?,r.get(1)?))).optional(){Ok(v)=>v,Err(_)=>return false};
-                    let Some((persisted_target, persisted_status)) = persisted else {
-                        return false;
-                    };
-                    if persisted_target.as_deref() != Some(target)
-                        || persisted_status == "unverified"
-                        || persisted_status == "author-waived"
-                    {
-                        return false;
-                    }
                 }
                 let index: i64 = match conn.query_row(
                     "SELECT review_index FROM reviews WHERE id=?1",
@@ -3380,8 +3500,8 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
                     Err(_) => return false,
                 };
                 let version: i64 = match conn.query_row(
-                    "SELECT version FROM drafts WHERE id=?1",
-                    [base.unwrap_or_default()],
+                    "SELECT source_draft_version FROM reviews WHERE id=?1",
+                    [recheck_id],
                     |r| r.get(0),
                 ) {
                     Ok(v) => v,
@@ -3869,6 +3989,73 @@ pub fn attach_generated_revision(
         revision_status: GeneratedRevisionStatus::Generated,
         idempotent: false,
     })
+}
+
+/// 基线 commitMergedRevision：与正文合并共用事务，冻结复核使用的合并快照。
+pub(crate) fn commit_merged_revision(
+    conn: &Connection,
+    revision_id: i64,
+    merged_hash: &str,
+) -> Result<(), String> {
+    if conn.is_autocommit() {
+        return Err(TRANSACTION_REQUIRED.to_string());
+    }
+    if revision_id < 1 || !is_content_hash(merged_hash) {
+        return invalid();
+    }
+    let cycle: Option<(String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT cycle_id,revision_status,merged_hash FROM review_cycles WHERE revision_id=?1",
+            [revision_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((cycle_id, status, prior_hash)) = cycle else {
+        return Ok(());
+    };
+    if !["generated", "merge-committed"].contains(&status.as_str()) {
+        return conflict();
+    }
+    let merged: Option<(String, i64, Option<i64>, String)> = conn
+        .query_row(
+            "SELECT r.status,r.base_draft_id,r.merged_to_draft_id,c.body
+         FROM revisions r JOIN drafts d ON d.id=r.base_draft_id
+         JOIN contents c ON c.id=d.content_id WHERE r.id=?1",
+            [revision_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((revision_status, base, target, body)) = merged else {
+        return conflict();
+    };
+    if revision_status != "merged" || target != Some(base) || hash(&body) != merged_hash {
+        return conflict();
+    }
+    if status == "merge-committed" {
+        if prior_hash.as_deref() != Some(merged_hash) || !verify_m03_review_cycle(conn) {
+            return conflict();
+        }
+        return Ok(());
+    }
+    let changes = conn.execute(
+        "UPDATE review_cycles SET revision_status='merge-committed',merged_hash=?1
+         WHERE cycle_id=?2 AND revision_id=?3 AND revision_status='generated' AND merged_hash IS NULL",
+        rusqlite::params![merged_hash, cycle_id, revision_id],
+    ).map_err(|error| error.to_string())?;
+    if changes != 1 {
+        return conflict();
+    }
+    conn.execute(
+        "INSERT INTO review_cycle_merges(cycle_id,body) VALUES(?1,?2)",
+        rusqlite::params![cycle_id, body],
+    )
+    .map_err(|error| error.to_string())?;
+    if !verify_m03_review_cycle(conn) {
+        return conflict();
+    }
+    Ok(())
 }
 
 /// 基线 `ReviewCycleRepository.planRecheck`：判定合并提交周期是否需要复核

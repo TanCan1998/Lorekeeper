@@ -19,6 +19,13 @@ impl Fixture {
         Self::with_goal(operation, None)
     }
     fn with_goal(operation: ReviewRevisionOperation, goal: Option<(&str, &str)>) -> Self {
+        Self::with_report(operation, goal, None)
+    }
+    fn with_report(
+        operation: ReviewRevisionOperation,
+        goal: Option<(&str, &str)>,
+        report: Option<Value>,
+    ) -> Self {
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -118,6 +125,12 @@ impl Fixture {
                     .expect("准备阶段必须读取作者蓝图目标")
                     .id;
                 value["goalReviews"] = json!([{"id":id,"status":"completed","description":"已展示","evidence":[{"quote":quote}]}]);
+            }
+            if let Some(report) = report {
+                value["items"] = report["items"].clone();
+                if let Some(status) = report.get("goalStatus") {
+                    value["goalReviews"][0]["status"] = status.clone();
+                }
             }
             value.to_string()
         } else {
@@ -657,3 +670,6 @@ fn recovery_of_saved_receipt_does_not_authorize_a_new_execution_on_source_drift(
     assert_eq!(f.count("generation_attempts"), 1);
     assert_eq!(f.count("reviews"), 1);
 }
+
+#[path = "review_revision_chain_tests.rs"]
+mod chain_tests;
