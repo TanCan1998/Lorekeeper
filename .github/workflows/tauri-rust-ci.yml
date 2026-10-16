@@ -1,0 +1,104 @@
+name: Tauri Rust CI
+
+on:
+  push:
+    paths:
+      - 'tauri-app/src-tauri/**'
+      - 'tauri-app/scripts/test-rust-ci*.ps1'
+      - '.github/workflows/tauri-rust-ci.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'tauri-app/src-tauri/**'
+      - 'tauri-app/scripts/test-rust-ci*.ps1'
+      - '.github/workflows/tauri-rust-ci.yml'
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: '必须匹配本次检出版本的完整40位提交SHA'
+        required: true
+        type: string
+
+# 仅验证公开源码与合成材料，不授予发布、仓库写入或业务服务凭据。
+permissions:
+  contents: read
+
+concurrency:
+  group: tauri-rust-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-windows:
+    name: Rust full suite (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: 'true'
+      RUST_TOOLCHAIN: '1.99.0'
+      RUSTUP_HOME: ${{ runner.temp }}/lorekeeper-rustup
+      CARGO_HOME: ${{ runner.temp }}/lorekeeper-cargo
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+      AI_NOVEL_LOREKEEPER_HOME: ${{ runner.temp }}/lorekeeper-test-home
+
+    steps:
+      # 2026-10-17核对官方latest稳定版；固定SHA以避免浮动标签供应链漂移。
+      - name: 检出待验证版本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 离线校验CI脚本合同
+        run: |
+          ./tauri-app/scripts/test-rust-ci.contract.ps1
+          exit $LASTEXITCODE
+
+      - name: 安装固定Rust工具链
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup run $env:RUST_TOOLCHAIN rustc --version --verbose
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup run $env:RUST_TOOLCHAIN cargo --version
+          exit $LASTEXITCODE
+
+      # 缓存只包含公开依赖与编译结果，不缓存整个CARGO_HOME或用户数据。
+      - name: 恢复Rust依赖与编译缓存
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry/index
+            ${{ env.CARGO_HOME }}/registry/cache
+            ${{ env.CARGO_HOME }}/registry/src
+            ${{ env.CARGO_HOME }}/git/db
+            tauri-app/src-tauri/target
+          key: tauri-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}-${{ github.sha }}
+          restore-keys: |
+            tauri-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}-
+
+      - name: 运行全量测试与所有目标检查
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          ./tauri-app/scripts/test-rust-ci.ps1 -ExpectedSha $env:EXPECTED_SHA -Toolchain $env:RUST_TOOLCHAIN -EvidenceDirectory "${{ runner.temp }}/tauri-rust-ci-evidence"
+          exit $LASTEXITCODE
+
+      # 只上传显式列出的验证日志；不上传数据库、用户目录、target或可执行程序。
+      - name: 保存绑定提交的验证证据
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tauri-rust-ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/tauri-rust-ci-evidence/validation.json
+            ${{ runner.temp }}/tauri-rust-ci-evidence/cargo-test.log
+            ${{ runner.temp }}/tauri-rust-ci-evidence/cargo-check.log
+          if-no-files-found: warn
+          retention-days: 14
+          include-hidden-files: false
