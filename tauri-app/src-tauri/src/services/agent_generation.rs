@@ -2073,13 +2073,6 @@ impl<'a> AgentGeneration<'a> {
         self.read(&serde_json::to_value(&recovery.handle).map_err(|error| error.to_string())?)
     }
 
-    /// 基线 `executeRound(request)`（:180-219）——随分发核心
-    /// （generation-run-service）波次实现
-
-    pub fn execute_round(&self, _request: &Value) -> Result<AgentGenerationRecovery, String> {
-        Err("GENERATION_AGENT_ROUND_UNMIGRATED".to_string())
-    }
-
     /// 基线 executeRound 的同步准备段：先认证，再校验轮次与准入；
     /// 已返回或未知调用只重放，绝不因再次点击而静默派发。
     ///
@@ -5382,9 +5375,11 @@ mod tests {
             agent.resume(&handle_of("run-0")).unwrap_err(),
             "GENERATION_RUN_MISSING"
         );
+        // 轮次执行走命令层短锁路径（`prepare_execute_round` + 受控分发）；
+        // 服务层不再保留 fail-closed 的 `execute_round` 死路径。
         assert_eq!(
-            agent.execute_round(&json!({})).unwrap_err(),
-            "GENERATION_AGENT_ROUND_UNMIGRATED"
+            agent.prepare_execute_round(&json!({})).unwrap_err(),
+            "GENERATION_AGENT_IDENTITY_MISMATCH"
         );
         // admit_workflow 已随子波次 B 实现（见下方 admit_workflow 用例）；
         // commit_domain_tool 已随子波次 C 实现——ref 定位先行

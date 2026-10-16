@@ -1957,23 +1957,6 @@ impl MainGenerationOwner {
         agent.resume(handle)
     }
 
-    /// 基线 `owner.agents.executeRound(request)`
-    /// （controller:227）——执行指定轮次（0..7）：构造
-    /// messages 后 host.execute 派发 LLM。
-    ///
-    /// ⚠️ 本波占位：主体依赖 LLM 双阶段执行循环迁移，
-    /// 当前 fail-closed 于 `GENERATION_AGENT_ROUND_UNMIGRATED`
-    /// （迁移占位码、非基线码，经错误映射透传）。
-    pub fn agent_round(
-        &self,
-        conn: &Connection,
-        request: &Value,
-    ) -> Result<AgentGenerationRecovery, String> {
-        let assert_current = || self.assert_current();
-        let agent = self.agent_service(conn, &assert_current)?;
-        agent.execute_round(request)
-    }
-
     /// 冻结轮次准备计划；仅 Agent 频道内部使用，普通 execute 仍拒绝 Agent 准入。
     pub(crate) fn prepare_agent_round(
         &self,

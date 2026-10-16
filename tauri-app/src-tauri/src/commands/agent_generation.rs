@@ -32,8 +32,8 @@
 //! `agent-generation:resume` / `agent-generation:round` 的 owner
 //! 主体（`AgentGeneration::resume` / `execute_round`）依赖分发核心
 //! 与 LLM 双阶段执行循环迁移（后续波次），当前 fail-closed 于
-//! `GENERATION_AGENT_RESUME_UNMIGRATED` /
-//! `GENERATION_AGENT_ROUND_UNMIGRATED`（迁移占位码、非基线码，
+//! 轮次执行与恢复均走真实短锁路径（`prepare_execute_round` + 受控分发；
+//! resume 的身份门禁沿用迁移期既定错误码），
 //! 匹配透传正则，经错误映射原样透传）。
 
 use serde::Serialize;
@@ -114,9 +114,7 @@ pub async fn agent_generation_read(
 /// 纪元写入，否则 host.resume（LLM 续跑）（基线
 /// `owner.agents.resume(request.handle)`，controller:226）。
 ///
-/// ⚠️ 本波占位：owner 主体依赖分发核心迁移，当前
-/// fail-closed 于 `GENERATION_AGENT_RESUME_UNMIGRATED`
-/// （迁移占位码、非基线码，经错误映射透传）。
+/// 已完成轮次走控制纪元写入，否则由 host 续跑（真实分发路径）。
 #[tauri::command]
 pub async fn agent_generation_resume(
     state: State<'_, AppState>,
