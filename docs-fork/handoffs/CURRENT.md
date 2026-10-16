@@ -1,20 +1,20 @@
 # 当前交接入口
 
-- 最新快照：[2026-10-16-tauri-migration-status.md](./2026-10-16-tauri-migration-status.md)，第 **66** 次。
-- 最新已验证代码：`b9d18fad` / master（DPAPI凭据基础层），恢复频道 `f42ae6f1`。
-- **Rust最新全量1539 passed / 0 failed**，库测试57.00s；全目标检查无告警。
-  证据：`.pi/tmp/b114-credentials-full.log`、`.pi/tmp/b114-credentials-check.log`。
-  全量后累计Rust切片 **0**；本轮DPAPI/凭据定向4项。
-- 归档恢复及连接级冻结门禁已完成；频道沿用 `f42ae6f1` 实测 **281/290**，
-  注册282、事件7，剩余cloud-backup八频道与project:import-legacy-copy。
-- 用户已确定：旧版导入**仅限Lorekeeper**，不读Electron旧项目；
-  云凭据采用**Windows当前用户DPAPI**，不明文落盘、不随项目导出。
-- DPAPI与凭据文档/会话降级服务已交付，尚未接云网络、绑定状态与八个频道。
-- **前提纠正（用户指出）**：目前没有已确认的旧版 Lorekeeper。源码兼容逻辑不等于存在旧产品。
-  撤回旧库升级及临时来源UUID确认请求；暂缓上游遗留导入频道，不用占位实现凑覆盖。
-  详情：[核查结论与范围纠正](../research/2026-10-16-lorekeeper-legacy-copy-scope.md)。
-  下一步推进云备份网络、绑定与频道链路。
-- 最近前端归档定向3文件8项，typecheck/lint/频道脚本通过（均为恢复频道切片实测）。
-  GUI/真实模型/MCP尚未验收，前端非浏览器全量仍沿用B91历史结果。
+- 最新快照：[2026-10-16-tauri-migration-status.md](./2026-10-16-tauri-migration-status.md)，第 **67** 次。
+- 最新已验证代码：`0f0c9d19` / master，已推送；云服务层为 `0ba0ec2e`。
+- 云备份八频道已接通：DPAPI凭据、绑定CAS、WebDAV追加式提交、取消、
+  副本恢复及来源只读绑定；本地模拟DAV端到端通过，**未验收真实云供应商**。
+- **Rust全量1552 passed / 0 failed**，库测试65.24s；all-targets无告警。
+  证据：`.pi/tmp/b116-full.log`、`b116-check.log`；全量后累计Rust切片 **0**。
+- 最新频道实测 **289/290**：注册290、事件7；仅遗留旧版导入暂缓。
+  没有已确认的旧版Lorekeeper输入，不读取Electron/.vela/LanceDB，不做占位凑覆盖。
+- 本轮前端2文件11项，typecheck/lint通过；`.pi/tmp/b116-vitest.log` 等。
+  不是前端全量；非浏览器全量仍沿用B91历史结果。
+- **新发现的构建入口阻塞**：真实执行 `pnpm tauri build --debug --no-bundle`，
+  在 `beforeBuildCommand=pnpm build:frontend` 失败，因为该脚本不存在，
+  实际脚本为 `pnpm build`。证据：`.pi/tmp/b117-build-entry.log`。
+  修改Tauri发布构建入口需先确认，尚未改 `tauri.conf.json`。
+- 下一步：确认后仅修正构建入口，再用隔离Lorekeeper数据根验收构建与窗口；
+  GUI/真实模型/MCP仍未验收，不安装新软件或改变打包/发布策略。
 - 活动状态：[pipeline-state](../../.pi/tmp/pipeline-state.md)；
   [频道清单](../plans/tauri-migration-channel-inventory.md)。不派发子代理。

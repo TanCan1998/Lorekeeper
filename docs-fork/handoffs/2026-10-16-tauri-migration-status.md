@@ -2,32 +2,42 @@
 
 > 入口 [CURRENT.md](./CURRENT.md)；规则见 [../agents/pi-development.md](../agents/pi-development.md) §9。
 
-## 已验证状态（第 66 次 —— DPAPI凭据基础层与输入范围核查）
+## 已验证状态（第 67 次 —— 云备份八频道与真实构建入口核查）
 
-> **用户纠正**：当前没有已确认的旧版 Lorekeeper。下面的源码兼容结构核查不构成产品旧版输入。
-> 撤回旧库升级/临时来源UUID确认请求，暂缓上游遗留导入频道，继续实际云备份链路。
-> 纠正详情见 [核查结论](../research/2026-10-16-lorekeeper-legacy-copy-scope.md)。
-
-- 最新代码 `b9d18fad`：按用户确认复用windows-sys Cryptography feature，
-  当前用户DPAPI加密、UI_FORBIDDEN；额外熵绑定Lorekeeper/账户/端点/用户名，
-  防密文换绑。没有新增crate或改锁文件，其他平台明确不支持。
-- 凭据文档严格解析，保存/解析/清除只在Lorekeeper全局根；明文不落盘，不记日志，
-  不随项目归档；加密失败仅会话保留并警告，损坏文件拒绝覆盖。
-- 用户已确认旧版导入只考虑Lorekeeper；核查发现现有 .lore 无清单指纹及补列/补表，
-  但不能断言覆盖全部早期格式。原地adopt会写源目录，不能用于只读副本导入。
-  [核查与下一确认](../research/2026-10-16-lorekeeper-legacy-copy-scope.md)。
-- **本轮最新验证**（`b9d18fad` 对应工作区）：
-  - Rust全量 **1539 passed / 0 failed**，库测试57.00s；
-    `.pi/tmp/b114-credentials-full.log`，main/doc tests无测试；全量后累计Rust切片 **0**。
-  - `cargo check --all-targets` 无告警：`.pi/tmp/b114-credentials-check.log`。
-  - DPAPI与凭据定向4项：`.pi/tmp/b114-credentials.log`，包含真实Windows DPAPI往返、
-    密文/绑定上下文篡改拒绝、持久文件不含测试明文、仅会话降级及损坏文件保护。
-  - 定向rustfmt与diff/隔离检查通过；本轮未改TS、未重跑前端或频道脚本。
-- 频道沿用 `f42ae6f1` 的 **281/290**；剩余cloud-backup八频道与project:import-legacy-copy。
-  凭据基础层完成**不等于云备份可用**：WebDAV网络、绑定状态、取消/并发与频道接线仍待迁移。
-- 当前队列：云备份网络、绑定、取消/并发及八频道；旧版导入因无已确认输入暂缓。
-  不再要求用户为假设中的旧版Lorekeeper批准schema升级或来源身份分配。
-- GUI/真实模型/MCP仍未验收。
+- 当前代码HEAD `0f0c9d19`，服务层 `0ba0ec2e`，均已推送origin/master。
+- 八个云频道已接通；账户与绑定在Lorekeeper全局根，互斥状态不跨await持锁。
+  未新增crate或修改锁文件，仅给既有tokio启用fs/io-util。
+- WebDAV追加式archive→manifest→completion：条件PUT、读回核验、流式哈希、
+  同源href、禁止重定向、大小限制、在途取消、下载暂存后无覆盖发布。
+- 备份必须显式确认披露；快照后重新认证会话、绑定及账户端点。
+  远端已完成、本机修订冲突时仍报告成功及binding-not-saved。
+- 副本恢复消费目标Create授权，复用已验证恢复服务，不切换活动项目；
+  新绑定为origin-readonly，最近项目记录失败只警告。
+  清除凭据先失配绑定；删除项目仅清理本机绑定，不删远端或共享账户。
+- 操作ID取消后保留至任务结束；暂存按登记文件身份清理，不递归误删陌生内容。
+- 最新验证（本切片最终工作区，对应 `0f0c9d19`）：
+  - Rust全量 **1552 passed / 0 failed**，库测试65.24s；main/doc tests无测试。
+    `.pi/tmp/b116-full.log`，全量后Rust切片累计 **0**。
+  - all-targets无告警：`.pi/tmp/b116-check.log`。
+  - 命令定向5项：`.pi/tmp/b116-command.log`；包括本地DAV完整备份/恢复链路、
+    披露/操作身份、旧会话、只读绑定、绑定CAS冲突及错误脱敏。
+    服务层定向沿用B115的绑定2项、WebDAV5项。
+  - 修复Windows回环夹具接受socket继承非阻塞模式导致大归档分段接收误失败；
+    显式恢复阻塞模式，不降低归档校验或上传体积。
+  - 前端相关2文件11项：`.pi/tmp/b116-vitest.log`；
+    typecheck/lint通过：`b116-typecheck.log`、`b116-lint.log`。
+    这不是前端全量；非浏览器全量仍沿用B91历史结果。
+  - 频道：`.pi/tmp/b116-channels.log`，**289/290**，注册290、事件7；
+    八云频道一一对应，剩余上游遗留 `project:import-legacy-copy`。
+  - 定向格式、差异、双栈与锁文件卫生检查通过。
+- **真实构建入口阻塞**：`pnpm tauri build --debug --no-bundle` 实际退出1，
+  `beforeBuildCommand=pnpm build:frontend` 引用了不存在的脚本；
+  package.json实际已有 `build=tsc && vite build`。证据：`.pi/tmp/b117-build-entry.log`。
+  尚未修改tauri.conf.json；按构建/发布配置边界，先确认只修正这一项。
+- 下一步：确认后修正入口，再执行真实构建和隔离数据根窗口验收。
+  GUI、真实模型、MCP与真实云供应商尚未验收，不能宣称产品迁移完成。
+- **输入范围不变**：没有已确认的旧版Lorekeeper，不把开发期schema演变当旧产品，
+  暂缓遗留导入、不做占位，不读取Electron/.vela/LanceDB。仍不派发子代理。
 
 ---
 
