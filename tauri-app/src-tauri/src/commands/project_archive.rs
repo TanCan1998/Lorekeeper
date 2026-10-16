@@ -1,14 +1,16 @@
-//! 便携项目归档的对话框频道（`dialog:select-project-archive*`，3 频道）。
+//! 便携项目归档：三个授权对话框与项目归档导出/恢复命令。
 //!
 //! | 契约频道 | 命令 | 迁移自 |
 //! |---|---|---|
 //! | `dialog:select-project-archive-export` | [`dialog_select_project_archive_export`] | `electron/controllers/project-archive-controller.ts:142` |
 //! | `dialog:select-project-archive` | [`dialog_select_project_archive`] | 同上 `:163` |
 //! | `dialog:select-project-restore-target` | [`dialog_select_project_restore_target`] | 同上 `:181` |
+//! | `project:archive-export` | [`project_archive_export`] | 同 controller |
+//! | `project:archive-restore` | [`project_archive_restore`] | 同 controller |
 //!
 //! 三个频道只做「用户显式选择 → 签发不透明授权」：返回值仅含 `grantId` 与展示名，绝对路径
 //! 只留在进程内授权注册表（ADR 0002）。消费这些授权的 `project:archive-export` /
-//! `project:archive-restore`（便携归档 ZIP 方案待确认）尚未迁移，届时经
+//! `project:archive-restore` 已落地，经
 //! [`ExternalGrantRegistry::resolve_exact_path`](crate::external_grant::ExternalGrantRegistry::resolve_exact_path)
 //! 取路径。
 //!
@@ -328,7 +330,7 @@ pub enum PortableProjectExportResponse {
     Failure {
         success: bool,
         error: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
         error_code: Option<String>,
     },
 }
@@ -421,6 +423,139 @@ pub fn project_archive_export(
         Err(error) => Ok(portable_failure(error)),
     }
 }
+
+// ===== project:archive-restore =====
+
+/// 恢复是能力域操作：两个一次性授权均由用户显式选择，不依赖当前打开的项目会话。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableProjectRestoreRequest {
+    pub archive_grant_id: String,
+    pub target_grant_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum PortableProjectRestoreResponse {
+    Success {
+        success: bool,
+        receipt: crate::services::portable_project_restore_install::RestorePortableProjectReceipt,
+        #[serde(rename = "recentProjectUpdated")]
+        recent_project_updated: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warning: Option<String>,
+    },
+    Failure {
+        success: bool,
+        error: String,
+        #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
+    },
+}
+
+fn restore_failure(error: String) -> PortableProjectRestoreResponse {
+    match portable_failure(error) {
+        PortableProjectExportResponse::Failure {
+            success,
+            error,
+            error_code,
+        } => PortableProjectRestoreResponse::Failure {
+            success,
+            error,
+            error_code,
+        },
+        _ => unreachable!("失败构造器不会产生成功信封"),
+    }
+}
+
+fn resolve_restore_grants(
+    state: &AppState,
+    request: &PortableProjectRestoreRequest,
+) -> Result<(PathBuf, PathBuf), String> {
+    let archive = resolve_granted_path(state, &request.archive_grant_id, GrantOperation::Read)?;
+    let target = resolve_granted_path(state, &request.target_grant_id, GrantOperation::Create)?;
+    Ok((archive, target))
+}
+
+/// 最近项目登记失败只产生警告，不能把已成功安装的副本谎报为恢复失败。
+fn restored_response(
+    receipt: crate::services::portable_project_restore_install::RestorePortableProjectReceipt,
+    recent: Result<(), String>,
+) -> PortableProjectRestoreResponse {
+    PortableProjectRestoreResponse::Success {
+        success: true,
+        receipt,
+        recent_project_updated: recent.is_ok(),
+        warning: recent
+            .err()
+            .map(|_| "项目已恢复，但最近项目列表暂未更新".to_string()),
+    }
+}
+
+fn register_restored_recent(
+    receipt: &crate::services::portable_project_restore_install::RestorePortableProjectReceipt,
+) -> Result<(), String> {
+    let path = Path::new(&receipt.target_project_root);
+    let database = rusqlite::Connection::open_with_flags(
+        crate::db::project_database_path(path),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|_| "RESTORED_PROJECT_NAME_INVALID".to_string())?;
+    let name: String = database
+        .query_row(
+            "SELECT project_name FROM project_core WHERE id='main'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "RESTORED_PROJECT_NAME_INVALID".to_string())?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("RESTORED_PROJECT_NAME_INVALID".to_string());
+    }
+    crate::commands::project::add_recent_project(crate::commands::project::RecentProject {
+        name: name.to_string(),
+        path: receipt.target_project_root.clone(),
+        updated_at: crate::commands::project::iso8601_utc_from_millis(
+            crate::commands::project::epoch_millis_now(),
+        ),
+    })
+}
+
+/// 归档读取与新副本创建各消费一次授权；不切换当前项目，不在 UI 主线程做解包/SQLite 工作。
+#[tauri::command]
+pub async fn project_archive_restore(
+    state: State<'_, AppState>,
+    request: PortableProjectRestoreRequest,
+) -> Result<PortableProjectRestoreResponse, String> {
+    let (archive, target) = match resolve_restore_grants(state.inner(), &request) {
+        Ok(paths) => paths,
+        Err(error) => return Ok(restore_failure(error)),
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let created_at = crate::commands::project::iso8601_utc_from_millis(
+            crate::commands::project::epoch_millis_now(),
+        );
+        match crate::services::portable_project_restore_install::restore_portable_project(
+            &crate::services::portable_project_restore_install::RestorePortableProjectInput {
+                archive_path: &archive,
+                target_project_root: &target,
+                created_at: &created_at,
+                target_project_id: None,
+                cancel: None,
+                limits: None,
+            },
+        ) {
+            Ok(receipt) => {
+                let recent = register_restored_recent(&receipt);
+                restored_response(receipt, recent)
+            }
+            Err(error) => restore_failure(error),
+        }
+    })
+    .await;
+    Ok(result.unwrap_or_else(|_| restore_failure("恢复任务执行失败".to_string())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,6 +569,114 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn sample_restore_receipt(
+    ) -> crate::services::portable_project_restore_install::RestorePortableProjectReceipt {
+        crate::services::portable_project_restore_install::RestorePortableProjectReceipt {
+            origin_project_id: "123e4567-e89b-12d3-a456-426614174000".into(),
+            target_project_id: "987e6543-e21b-42d3-a456-426614174000".into(),
+            target_project_root: "C:/test/restored".into(),
+            snapshot_generation: "gen-1".into(),
+            portable_database_sha256: "a".repeat(64),
+            rebuilt_derived_tables: vec!["kb_fts".into()],
+            requires_runtime_freeze_guard: true,
+        }
+    }
+
+    #[test]
+    fn restore_consumes_read_and_create_grants_without_requiring_active_session() {
+        let dir = temp_dir("restore-two-grants");
+        let archive = dir.join("book.ainovel");
+        std::fs::write(&archive, b"archive").unwrap();
+        let state = AppState::new();
+        let request = {
+            let mut grants = state.external_grants.lock().unwrap();
+            PortableProjectRestoreRequest {
+                archive_grant_id: grants
+                    .issue_file(&archive, ARCHIVE_GRANT_TTL, Some(1))
+                    .unwrap(),
+                target_grant_id: grants
+                    .issue_new_child(
+                        &dir,
+                        "restored",
+                        vec![GrantOperation::Create],
+                        ARCHIVE_GRANT_TTL,
+                        Some(1),
+                    )
+                    .unwrap(),
+            }
+        };
+        let (source, target) = resolve_restore_grants(&state, &request).unwrap();
+        assert_eq!(source, std::fs::canonicalize(&archive).unwrap());
+        assert_eq!(
+            target,
+            std::fs::canonicalize(&dir).unwrap().join("restored")
+        );
+        assert!(state.active_project_snapshot().is_none());
+        assert_eq!(
+            resolve_restore_grants(&state, &request).unwrap_err(),
+            "PORTABLE_GRANT_INVALID"
+        );
+        assert_eq!(
+            resolve_granted_path(&state, &request.target_grant_id, GrantOperation::Create)
+                .unwrap_err(),
+            "PORTABLE_GRANT_INVALID"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_invalid_second_grant_still_consumes_first_like_baseline() {
+        let dir = temp_dir("restore-invalid-grant");
+        let archive = dir.join("book.ainovel");
+        std::fs::write(&archive, b"archive").unwrap();
+        let state = AppState::new();
+        let archive_grant_id = state
+            .external_grants
+            .lock()
+            .unwrap()
+            .issue_file(&archive, ARCHIVE_GRANT_TTL, Some(1))
+            .unwrap();
+        let request = PortableProjectRestoreRequest {
+            archive_grant_id,
+            target_grant_id: "invalid".into(),
+        };
+        assert_eq!(
+            resolve_restore_grants(&state, &request).unwrap_err(),
+            "PORTABLE_GRANT_INVALID"
+        );
+        assert_eq!(
+            resolve_granted_path(&state, &request.archive_grant_id, GrantOperation::Read)
+                .unwrap_err(),
+            "PORTABLE_GRANT_INVALID"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_serialization_matches_success_warning_and_error_contract() {
+        let good =
+            serde_json::to_value(restored_response(sample_restore_receipt(), Ok(()))).unwrap();
+        assert_eq!(good["success"], true);
+        assert_eq!(good["recentProjectUpdated"], true);
+        assert!(good.get("warning").is_none());
+        assert!(good["receipt"].get("rebuiltDerivedTables").is_none());
+        let warning = serde_json::to_value(restored_response(
+            sample_restore_receipt(),
+            Err("内部路径不能泄漏".into()),
+        ))
+        .unwrap();
+        assert_eq!(warning["success"], true);
+        assert_eq!(warning["recentProjectUpdated"], false);
+        assert_eq!(warning["warning"], "项目已恢复，但最近项目列表暂未更新");
+        let failure =
+            serde_json::to_value(restore_failure("PORTABLE_GRANT_INVALID".into())).unwrap();
+        assert_eq!(failure["errorCode"], "PORTABLE_GRANT_INVALID");
+        assert!(failure.get("error_code").is_none());
+        let export =
+            serde_json::to_value(portable_failure("PORTABLE_GRANT_INVALID".into())).unwrap();
+        assert_eq!(export["errorCode"], "PORTABLE_GRANT_INVALID");
     }
 
     #[test]

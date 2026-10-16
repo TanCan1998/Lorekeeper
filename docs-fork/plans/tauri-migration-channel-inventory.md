@@ -41,6 +41,20 @@
 
 `electron/preload.ts` 暴露面 = `invoke / on / once / send / setZoomLevel / setZoomFactor / getZoomLevel`（zoom 走 Electron `webFrame`，Tauri 侧需用 Webview zoom API 或 CSS 替代，归阶段 3）。
 
+## 便携归档频道映射补充（B109–B113）
+
+| 频道 | Rust command | 参数/能力边界 |
+|---|---|---|
+| `dialog:select-project-archive-export` | `dialog_select_project_archive_export` | 净化建议名，签发一次性 create 授权 |
+| `dialog:select-project-archive` | `dialog_select_project_archive` | 签发一次性 read 授权 |
+| `dialog:select-project-restore-target` | `dialog_select_project_restore_target` | 固定新副本名，签发一次性 create 授权 |
+| `project:archive-export` | `project_archive_export` | request 内显式携带会话与目标授权 |
+| `project:archive-restore` | `project_archive_restore` | request 仅携带 archiveGrantId / targetGrantId；不注入会话 |
+
+恢复异步在阻塞工作线程解包和安装，不切换活动项目；最近项目登记失败保留成功收据并返回警告。
+所有项目数据落在 `.lore`；冻结侧车与连接级 TEMP 写入门禁必须协同，不把历史收据当作可重放权威。
+本条不表示旧版副本导入或云备份已完成。
+
 ## 2. 必须知晓的传输层约定（Rust 签名要预留）
 
 1. **项目会话注入**：`ipc-client.ts` 的 `invokeWithSession` 对项目域频道（`db:*`、`kb:*`、`chapter:*`、`fs:*`、`project:save|update-config|delete`）**自动在参数尾部追加 `projectSession`**（`ProjectSessionContext { projectId, leaseId, projectPath }`）。契约文件的 `args` 不包含它 —— **Rust 命令必须接受这个尾参**并校验租约（对应 ADR 0001 会话租约）。

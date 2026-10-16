@@ -250,6 +250,7 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'model-provider-resource:open',
   'official-homepage:open',
   'project:archive-export',
+  'project:archive-restore',
   'project:create',
   'project:delete',
   'project:get-runtime-context',

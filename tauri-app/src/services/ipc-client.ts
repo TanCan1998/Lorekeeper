@@ -209,6 +209,8 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   // 注：`project:archive-export` 不是 ipc-client 的自动注入面（其 request 自带 projectSession），
   // 因此这里只登记位置参数名。
   'project:archive-export': ['request'],
+  // 恢复只携带两份不透明授权，不注入当前项目会话。
+  'project:archive-restore': ['request'],
   // 批次 B110：角色头像（项目域，自动注入 projectSession）
   // 注：返回契约判别联合 `{ success, cancelled?/image?/avatars?/error? }`。
   'character-avatar:choose': ['characterId'],

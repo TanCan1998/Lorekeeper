@@ -539,7 +539,7 @@ pub struct ProjectDeleteResult {
 // ===== 项目身份 / 最近项目 / 数据库状态辅助 =====
 
 /// 记录最近项目（去重后置顶，最多 20 条）—— 对齐基线 `addRecentProject`
-fn add_recent_project(project: RecentProject) -> Result<(), String> {
+pub(crate) fn add_recent_project(project: RecentProject) -> Result<(), String> {
     let mut list: Vec<RecentProject> = load_recent_projects()
         .into_iter()
         .filter(|item| !same_recent_project_path(&item.path, &project.path))
