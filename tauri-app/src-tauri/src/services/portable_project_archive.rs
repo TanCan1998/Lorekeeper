@@ -18,14 +18,14 @@
 //! - Windows 上目录身份经 `FILE_FLAG_BACKUP_SEMANTICS` 打开目录句柄后取（复用
 //!   `GetFileInformationByHandle`），与 `portable_runtime_freeze` / `import::parsing` 同款做法。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::services::portable_project_format::{
     parse_portable_project_manifest, portable_path_key, PortableArchiveLimits,
@@ -647,6 +647,333 @@ fn write_archive_body(
     })
 }
 
+/// 上游 `ExtractPortableProjectArchiveInput`
+#[derive(Debug, Clone)]
+pub struct ExtractPortableProjectArchiveInput<'a> {
+    pub archive_path: &'a Path,
+    /// 应用自有的私有目录（必须是安全目录，且不是用户可写的公共目录）
+    pub staging_parent_path: &'a Path,
+    pub limits: Option<PortableArchiveLimits>,
+}
+
+/// 上游 `ExtractPortableProjectArchiveResult`
+#[derive(Debug, Clone)]
+pub struct ExtractPortableProjectArchiveResult {
+    pub manifest: PortableProjectManifest,
+    pub receipt: PortableArchiveReceipt,
+    pub staging_path: PathBuf,
+}
+
+/// 索引后的条目元信息（`ZipFile` 借用 `ZipArchive`，故先记住元信息再逐条解包）
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedEntry {
+    name: String,
+    index: usize,
+    size: u64,
+    compressed_size: u64,
+}
+
+/// 上游 `assertOwnedOpenFile`：目标必须是本次暂存尝试创建的文件，且句柄与路径同一
+fn assert_owned_open_file(
+    attempt: &StagingAttempt,
+    target: &Path,
+    file: &File,
+) -> Result<FileIdentity, String> {
+    let parent = target.parent().ok_or_else(source_unsafe)?;
+    assert_attempt_directory(attempt, parent)?;
+    let opened = handle_identity(file)?;
+    let actual = path_identity(target)?;
+    let root_real = std::fs::canonicalize(&attempt.root).map_err(|_| source_unsafe())?;
+    let target_real = std::fs::canonicalize(target).map_err(|_| source_unsafe())?;
+    if !actual.is_file
+        || actual.is_symlink
+        || !same_file(&opened, &actual)
+        || !target_real.starts_with(&root_real)
+        || real_path_text(target) != literal_path_text(target)
+    {
+        return Err(source_unsafe());
+    }
+    Ok(actual)
+}
+
+/// 上游 `indexArchive`：逐条目严格校验元数据、路径键与限额
+fn index_archive<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    limits: &PortableArchiveLimits,
+) -> Result<Vec<IndexedEntry>, String> {
+    let count = archive.len();
+    if count == 0 || count > limits.max_entries + 1 {
+        return Err(archive_invalid());
+    }
+    if !archive.comment().is_empty() {
+        return Err(archive_invalid());
+    }
+    let mut entries: Vec<IndexedEntry> = Vec::with_capacity(count);
+    let mut path_keys: HashSet<String> = HashSet::new();
+    let mut uncompressed_total: u64 = 0;
+    let mut compressed_total: u64 = 0;
+    for index in 0..count {
+        let entry = archive.by_index(index).map_err(|_| archive_invalid())?;
+        // 基线 `assertEntryMetadata`：拒绝加密 / 非 store / 目录条目 / 条目注释 / Zip64 之外的形状
+        if entry.encrypted()
+            || entry.compression() != CompressionMethod::Stored
+            || entry.is_dir()
+            || !entry.comment().is_empty()
+            || entry.version_needed() > 45
+        {
+            return Err(archive_invalid());
+        }
+        let attributes = entry.external_attributes();
+        if attributes & 0x10 != 0 || attributes & 0x400 != 0 {
+            return Err(archive_invalid());
+        }
+        if let Some(mode) = entry.unix_mode() {
+            // 基线：creator 为 Unix 时类型位必须是常规文件（0o100000）
+            if mode & 0o170000 != 0o100000 {
+                return Err(archive_invalid());
+            }
+        }
+        let raw_name = entry.name_raw();
+        if raw_name.is_empty() || raw_name.len() > limits.max_path_bytes {
+            return Err(archive_invalid());
+        }
+        // 名称必须能严格按 UTF-8 解码（等价基线 fatal TextDecoder；不强制 UTF-8 标志位，
+        // 以便读取 Tauri 侧写出的纯 ASCII 条目名归档）。
+        let name = std::str::from_utf8(raw_name)
+            .map_err(|_| archive_invalid())?
+            .to_string();
+        let key = portable_path_key(&name, limits.max_path_bytes)?;
+        if index == 0 {
+            if name != MANIFEST_PATH {
+                return Err(archive_invalid());
+            }
+        } else {
+            if key == MANIFEST_PATH {
+                return Err(archive_invalid());
+            }
+            if !path_keys.insert(key) {
+                return Err(archive_invalid());
+            }
+        }
+        if entry.size() > limits.max_entry_bytes
+            || entry.compressed_size() > limits.max_declared_compressed_bytes
+            || entry.size()
+                > entry
+                    .compressed_size()
+                    .max(1)
+                    .saturating_mul(limits.max_compression_ratio)
+        {
+            return Err(limit_exceeded());
+        }
+        uncompressed_total = uncompressed_total
+            .checked_add(entry.size())
+            .ok_or_else(limit_exceeded)?;
+        compressed_total = compressed_total
+            .checked_add(entry.compressed_size())
+            .ok_or_else(limit_exceeded)?;
+        if uncompressed_total > limits.max_total_bytes
+            || compressed_total > limits.max_declared_compressed_bytes
+        {
+            return Err(limit_exceeded());
+        }
+        entries.push(IndexedEntry {
+            name,
+            index,
+            size: entry.size(),
+            compressed_size: entry.compressed_size(),
+        });
+    }
+    Ok(entries)
+}
+
+/// 上游 `readManifest`：读取单条目的全部字节（Size 上限 = min(maxEntryBytes, 16 MiB)）
+fn read_entry_bytes<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    index: usize,
+    max_bytes: u64,
+) -> Result<Vec<u8>, String> {
+    let mut entry = archive.by_index(index).map_err(|_| archive_invalid())?;
+    if entry.size() > max_bytes {
+        return Err(limit_exceeded());
+    }
+    let mut bytes: Vec<u8> = Vec::with_capacity(entry.size().min(1 << 20) as usize);
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = entry.read(&mut buffer).map_err(|_| archive_invalid())?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() as u64 > max_bytes || bytes.len() as u64 > entry.size() {
+            return Err(limit_exceeded());
+        }
+    }
+    if bytes.len() as u64 != entry.size() {
+        return Err(archive_invalid());
+    }
+    Ok(bytes)
+}
+
+/// 解包单个 payload 条目到暂存目录（`wx` 打开 → 身份复核 → 流式复制 → 结束复核）
+fn extract_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    item: &IndexedEntry,
+    expected: &PortableProjectManifestEntry,
+    staging: &mut StagingAttempt,
+) -> Result<(), String> {
+    let target = target_for(staging, &item.name)?;
+    let mut options = OpenOptions::new();
+    options.write(true).read(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = match options.open(&target) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(target_exists())
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let identity = assert_owned_open_file(staging, &target, &file)?;
+    staging.record_file(&target, identity);
+
+    let mut entry = archive
+        .by_index(item.index)
+        .map_err(|_| archive_invalid())?;
+    let mut hasher = Sha256::new();
+    let mut written: u64 = 0;
+    let mut buffer = vec![0u8; COPY_CHUNK_BYTES];
+    loop {
+        let read = entry.read(&mut buffer).map_err(|_| archive_invalid())?;
+        if read == 0 {
+            break;
+        }
+        written += read as u64;
+        if written > expected.byte_size {
+            return Err(archive_invalid());
+        }
+        hasher.update(&buffer[..read]);
+        file.write_all(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+    }
+    if written != expected.byte_size || format!("{:x}", hasher.finalize()) != expected.sha256 {
+        return Err(archive_invalid());
+    }
+    file.sync_all().map_err(|error| error.to_string())?;
+    let final_identity = assert_owned_open_file(staging, &target, &file)?;
+    staging.update_file_identity(&target, final_identity);
+    Ok(())
+}
+
+/// 上游 `extractPortableProjectArchive` 的解包段：建暂存 → 逐条解包 → 归档身份复核
+#[allow(clippy::too_many_arguments)]
+fn extract_payloads<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    probe: &File,
+    archive_path: &Path,
+    before: &FileIdentity,
+    manifest: &PortableProjectManifest,
+    payloads: &[IndexedEntry],
+    staging_parent_path: &Path,
+) -> Result<PathBuf, String> {
+    let mut staging = prepare_staging(staging_parent_path)?;
+    let outcome = (|| -> Result<(), String> {
+        for (index, item) in payloads.iter().enumerate() {
+            let expected = manifest.entries.get(index).ok_or_else(archive_invalid)?;
+            extract_entry(archive, item, expected, &mut staging)?;
+        }
+        if !same_file(before, &handle_identity(probe)?)
+            || !same_file(before, &assert_regular_source(archive_path)?)
+        {
+            return Err(source_changed());
+        }
+        Ok(())
+    })();
+    match outcome {
+        Ok(()) => Ok(staging.root.clone()),
+        Err(error) => {
+            cleanup_attempt(&staging);
+            Err(error)
+        }
+    }
+}
+
+/// 上游 `extractPortableProjectArchive`（B111b-2 读取面）
+pub fn extract_portable_project_archive(
+    input: &ExtractPortableProjectArchiveInput<'_>,
+) -> Result<ExtractPortableProjectArchiveResult, String> {
+    let limits = input.limits.unwrap_or_default();
+    let archive_path = absolute(input.archive_path)?;
+    let before = assert_regular_source(&archive_path)?;
+    let file = File::open(&archive_path).map_err(|_| archive_invalid())?;
+    if !same_file(&before, &handle_identity(&file)?) {
+        return Err(source_changed());
+    }
+    // 读取交给 `zip`（它自行按 central directory 解析并校验 CRC）；保留一个句柄用于身份复核。
+    let probe = file.try_clone().map_err(|error| error.to_string())?;
+    let mut archive = ZipArchive::new(file).map_err(|_| archive_invalid())?;
+    let indexed = index_archive(&mut archive, &limits)?;
+    let manifest_bytes = read_entry_bytes(
+        &mut archive,
+        0,
+        limits.max_entry_bytes.min(PORTABLE_MANIFEST_MAX_BYTES),
+    )?;
+    let decoded = String::from_utf8(manifest_bytes.clone()).map_err(|_| archive_invalid())?;
+    let value: serde_json::Value = serde_json::from_str(&decoded).map_err(|_| archive_invalid())?;
+    let manifest = parse_portable_project_manifest(&value, Some(&limits))?;
+    let payloads = &indexed[1..];
+    let uncompressed_total: u64 = payloads.iter().map(|entry| entry.size).sum();
+    let compressed_total: u64 = payloads.iter().map(|entry| entry.compressed_size).sum();
+    if manifest.declared_uncompressed_bytes != uncompressed_total
+        || manifest.declared_compressed_bytes != compressed_total
+        || manifest.entries.len() != payloads.len()
+    {
+        return Err(archive_invalid());
+    }
+    for (index, item) in payloads.iter().enumerate() {
+        let entry = &manifest.entries[index];
+        if entry.path != item.name || entry.byte_size != item.size {
+            return Err(archive_invalid());
+        }
+    }
+    let staging_path = extract_payloads(
+        &mut archive,
+        &probe,
+        &archive_path,
+        &before,
+        &manifest,
+        payloads,
+        input.staging_parent_path,
+    )?;
+    Ok(ExtractPortableProjectArchiveResult {
+        receipt: PortableArchiveReceipt {
+            entry_count: manifest.entries.len(),
+            payload_bytes: uncompressed_total,
+            archive_bytes: before.size,
+            manifest_sha256: sha256_hex(&manifest_bytes),
+        },
+        manifest,
+        staging_path,
+    })
+}
+impl StagingAttempt {
+    /// 登记本次尝试创建的文件（created 所有权清单）
+    pub fn record_file(&mut self, path: &Path, identity: FileIdentity) {
+        self.created.push((path.to_path_buf(), identity, false));
+    }
+
+    /// 更新已登记文件的最新身份（写出后复核结果）
+    pub fn update_file_identity(&mut self, path: &Path, identity: FileIdentity) {
+        for record in self.created.iter_mut() {
+            if record.0 == path {
+                record.1 = identity;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,6 +1208,158 @@ mod tests {
         assert!(safe_directory(&real).is_ok());
         assert_eq!(
             safe_directory(&link).unwrap_err(),
+            "PORTABLE_ARCHIVE_SOURCE_UNSAFE"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn extract_round_trips_written_archive_test() {
+        let root = temp_dir("extract");
+        let (manifest, sources) = case(&root);
+        let target = root.join("book.ainovel");
+        let staging_parent = root.join("staging");
+        std::fs::create_dir_all(&staging_parent).unwrap();
+        let written = write_portable_project_archive(&WritePortableProjectArchiveInput {
+            manifest: &manifest,
+            sources: &sources,
+            target_path: &target,
+            limits: None,
+        })
+        .unwrap();
+        let extracted = extract_portable_project_archive(&ExtractPortableProjectArchiveInput {
+            archive_path: &target,
+            staging_parent_path: &staging_parent,
+            limits: None,
+        })
+        .unwrap();
+        assert_eq!(extracted.manifest, manifest);
+        assert_eq!(extracted.receipt.entry_count, written.entry_count);
+        assert_eq!(extracted.receipt.payload_bytes, written.payload_bytes);
+        assert_eq!(extracted.receipt.manifest_sha256, written.manifest_sha256);
+        assert_eq!(extracted.receipt.archive_bytes, written.archive_bytes);
+        assert_eq!(
+            std::fs::read(extracted.staging_path.join("a.txt")).unwrap(),
+            b"first payload"
+        );
+        assert_eq!(
+            std::fs::read(extracted.staging_path.join("novel/b.json")).unwrap(),
+            b"second payload"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_rejects_deflated_entry_and_bad_first_entry_test() {
+        let root = temp_dir("deflate");
+        let staging_parent = root.join("staging");
+        std::fs::create_dir_all(&staging_parent).unwrap();
+        let payload = b"payload".to_vec();
+        let manifest = make_manifest(&[("a.txt", &payload)]);
+        let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+        let stored = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .unix_permissions(0o600);
+        let deflated = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o600);
+
+        // 非 store 条目必须被拒绝（对齐基线 `assertEntryMetadata`）
+        let target = root.join("deflated.ainovel");
+        {
+            let mut writer = ZipWriter::new(File::create(&target).unwrap());
+            writer.start_file(MANIFEST_PATH, stored).unwrap();
+            writer.write_all(&manifest_bytes).unwrap();
+            writer.start_file("a.txt", deflated).unwrap();
+            writer.write_all(&payload).unwrap();
+            writer.finish().unwrap();
+        }
+        assert_eq!(
+            extract_portable_project_archive(&ExtractPortableProjectArchiveInput {
+                archive_path: &target,
+                staging_parent_path: &staging_parent,
+                limits: None,
+            })
+            .unwrap_err(),
+            "PORTABLE_ARCHIVE_INVALID"
+        );
+
+        // 首条目不是 manifest.json 也必须被拒绝
+        let second = root.join("first-not-manifest.ainovel");
+        {
+            let mut writer = ZipWriter::new(File::create(&second).unwrap());
+            writer.start_file("a.txt", stored).unwrap();
+            writer.write_all(&payload).unwrap();
+            writer.start_file(MANIFEST_PATH, stored).unwrap();
+            writer.write_all(&manifest_bytes).unwrap();
+            writer.finish().unwrap();
+        }
+        assert_eq!(
+            extract_portable_project_archive(&ExtractPortableProjectArchiveInput {
+                archive_path: &second,
+                staging_parent_path: &staging_parent,
+                limits: None,
+            })
+            .unwrap_err(),
+            "PORTABLE_ARCHIVE_INVALID"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_rejects_tampered_payload_and_missing_staging_parent_test() {
+        let root = temp_dir("tamper");
+        let (manifest, sources) = case(&root);
+        let target = root.join("book.ainovel");
+        let staging_parent = root.join("staging");
+        std::fs::create_dir_all(&staging_parent).unwrap();
+        write_portable_project_archive(&WritePortableProjectArchiveInput {
+            manifest: &manifest,
+            sources: &sources,
+            target_path: &target,
+            limits: None,
+        })
+        .unwrap();
+
+        // 翻转 payload 字节 → 条目 CRC / sha256 不符 → 拒绝（且不留下暂存目录）
+        let mut bytes = std::fs::read(&target).unwrap();
+        let needle = b"first payload";
+        let position = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap();
+        bytes[position] = b'X';
+        std::fs::write(&target, &bytes).unwrap();
+        assert_eq!(
+            extract_portable_project_archive(&ExtractPortableProjectArchiveInput {
+                archive_path: &target,
+                staging_parent_path: &staging_parent,
+                limits: None,
+            })
+            .unwrap_err(),
+            "PORTABLE_ARCHIVE_INVALID"
+        );
+        let leftovers: Vec<String> = std::fs::read_dir(&staging_parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(leftovers.is_empty(), "失败必须清理暂存目录");
+
+        // 暂存父目录不存在（非安全目录）→ SOURCE_UNSAFE
+        let clean_target = root.join("clean.ainovel");
+        write_portable_project_archive(&WritePortableProjectArchiveInput {
+            manifest: &manifest,
+            sources: &sources,
+            target_path: &clean_target,
+            limits: None,
+        })
+        .unwrap();
+        assert_eq!(
+            extract_portable_project_archive(&ExtractPortableProjectArchiveInput {
+                archive_path: &clean_target,
+                staging_parent_path: &root.join("missing"),
+                limits: None,
+            })
+            .unwrap_err(),
             "PORTABLE_ARCHIVE_SOURCE_UNSAFE"
         );
         let _ = std::fs::remove_dir_all(&root);
