@@ -122,6 +122,8 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    # 已批准：当前 Windows 用户 DPAPI 云凭据保护（非机器范围）。
+    "Win32_Security_Cryptography",
 ] }
 
 # 按需引入（不提前加，避免无用编译）：

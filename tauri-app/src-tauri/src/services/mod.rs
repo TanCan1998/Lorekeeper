@@ -11,6 +11,8 @@ pub mod avatar_image;
 pub mod character_asset_service; // 批次 B110：头像资产读写与孤儿登记
 pub mod character_proposal;
 pub mod character_proposal_parser;
+pub mod cloud_credential_store;
+pub mod cloud_secret_protector;
 pub mod draft_reconciliation;
 pub mod draft_short_outline;
 pub mod main_generation_owner;
