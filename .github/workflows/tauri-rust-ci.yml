@@ -38,13 +38,10 @@ jobs:
     env:
       CI: 'true'
       RUST_TOOLCHAIN: '1.99.0'
-      RUSTUP_HOME: ${{ runner.temp }}/lorekeeper-rustup
-      CARGO_HOME: ${{ runner.temp }}/lorekeeper-cargo
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_TERM_COLOR: never
-      AI_NOVEL_LOREKEEPER_HOME: ${{ runner.temp }}/lorekeeper-test-home
 
     steps:
       # 2026-10-17核对官方latest稳定版；固定SHA以避免浮动标签供应链漂移。
@@ -57,6 +54,13 @@ jobs:
         run: |
           ./tauri-app/scripts/test-rust-ci.contract.ps1
           exit $LASTEXITCODE
+
+      # runner上下文不能用于job级env，在runner步骤中登记隔离目录。
+      - name: 设置隔离测试目录
+        run: |
+          "RUSTUP_HOME=$(Join-Path $env:RUNNER_TEMP 'lorekeeper-rustup')" >> $env:GITHUB_ENV
+          "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'lorekeeper-cargo')" >> $env:GITHUB_ENV
+          "AI_NOVEL_LOREKEEPER_HOME=$(Join-Path $env:RUNNER_TEMP 'lorekeeper-test-home')" >> $env:GITHUB_ENV
 
       - name: 安装固定Rust工具链
         run: |
