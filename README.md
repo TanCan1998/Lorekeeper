@@ -16,15 +16,7 @@
 >
 > - **迁移策略**：在 `tauri-app/` 独立推进 Lorekeeper（设定司），Rust 后端位于 `tauri-app/src-tauri/`，保留原有 **Electron** 实现继续可运行，用于**同步上游仓库的修改**。
 > - **上游同步**：通过 `git remote add upstream https://github.com/EthanYoQ/AI-Novel-Writer.git` 关联原仓库，定期 `git fetch upstream` 合并上游演进，避免功能分叉。
-> - **文档**：迁移评估见 `docs-fork/research/2026-10-04-tauri-migration-evaluation.md`；pi agent 开发指南见 `docs-fork/agents/pi-development.md`。
->
-> ### 迁移进度（2026-10-15）
->
-> - **历史频道覆盖**：248/290（约86%），另有42个未迁移频道；本机 `pnpm run check:channels` 实测（已注册249 → 覆盖248），**不代表产品完成度或 GUI 验收比例**。
-> - **已接通**：生产短锁与关闭围栏、事件、Agent轮次/恢复、材料/短细纲/对账、普通重启、启动门禁、知识库原文副本三频道；仅开放已登记的 `generate_draft → chapter-draft` 工作流。
-> - **最近验证**：代码 `4c9364c4` 的Rust全量 **1415通过/0失败（56.63s）**、全目标检查无告警；知识库定向74项、前端传输13项与IPC结构体合同1项通过，typecheck/lint退出0。最近前端非浏览器全量沿用B91的 **1929通过/123失败/1跳过**（本轮未重跑）。
-> - **仍待完成**：前端既存失败、真实模型与完整 GUI 验收；其他工作流和特殊域未开放。B3仍在进行中，不宣称完整端到端完成。
-> - **接续入口**：[迁移总览](docs-fork/README.md)、[当前交接](docs-fork/handoffs/CURRENT.md)、[第77次快照](docs-fork/handoffs/2026-10-17-tauri-migration-status.md)。按“继续迁移”推进，开发子代理仍禁止派发。
+> - **文档**：[Fork 文档入口](docs-fork/README.md)；迁移评估见 `docs-fork/research/2026-10-04-tauri-migration-evaluation.md`；pi agent 开发指南见 `docs-fork/agents/pi-development.md`。
 >
 > 以下内容与原项目一致。
 
