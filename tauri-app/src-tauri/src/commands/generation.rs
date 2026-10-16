@@ -2424,34 +2424,8 @@ pub async fn generation_compose_visible(
 /// generation-owner-contract.ts:189，对齐基线的
 /// 单参数注册形态）。
 ///
-/// 执行依赖型 fail-closed（双重依赖未迁移，本波次
-/// 既定决策）：
-/// 1. 基线 :169-170 `knowledgeBaseLoader.load()` +
-///    `kb.captureWritingKnowledgeSnapshot(request.query,
-///    session.projectPath, getEmbeddingConfig())`——KB
-///    命令层待 F2 收口（`db/vector.rs`
-///    `LocalVectorIndex` 已落地但未接命令层），命令层
-///    fail-closed；错误码对齐基线 register catch
-///    （generation-controller.ts:159-160）：
-///    `KnowledgeBaseUnavailableError` /
-///    `LegacyVectorMigrationBlockedError` → 抛出其
-///    code（`KNOWLEDGE_BASE_NATIVE_UNAVAILABLE` /
-///    `LEGACY_VECTOR_MIGRATION_BLOCKED`，用
-///    `mutating_error` 包装）。
-/// 2. 基线 :167 `owner.draftPreparationBinding(request)`
-///    ——策略构造点（`newMainGenerationPolicy` /
-///    `rootPolicy`）依赖 main-generation-plan.ts 写面
-///    未迁移（G4-6b-1 既定 fail-closed 依赖），owner
-///    方法内 fail-closed（见 `services/
-///    main_generation_owner.rs` `draft_preparation_binding`
-///    头注）。
-///
-/// 执行路径上基线先算 `baseline`（:167），故策略
-/// 规划器的 fail-closed 先于 KB 捕获触发；
-/// `prepareDraftContext` 主体（`GENERATION_DRAFT_
-/// PREPARATION_CHANGED` 校验、selectedDrafts 读取、
-/// `preparationId` LRU）与 `preparedKnowledge` 已在
-/// owner 方法内完整就位，待依赖迁移后自动生效。
+/// 分两次短门禁构造准备绑定：可选嵌入请求在中间执行，不占 owner/数据库锁。
+/// 返回前在事务内复核知识身份及作者来源漂移，不接受渲染层自报知识快照。
 #[tauri::command]
 pub async fn generation_prepare_draft_context(
     state: State<'_, AppState>,
@@ -2460,15 +2434,43 @@ pub async fn generation_prepare_draft_context(
 ) -> Result<Value, String> {
     let state = state.inner();
     let cache = &state.generation_owners;
-    let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
-    let owner = guard.owner();
+    let session = project_session
+        .as_ref()
+        .ok_or_else(|| "缺少项目会话上下文，已拒绝操作".to_string())?;
+    let baseline = {
+        let mut guard = authorized_gate(cache, state, Some(session))?;
+        state.with_project_db(|conn| {
+            guard
+                .owner()
+                .draft_preparation_binding(conn, &request, None)
+        })?
+    };
+    let query = request
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or_else(|| mutating_error("GENERATION_DRAFT_PREPARATION_INVALID"))?;
+    let snapshot = crate::commands::kb::capture_writing_knowledge(
+        state,
+        query,
+        &session.project_path,
+        session,
+    )
+    .await
+    .map_err(|error| mutating_error(&error))?;
+    let snapshot = serde_json::to_value(snapshot)
+        .map_err(|_| mutating_error("GENERATION_KNOWLEDGE_INVALID_SNAPSHOT"))?;
+    let mut guard = authorized_gate(cache, state, Some(session))?;
     state.with_project_db(|conn| {
-        // 基线 :167 `owner.draftPreparationBinding(request)`
-        // ——策略构造点 fail-closed（依赖未迁移）。
-        let _baseline = owner.draft_preparation_binding(conn, &request, None)?;
-        // 基线 :169-170 KB 知识快照捕获——命令层
-        // fail-closed（KB 命令层待 F2 收口）。
-        Err(mutating_error("KNOWLEDGE_BASE_NATIVE_UNAVAILABLE"))
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|_| mutating_error("GENERATION_DATABASE_NOT_READY"))?;
+        let prepared =
+            guard
+                .owner()
+                .prepare_draft_context(&tx, &request, &snapshot, Some(&baseline))?;
+        tx.commit()
+            .map_err(|_| mutating_error("GENERATION_DATABASE_NOT_READY"))?;
+        Ok(prepared)
     })
 }
 

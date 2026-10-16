@@ -17,7 +17,7 @@
     "character_avatar_assets", "character_avatar_unresolved"
   ],
   "m06Tables": ["review_cycle_merges"],
-  "optionalFields": ["characters.avatar"],
+  "optionalFields": ["characters.avatar", "kb_source_revisions.id", "kb_source_revisions.canonical_revision", "kb_source_revisions.documents_revision"],
   "deltaCharacterFields": ["character_id", "legacy_key", "static_provenance", "identity_revision", "retired"],
   "signedOverrides": {
     "chapter_deletion_operations.knowledge_status": "non-executable-history",
@@ -123,6 +123,7 @@
     "revisions": {"id":"D","base_draft_id":"D","revision_index":"D","revision_type":"D","status":"D","merged_to_draft_id":"D","user_prompt":"D","review_source_id":"D","source_draft_chapter_number":"D","source_draft_version":"D","source_draft_status":"D","source_content":"D","content_id":"D","word_count":"D","created_at":"D","updated_at":"D"},
     "summary_snapshots": {"id":"D","draft_id":"D","chapter_number":"D","character_states":"D","chapter_notes":"D","continuity_facts":"D","character_state_candidates":"D","source_finalization_id":"D","source_content_hash":"D","projection_generation":"D","created_at":"D"},
     "text_metric_versions": {"metric":"B","version":"B","updated_at":"B"},
+    "kb_source_revisions": {"id":"B", "canonical_revision":"B", "documents_revision":"B"},
     "kb_documents": {
       "id": "D",
       "file_name": "D",

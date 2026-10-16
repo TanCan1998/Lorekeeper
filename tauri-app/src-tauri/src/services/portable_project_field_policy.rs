@@ -545,6 +545,31 @@ mod tests {
     }
 
     #[test]
+    fn older_archives_without_source_revisions_still_match_and_upgrade() {
+        let conn = memory_db();
+        drop_rebuildable_tables(&conn).unwrap();
+        for table in ["kb_chunks", "kb_documents"] {
+            for event in ["insert", "update", "delete"] {
+                conn.execute_batch(&format!("DROP TRIGGER kb_source_revision_{table}_{event}"))
+                    .unwrap();
+            }
+        }
+        conn.execute_batch("DROP TABLE kb_source_revisions")
+            .unwrap();
+        assert!(assert_portable_source_schema(&conn).is_ok());
+        create_tables(&conn).unwrap();
+        assert_eq!(crate::db::kb::revisions::read(&conn).unwrap().canonical, 0);
+        drop_rebuildable_tables(&conn).unwrap();
+        assert!(assert_portable_source_schema(&conn).is_ok());
+        assert_eq!(
+            get_portable_field_policy("kb_source_revisions", "canonical_revision")
+                .unwrap()
+                .disposition,
+            PortableFieldDisposition::RebuildStale
+        );
+    }
+
+    #[test]
     fn assert_schema_rejects_unknown_table_field_and_missing_column_test() {
         let conn = memory_db();
         drop_rebuildable_tables(&conn).unwrap();

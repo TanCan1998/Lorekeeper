@@ -15,6 +15,7 @@ pub mod chunks;
 pub mod document_copy;
 pub mod fts;
 pub mod hybrid;
+pub mod revisions;
 pub mod source_gate;
 pub mod store;
 pub mod vectors;

@@ -67,6 +67,7 @@ pub mod finalization_generation_source;
 pub mod finalized_character_proof;
 pub mod finalized_character_service;
 pub mod generation_draft_effects; // 批次 G4-5：批量草稿效应读面（generation:* 读面依赖）
+pub(crate) mod generation_knowledge_source;
 pub mod generation_source_binding; // 批次 G4-6a：生成源绑定服务层（平移自 electron/services/generation-source-binding.ts）
 pub mod generation_task;
 pub mod prompt_system_role;

@@ -433,14 +433,7 @@ pub fn mutating_error(code: &str) -> String {
 /// owner.ts:115；`knowledgeSnapshot` 以全保真 `Value`
 /// 存储，语义见 [`MainGenerationOwner::preparations`]）。
 struct PreparationEntry {
-    /// 基线 binding 随 `deps.buildBinding` 持久化
-    /// （main-generation-owner.ts:334）——源绑定构造
-    /// 依赖未迁移（见 [`MainGenerationOwner::
-    /// draft_preparation_binding`] 头注）；基线同样
-    /// 只写不读（`preparedKnowledge` 仅返回
-    /// `knowledgeSnapshot`），字段保留为缓存条目
-    /// 形状锚点，待依赖迁移后接入读取面。
-    #[allow(dead_code)]
+    /// 准备时冻结的源绑定；begin 必须与当前绑定一致，不能仅复用 preparationId。
     binding: RunBinding,
     knowledge_snapshot: Value,
 }
@@ -787,6 +780,14 @@ impl MainGenerationOwner {
         let input: crate::services::generation_source_binding::GenerationSourceBindingInput =
             serde_json::from_value(input)
                 .map_err(|_| mutating_error("GENERATION_SOURCE_BINDING_INVALID"))?;
+        if let Some(snapshot) = &input.knowledge_snapshot {
+            crate::services::generation_knowledge_source::verify(
+                conn,
+                &PathBuf::from(&self.session.project_path).join(".lore"),
+                snapshot,
+            )
+            .map_err(|error| mutating_error(&error))?;
+        }
         crate::services::main_generation_sources::with_source_dependencies(
             conn,
             &PathBuf::from(&self.session.project_path).join(".lore"),
@@ -3879,14 +3880,8 @@ impl MainGenerationOwner {
     ///   缓存（:348-351，容量 [`PREPARATION_CAPACITY`]，
     ///   超限逐出最旧条目）。
     ///
-    /// ⚠️ 执行依赖（本波次既定 fail-closed）：事务内首步
-    /// `draftPreparationBinding`（基线 :338）在模型加载 /
-    /// 策略规划器构造点 fail-closed（见
-    /// [`Self::draft_preparation_binding`] 头注），故绑定
-    /// 构造核心未迁移前的合法请求在事务入口即被拒绝；
-    /// KB 知识快照捕获在命令层 fail-closed（见
-    /// `commands::generation_prepare_draft_context` 头注），
-    /// `beforeKnowledgeRead` 恒为 `None`（IPC 边界）。
+    /// 命令层先捕获真实知识快照，再在短事务内传入采集前绑定。
+    /// 校验模型、作者来源与知识身份后才签发准备 ID；不执行生成。
     pub fn prepare_draft_context(
         &mut self,
         conn: &Connection,
@@ -8413,8 +8408,8 @@ mod tests {
                 let claim=owner.agent_claim_tool(conn,&json!({"ref":ref_,"confirmed":true}))?;
                 assert!(claim.execute);
                 let registration=owner.agent_register_workflow(conn,&ref_)?;
-                let snapshot=json!({"version":1,"state":"empty","storageState":"absent","query":"合成查询",
-                    "topK":5,"canonicalRevision":null,"documentsRevision":null,"items":[]});
+                let snapshot=serde_json::to_value(crate::services::generation_knowledge_source::capture(
+                    conn, &PathBuf::from(&owner.session.project_path).join(".lore"), "合成查询", 5, None)?).unwrap();
                 let prepared=owner.prepare_draft_context(conn,&json!({"chapterNumber":1,"modelId":"fixture",
                     "promptKeys":["edit_selected_text"],"skillStages":[],"selectedDraftIds":[],"query":"合成查询","authorInputs":author_inputs}),&snapshot,None)?;
                 let mut selection=begin_root_selection();
@@ -9356,8 +9351,17 @@ mod tests {
         record_outline_fixture(&conn, &owner, &old, &task, "合成旧细纲", "stop");
         let request = json!({"chapterNumber":1,"modelId":"fixture","promptKeys":["edit_selected_text"],
             "skillStages":[],"selectedDraftIds":[],"query":"合成查询"});
-        let snapshot = json!({"version":1,"state":"empty","storageState":"absent","query":"合成查询",
-            "topK":3,"canonicalRevision":null,"documentsRevision":null,"items":[]});
+        let snapshot = serde_json::to_value(
+            crate::services::generation_knowledge_source::capture(
+                &conn,
+                &PathBuf::from(&owner.session.project_path).join(".lore"),
+                "合成查询",
+                3,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let prepared = owner
             .prepare_draft_context(&conn, &request, &snapshot, None)
             .unwrap();
@@ -9812,8 +9816,17 @@ mod tests {
         }
         let request = json!({"chapterNumber":1,"modelId":"fixture","promptKeys":["edit_selected_text"],
             "skillStages":[],"selectedDraftIds":[],"query":"合成查询"});
-        let snapshot = json!({"version":1,"state":"empty","storageState":"absent","query":"合成查询",
-            "topK":3,"canonicalRevision":null,"documentsRevision":null,"items":[]});
+        let snapshot = serde_json::to_value(
+            crate::services::generation_knowledge_source::capture(
+                &conn,
+                &PathBuf::from(&owner.session.project_path).join(".lore"),
+                "合成查询",
+                3,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let prepared = owner
             .prepare_draft_context(&conn, &request, &snapshot, None)
             .unwrap();
@@ -9849,6 +9862,115 @@ mod tests {
         );
         assert_eq!(begin_run_count(&conn), 2);
         assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), 1);
+    }
+
+    #[test]
+    fn prepared_knowledge_drift_rejects_begin_and_execution_without_new_effects() {
+        let (_temp, conn, mut owner, _) = source_owner_fixture();
+        for chapter in 1..=6 {
+            conn.execute(
+                "INSERT INTO blueprints(chapter_number,title) VALUES (?,'合成蓝图')",
+                [chapter],
+            )
+            .unwrap();
+        }
+        let request = json!({"chapterNumber":1,"modelId":"fixture","promptKeys":["edit_selected_text"],
+            "skillStages":[],"selectedDraftIds":[],"query":"测试角色"});
+        let capture = || {
+            serde_json::to_value(
+                crate::services::generation_knowledge_source::capture(
+                    &conn,
+                    &PathBuf::from(&owner.session.project_path).join(".lore"),
+                    "测试角色",
+                    5,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let snapshot = capture();
+        let before = owner
+            .draft_preparation_binding(&conn, &request, None)
+            .unwrap();
+        let prepared = owner
+            .prepare_draft_context(&conn, &request, &snapshot, Some(&before))
+            .unwrap();
+        let mut selection = begin_root_selection();
+        selection["operation"] = json!("chapter-draft");
+        selection["chapterNumber"] = json!(1);
+        selection["selectedBlueprintChapterNumbers"] = json!([1, 2, 3, 4, 5, 6]);
+        selection["preparationId"] = prepared["preparationId"].clone();
+        selection["materialDecision"] = json!({"version":1,"verdict":"admitted","promptHash":text_hash("合成提示"),
+            "capacity":{"maxInputUnits":1000,"methodVersion":"utf8-bytes-v1","admittedUnits":12},
+            "coverage":{"required":1,"included":1,"complete":true},
+            "included":[{"sourceId":"author:required","revision":1,"contentHash":text_hash("合成作者"),
+                "category":"author","required":true,"units":12}],"omitted":[]});
+        crate::db::kb::store::insert_document(
+            &conn,
+            "new-doc",
+            "合成知识",
+            &["测试角色读取合成材料".into()],
+            &crate::db::kb::store::DocumentMeta {
+                corpus_kind: "project-knowledge",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            owner.begin(&conn, &selection, false, false).unwrap_err(),
+            mutating_error("GENERATION_KNOWLEDGE_SOURCE_STALE")
+        );
+        assert_eq!(begin_run_count(&conn), 1);
+        assert!(owner.lease_store.lock().unwrap().live_lease_count() == 0);
+        // 重新准备才可建立运行；后续规范材料变化时不得创建 attempt 或业务效果。
+        let snapshot = serde_json::to_value(
+            crate::services::generation_knowledge_source::capture(
+                &conn,
+                &PathBuf::from(&owner.session.project_path).join(".lore"),
+                "测试角色",
+                5,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let prepared = owner
+            .prepare_draft_context(&conn, &request, &snapshot, None)
+            .unwrap();
+        selection["preparationId"] = prepared["preparationId"].clone();
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let run = owner
+            .repository
+            .get(&conn, view["handle"]["runId"].as_str().unwrap())
+            .unwrap();
+        let budget = owner.repository.budget(&conn, &run.root_action_id).unwrap();
+        conn.execute(
+            "UPDATE kb_documents SET file_name='变化材料' WHERE id='new-doc'",
+            [],
+        )
+        .unwrap();
+        assert!(owner
+            .assert_sources_current(&conn, &view["handle"], None)
+            .is_err());
+        assert!(owner
+            .prepare_execution(
+                &conn,
+                &json!({"handle":view["handle"],"invocationNonce":"stale-kb",
+            "task":{"kind":"generate_draft","payload":{"prompt":"合成提示"}}}),
+                false
+            )
+            .is_err());
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, &run.root_action_id)
+                .unwrap()
+                .attempts
+                .len(),
+            budget.attempts.len()
+        );
+        assert_eq!(begin_run_count(&conn), 2);
     }
 
     #[test]

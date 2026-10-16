@@ -145,6 +145,19 @@ pub(crate) fn rebuild_binding_with_receipt(
         .unwrap_or(Value::Null);
     // 解析器要求输入逐字段等于规范策略，校验通过后可原样透传。
     crate::services::main_generation_plan::read_main_generation_policy(&policy)?;
+    if let Some(snapshot) = previous
+        .source_manifest
+        .get("knowledgeSnapshot")
+        .filter(|value| !value.is_null())
+    {
+        let snapshot = serde_json::from_value(snapshot.clone())
+            .map_err(|_| "GENERATION_KNOWLEDGE_INVALID_SNAPSHOT".to_string())?;
+        crate::services::generation_knowledge_source::verify(
+            conn,
+            project_storage_root,
+            &snapshot,
+        )?;
+    }
     with_source_dependencies(conn, project_storage_root, global_root, |deps| {
         Ok(rebuild_generation_source_binding(
             deps,

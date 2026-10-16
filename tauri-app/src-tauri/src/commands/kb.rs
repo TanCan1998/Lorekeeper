@@ -744,6 +744,79 @@ async fn search_core(
     serde_json::to_value(results).map_err(|error| error.to_string())
 }
 
+/// 写作准备专用快照；嵌入网络阶段不持有 owner、SQLite 或知识源锁。
+pub(crate) async fn capture_writing_knowledge(
+    state: &AppState,
+    query: &str,
+    project_root: &str,
+    session: &ProjectSessionContext,
+) -> Result<crate::services::generation_source_binding::GenerationKnowledgeSnapshot, String> {
+    guard_read(state, project_root, Some(session))?;
+    preflight_or_error(project_root)?;
+    let setup = embedding_setup();
+    let query_vector = if let Some(setup) = setup
+        .as_ref()
+        .filter(|setup| usable(setup) && !query.trim().is_empty())
+    {
+        embed_texts(setup, &[query.to_string()])
+            .await
+            .ok()
+            .and_then(|vectors| vectors.into_iter().next())
+    } else {
+        None
+    };
+    let _gate = crate::db::kb::source_gate::acquire(project_root).await?;
+    // 等待外部请求或知识源锁后，重新认证会话；只从当前项目库读取。
+    let active = with_knowledge_db(state, project_root, Some(session), |conn| {
+        hybrid::active_space(conn).map_err(|error| error.to_string())
+    })?;
+    let mut vector_hits = None;
+    if let (Some(vector), Some(space), Some(setup)) =
+        (query_vector.as_ref(), active.as_ref(), setup.as_ref())
+    {
+        if !vector.is_empty()
+            && vector.iter().all(|value| value.is_finite())
+            && space.model_fingerprint == setup.fingerprint
+            && space.dimension == vector.len() as i64
+            && space.distance_metric == "cosine"
+        {
+            if let Ok(index) = state
+                .kb_vector_index(project_root, space.generation, space.dimension as usize)
+                .await
+            {
+                // 先检索全部候选，规范层排除 reference/脏副本后才截断 topK。
+                if let Ok(hits) = index
+                    .search_rag(vector, index.live_doc_ids().await.len())
+                    .await
+                {
+                    if hits
+                        .iter()
+                        .any(|(_, distance)| !distance.is_finite() || *distance < 0.0)
+                    {
+                        return Err("GENERATION_KNOWLEDGE_INVALID_DISTANCE".to_string());
+                    }
+                    vector_hits = Some(
+                        hits.into_iter()
+                            .map(|(id, distance)| {
+                                (id, hybrid::vector_distance_to_score(distance as f64))
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
+    }
+    with_knowledge_db(state, project_root, Some(session), |conn| {
+        crate::services::generation_knowledge_source::capture(
+            conn,
+            &document_copy::project_storage_root(project_root),
+            query,
+            5,
+            vector_hits.as_deref(),
+        )
+    })
+}
+
 /// 计算无向量块数（使用 active 或首个 building 代际；无空间则全部计入）
 async fn vectorless_count(state: &AppState, project_root: &str) -> Result<i64, String> {
     let (all_ids, space) = state.with_project_db(|conn| {
@@ -2276,6 +2349,24 @@ mod tests {
         };
         state.activate_project(lease).unwrap();
         (state, root_text, session)
+    }
+
+    #[tokio::test]
+    async fn writing_knowledge_rechecks_session_after_waiting_for_source_gate() {
+        let (state, root, session) = activated_state("writing-knowledge-stale");
+        let held = crate::db::kb::source_gate::acquire(&root).await.unwrap();
+        let capture = capture_writing_knowledge(&state, "", &root, &session);
+        tokio::pin!(capture);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut capture)
+                .await
+                .is_err()
+        );
+        state.invalidate_current_session().unwrap();
+        drop(held);
+        assert!(capture.await.is_err());
+        assert!(!state.project_database_open());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[tokio::test]

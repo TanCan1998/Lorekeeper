@@ -1026,6 +1026,8 @@ pub fn create_tables(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(CREATE_KB_CHUNKS)?;
     conn.execute_batch(CREATE_KB_EMBEDDING_SPACES)?;
     conn.execute_batch(CREATE_KB_FTS)?;
+    // 2026-10-17 授权：知识规范源的持久修订元数据及事务内触发器。
+    crate::db::kb::revisions::migrate(conn)?;
     // 批次 B1：生成账本（m01 四表）
     conn.execute_batch(CREATE_GENERATION_LEDGER)?;
     migrate_project_core_legacy_columns(conn)?;
