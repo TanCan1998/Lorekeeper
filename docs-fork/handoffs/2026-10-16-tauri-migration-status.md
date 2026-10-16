@@ -1,43 +1,53 @@
 # Tauri 迁移进度快照（2026-10-16）
 
-> 入口 [CURRENT.md](./CURRENT.md)；规则见 [../agents/pi-development.md](../agents/pi-development.md) §9。
+> 入口 [CURRENT.md](./CURRENT.md)；规则见 [开发指南 §9](../agents/pi-development.md)。
 
-## 已验证状态（第 70 次 —— UTF-16证据与基础恢复边界）
+## 已验证状态（第 72 次 —— 审稿证据哈希与初审篡改回归）
 
-- 最新代码 `32e443d5` 已推送origin/master；本轮无子代理、在飞任务或残留窗口。
-- 沿审稿效果证明调用图核查，复现并修复了：
-  1. 报告/上下文把emoji按Unicode标量计长，误拒合法UTF-16区间或接纳错误区间；
-  2. 目标引文输出UTF-8字节偏移，且剥除模型额外引号的回退因提前返回而不可达；
-  3. 唯一锚点按引文UTF-8字节长继续搜索，漏过中文、emoji及重叠的第二次命中；
-  4. 上下文证据边界相加可溢出，改为受检加法。
-- 保留基线语义：正常目标引文取首处，只有剥引号回退要求唯一；事实锚点仍要求唯一。
-  不修改作者正文、CRLF或Unicode，不新增schema/依赖/权限/ADR，不重写历史收据。
-- **本轮Rust最新全量**（对应 `32e443d5`）：
-  **1570通过 / 0失败**，库60.25s；main/doc tests无测试，
-  `.pi/tmp/b120-full.log`。all-targets无告警：`b120-check.log`。
-  全量后Rust逻辑切片累计 **0**；定向格式与diff/双栈卫生检查通过。
-- 新增11项回归（周期证据4、上下文1、引文定位2、SQLite服务链路/恢复4）。
-  审稿相关定向20项 `b120-review.log`，周期证据4项 `b120-cycle.log`。
-  修复前5项失败见 `b120-evidence-red.log`，不是当前失败状态。
-- 真实SQLite验证Unicode证据贯穿报告、周期、效果收据及恢复，原文保持逐字不变；
-  来源探针按服务既有DI注入，不能称为真实模型或完整owner端到端验收。
-  另验证缓存失效重建上下文不重复派发、源漂移只读保留候选、已有收据不授权新执行。
-- **效果证明尚未补齐**：仓储的proveEffect省略段仍在，基础恢复回归也不等于全部审修/复核链路已验收。
-  审稿四频道生产前端保持关闭，不以本轮修复作为开放的充分条件。
-- 覆盖不变：Rust结构性 **289/290（99.7%）**、注册290、事件7，
-  前端开放 **285/290（98.3%）**。README保留emoji进度条，不以频道比例宣称产品完成。
-- 前端最近非浏览器全量仍是 `4c03d515`：186文件，2101通过/0失败/1跳过，
-  `b118-final.json/log`；typecheck/lint同版本通过。本轮未改TS。
-  门禁定向沿用B119的3文件14项，浏览器沿用B117定向1文件2项。
-- 构建与GUI沿用 `a6655558`：debug/no-bundle及隔离窗口空书架、品牌、关闭通过；
-  不是本轮最新Rust修复后的窗口复验，也不是完整GUI验收。
-  云备份八频道、本地DAV端到端、归档恢复及冻结保护已交付；
-  真实模型/MCP/云供应商与完整GUI仍未验收。
-- 下一步补齐审稿周期的效果证明、完整审稿/确认/修稿/合并/复核链路；
-  强制证明必须同时遵守恢复项目脱敏历史只读、旧执行不可重放及originalReceiptVerified=false，
-  不得为通过验证伪造原始收据或删除作者可读事实。
-- 遗留旧版导入因无已确认的Lorekeeper旧版输入继续暂缓，不跨栈、不做占位。
+- 核对时间：2026-10-16；分支 master，HEAD 与本地 origin/master 均为 `34662f72`（完整 SHA：34662f726aa71d2b0ca2e0967c1fa41ba8550312）。
+- **本轮没有提交或推送**。保留此前三个 Rust 文件的未提交迁移逻辑并继续增补；完整 proveEffect 尚未完成。
+- 主会话直接操作，没有启动子代理，无登记在飞工作。
 
+| 检查 | 本轮结果 | 验证范围/版本 | 证据（本机，不入库） |
+|---|---|---|---|
+| 周期仓储定向 | 4 通过，0 失败 | HEAD + 当前三个 Rust 文件 diff | .pi/tmp/recovery/evidence-cycle.log |
+| 生成提交与恢复定向 | 19 通过，0 失败 | 同一工作区 | .pi/tmp/recovery/evidence-directed.log |
+| Rust 全量 | **1575 通过，0 失败**；库 65.42 秒 | 本轮最终 Rust 工作区，指纹见 pipeline | .pi/tmp/recovery/evidence-full.log |
+| all-targets | 通过，无告警 | 同一工作区 | .pi/tmp/recovery/evidence-check.log |
+| 格式与差异 | 三文件定向 rustfmt、git diff --check 通过 | 全量后仅更新交接文档 | .pi/tmp/recovery/evidence-format.log；工具输出 |
+| 前端、GUI、频道覆盖 | 本轮未重测 | 历史基线，不归于本轮代码 | 见下方沿用范围 |
+
+## 本次更新
+
+- 对照 `electron/migrations/m03-review-cycle.ts` 审计现有证明链；保留上一轮已修复的 UTF-8 源码，不再从 HEAD 覆盖迁移改动。
+- 初审效果证明新增精确字段集合检查、reportVersion 域检查，以及 artifact JSON revision 与数据库 revision 的交叉检查。
+- 提取 `recheck_evidence_hash`，写入与历史校验共用有序证据负载；复核按 findingId、targetId、reviewItemIndex、报告条目与 resolved 重算 evidenceHash，不再只检查哈希格式。该项不等于完成复核资格和状态映射校验。
+- 新增真实内存 SQLite 篡改矩阵：额外回执字段、错误报告版本、上下文哈希、产物版本、正文、attempt/root 身份；逐项验证拒绝，恢复原值后重新通过。
+- 新增两个各自绑定独立产物的重复效果 attempt 测试，验证匹配数必须为一；新增证据负载字段顺序及每个字段影响哈希的测试。
+- 全量较上轮 1572 增加 3 项，现为 1575。定向 19 项含既有恢复/来源漂移测试，但不是新增脱敏归档冻结历史的专用回归。
+
+### 未完成与安全边界
+
+1. 继续审计 review/revision/recheck 的完整 root、run binding、attempt 唯一绑定；本轮初审重复效果回归不覆盖所有跨 root/run 组合。
+2. recheck 仍缺完整合法端到端样例，以及从数据库重新构建 eligible findings/context、receipt 与持久化 finding 状态/evidenceHash 对应的正反回归。新增哈希重算已接入，但尚未用完整复核 SQLite 场景证明兼容性。
+3. revision 冻结确认上下文、完整来源字段、续写来源身份及有效文本增长约束仍须补齐和验证。
+4. 脱敏恢复冻结历史专用回归未补齐；不得伪造 originalReceiptVerified、重放历史执行、删除作者可读事实或绕过冻结。
+5. **审稿四个生产前端频道继续关闭**；未改 schema、依赖、权限、ADR、根配置、根锁文件、Electron 或上游 docs。未完成完整切片前不提交或推送。
+
+### 沿用范围（非本轮新验证）
+
+- 结构覆盖 289/290（99.7%）、注册 290、事件 7；前端开放 285/290（98.3%），沿用 b116 口径，不是产品完成率。
+- 前端全量沿用 `4c03d515`：186 文件、2101 通过/0 失败/1 跳过，b118-final.json/log；typecheck/lint 同版本通过。本轮无 TS 改动。
+- GUI/build 沿用 `a6655558` 与 B117 证据，不是当前 Rust 工作区的原生窗口复验。
+- 真实模型/MCP/云供应商与完整 GUI 未验收；旧版导入等待已确认的 Lorekeeper 输入。
+
+## 交接给下次会话
+
+1. 读 AGENTS.md、CURRENT.md、.pi/tmp/pipeline-state.md，核对 HEAD、工作区及三个 Rust 文件 SHA256；不要丢弃未提交迁移改动。
+2. 优先构造完整 review → confirmation → revision → merge → recheck 的真实 SQLite 合法链，再补资格/context、finding 状态映射及篡改拒绝；继续 revision 来源链与脱敏冻结恢复专用验证。
+3. 本轮全量不代表完整 proveEffect 验收，不开放频道；完整切片完成后再自检、提交及推送。
+
+活动状态与文件指纹见 `.pi/tmp/pipeline-state.md`。最新全量基线为当前未提交工作区；全量后 Rust 语义切片累计 0。
 
 ---
 

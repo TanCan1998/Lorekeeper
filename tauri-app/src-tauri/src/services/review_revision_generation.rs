@@ -994,15 +994,12 @@ impl ReviewRevisionGeneration {
                         finding_id: decision.finding_id.clone(),
                         target_id: decision.target_id.clone(),
                         review_item_index: decision.review_item_index,
-                        evidence_hash: text_hash(
-                            &serde_json::to_string(&RecheckEvidencePayload {
-                                finding_id: decision.finding_id.clone(),
-                                target_id: decision.target_id.clone(),
-                                review_item_index: decision.review_item_index,
-                                item,
-                                resolved,
-                            })
-                            .expect("证据负载 JSON 序列化不得失败"),
+                        evidence_hash: recheck_evidence_hash(
+                            &decision.finding_id,
+                            &decision.target_id,
+                            decision.review_item_index,
+                            &item,
+                            resolved,
                         ),
                         resolved,
                     }
@@ -1541,6 +1538,26 @@ struct RecheckEvidencePayload {
     resolved: bool,
 }
 
+/// 写入与历史校验共用同一字段顺序，避免 JSON 对象排序改变证据身份。
+pub(crate) fn recheck_evidence_hash(
+    finding_id: &str,
+    target_id: &str,
+    review_item_index: i64,
+    item: &Value,
+    resolved: bool,
+) -> String {
+    text_hash(
+        &serde_json::to_string(&RecheckEvidencePayload {
+            finding_id: finding_id.to_string(),
+            target_id: target_id.to_string(),
+            review_item_index,
+            item: item.clone(),
+            resolved,
+        })
+        .expect("证据负载 JSON 序列化不得失败"),
+    )
+}
+
 /// 基线 `commitReview` 中持久化的 `reviewCycleRecheck` 回执
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1565,6 +1582,56 @@ struct BuildReviewGenerationReportInput {
     report_version: i64,
 }
 
+/// 从冻结上下文与可见产物重建审稿正文哈希；供历史效果证明调用。
+pub(crate) fn rebuild_review_report_hash(
+    context: &ReviewRevisionContext,
+    artifact_text: &str,
+    report_version: i64,
+    persisted_recheck_version: Option<i64>,
+) -> Option<String> {
+    if ![1, 2].contains(&report_version)
+        || context.operation != ReviewRevisionOperation::ReviewChapter
+    {
+        return None;
+    }
+    let rebuilt = if let Some(recheck) = &context.recheck {
+        let version = persisted_recheck_version.unwrap_or(2);
+        if ![1, 2].contains(&version) || (recheck.version == 2 && version != 2) {
+            return None;
+        }
+        let policy = RecheckPolicy {
+            context: recheck_policy_context(recheck),
+            version,
+        };
+        let report = build_review_cycle_recheck_report(
+            artifact_text,
+            &context.source.content,
+            &policy,
+            &context.ui_locale,
+            report_version,
+        );
+        serde_json::to_string_pretty(&ReviewReportBody {
+            summary: report.summary,
+            items: report.items,
+        })
+        .expect("审稿报告 JSON 序列化不得失败")
+    } else {
+        if persisted_recheck_version.is_some() {
+            return None;
+        }
+        let report = build_review_generation_report(&BuildReviewGenerationReportInput {
+            content: artifact_text.to_string(),
+            source_content: context.source.content.clone(),
+            frozen_goals: context.frozen_goals.clone(),
+            writing_language: context.writing_language.clone(),
+            ui_locale: context.ui_locale.clone(),
+            preflight_findings: context.preflight_findings.clone(),
+            report_version,
+        });
+        serde_json::to_string_pretty(&report).expect("审稿报告 JSON 序列化不得失败")
+    };
+    Some(text_hash(&rebuilt))
+}
 // ===== 基础设施 =====
 
 /// 基线 `textHash`（SHA-256 十六进制小写）

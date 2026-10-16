@@ -178,6 +178,190 @@ impl Fixture {
     }
 }
 #[test]
+fn review_cycle_verification_requires_exactly_one_report_effect() {
+    let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    f.review().unwrap();
+    assert!(review_cycle::verify_m03_review_cycle(&f.conn));
+    let usage: String = f
+        .conn
+        .query_row(
+            "SELECT usage_receipt_json FROM generation_attempts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut value: Value = serde_json::from_str(&usage).unwrap();
+    value["reviewRevisionEffect"]["contentHash"] = Value::String("0".repeat(64));
+    f.conn
+        .execute(
+            "UPDATE generation_attempts SET usage_receipt_json=?1",
+            [value.to_string()],
+        )
+        .unwrap();
+    assert!(!review_cycle::verify_m03_review_cycle(&f.conn));
+}
+#[test]
+fn report_proof_rebuilds_frozen_review_and_recheck_versions() {
+    let review = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    let proof =
+        rebuild_review_report_hash(&review.prepared.context, &review.artifact.text, 2, None)
+            .unwrap();
+    let receipt = review.review().unwrap();
+    assert_eq!(proof, text_hash(&receipt.content));
+    assert_eq!(
+        rebuild_review_report_hash(&review.prepared.context, &review.artifact.text, 0, None),
+        None
+    );
+    assert_eq!(
+        rebuild_review_report_hash(&review.prepared.context, &review.artifact.text, 2, Some(1)),
+        None
+    );
+}
+#[test]
+fn review_cycle_rejects_receipt_and_artifact_tampering_in_sqlite() {
+    let mutations = [
+        (
+            "generation_attempts",
+            "usage_receipt_json",
+            "/reviewRevisionEffect/unexpected",
+            json!(true),
+        ),
+        (
+            "generation_attempts",
+            "usage_receipt_json",
+            "/reviewRevisionEffect/reportVersion",
+            json!(1),
+        ),
+        (
+            "generation_attempts",
+            "usage_receipt_json",
+            "/reviewRevisionEffect/contextHash",
+            json!("0".repeat(64)),
+        ),
+        (
+            "generation_artifacts",
+            "artifact_json",
+            "/revision",
+            json!(99),
+        ),
+        (
+            "generation_artifacts",
+            "artifact_json",
+            "/text",
+            json!("被替换的合成产物"),
+        ),
+        (
+            "generation_artifacts",
+            "artifact_json",
+            "/attemptId",
+            json!("other-attempt"),
+        ),
+        (
+            "generation_artifacts",
+            "artifact_json",
+            "/rootActionId",
+            json!("other-root"),
+        ),
+    ];
+    for (table, column, pointer, replacement) in mutations {
+        let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+        f.review().unwrap();
+        assert!(review_cycle::verify_m03_review_cycle(&f.conn));
+        let original: String = f
+            .conn
+            .query_row(&format!("SELECT {column} FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let mut value: Value = serde_json::from_str(&original).unwrap();
+        if pointer.ends_with("/unexpected") {
+            value["reviewRevisionEffect"]["unexpected"] = replacement;
+        } else {
+            *value.pointer_mut(pointer).unwrap() = replacement;
+        }
+        let sql = format!("UPDATE {table} SET {column}=?1");
+        f.conn.execute(&sql, [value.to_string()]).unwrap();
+        assert!(
+            !review_cycle::verify_m03_review_cycle(&f.conn),
+            "未拒绝 {pointer}"
+        );
+        f.conn.execute(&sql, [&original]).unwrap();
+        assert!(
+            review_cycle::verify_m03_review_cycle(&f.conn),
+            "恢复后仍拒绝 {pointer}"
+        );
+    }
+}
+
+#[test]
+fn recheck_evidence_hash_matches_ordered_payload_and_covers_every_field() {
+    let item = json!({"description":"合成复核证据", "resolved":false});
+    // 负载顺序与基线 JSON.stringify 的字段插入顺序一致，条目沿用持久化值。
+    let expected = text_hash(&format!(
+        "{{\"findingId\":\"finding-1\",\"targetId\":\"target-1\",\"reviewItemIndex\":0,\"item\":{},\"resolved\":false}}",
+        serde_json::to_string(&item).unwrap(),
+    ));
+    let actual = recheck_evidence_hash("finding-1", "target-1", 0, &item, false);
+    assert_eq!(actual, expected);
+    for changed in [
+        recheck_evidence_hash("finding-2", "target-1", 0, &item, false),
+        recheck_evidence_hash("finding-1", "target-2", 0, &item, false),
+        recheck_evidence_hash("finding-1", "target-1", 1, &item, false),
+        recheck_evidence_hash(
+            "finding-1",
+            "target-1",
+            0,
+            &json!({"resolved":false}),
+            false,
+        ),
+        recheck_evidence_hash("finding-1", "target-1", 0, &item, true),
+    ] {
+        assert_ne!(actual, changed);
+    }
+}
+
+#[test]
+fn review_cycle_rejects_two_individually_bound_effect_attempts() {
+    let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    f.review().unwrap();
+    assert!(review_cycle::verify_m03_review_cycle(&f.conn));
+    let usage_raw: String = f
+        .conn
+        .query_row(
+            "SELECT usage_receipt_json FROM generation_attempts",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let artifact_raw: String = f
+        .conn
+        .query_row(
+            "SELECT artifact_json FROM generation_artifacts",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut usage: Value = serde_json::from_str(&usage_raw).unwrap();
+    usage["artifactIdentity"]["artifactId"] = json!("duplicate-artifact");
+    usage["reviewRevisionEffect"]["artifact"]["artifactId"] = json!("duplicate-artifact");
+    let mut artifact: Value = serde_json::from_str(&artifact_raw).unwrap();
+    artifact["artifactId"] = json!("duplicate-artifact");
+    artifact["attemptId"] = json!("duplicate-attempt");
+    // 克隆完整有效效果而不是仅复制引用，确保实际覆盖匹配数必须为一的约束。
+    f.conn.execute(
+        "INSERT INTO generation_attempts(attempt_id,reservation_id,run_id,root_action_id,attempt_json,usage_receipt_json,invocation_nonce)
+         SELECT 'duplicate-attempt','duplicate-reservation',run_id,root_action_id,attempt_json,?1,'duplicate-nonce' FROM generation_attempts",
+        [usage.to_string()],
+    ).unwrap();
+    f.conn.execute(
+        "INSERT INTO generation_artifacts(artifact_id,attempt_id,run_id,artifact_json,revision,status)
+         SELECT 'duplicate-artifact','duplicate-attempt',run_id,?1,revision,status FROM generation_artifacts",
+        [artifact.to_string()],
+    ).unwrap();
+    assert!(!review_cycle::verify_m03_review_cycle(&f.conn));
+}
+
+#[test]
 fn goal_locator_uses_utf16_offsets_without_normalizing_source() {
     let source = "🔑开场。甲\r\n乙。e\u{301}尾声。";
     for (quote, start, end) in [("甲\r\n乙", 5, 9), ("e\u{301}", 10, 12)] {

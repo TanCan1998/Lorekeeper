@@ -1,26 +1,10 @@
 # 当前交接入口
 
-- 最新快照：[2026-10-16-tauri-migration-status.md](./2026-10-16-tauri-migration-status.md)，第 **70** 次。
-- 最新代码 **`32e443d5`** 已推送origin/master：审稿证据统一使用UTF-16码元，
-  修复目标引文的字节偏移、不可达引号回退、重复/重叠引文误判唯一及区间溢出。
-  不规范化作者原文、Unicode或CRLF；保持基线目标引文正常命中/回退的不同唯一性规则。
-- **Rust最新全量1570通过、0失败**，60.25s；all-targets无告警：
-  `.pi/tmp/b120-full.log`、`b120-check.log`。全量后Rust逻辑切片累计 **0**。
-- 本轮新增11项回归；审稿相关定向20项、周期证据定向4项，
-  `b120-review.log`、`b120-cycle.log`。包含真实SQLite服务链路、
-  缓存失效重建上下文、源漂移只读候选、已有收据不授权新执行及恢复不重复派发。
-  来源探针按服务DI注入，不等于真实模型或完整owner端到端验收。
-- **审稿四频道生产前端仍关闭**，效果证明尚未补齐。
-  Rust结构覆盖 **289/290（99.7%）**，前端开放 **285/290（98.3%）**，
-  注册290、事件7；不是产品整体完成率。README继续保留emoji进度条。
-- 前端全量沿用 `4c03d515`：186文件，2101通过、0失败、1跳过，
-  `b118-final.json/log`；typecheck/lint通过。本轮未改TS。
-  最近门禁定向沿用B119的3文件14项 `b119-gates.json`。
-- 真实构建/隔离原生窗口冒烟沿用 `a6655558`；不是最新Rust修复后的GUI复验。
-  云备份八频道、本地DAV端到端、归档恢复与冻结保护已交付；
-  真实模型/MCP/云供应商及完整GUI仍未验收。
-- 下步：补齐审稿周期效果证明，核查完整审稿→确认→修稿→合并→复核链路，
-  同时遵守恢复项目的只读历史、脱敏收据与不可重放边界，再考虑开放四频道。
-- 遗留旧版导入因没有已确认Lorekeeper旧版输入暂缓，不跨栈、不做占位。
-  无代理派发、在飞任务或残留窗口。
-  [活动状态](../../.pi/tmp/pipeline-state.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。
+- 最新快照：[2026-10-16-tauri-migration-status.md](./2026-10-16-tauri-migration-status.md)，第 **72** 次。
+- 已核对：master，HEAD/本地 origin/master 均为 **34662f72**。本轮无提交、无推送；三个 Rust 文件保留未提交迁移逻辑。
+- 本轮补充：初审回执精确字段/报告版本及产物 revision 校验；复核 evidenceHash 按有序负载重算，写入与验证共用算法。新增 SQLite 篡改/恢复原值与独立产物重复效果 attempt 回归。
+- **本轮 Rust 全量 1575 通过、0 失败**（库 65.42 秒）；生成/恢复定向 19 项、周期仓储 4 项通过，all-targets 无告警，三文件格式与 diff 检查通过。证据 `.pi/tmp/recovery/evidence-*.log`；指纹见 pipeline。
+- **完整 proveEffect 未完成，审稿四频道继续关闭**。下一步构造完整复核 SQLite 合法链，补 eligible findings/context 重建、持久 finding 状态/证据映射、revision 来源链及脱敏冻结历史不可重放回归。
+- 不伪造 originalReceiptVerified，不删除作者可读事实；完整切片完成前不提交或推送。不派发子代理。
+- 结构覆盖 289/290、前端开放 285/290 沿用历史口径；前端全量沿用 4c03d515 的 2101 通过/0 失败/1 跳过；GUI/build 沿用 a6655558，均非本轮重新验收。
+- [活动状态](../../.pi/tmp/pipeline-state.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。

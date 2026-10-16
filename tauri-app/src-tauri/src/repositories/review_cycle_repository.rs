@@ -30,14 +30,9 @@
 //!   已安装（M03 已应用而 M06 未应用）选择 `m.body` / `c.body`；Tauri 侧
 //!   不建迁移运行时，三表由 `db/schema.rs` 一次性创建，该分支恒走快照列，
 //!   基线双分支简化为单分支（行为等价）。
-//! - **`verify_m03_review_cycle`**：基线是迁移文件内的跨表完整性校验器，
-//!   其 `proveEffect` 段依赖尚未移植的 `buildReviewGenerationReport` /
-//!   `buildReviewCycleRecheckReport` / `extractSingleCompleteJsonObject`
-//!   （属后续共享纯逻辑移植波次，非本波写面），本波省略该段，即不执行
-//!   「每个 review/revision 恰有一个可证明效果的 generation attempt」与
-//!   重查回执的效果证明；其余不变量（外键、schema 形状、逐周期绑定一致性、
-//!   findings 锚点完整性与 finding-set 哈希）逐字保留。该偏离只会弱化校验
-//!   （不会误拒合法数据），不影响 4 个方法自身的写入语义。
+//! - **周期效果证明（进行中）**：已接入初审、修稿与登记复核 attempt 的效果校验，
+//!   保留回执、上下文与可见产物的绑定验证；复核 evidenceHash 的完整基线重算、
+//!   真实 SQLite 篡改回归及冻结恢复边界的专用验证仍待补齐，不代表完整等价。
 //!
 //! 错误码（`REVIEW_CYCLE_TRANSACTION_REQUIRED` / `REVIEW_CYCLE_INPUT_INVALID`
 //! / `REVIEW_CYCLE_CONFLICT`）逐字对齐基线；「Error: 」前缀由命令层添加。
@@ -2151,13 +2146,577 @@ fn exact_schema(conn: &Connection, table: &str, columns: &[&str], fragments: &[&
         .all(|fragment| compact.contains(&fragment.replace(' ', "").to_lowercase()))
 }
 
-/// 基线 `verifyM03ReviewCycle` 的可本地验证部分（外键、schema 形状、逐周期
-/// 绑定一致性、findings 锚点完整性与 finding-set 哈希）。
-///
-/// 偏离：省略基线 `proveEffect` 生成回执效果证明段（见模块头注），即不校验
-/// 「每个 review/revision 恰有一个可证明效果的 generation attempt」与重查回执
-/// 的效果证明；其余不变量逐字保留。
-fn verify_m03_review_cycle(conn: &Connection) -> bool {
+/// 从冻结上下文、回执与可见产物验证初审效果；仅接受一个匹配的 attempt。
+fn prove_review_effect(
+    conn: &Connection,
+    cycle: &CycleVerifyRow,
+    action: &Map<String, Value>,
+    source: &crate::draft_source_guard::ExpectedDraftSource,
+    review_body: &str,
+) -> bool {
+    let mut stmt = match conn.prepare("SELECT a.attempt_id,a.run_id,a.root_action_id,a.attempt_json,a.usage_receipt_json,
+        r.root_action_id,r.binding_json FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id
+        WHERE a.root_action_id=?1 ORDER BY a.rowid") { Ok(stmt) => stmt, Err(_) => return false };
+    let rows = match stmt.query_map([cycle.root_action_id.as_str()], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return false,
+    };
+    let mut matches = 0usize;
+    for row in rows {
+        let (attempt_id, run_id, root_action_id, attempt_json, usage_json, run_root, binding_json) =
+            match row {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+        if run_root != cycle.root_action_id {
+            return false;
+        }
+        let binding: Value = match serde_json::from_str(&binding_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if binding.get("projectId") != action.get("projectId")
+            || binding
+                .get("epoch")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return false;
+        }
+        let usage: Value = match serde_json::from_str(&usage_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let effect = match usage.get("reviewRevisionEffect").and_then(Value::as_object) {
+            Some(v) => v,
+            None => continue,
+        };
+        if effect.get("kind").and_then(Value::as_str) != Some("review")
+            || effect.get("id").and_then(Value::as_i64) != Some(cycle.review_id)
+        {
+            continue;
+        }
+        let mut effect_keys = effect.keys().map(String::as_str).collect::<Vec<_>>();
+        effect_keys.sort_unstable();
+        let mut expected_keys = vec![
+            "artifact",
+            "contentHash",
+            "contextHash",
+            "id",
+            "index",
+            "kind",
+        ];
+        if effect.contains_key("reportVersion") {
+            if effect.get("reportVersion").and_then(Value::as_i64) != Some(2) {
+                return false;
+            }
+            expected_keys.push("reportVersion");
+        }
+        if effect_keys != expected_keys {
+            return false;
+        }
+
+        let attempt: Value = match serde_json::from_str(&attempt_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if !matches!(
+            attempt.get("status").and_then(Value::as_str),
+            Some("settled" | "unknown")
+        ) || usage
+            .pointer("/result/finishReason")
+            .and_then(Value::as_str)
+            != Some("stop")
+            || usage.pointer("/result/failureCode").is_some()
+        {
+            return false;
+        }
+        let index = match conn.query_row(
+            "SELECT review_index FROM reviews WHERE id=?1",
+            [cycle.review_id],
+            |r| r.get::<_, i64>(0),
+        ) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if effect.get("index").and_then(Value::as_i64) != Some(index)
+            || effect.get("contentHash").and_then(Value::as_str)
+                != Some(cycle.review_content_hash.as_str())
+        {
+            return false;
+        }
+        let artifact = match effect.get("artifact").and_then(Value::as_object) {
+            Some(v) => v,
+            None => return false,
+        };
+        if artifact.len() != 3
+            || artifact
+                .get("artifactId")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return false;
+        }
+        let artifact_id = artifact.get("artifactId").and_then(Value::as_str).unwrap();
+        let artifact_row:Option<(String,String,String,i64,String)>=match conn.query_row("SELECT attempt_id,run_id,artifact_json,revision,status FROM generation_artifacts WHERE artifact_id=?1",[artifact_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional(){Ok(v)=>v,Err(_)=>return false};
+        let Some((artifact_attempt, artifact_run, artifact_json, revision, status)) = artifact_row
+        else {
+            return false;
+        };
+        let art: Value = match serde_json::from_str(&artifact_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let artifact_hash = match art.get("textHash").and_then(Value::as_str) {
+            Some(v) => v,
+            None => return false,
+        };
+        if artifact_attempt != attempt_id
+            || artifact_run != run_id
+            || status == "discarded"
+            || artifact.get("revision").and_then(Value::as_i64) != Some(revision)
+            || art.get("revision").and_then(Value::as_i64) != Some(revision)
+            || artifact.get("textHash").and_then(Value::as_str) != Some(artifact_hash)
+            || art.get("artifactId").and_then(Value::as_str) != Some(artifact_id)
+            || art.get("attemptId").and_then(Value::as_str) != Some(attempt_id.as_str())
+            || art.get("rootActionId").and_then(Value::as_str) != Some(root_action_id.as_str())
+            || art.get("projectId") != binding.get("projectId")
+            || art
+                .get("epoch")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || art.get("fingerprint") != binding.get("fingerprint")
+        {
+            return false;
+        }
+        let text = match art.get("text").and_then(Value::as_str) {
+            Some(v) => v,
+            None => return false,
+        };
+        if hash(text) != artifact_hash
+            || usage
+                .pointer("/artifactIdentity/artifactId")
+                .and_then(Value::as_str)
+                != Some(artifact_id)
+            || usage.pointer("/artifactIdentity/epoch") != art.get("epoch")
+            || usage.pointer("/artifactIdentity/fingerprint") != art.get("fingerprint")
+        {
+            return false;
+        }
+        let manifest = match binding.pointer("/sourceManifest") {
+            Some(v) => v,
+            None => return false,
+        };
+        let context = match manifest.get("reviewRevisionContext") {
+            Some(v) => v,
+            None => return false,
+        };
+        if manifest.get("operation").and_then(Value::as_str) != Some("review-chapter")
+            || context.get("version").and_then(Value::as_i64) != Some(1)
+            || context.get("operation").and_then(Value::as_str) != Some("review-chapter")
+            || context.get("sourceHash").and_then(Value::as_str)
+                != Some(hash(&source.content).as_str())
+            || context
+                .get("source")
+                .and_then(Value::as_object)
+                .is_none_or(|v| {
+                    v.len() != 5
+                        || v.get("id").and_then(Value::as_i64) != Some(source.id)
+                        || v.get("chapterNumber").and_then(Value::as_i64)
+                            != Some(source.chapter_number)
+                        || v.get("version").and_then(Value::as_i64) != Some(source.version)
+                        || v.get("status").and_then(Value::as_str) != Some(source.status.as_str())
+                        || v.get("content").and_then(Value::as_str) != Some(source.content.as_str())
+                })
+            || context.get("confirmation").is_some()
+        {
+            return false;
+        }
+        let author_input = match manifest.get("authorInputs").and_then(Value::as_array) {
+            Some(values)
+                if values.len() == 1
+                    && values[0].get("id").and_then(Value::as_str)
+                        == Some("review-revision-context") =>
+            {
+                match values[0].get("text").and_then(Value::as_str) {
+                    Some(text) => text,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        let revision_context: crate::services::review_revision_context::ReviewRevisionContext =
+            match serde_json::from_str(author_input) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+        let context_value: Value = match serde_json::from_str(author_input) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if context_value != *context {
+            return false;
+        }
+        let ctx_hash = hash(author_input);
+        if effect.get("contextHash").and_then(Value::as_str) != Some(ctx_hash.as_str())
+            || manifest
+                .get("reviewRevisionContextHash")
+                .and_then(Value::as_str)
+                != Some(ctx_hash.as_str())
+        {
+            return false;
+        }
+        let version = effect
+            .get("reportVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(1);
+        if effect.get("reportVersion").is_some() && version != 2 {
+            return false;
+        }
+        let recheck_version = usage
+            .pointer("/reviewCycleRecheck/version")
+            .and_then(Value::as_i64);
+        if revision_context.recheck.is_some() != recheck_version.is_some() {
+            return false;
+        }
+        if crate::services::review_revision_generation::rebuild_review_report_hash(
+            &revision_context,
+            text,
+            version,
+            recheck_version,
+        )
+        .as_deref()
+            != Some(cycle.review_content_hash.as_str())
+            || hash(review_body) != cycle.review_content_hash
+        {
+            return false;
+        }
+        matches += 1;
+    }
+    matches == 1
+}
+fn cycle_attempts(
+    conn: &Connection,
+    root_id: &str,
+) -> Vec<(String, String, String, String, String, String, String)> {
+    let mut stmt=match conn.prepare("SELECT a.attempt_id,a.run_id,a.root_action_id,a.attempt_json,a.usage_receipt_json,r.root_action_id,r.binding_json FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id WHERE a.root_action_id=?1 ORDER BY a.rowid"){Ok(v)=>v,Err(_)=>return Vec::new()};
+    let mapped = stmt.query_map([root_id], |r| {
+        Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+            r.get(6)?,
+        ))
+    });
+    match mapped {
+        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+fn prove_revision_effect(
+    conn: &Connection,
+    cycle: &CycleVerifyRow,
+    action: &Map<String, Value>,
+    source: &crate::draft_source_guard::ExpectedDraftSource,
+    confirmation_review_id: i64,
+    confirmation_body: &str,
+    confirmation_hash: &str,
+    revision_id: i64,
+    revision_index: i64,
+    revision_body: &str,
+    attempts: &[(String, String, String, String, String, String, String)],
+) -> bool {
+    let mut matched = 0usize;
+    for (attempt_id, run_id, root_id, attempt_json, usage_json, run_root, binding_json) in attempts
+    {
+        if run_root != &cycle.root_action_id {
+            return false;
+        }
+        let binding: Value = match serde_json::from_str(binding_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if binding.get("projectId") != action.get("projectId")
+            || binding
+                .get("epoch")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return false;
+        }
+        let usage: Value = match serde_json::from_str(usage_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let Some(effect) = usage.get("reviewRevisionEffect").and_then(Value::as_object) else {
+            continue;
+        };
+        if effect.get("kind").and_then(Value::as_str) != Some("revision")
+            || effect.get("id").and_then(Value::as_i64) != Some(revision_id)
+        {
+            continue;
+        }
+        let mut effect_keys = effect.keys().map(String::as_str).collect::<Vec<_>>();
+        effect_keys.sort_unstable();
+        if effect_keys
+            != [
+                "artifact",
+                "compositionHash",
+                "contentHash",
+                "contextHash",
+                "id",
+                "index",
+                "kind",
+            ]
+        {
+            return false;
+        }
+        if effect.get("index").and_then(Value::as_i64) != Some(revision_index)
+            || effect.get("contentHash").and_then(Value::as_str)
+                != Some(hash(revision_body).as_str())
+            || effect.get("compositionHash").and_then(Value::as_str)
+                != Some(hash(revision_body).as_str())
+        {
+            return false;
+        }
+        let attempt: Value = match serde_json::from_str(attempt_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if !matches!(
+            attempt.get("status").and_then(Value::as_str),
+            Some("settled" | "unknown")
+        ) || usage
+            .pointer("/result/finishReason")
+            .and_then(Value::as_str)
+            != Some("stop")
+            || usage.pointer("/result/failureCode").is_some()
+        {
+            return false;
+        }
+        let Some(artifact_ref) = effect.get("artifact").and_then(Value::as_object) else {
+            return false;
+        };
+        let mut artifact_keys = artifact_ref.keys().map(String::as_str).collect::<Vec<_>>();
+        artifact_keys.sort_unstable();
+        if artifact_keys != ["artifactId", "revision", "textHash"] {
+            return false;
+        }
+        let Some(artifact_id) = artifact_ref.get("artifactId").and_then(Value::as_str) else {
+            return false;
+        };
+        let row:Option<(String,String,String,i64,String)>=match conn.query_row("SELECT attempt_id,run_id,artifact_json,revision,status FROM generation_artifacts WHERE artifact_id=?1",[artifact_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional(){Ok(v)=>v,Err(_)=>return false};
+        let Some((owner_attempt, owner_run, raw, rev, status)) = row else {
+            return false;
+        };
+        let art: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if owner_attempt != *attempt_id
+            || owner_run != *run_id
+            || status == "discarded"
+            || artifact_ref.get("revision").and_then(Value::as_i64) != Some(rev)
+            || artifact_ref.get("textHash").and_then(Value::as_str)
+                != art.get("textHash").and_then(Value::as_str)
+            || art.get("artifactId").and_then(Value::as_str) != Some(artifact_id)
+            || art.get("attemptId").and_then(Value::as_str) != Some(attempt_id.as_str())
+            || art.get("rootActionId").and_then(Value::as_str) != Some(root_id.as_str())
+            || art.get("projectId") != binding.get("projectId")
+            || art.get("fingerprint") != binding.get("fingerprint")
+            || usage
+                .pointer("/artifactIdentity/artifactId")
+                .and_then(Value::as_str)
+                != Some(artifact_id)
+            || usage.pointer("/artifactIdentity/fingerprint") != art.get("fingerprint")
+            || usage.pointer("/artifactIdentity/epoch") != art.get("epoch")
+        {
+            return false;
+        }
+        let context = match binding.pointer("/sourceManifest/reviewRevisionContext") {
+            Some(v) => v,
+            None => return false,
+        };
+        if binding
+            .pointer("/sourceManifest/operation")
+            .and_then(Value::as_str)
+            != Some("refine-from-review")
+            || context.get("operation").and_then(Value::as_str) != Some("refine-from-review")
+            || context.get("version").and_then(Value::as_i64) != Some(1)
+            || context.pointer("/source/id").and_then(Value::as_i64) != Some(source.id)
+            || context.pointer("/source/content").and_then(Value::as_str)
+                != Some(source.content.as_str())
+            || context.pointer("/sourceHash").and_then(Value::as_str)
+                != Some(hash(&source.content).as_str())
+        {
+            return false;
+        }
+        let Some(authors) = binding
+            .pointer("/sourceManifest/authorInputs")
+            .and_then(Value::as_array)
+        else {
+            return false;
+        };
+        let Some(text) = authors
+            .iter()
+            .find(|x| x.get("id").and_then(Value::as_str) == Some("review-revision-context"))
+            .and_then(|x| x.get("text"))
+            .and_then(Value::as_str)
+        else {
+            return false;
+        };
+        let ctx: crate::services::review_revision_context::ReviewRevisionContext =
+            match serde_json::from_str(text) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+        let Some(confirm) = ctx.confirmation else {
+            return false;
+        };
+        if confirm.review_source_id != confirmation_review_id
+            || confirm.content != confirmation_body
+            || confirm.original_review_content_hash != cycle.review_content_hash
+            || hash(text)
+                != effect
+                    .get("contextHash")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            || binding
+                .pointer("/sourceManifest/reviewRevisionContextHash")
+                .and_then(Value::as_str)
+                != Some(hash(text).as_str())
+            || hash(confirmation_body) != confirmation_hash
+        {
+            return false;
+        }
+        let composition = match usage.get("visibleComposition").and_then(Value::as_object) {
+            Some(v) => v,
+            None => return false,
+        };
+        if composition.get("algorithm").and_then(Value::as_str) != Some("visible-append-v1")
+            || composition.get("textHash").and_then(Value::as_str)
+                != Some(hash(revision_body).as_str())
+        {
+            return false;
+        }
+        let Some(ids) = composition.get("artifactIds").and_then(Value::as_array) else {
+            return false;
+        };
+        let Some(sources) = composition.get("sources").and_then(Value::as_array) else {
+            return false;
+        };
+        if ids.is_empty()
+            || ids.len() > 32
+            || ids.last().and_then(Value::as_str) != Some(artifact_id)
+            || sources.len() != ids.len()
+        {
+            return false;
+        }
+        let mut text_acc = String::new();
+        let mut previous = 0i64;
+        let mut seen = std::collections::HashSet::new();
+        for (n, idval) in ids.iter().enumerate() {
+            let Some(id) = idval.as_str() else {
+                return false;
+            };
+            if !seen.insert(id) {
+                return false;
+            }
+            let data:Option<(String,String,i64,String,String,String,String)>=match conn.query_row("SELECT a.attempt_id,a.run_id,a.revision,a.status,a.artifact_json,t.attempt_json,t.usage_receipt_json FROM generation_artifacts a JOIN generation_attempts t ON t.attempt_id=a.attempt_id WHERE a.artifact_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional(){Ok(v)=>v,Err(_)=>return false,};
+            let Some((aid, rid, revision, status, raw, attempt_raw, usage_raw)) = data else {
+                return false;
+            };
+            if rid != *run_id || status == "discarded" {
+                return false;
+            }
+            let art: Value = match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            let physical: Value = match serde_json::from_str(&attempt_raw) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            let receipt: Value = match serde_json::from_str(&usage_raw) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            if !matches!(
+                physical.get("status").and_then(Value::as_str),
+                Some("settled" | "unknown")
+            ) || !matches!(
+                receipt
+                    .pointer("/result/finishReason")
+                    .and_then(Value::as_str),
+                Some("stop" | "length")
+            ) {
+                return false;
+            }
+            let Some(chunk) = art.get("text").and_then(Value::as_str) else {
+                return false;
+            };
+            let Some(chunk_hash) = art.get("textHash").and_then(Value::as_str) else {
+                return false;
+            };
+            if hash(chunk) != chunk_hash {
+                return false;
+            }
+            if n == 0 {
+                text_acc = chunk.trim().to_string();
+            } else {
+                text_acc =
+                    crate::repositories::generation_run_repository::compose_visible_continuation(
+                        &text_acc, chunk,
+                    );
+            }
+            if art.get("artifactId").and_then(Value::as_str) != Some(id)
+                || art.get("attemptId").and_then(Value::as_str) != Some(aid.as_str())
+                || art.get("revision").and_then(Value::as_i64) != Some(revision)
+                || art.get("rootActionId").and_then(Value::as_str) != Some(root_id.as_str())
+                || art.get("projectId") != binding.get("projectId")
+                || art.get("fingerprint") != binding.get("fingerprint")
+            {
+                return false;
+            }
+            let expected =
+                serde_json::json!({"artifactId":id,"revision":revision,"textHash":chunk_hash});
+            if sources.get(n) != Some(&expected) {
+                return false;
+            }
+            let ordinal: i64 = match conn.query_row(
+                "SELECT rowid FROM generation_attempts WHERE attempt_id=?1",
+                [aid],
+                |r| r.get(0),
+            ) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            if ordinal <= previous {
+                return false;
+            }
+            previous = ordinal;
+        }
+        if hash(&text_acc) != hash(revision_body) {
+            return false;
+        }
+        matched += 1;
+    }
+    matched == 1
+}
+pub(crate) fn verify_m03_review_cycle(conn: &Connection) -> bool {
     if !verify_foreign_keys(conn) {
         return false;
     }
@@ -2382,7 +2941,7 @@ fn verify_foreign_keys(conn: &Connection) -> bool {
     violations == 0
 }
 
-/// 基线逐周期校验（省略 `proveEffect` 段）：字段域、审稿哈希绑定、根动作、
+/// 逐周期校验：字段域、审稿哈希绑定、根动作、已接入的效果证明、
 /// 确认 / 修稿绑定链与状态机不变量
 fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
     if !is_nonempty_str(&cycle.cycle_id)
@@ -2463,6 +3022,19 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
         _ => return false,
     };
     if !is_nonempty_string(action.get("projectId")) || !is_nonempty_string(action.get("epoch")) {
+        return false;
+    }
+    let Some(source_content_value) = source_content.as_ref() else {
+        return false;
+    };
+    let source = crate::draft_source_guard::ExpectedDraftSource {
+        id: base_draft_id,
+        chapter_number: source_draft_chapter_number.unwrap_or_default(),
+        version: source_draft_version.unwrap_or_default(),
+        status: source_draft_status.clone().unwrap_or_default(),
+        content: source_content_value.clone(),
+    };
+    if !prove_review_effect(conn, cycle, &action, &source, &body) {
         return false;
     }
     // 确认绑定（基线：确认行必须与周期同源稿且哈希匹配，快照字段一致）
@@ -2581,6 +3153,61 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
             {
                 return false;
             }
+            let confirmation_id = match cycle.confirmation_review_id {
+                Some(value) => value,
+                None => return false,
+            };
+            let confirmation_hash = match cycle.confirmation_content_hash.as_deref() {
+                Some(value) => value,
+                None => return false,
+            };
+            let confirmation_body: String = match conn.query_row(
+                "SELECT c.body FROM reviews r JOIN contents c ON c.id=r.content_id WHERE r.id=?1",
+                [confirmation_id],
+                |row| row.get(0),
+            ) {
+                Ok(value) => value,
+                Err(_) => return false,
+            };
+            let revision_body: String = match conn.query_row(
+                "SELECT c.body FROM revisions r JOIN contents c ON c.id=r.content_id WHERE r.id=?1",
+                [revision_id],
+                |row| row.get(0),
+            ) {
+                Ok(value) => value,
+                Err(_) => return false,
+            };
+            let revision_index: i64 = match conn.query_row(
+                "SELECT revision_index FROM revisions WHERE id=?1",
+                [revision_id],
+                |row| row.get(0),
+            ) {
+                Ok(value) => value,
+                Err(_) => return false,
+            };
+            let source = crate::draft_source_guard::ExpectedDraftSource {
+                id: base_draft_id,
+                chapter_number: source_draft_chapter_number.unwrap_or_default(),
+                version: source_draft_version.unwrap_or_default(),
+                status: source_draft_status.clone().unwrap_or_default(),
+                content: source_content.clone().unwrap_or_default(),
+            };
+            let attempts = cycle_attempts(conn, &cycle.root_action_id);
+            if !prove_revision_effect(
+                conn,
+                cycle,
+                &action,
+                &source,
+                confirmation_id,
+                &confirmation_body,
+                confirmation_hash,
+                revision_id,
+                revision_index,
+                &revision_body,
+                &attempts,
+            ) {
+                return false;
+            }
             Some((
                 revision_id,
                 revision_base_draft_id,
@@ -2642,6 +3269,146 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
             };
             let merged_hash = cycle.merged_hash.as_deref().unwrap_or("");
             if merged_body.is_none() || hash(merged_body.as_deref().unwrap_or("")) != merged_hash {
+                return false;
+            }
+            if cycle.recheck_count == 1 {
+                let Some(attempt_id) = cycle.recheck_attempt_id.as_deref() else {
+                    return false;
+                };
+                let recheck: Option<(i64,String,String,Option<String>,Option<i64>,Option<i64>,Option<String>)> = match conn.query_row(
+                    "SELECT r.id,c.body,a.usage_receipt_json,r.source_content,r.base_draft_id,r.source_draft_chapter_number,r.source_draft_status FROM generation_attempts a JOIN reviews r ON r.id=CAST(json_extract(a.usage_receipt_json,'$.reviewRevisionEffect.id') AS INTEGER) JOIN contents c ON c.id=r.content_id WHERE a.attempt_id=?1 AND a.root_action_id=?2 AND json_extract(a.usage_receipt_json,'$.reviewRevisionEffect.kind')='review'",
+                    rusqlite::params![attempt_id, cycle.root_action_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))) { Ok(v)=>Some(v), Err(rusqlite::Error::QueryReturnedNoRows)=>None, Err(_)=>return false };
+                let Some((
+                    recheck_id,
+                    recheck_body,
+                    usage_raw,
+                    recheck_source,
+                    base,
+                    chapter,
+                    status,
+                )) = recheck
+                else {
+                    return false;
+                };
+                if base != Some(revision_base_draft_id.unwrap_or_default())
+                    || recheck_source
+                        .as_deref()
+                        .is_none_or(|v| hash(v) != merged_hash)
+                {
+                    return false;
+                }
+                let usage: Value = match serde_json::from_str(&usage_raw) {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
+                let receipt = match usage.get("reviewCycleRecheck").and_then(Value::as_object) {
+                    Some(v) => v,
+                    None => return false,
+                };
+                if receipt.get("cycleId").and_then(Value::as_str) != Some(cycle.cycle_id.as_str())
+                    || receipt.get("comparisonVersion").and_then(Value::as_i64)
+                        != Some(cycle.comparison_version)
+                    || receipt.get("mergedHash").and_then(Value::as_str) != Some(merged_hash)
+                    || receipt.get("findingSetHash").and_then(Value::as_str)
+                        != Some(cycle.finding_set_hash.as_str())
+                    || !matches!(receipt.get("version").and_then(Value::as_i64), Some(1 | 2))
+                    || receipt.get("findings").and_then(Value::as_array).is_none()
+                {
+                    return false;
+                }
+                let findings = receipt.get("findings").and_then(Value::as_array).unwrap();
+                let report: Value = match serde_json::from_str(&recheck_body) {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
+                let Some(report_items) = report.get("items").and_then(Value::as_array) else {
+                    return false;
+                };
+                let mut mapped_ids = std::collections::HashSet::new();
+                let mut mapped_indexes = std::collections::HashSet::new();
+                for item in findings {
+                    let Some(fid) = item.get("findingId").and_then(Value::as_str) else {
+                        return false;
+                    };
+                    let Some(target) = item.get("targetId").and_then(Value::as_str) else {
+                        return false;
+                    };
+                    let Some(idx) = item.get("reviewItemIndex").and_then(Value::as_u64) else {
+                        return false;
+                    };
+                    let Some(resolved) = item.get("resolved").and_then(Value::as_bool) else {
+                        return false;
+                    };
+                    let Some(ehash) = item.get("evidenceHash").and_then(Value::as_str) else {
+                        return false;
+                    };
+                    if idx as usize >= report_items.len()
+                        || !is_content_hash(ehash)
+                        || !mapped_ids.insert(fid.to_string())
+                        || !mapped_indexes.insert(idx)
+                        || (receipt.get("version").and_then(Value::as_i64) == Some(2) && resolved)
+                    {
+                        return false;
+                    }
+                    let ri = &report_items[idx as usize];
+                    if ri.get("resolved").and_then(Value::as_bool) != Some(resolved)
+                        || i64::try_from(idx).ok().is_none_or(|index| {
+                            crate::services::review_revision_generation::recheck_evidence_hash(
+                                fid, target, index, ri, resolved,
+                            ) != ehash
+                        })
+                    {
+                        return false;
+                    }
+                    let persisted:Option<(Option<String>,String)>=match conn.query_row("SELECT target_id,status FROM review_findings WHERE cycle_id=?1 AND finding_id=?2",rusqlite::params![cycle.cycle_id,fid],|r|Ok((r.get(0)?,r.get(1)?))).optional(){Ok(v)=>v,Err(_)=>return false};
+                    let Some((persisted_target, persisted_status)) = persisted else {
+                        return false;
+                    };
+                    if persisted_target.as_deref() != Some(target)
+                        || persisted_status == "unverified"
+                        || persisted_status == "author-waived"
+                    {
+                        return false;
+                    }
+                }
+                let index: i64 = match conn.query_row(
+                    "SELECT review_index FROM reviews WHERE id=?1",
+                    [recheck_id],
+                    |r| r.get(0),
+                ) {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
+                let version: i64 = match conn.query_row(
+                    "SELECT version FROM drafts WHERE id=?1",
+                    [base.unwrap_or_default()],
+                    |r| r.get(0),
+                ) {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                };
+                let source = crate::draft_source_guard::ExpectedDraftSource {
+                    id: base.unwrap_or_default(),
+                    chapter_number: chapter.unwrap_or_default(),
+                    version,
+                    status: status.unwrap_or_default(),
+                    content: recheck_source.unwrap_or_default(),
+                };
+                let mut recheck_cycle = cycle.clone();
+                recheck_cycle.review_id = recheck_id;
+                recheck_cycle.review_content_hash = hash(&recheck_body);
+                recheck_cycle.source_hash = hash(&source.content);
+                if !prove_review_effect(conn, &recheck_cycle, &action, &source, &recheck_body) {
+                    return false;
+                }
+                let duplicate_effects: i64 = match conn.query_row(
+                    "SELECT COUNT(*) FROM generation_attempts WHERE root_action_id=?1 AND json_extract(usage_receipt_json,'$.reviewRevisionEffect.kind')='review' AND CAST(json_extract(usage_receipt_json,'$.reviewRevisionEffect.id') AS INTEGER)=?2",
+                    rusqlite::params![cycle.root_action_id, recheck_id], |r| r.get(0)) { Ok(v)=>v, Err(_)=>return false };
+                if duplicate_effects != 1 {
+                    return false;
+                }
+                let _ = index;
+            } else if cycle.recheck_attempt_id.is_some() {
                 return false;
             }
             let _ = revision_id;
