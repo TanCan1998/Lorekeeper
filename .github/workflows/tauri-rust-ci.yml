@@ -61,6 +61,9 @@ jobs:
           "RUSTUP_HOME=$(Join-Path $env:RUNNER_TEMP 'lorekeeper-rustup')" >> $env:GITHUB_ENV
           "CARGO_HOME=$(Join-Path $env:RUNNER_TEMP 'lorekeeper-cargo')" >> $env:GITHUB_ENV
           "AI_NOVEL_LOREKEEPER_HOME=$(Join-Path $env:RUNNER_TEMP 'lorekeeper-test-home')" >> $env:GITHUB_ENV
+          # 使用物理长路径作为TEMP/TMP，避免RUNNER~1别名触发严格路径身份拒绝。
+          node -e "const fs = require('node:fs'); const path = require('node:path'); const dir = path.join(process.env.RUNNER_TEMP, 'lorekeeper-tests'); fs.mkdirSync(dir, { recursive: true }); const physical = fs.realpathSync.native(dir); fs.appendFileSync(process.env.GITHUB_ENV, 'TEMP=' + physical + '\nTMP=' + physical + '\n'); console.log('已设置隔离物理临时目录')"
+          exit $LASTEXITCODE
 
       - name: 安装固定Rust工具链
         run: |
