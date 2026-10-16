@@ -122,7 +122,7 @@ fn same_file(left: &FileIdentity, right: &FileIdentity) -> bool {
 }
 
 /// 上游 `sameObject`：仅 `dev` 与 `ino` 相等
-fn same_object(left: &FileIdentity, right: &FileIdentity) -> bool {
+pub fn same_object(left: &FileIdentity, right: &FileIdentity) -> bool {
     left.dev == right.dev && left.ino == right.ino
 }
 
@@ -288,8 +288,51 @@ pub fn handle_identity(file: &File) -> Result<FileIdentity, String> {
     })
 }
 
+/// 硬链接数（Unix 走 `MetadataExt::nlink`；Windows 走 Win32 `nNumberOfLinks`——
+/// std 的 `nlink` 在 Windows 恒为 1，不能反映硬链接；目录在 Windows 上按 1 处理）。
+///
+/// 与 `portable_runtime_freeze` / `portable_project_assets` 同款平台取法。
+pub fn link_count(path: &Path) -> Result<u64, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path).map_err(|_| source_unsafe())?;
+        Ok(metadata.nlink())
+    }
+    #[cfg(windows)]
+    {
+        let file = File::open(path).map_err(|_| source_unsafe())?;
+        let metadata = file.metadata().map_err(|_| source_unsafe())?;
+        if metadata.is_dir() {
+            return Ok(1);
+        }
+        windows_link_count(&file).ok_or_else(source_unsafe)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        Ok(1)
+    }
+}
+
+#[cfg(windows)]
+fn windows_link_count(file: &File) -> Option<u64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `file` 持有有效句柄，`information` 为栈上可写结构；失败时返回 0。
+    let succeeded =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) };
+    if succeeded == 0 {
+        return None;
+    }
+    Some(u64::from(information.nNumberOfLinks))
+}
+
 /// 绝对化（对齐 `path.resolve`）
-fn absolute(path: &Path) -> Result<PathBuf, String> {
+pub fn absolute(path: &Path) -> Result<PathBuf, String> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
@@ -344,7 +387,7 @@ pub fn safe_directory(directory: &Path) -> Result<(), String> {
 }
 
 /// 上游 `StagingAttempt`
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StagingAttempt {
     pub root: PathBuf,
     directories: HashMap<PathBuf, FileIdentity>,
@@ -662,6 +705,8 @@ pub struct ExtractPortableProjectArchiveResult {
     pub manifest: PortableProjectManifest,
     pub receipt: PortableArchiveReceipt,
     pub staging_path: PathBuf,
+    /// 解包创建清单传递给恢复端，失败时只能按原始身份清理。
+    pub staging_attempt: StagingAttempt,
 }
 
 /// 索引后的条目元信息（`ZipFile` 借用 `ZipArchive`，故先记住元信息再逐条解包）
@@ -877,7 +922,7 @@ fn extract_payloads<R: Read + Seek>(
     manifest: &PortableProjectManifest,
     payloads: &[IndexedEntry],
     staging_parent_path: &Path,
-) -> Result<PathBuf, String> {
+) -> Result<StagingAttempt, String> {
     let mut staging = prepare_staging(staging_parent_path)?;
     let outcome = (|| -> Result<(), String> {
         for (index, item) in payloads.iter().enumerate() {
@@ -892,7 +937,7 @@ fn extract_payloads<R: Read + Seek>(
         Ok(())
     })();
     match outcome {
-        Ok(()) => Ok(staging.root.clone()),
+        Ok(()) => Ok(staging),
         Err(error) => {
             cleanup_attempt(&staging);
             Err(error)
@@ -938,7 +983,7 @@ pub fn extract_portable_project_archive(
             return Err(archive_invalid());
         }
     }
-    let staging_path = extract_payloads(
+    let staging_attempt = extract_payloads(
         &mut archive,
         &probe,
         &archive_path,
@@ -955,7 +1000,8 @@ pub fn extract_portable_project_archive(
             manifest_sha256: sha256_hex(&manifest_bytes),
         },
         manifest,
-        staging_path,
+        staging_path: staging_attempt.root.clone(),
+        staging_attempt,
     })
 }
 impl StagingAttempt {

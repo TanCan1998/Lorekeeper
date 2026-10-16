@@ -4,7 +4,7 @@
 //! # 职责边界
 //!
 //! 本模块只做**纯逻辑**：把已解析的 manifest 校验成一份「归档条目 → 目标相对路径」计划。
-//! 真正的安装（暂存目录所有权、安装日志、原子移动、转移权威改写、回执）由 B113b 落地；
+//! 安装执行见 [`crate::services::portable_project_restore_install`]；
 //! 命令层（消费两个授权 + 会话门禁）由 B113c 落地。
 //!
 //! # 本项目口径与基线差异
@@ -20,7 +20,7 @@
 //!
 //! 因此基线那套「`.ai-novel/` 保留前缀 + 知识快照条目」的校验在本项目里简化为：
 //! 条目路径一律相对存储根、不得出现 `.lore/` 前缀（否则会双重嵌套）、不得出现库副文件与
-//! 项目清单（这两类由恢复过程自行生成）。
+//! 项目清单（这两类由恢复过程自行生成）。冻结侧车是唯一允许的 `history-projection`，且必须存在。
 
 use std::collections::BTreeSet;
 
@@ -92,7 +92,7 @@ impl RestorePlan {
 /// - 便携库条目缺失 / 重复 / 处置不是 `portable-database`；
 /// - 转移权威条目缺失 / 重复 / 处置不是 `transfer-receipt`；
 /// - `avatar-asset` 条目落在 `avatars/` 之外；
-/// - `knowledge-source` / `history-projection` 处置在本项目口径下不产出。
+/// - `knowledge-source` 不产出；`history-projection` 仅允许唯一冻结侧车。
 pub fn plan_restore(manifest: &PortableProjectManifest) -> Result<RestorePlan, String> {
     let max_path_bytes =
         crate::services::portable_project_format::default_portable_archive_limits().max_path_bytes;
@@ -101,6 +101,7 @@ pub fn plan_restore(manifest: &PortableProjectManifest) -> Result<RestorePlan, S
     let mut database_entry: Option<RestorePlanEntry> = None;
     let mut authority_entry: Option<RestorePlanEntry> = None;
     let mut avatar_entries = 0usize;
+    let mut freeze_entry = false;
 
     for entry in &manifest.entries {
         let key = portable_path_key(&entry.path, max_path_bytes).map_err(|_| restore_invalid())?;
@@ -147,12 +148,20 @@ pub fn plan_restore(manifest: &PortableProjectManifest) -> Result<RestorePlan, S
             PortableEntryDisposition::AuthorContent
             | PortableEntryDisposition::Prompt
             | PortableEntryDisposition::Skill => {}
-            PortableEntryDisposition::KnowledgeSource
-            | PortableEntryDisposition::HistoryProjection => return Err(restore_invalid()),
+            PortableEntryDisposition::HistoryProjection => {
+                if key != crate::services::portable_project_history::FREEZE_ENTRY || freeze_entry {
+                    return Err(restore_invalid());
+                }
+                freeze_entry = true;
+            }
+            PortableEntryDisposition::KnowledgeSource => return Err(restore_invalid()),
         }
         entries.push(plan_entry);
     }
 
+    if !freeze_entry {
+        return Err(restore_invalid());
+    }
     let Some(database_entry) = database_entry else {
         return Err(restore_invalid());
     };
@@ -223,6 +232,10 @@ mod tests {
                 "portable-transfer-authority.json",
                 PortableEntryDisposition::TransferReceipt,
             ),
+            entry(
+                crate::services::portable_project_history::FREEZE_ENTRY,
+                PortableEntryDisposition::HistoryProjection,
+            ),
             entry("prompts/a.md", PortableEntryDisposition::Prompt),
             entry("skills/b.md", PortableEntryDisposition::Skill),
             entry("avatars/ab/1-x.png", PortableEntryDisposition::AvatarAsset),
@@ -232,7 +245,7 @@ mod tests {
     #[test]
     fn plan_maps_entries_to_storage_root_test() {
         let plan = plan_restore(&manifest(base_entries())).unwrap();
-        assert_eq!(plan.entries.len(), 5);
+        assert_eq!(plan.entries.len(), 6);
         assert_eq!(plan.database_entry.target_relative_path, "lorekeeper.db");
         assert_eq!(
             plan.transfer_authority_entry.target_relative_path,
@@ -246,6 +259,7 @@ mod tests {
             vec![
                 "avatars/ab/1-x.png",
                 "lorekeeper.db",
+                "portable-runtime-freeze.json",
                 "portable-transfer-authority.json",
                 "prompts/a.md",
                 "skills/b.md",
@@ -281,6 +295,15 @@ mod tests {
 
     #[test]
     fn plan_rejects_shape_drift_test() {
+        // 缺冻结证据不再允许恢复，不能把保留的历史误认作可重放记录。
+        let entries: Vec<_> = base_entries()
+            .into_iter()
+            .filter(|entry| entry.disposition != PortableEntryDisposition::HistoryProjection)
+            .collect();
+        assert_eq!(
+            plan_restore(&manifest(entries)).unwrap_err(),
+            "PORTABLE_RESTORE_INVALID"
+        );
         // 缺库条目
         let entries: Vec<_> = base_entries()
             .into_iter()
@@ -311,7 +334,7 @@ mod tests {
 
         // 头像资产不在 avatars/ 下
         let mut entries = base_entries();
-        entries[4].path = "assets/1-x.png".to_string();
+        entries[5].path = "assets/1-x.png".to_string();
         assert_eq!(
             plan_restore(&manifest(entries)).unwrap_err(),
             "PORTABLE_RESTORE_INVALID"

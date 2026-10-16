@@ -14,7 +14,7 @@
 //!
 //! # 与基线的差异（本项目口径）
 //!
-//! - 项目存储根是 `<项目根>/.lore`（`db::PROJECT_DIR_NAME`），不是上游的 `.ai-novel`：导出从该根\n//!   收集库、头像与原始资产，归档条目一律相对该根、不带任何前缀；\n//! - 不产出基线式逐行历史投影文件（`historyProjectionIds` 只承载头像引用占位，见 `omittedItems` 说明）；
+//! - 项目存储根是 `<项目根>/.lore`（`db::PROJECT_DIR_NAME`），不是上游的 `.ai-novel`：导出从该根\n//!   收集库、头像与原始资产，归档条目一律相对该根、不带任何前缀；\n//! - 冻结侧车仅记录脱敏历史行身份与空投影，不携带原始收据或其摘要；恢复必须校验全量冻结键；
 //! - 派生索引（FTS5 `kb_fts`、HNSW 向量快照）一律按 `rebuild-stale` 省略，知识**事实**在库副本内；
 //! - 基线依赖 Electron 备份 API 二次快照做「源未变」复核；本项目在归档写出前复核一次
 //!   （容器层已对每个源文件做「读取前后四次身份复核 + sha256 校验」，等价强度，少一次整库快照）。
@@ -302,13 +302,31 @@ pub fn export_portable_project(
             .len();
         let database_sha256 = sha256_file(&staged_database)?;
 
+        // 冻结证据与转移权威必须来自同一脱敏副本。
+        let history_bytes = {
+            let conn = Connection::open(&staged_database).map_err(|_| asset_unsafe())?;
+            let document = crate::services::portable_project_history::freeze_document(
+                &conn,
+                input.origin_project_id,
+                &snapshot_generation,
+            )?;
+            serde_json::to_vec(&document).map_err(|_| asset_unsafe())?
+        };
+        let freeze =
+            crate::services::portable_runtime_freeze::parse_portable_runtime_freeze(&history_bytes)
+                .map_err(|_| asset_unsafe())?;
+        let history_path = attempt
+            .root
+            .join(crate::services::portable_project_history::FREEZE_ENTRY);
+        std::fs::write(&history_path, &history_bytes).map_err(|_| asset_unsafe())?;
+
         // 转移权威
         let transfer_bytes = {
             let conn = Connection::open(&staged_database).map_err(|_| asset_unsafe())?;
             let authority =
                 create_portable_transfer_authority(CreatePortableTransferAuthorityInput {
                     database: &conn,
-                    freeze: None,
+                    freeze: Some(&freeze),
                     origin_project_id: input.origin_project_id,
                     snapshot_generation: &snapshot_generation,
                     portable_database_sha256: &database_sha256,
@@ -386,6 +404,17 @@ pub fn export_portable_project(
             &mut claimed_path,
         )?;
 
+        add_source(
+            crate::services::portable_project_history::FREEZE_ENTRY.to_string(),
+            history_bytes.len() as u64,
+            sha256_hex(&history_bytes),
+            PortableEntryDisposition::HistoryProjection,
+            history_path,
+            &mut sources,
+            &mut entries,
+            &mut claimed_path,
+        )?;
+
         // 头像资产：逐文件比对大小与内容哈希
         for row in &avatars {
             let source_path = storage_root.join(
@@ -454,7 +483,18 @@ pub fn export_portable_project(
             semantic_counts,
             omitted_items: omitted_items(&sanitized.neutralized_columns, &sanitized.dropped_tables),
             transfer_receipt_ids: vec![receipt_id],
-            history_projection_ids: Vec::new(),
+            history_projection_ids: serde_json::from_slice::<serde_json::Value>(&history_bytes)
+                .map_err(|_| asset_unsafe())?["records"]
+                .as_array()
+                .ok_or_else(asset_unsafe)?
+                .iter()
+                .map(|record| {
+                    record["projectionId"]
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(asset_unsafe)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         };
         let archive_receipt: PortableArchiveReceipt =
             write_portable_project_archive(&WritePortableProjectArchiveInput {
@@ -593,7 +633,7 @@ mod tests {
         assert!(receipt.source_evidence.table_count >= 40);
         assert!(receipt.requires_runtime_freeze_guard);
         // 条目：库 + 转移权威 + 原始资产
-        assert_eq!(receipt.entry_count, 3);
+        assert_eq!(receipt.entry_count, 4);
 
         // 暂存目录回收
         let leftovers: Vec<String> = std::fs::read_dir(&attempt_parent)

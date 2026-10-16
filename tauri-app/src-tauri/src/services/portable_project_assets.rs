@@ -15,10 +15,6 @@
 //!   `GetFileInformationByHandle().nNumberOfLinks`），与 `portable_runtime_freeze` 同款。
 
 use std::collections::HashSet;
-#[cfg(windows)]
-use std::fs::File;
-#[cfg(unix)]
-use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -105,30 +101,6 @@ fn strictly_contained(root: &Path, candidate: &Path) -> bool {
     candidate != root && candidate.starts_with(root)
 }
 
-/// Unix 侧硬链接数（Windows 走 [`windows_link_count`]：std 的 `nlink` 在 Windows 恒为 1，
-/// 不能反映硬链接，必须查 Win32；与 `portable_runtime_freeze` 同款）。
-#[cfg(unix)]
-fn link_count(metadata: &Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    metadata.nlink()
-}
-
-#[cfg(windows)]
-fn windows_link_count(file: &File) -> Option<u64> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-    };
-    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: `file` 持有有效句柄，`information` 为栈上可写结构；失败时返回 0。
-    let succeeded =
-        unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) };
-    if succeeded == 0 {
-        return None;
-    }
-    Some(u64::from(information.nNumberOfLinks))
-}
-
 /// 上游 `physicalDirectory`：目录、非符号链接、`realpath` 与字面路径一致、且在根内
 fn physical_directory(directory: &Path, root: &Path) -> Result<(), String> {
     let identity = crate::services::portable_project_archive::path_identity(directory)
@@ -155,19 +127,9 @@ fn physical_file(file: &Path, root: &Path) -> Result<u64, String> {
     if !strictly_contained(&root_real, &file_real) {
         return Err(asset_unsafe());
     }
-    #[cfg(unix)]
+    if crate::services::portable_project_archive::link_count(file).map_err(|_| asset_unsafe())? != 1
     {
-        let metadata = std::fs::symlink_metadata(file).map_err(|_| asset_unsafe())?;
-        if link_count(&metadata) != 1 {
-            return Err(asset_unsafe());
-        }
-    }
-    #[cfg(windows)]
-    {
-        let handle = File::open(file).map_err(|_| asset_unsafe())?;
-        if windows_link_count(&handle) != Some(1) {
-            return Err(asset_unsafe());
-        }
+        return Err(asset_unsafe());
     }
     Ok(identity.size)
 }
