@@ -1005,7 +1005,7 @@ fn hash_file(
 }
 #[cfg(test)]
 #[path = "webdav_backup_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 fn public_generation(manifest: &Manifest, siblings: Vec<String>) -> WebDavGeneration {
     WebDavGeneration {

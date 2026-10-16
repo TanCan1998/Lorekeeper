@@ -10,8 +10,8 @@ const GEN1: &str = "11111111-1111-4111-8111-111111111111";
 const GEN2: &str = "22222222-2222-4222-8222-222222222222";
 const CREATED: &str = "2026-10-16T10:00:00.000Z";
 
-struct Server {
-    url: String,
+pub(crate) struct Server {
+    pub(crate) url: String,
     objects: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     put_order: Arc<Mutex<Vec<String>>>,
     stop: CancelFlag,
@@ -21,7 +21,7 @@ struct Server {
     thread: Option<JoinHandle<()>>,
 }
 impl Server {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -43,6 +43,8 @@ impl Server {
             while !done.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
+                        // Windows接受的socket可能继承监听器非阻塞模式；大归档分段接收必须显式恢复阻塞。
+                        socket.set_nonblocking(false).unwrap();
                         socket.set_nodelay(true).unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(5)))

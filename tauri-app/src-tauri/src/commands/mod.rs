@@ -17,6 +17,7 @@ pub mod app_data; // 批次 H：应用数据域（prompt:* 3 + skills:* 4）
 pub mod chapter_lifecycle; // 批次 E 第二部分：章节生命周期（4 频道）
 pub mod character_avatar; // 批次 B110：角色头像（character-avatar:* 4 频道）
 pub mod character_proposal; // 批次 G4-9a：角色提案（character-proposal:* 6 + character-identity:read）
+pub mod cloud_backup;
 mod config; // 批次 A：配置管理
 mod db; // 批次 C：项目数据库
 mod external_file_grant; // 批次 B：外部文件授权
@@ -48,6 +49,7 @@ pub use app_data::*;
 pub use chapter_lifecycle::*;
 pub use character_avatar::*;
 pub use character_proposal::*;
+pub use cloud_backup::*;
 pub use config::*;
 pub use db::*;
 pub use external_file_grant::*;

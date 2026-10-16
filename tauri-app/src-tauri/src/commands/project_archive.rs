@@ -353,7 +353,7 @@ fn portable_failure(error: String) -> PortableProjectExportResponse {
 
 /// 基线 `resolveGrantedPath(grants, event, grantId, operation)`：
 /// 无授权 / 范围不符 / 过期 / 已消费一律折叠为 `PORTABLE_GRANT_INVALID`（不含路径）。
-fn resolve_granted_path(
+pub(crate) fn resolve_granted_path(
     state: &AppState,
     grant_id: &str,
     operation: GrantOperation,
@@ -492,7 +492,7 @@ fn restored_response(
     }
 }
 
-fn register_restored_recent(
+pub(crate) fn register_restored_recent(
     receipt: &crate::services::portable_project_restore_install::RestorePortableProjectReceipt,
 ) -> Result<(), String> {
     let path = Path::new(&receipt.target_project_root);

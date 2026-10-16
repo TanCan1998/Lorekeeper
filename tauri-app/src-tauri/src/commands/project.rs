@@ -1276,13 +1276,19 @@ pub fn project_delete(
         );
     }
 
+    let binding_warning = app
+        .cloud_backup
+        .local()
+        .and_then(|mut local| local.bindings.remove_deleted_project(&active.project_id))
+        .err()
+        .map(|_| "项目目录已删除，但本机云备份绑定暂未清理".to_string());
     let _ = remove_recent_project(&authorized);
     ProjectDeleteResult {
         success: true,
         directory_deleted: true,
         database_restored: false,
         error: None,
-        warning: None,
+        warning: binding_warning,
     }
 }
 

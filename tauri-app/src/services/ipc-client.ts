@@ -211,6 +211,15 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'project:archive-export': ['request'],
   // 恢复只携带两份不透明授权，不注入当前项目会话。
   'project:archive-restore': ['request'],
+  // 云备份在契约参数中显式携带所需会话，能力域操作不自动注入。
+  'cloud-backup:view': ['projectSession'],
+  'cloud-backup:connect': ['request'],
+  'cloud-backup:confirm-binding': ['request'],
+  'cloud-backup:backup': ['request'],
+  'cloud-backup:list': ['request'],
+  'cloud-backup:restore-copy': ['request'],
+  'cloud-backup:cancel': ['operationId'],
+  'cloud-backup:clear-credential': ['localEndpointAccountId'],
   // 批次 B110：角色头像（项目域，自动注入 projectSession）
   // 注：返回契约判别联合 `{ success, cancelled?/image?/avatars?/error? }`。
   'character-avatar:choose': ['characterId'],

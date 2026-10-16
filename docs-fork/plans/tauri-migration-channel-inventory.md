@@ -55,6 +55,26 @@
 所有项目数据落在 `.lore`；冻结侧车与连接级 TEMP 写入门禁必须协同，不把历史收据当作可重放权威。
 本条不表示旧版副本导入或云备份已完成。
 
+## 云备份频道映射补充（B115–B116）
+
+八个 `cloud-backup:*` 频道分别对应 `cloud_backup_*` 命令；所有显式会话均来自契约，
+不额外自动注入活动项目。账户仅在当前 Windows 用户 DPAPI 保护下持久化。
+
+| 频道 | 参数与边界 |
+|---|---|
+| `view` | 显式projectSession，返回绑定及账户元数据，不返回明文 |
+| `connect` | request；先校验输入并探测DAV认证，再保存凭据 |
+| `confirm-binding` | request内会话及expectedRevision，显式确认可写绑定 |
+| `backup` | request内会话、operationId、disclosureConfirmed；快照后再校验租约与绑定 |
+| `list` | request内账户与cloudBookId；只列经过完成标记、清单和归档哈希验证的代 |
+| `restore-copy` | request内targetGrantId；只恢复副本，新绑定为origin-readonly |
+| `cancel` | operationId；在途取消，任务退出前仍占用同一操作身份 |
+| `clear-credential` | localEndpointAccountId；先失配绑定，再清除凭据 |
+
+远端完成、本机绑定保存失败返回成功及binding-not-saved；恢复副本成功不因最近项目列表失败而回滚。
+项目删除后仅清理本机绑定，失败返回警告，不删除远端代或共享账户凭据。
+上游遗留旧版导入频道因没有已确认的Lorekeeper旧版输入继续暂缓，不以不可用桩凑覆盖。
+
 ## 2. 必须知晓的传输层约定（Rust 签名要预留）
 
 1. **项目会话注入**：`ipc-client.ts` 的 `invokeWithSession` 对项目域频道（`db:*`、`kb:*`、`chapter:*`、`fs:*`、`project:save|update-config|delete`）**自动在参数尾部追加 `projectSession`**（`ProjectSessionContext { projectId, leaseId, projectPath }`）。契约文件的 `args` 不包含它 —— **Rust 命令必须接受这个尾参**并校验租约（对应 ADR 0001 会话租约）。

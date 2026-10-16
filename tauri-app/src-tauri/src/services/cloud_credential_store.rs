@@ -42,6 +42,23 @@ fn valid_secret(value: &[u8]) -> bool {
     !value.is_empty() && value.len() <= MAX_SECRET_BYTES
 }
 
+/// 网络探测前与保存前共用同一输入限额，避免无效凭据先被发送到远端。
+pub(crate) fn validate_input(
+    account_id: Option<&str>,
+    endpoint: &str,
+    username: &str,
+    secret: &str,
+) -> Result<(), String> {
+    normalize_webdav_endpoint(endpoint)?;
+    if account_id.is_some_and(|id| !valid_account_id(id))
+        || !valid_username(username)
+        || !valid_secret(secret.as_bytes())
+    {
+        return Err(input_invalid());
+    }
+    Ok(())
+}
+
 /// HTTPS；HTTP 仅允许三种字面回环主机。拒绝 URL 内凭据、查询、片段。
 pub fn normalize_webdav_endpoint(value: &str) -> Result<String, String> {
     let candidate = value.trim();
@@ -229,10 +246,8 @@ impl<P: SecretProtector> CloudCredentialStore<P> {
         if !self.protector.supported() {
             return Err("CLOUD_CREDENTIAL_PLATFORM_UNSUPPORTED".into());
         }
+        validate_input(account_id, endpoint, username, secret)?;
         let endpoint = normalize_webdav_endpoint(endpoint)?;
-        if !valid_username(username) || !valid_secret(secret.as_bytes()) {
-            return Err(input_invalid());
-        }
         let id = account_id
             .map(str::to_string)
             .unwrap_or_else(crate::project_access::random_uuid_v4);

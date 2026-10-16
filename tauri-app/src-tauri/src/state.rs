@@ -44,6 +44,7 @@ pub struct AppState {
     pub(crate) window_close_guard: Mutex<crate::commands::WindowCloseGuard>,
     /// 批次 B/C：活跃项目会话（None = 未打开项目；项目域命令一律拒绝）
     pub(crate) active_project: Mutex<Option<ActiveProject>>,
+    pub(crate) cloud_backup: crate::services::cloud_backup_state::CloudBackupState,
     /// 批次 C：项目数据库连接，生命周期与 `active_project` 一致
     pub(crate) project_db: Mutex<Option<crate::db::ProjectDatabase>>,
     /// 最近项目预览能力，仅进程内有效；快照操作在阻塞线程执行。
@@ -94,6 +95,9 @@ impl AppState {
             startup_gate: Mutex::new(crate::services::startup_gate::StartupGate::new()),
             window_close_guard: Mutex::new(crate::commands::WindowCloseGuard::default()),
             active_project: Mutex::new(None),
+            cloud_backup: crate::services::cloud_backup_state::CloudBackupState::new(
+                &crate::app_paths::lorekeeper_home(),
+            ),
             project_db: Mutex::new(None),
             project_peek: std::sync::Arc::new(Mutex::new(
                 crate::services::project_peek::ProjectPeek::default(),

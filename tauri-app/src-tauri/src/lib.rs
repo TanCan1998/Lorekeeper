@@ -170,6 +170,14 @@ pub fn run() {
             // 批次 B112b-3：便携归档导出（project:archive-export）
             commands::project_archive_export,
             commands::project_archive_restore,
+            commands::cloud_backup_connect,
+            commands::cloud_backup_view,
+            commands::cloud_backup_confirm_binding,
+            commands::cloud_backup_backup,
+            commands::cloud_backup_list,
+            commands::cloud_backup_restore_copy,
+            commands::cloud_backup_cancel,
+            commands::cloud_backup_clear_credential,
             // 批次 B：外部文件授权（骨架：等 tauri-plugin-dialog）
             commands::fs_grant_read_file,
             commands::fs_grant_write_file,
