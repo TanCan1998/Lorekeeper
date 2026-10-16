@@ -9,12 +9,12 @@
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
 ```text
-Rust频道结构覆盖  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨  289/290 ≈99.7%
+功能迁移覆盖      🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨  289/290 ≈99.7%
 生产前端频道开放  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨  285/290 ≈98.3%
 ```
 
-> 2026-10-17第80次：用户确认[混合验证](agents/tauri-rust-ci.md)，新增独立Windows Tauri全量/all-targets工作流，Action实时核对最新稳定版并固定SHA。本轮离线脚本合同8通过，首次云端结果以[运行记录](https://github.com/TanCan1998/Lorekeeper/actions/workflows/tauri-rust-ci.yml)为准；最近本机全量仍为0ead5794代码1611通过。四审稿频道仍关闭，真实业务外部验证未授权。
-> **注意**：上述比例不是产品总完成率，也不因首版排除旧库导入而改分母。方案已确定不等于实现/验收完成；剩余证明审计、Windows合成GUI与旧库入口不可用边界待落实。GitHub合成CI已授权，真实模型/MCP/业务云验收仍未授权，不得混为已验证。
+> 2026-10-17第82次：旧库不可用边界与Windows SSE夹具已提交推送；729cda50首次云端全量1614通过/0失败，all-targets无告警。本机真实Tauri完成新建/配置保存、本地归档导出/恢复新副本及重启重开。见[当前交接](handoffs/CURRENT.md)和[审计矩阵](plans/2026-10-17-tauri-proof-audit.md)。
+> **注意**：比例不是产品完成率，拒绝桩不计功能覆盖、290分母不变。注册291个命令/290契约频道，包含1项首版不支持边界；四审稿频道仍关闭。完整审修复核/冻结历史GUI与剩余证明审计未收口；真实模型/MCP/业务云验收未授权。后续真实窗口必须后台、不抢焦点。
 > 口径：当前已合并上游（@ `21d67211`，2026-10-10）为全集，**上游新提交不计入**；权威实测值见 [当前交接入口](handoffs/CURRENT.md) 指标表，频道明细见 [频道盘点](plans/tauri-migration-channel-inventory.md)。
 
 
@@ -22,7 +22,7 @@ Rust频道结构覆盖  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第80次快照（2026-10-17）](handoffs/2026-10-17-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第82次快照（2026-10-17）](handoffs/2026-10-17-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |

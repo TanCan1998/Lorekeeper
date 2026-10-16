@@ -1,11 +1,11 @@
 # 当前交接入口
 
-- 最新：[2026-10-17-tauri-migration-status.md](./2026-10-17-tauri-migration-status.md)，第 **80** 次。
-- 接续master/HEAD/origin/master=`0ead5794`，原工作区干净；无子代理。
-- 用户确认混合验证：**本机定向，GitHub Windows执行全量/all-targets**；新增独立Tauri工作流，不改Electron CI。规则见[混合验证](../agents/tauri-rust-ci.md)、[决策D7](../plans/2026-10-17-tauri-completion-decisions.md)。
-- Action已实时核对官方最新稳定版并固定SHA：checkout7.0.1、cache6.1.0、upload-artifact7.0.2。
-- 本轮脚本离线合同8项、YAML/内嵌PowerShell语法及diff检查通过。首次云端运行由push触发，**是否通过以对应SHA运行记录为准**；run URL/结果见pipeline。
-- 本机最近全量仍为 **0ead5794代码1611通过/0失败、all-targets无告警**；审稿定向74通过。非本轮重跑；本次不改Rust语义，累计0。
-- 允许为CI先提交推送，但对应SHA云端成功前不登记全量收口/清零；GUI/文件权限/恢复生命周期仍本机，真实模型/MCP/业务云与发布未授权。
-- 下一步先核对首次CI → 旧库不可用UI/blocked → Windows合成GUI/归档恢复与前端合同验收、剩余证明清单。
-- 四生产审稿频道继续关闭。根README不记录进度；[pipeline](../../.pi/tmp/pipeline-state.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。
+- 最新：[2026-10-17-tauri-migration-status.md](./2026-10-17-tauri-migration-status.md)，第 **82** 次。
+- 代码已提交推送：15ed11f4旧库不可用边界、729cda50 SSE夹具/CI触发补齐；代码验证SHA=`729cda50233747a29e2c46c7130498bdffa3bbdd`。之后收口仅文档。
+- **首次云端成功基线**：[38946375676](https://github.com/TanCan1998/Lorekeeper/actions/runs/38946375676)，Rust **1614/0**、all-targets无告警，artifact两个退出码均0且SHA相符；语义切片累计0。同SHA提交规范/秘密扫描通过。
+- 本机定向沿用同代码22+13通过，前端187文件2108通过/1跳过、typecheck/lint通过；本轮格式/CI合同及开发build通过。
+- 真实Tauri合成GUI已过：旧库禁用说明、新建/配置保存、归档导出/新副本恢复、打开副本、正常关闭重启后重开；仅配置级，不代表完整审修复核/冻结历史验收。
+- **用户新要求：后续真实窗口仅后台验证，不置顶/激活/抢焦点，不使用全局键鼠/SendKeys。无法后台完成的原生交互列待验收；旧GUI脚本不得直接复用。** 测试应用已正常关闭。
+- [证明/GUI审计矩阵](../plans/2026-10-17-tauri-proof-audit.md)记录已核查边界及剩余项。跨project/epoch/artifact审计、完整审修复核/暂停取消恢复/失效会话GUI、复杂归档仍待完成。
+- 功能289/290、业务285/290不变，注册291/契约注册290/事件7；旧库blocked不算功能迁移。四生产审稿频道继续关闭，真实模型/MCP/业务云及发布未授权。
+- [pipeline](../../.pi/tmp/pipeline-state.md)登记本机运行与证据；无子代理。根README不记录动态进度。

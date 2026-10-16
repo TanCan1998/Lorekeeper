@@ -1,39 +1,46 @@
-# Tauri迁移进度快照（2026-10-17）
+# Tauri迁移交接快照（2026-10-17）
 
-> [当前入口](./CURRENT.md) · [开发指南](../agents/pi-development.md) · [混合验证说明](../agents/tauri-rust-ci.md) · [首版决策D7](../plans/2026-10-17-tauri-completion-decisions.md)。动态进度仅在docs-fork展示。
+> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [首版决策](../plans/2026-10-17-tauri-completion-decisions.md) · [证明/GUI审计矩阵](../plans/2026-10-17-tauri-proof-audit.md)。动态进度仅在docs-fork展示。
 
-## 已验证状态（第80次 —— 独立Windows Tauri CI与混合验收）
+## 已验证状态（第82次）
 
-- 接续master，HEAD/本地origin/master=`0ead5794`，原工作区干净；无子代理/登记在飞工作。
-- 用户明确授权“本机定向 + GitHub全量”混合模式及独立CI配置，要求使用最新Action。
-- 新增工作流及脚本，不修改Rust业务源码/依赖/权限或Electron CI；本切片不增加Rust语义计数。
+代码版本：`729cda50233747a29e2c46c7130498bdffa3bbdd`，master，已推送origin。此后的本轮收口仅文档，无代码语义变化。验证日期为本机2026-10-17（云端UTC日志为2026-10-16）。
 
-| 指标 | 状态 | 范围 | 证据 |
-|---|---|---|---|
-| CI脚本离线合同 | **8通过** | 成功、两个独立失败/双失败、SHA不匹配、脏工作区、Git失败、非法SHA | .pi/tmp/recovery/ci-contract.log |
-| 工作流静态检查 | YAML解析/合同、全部run块语法、git diff --check通过 | 新工作流/PowerShell脚本 | 本机工具输出 |
-| 本机最近审稿定向 | **74通过/0失败**，非本轮重跑 | 0ead5794代码 | .pi/tmp/recovery/history-review-final.log |
-| 本机最近Rust全量 | **1611通过/0失败**，库64.76秒；非本轮重跑 | 0ead5794代码 | .pi/tmp/recovery/history-full.log |
-| 本机最近all-targets | 无告警，12.44秒；非本轮重跑 | 0ead5794代码 | .pi/tmp/recovery/history-check.log |
-| GitHub首次全量 | 配置落地后由push触发；**结果以对应SHA运行记录为准** | 本轮CI提交 | [工作流](https://github.com/TanCan1998/Lorekeeper/actions/workflows/tauri-rust-ci.yml)，run/SHA/状态见pipeline |
-| GUI/真实模型/MCP/业务云 | 本轮未执行/未验收 | GUI仍本机；真实业务外部服务未授权 | 无 |
+| 范围 | 结果/版本 | 证据 |
+|---|---|---|
+| Rust云端全量 | **1614通过/0失败**，库197.15秒，同上SHA | [run38946375676](https://github.com/TanCan1998/Lorekeeper/actions/runs/38946375676)；本机`.pi/tmp/recovery/ci-729cda50/` |
+| 云端all-targets | 成功、无告警，testExitCode/checkExitCode均0，state=passed | 同run artifact的validation.json与cargo-check.log |
+| 云端增量规范/秘密扫描 | 同SHA的Commit message CI、Gitleaks均成功 | run38946375629、38946375642 |
+| 本机Rust定向 | 沿用第81次同代码：项目域22/0、SSE域13/0 | legacy-directed-final.log、legacy-sse.log |
+| 前端 | 沿用第81次同代码：187文件、2108通过/1跳过；typecheck/lint通过 | legacy-frontend.log、legacy-typecheck.log、legacy-lint.log |
+| 本轮格式/静态复核 | 四Rust文件rustfmt、diff、隔离、频道检查、YAML及新增路径、离线CI合同8项通过 | 工具输出及CI合同 |
+| 本机开发构建 | 前端build通过（大chunk提示）；Rust build --locked通过，11.57秒、无告警 | current-gui-frontend-build.log、current-gui-rust-build.log |
+| 本机真实GUI | 旧库disabled说明、新建/配置保存、本地归档导出/新副本恢复、打开副本/配置一致、正常关闭重启及最近列表重开通过；仅配置级合成项目 | current-gui-ui.json、current-gui-archive-result.json与截图 |
+| 频道口径 | 注册291、契约注册290、事件7；功能迁移289/290、业务开放285/290，不变 | 本轮check:channels；blocked不计功能覆盖 |
 
-## 本次实现与执行规则
+本机证据均在`.pi/tmp/recovery/`，不入库。新全量基线已从0ead5794更新为729cda50；**之后Rust语义切片累计0**。此前云端1444/167与1610/1是失败历史，不能覆盖本次成功证据。
 
-- `.github/workflows/tauri-rust-ci.yml`：Windows 2022、固定Rust1.99.0；Rust/CI文件push、面向master的PR及手动expected_sha入口。独立于Electron验证。
-- `tauri-app/scripts/test-rust-ci.ps1`：检出SHA/干净工作区校验；分别执行cargo test --locked与cargo check --locked --all-targets；即使测试失败仍记录check结果，后者不覆盖前者，异常路径也保存失败证据。
-- 仅contents:read，checkout不保留凭据，无业务Secrets、发布或打包步骤。缓存公开依赖/编译产物，上传仅3个显式日志/元数据文件、保留14天；不上传数据库/用户目录/可执行程序。
-- `test-rust-ci.contract.ps1`：8项合成git/rustup替身测试，无网络/真实Rust编译。两个脚本显式要求PowerShell7，已用本机pwsh7.6.7按CI调用方式验证；不使用PS5默认ANSI解码运行UTF8中文脚本。
-- 官方latest release/tag实时核对：checkout v7.0.1、cache v6.1.0、upload-artifact v7.0.2，均使用完整提交SHA，详见混合验证说明。Context7额度不足，改核实官方release/tag与action.yml。
-- 本机定向/格式/diff继续执行；全量触发条件不变，改由GitHub执行。允许为CI先提交推送，只有对应SHA云端成功后才登记收口/累计清零，取消/跳过/失败均不计通过。
-- GUI、原生文件授权与恢复生命周期仍本机；真实模型、外部MCP及业务云访问仍未授权，不开放审稿四生产频道。
-- 已更新开发指南/决策D7与本机AGENTS（后者保持忽略、不入库）。未改根README、根配置/锁文件、Electron、上游docs、schema/依赖/ADR或发布配置。
-- 首次配置提交427dc23b的run38940977001在工作流校验阶段失败，未创建job、未运行Rust测试。按官方context可用性表修复job.env中不可用的runner引用：隔离路径改由runner步骤写入GITHUB_ENV；本地补上下文检查并通过。后续有效运行仍以pipeline的对应SHA结果为准。
+## 本次实现与提交
 
-## 全量基线与下一步
+- `15ed11f4`：首版旧库入口禁用并显示中英文说明；适配器/原生命令返回`{state:"blocked",code:"LEGACY_IMPORT_UNSUPPORTED"}`，不读旧库、不建副本、不消耗授权。保留IPC合同，范围清单用于生成器排除拒绝桩，290分母不变。已补Rust及前端回归。
+- `729cda50`：Windows SSE测试连接显式恢复阻塞模式，保留5秒超时和全部断言；CI push/PR补范围清单触发路径。只改测试夹具，不改真实模型行为。
+- 对跨root/run效果唯一性、物理attempt归属、历史版本/可选字段、畸形输入失败关闭做了有界源码与既有回归核查；云端实际执行审稿服务55项。见审计矩阵，不宣称全部证明审计完成。
+- 真实Tauri开发窗口使用独立数据根与合成项目；原生授权完成导出/恢复，副本独立projectId、原项目未被替换，重启后配置一致。不是发布包或含章节/定稿/审稿材料的复杂归档验收。
 
-- 本机全量基线0ead5794，语义切片累计0；本次CI/文档不增加计数。首次云端通过后可登记对应SHA新云端基线，尚未通过不得冒充。
-1. 核对首次GitHub运行与日志证据，修复CI接线问题（如有）；结果记录到pipeline，不因仅配置完成宣称云端通过。
-2. 继续旧库入口明确不可用UI/blocked边界，不读取旧库、不创建副本、不消耗授权，不计作真实导入完成。
-3. Windows本机合成GUI/归档恢复生命周期与前端合同验收、剩余证明审计明确清单。
-4. 四审稿频道继续关闭；生产开放仍须完整链验收及以后另行授权的真实模型验收。
+## 最新用户要求：真实窗口仅后台验证
+
+用户在本轮GUI后明确要求：后续验证不得置顶或打扰其操作。已写入本机AGENTS/pipeline：**不激活、不抢焦点、不用全局键鼠/SendKeys**；启动窗口也须保证后台。无法后台完成的原生交互记为待验收，不擅自切前台。
+
+本轮测试应用已正常关闭。之前的临时GUI启动/选择脚本没有后台不抢焦点保证，**不得原样重用**；下一轮先准备后台安全方案。运行占用只在pipeline登记。
+
+## 尚未解除的验收缺口
+
+1. 完整审修复核GUI、暂停/取消/恢复、失效会话交错，以及含冻结历史/资产的复杂归档恢复未验收。当前配置级GUI不能替代这些场景。
+2. 跨project/epoch/artifact的完整证明威胁枚举仍须继续逐项核查。现有回归通过不是无边界的安全结论。
+3. **四生产审稿频道仍关闭**。不得为GUI临时绕过门禁；真实模型、外部MCP、业务云与发布未授权，macOS/Linux未认证。
+
+## 接续顺序
+
+1. 核对HEAD/工作区/pipeline；本轮文档提交后应无入库文件改动。没有待等待的本轮Rust CI，不能重记为进行中。
+2. 按审计矩阵继续源码/合成回归，不涉及新依赖、schema、权限或ADR时由主会话直接推进。
+3. 只有后台不抢焦点方案可用时再做GUI；否则保留对应未验收项，继续不依赖窗口的工作。不启动子代理。
