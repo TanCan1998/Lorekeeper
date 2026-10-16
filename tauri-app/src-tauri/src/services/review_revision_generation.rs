@@ -2398,47 +2398,35 @@ fn locate_goal_evidence(
     if quote.trim().is_empty() {
         return None;
     }
-    let mut candidate = quote.to_string();
-    let mut start = draft.find(&candidate)?;
-    if start == usize::MAX {
-        return None;
-    }
-    if start == usize::MAX {
-        return None;
-    }
-    let paired = (candidate.starts_with('“') && candidate.ends_with('”'))
-        || (candidate.starts_with('"') && candidate.ends_with('"'));
-    if start == usize::MAX {
-        return None;
-    }
-    let found = draft.find(&candidate);
-    if found.is_none() {
-        if !paired {
-            return None;
-        }
-        if candidate.chars().count() < 2 {
-            return None;
-        }
-        candidate = candidate
-            .chars()
-            .skip(1)
-            .take(candidate.chars().count().saturating_sub(2))
-            .collect();
+    // 正常命中保留基线的首处定位；仅剥除模型添加引号的回退要求唯一。
+    let (candidate, start) = if let Some(start) = draft.find(quote) {
+        (quote, start)
+    } else {
+        let candidate = quote
+            .strip_prefix('“')
+            .and_then(|value| value.strip_suffix('”'))
+            .or_else(|| {
+                quote
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+            })?;
         if candidate.trim().is_empty() {
             return None;
         }
-        start = draft.find(&candidate)?;
-        if draft[start + candidate.len()..].contains(&candidate) {
+        let start = draft.find(candidate)?;
+        // 跳过首个完整标量以保持UTF-8切片合法，同时检测重叠的第二次命中。
+        let next = start + candidate.chars().next()?.len_utf8();
+        if draft[next..].contains(candidate) {
             return None;
         }
-    }
-    let start = draft.find(&candidate)?;
-    let end = start + candidate.len();
+        (candidate, start)
+    };
+    let utf16_start = draft[..start].encode_utf16().count() as i64;
     Some(
         crate::services::review_revision_context::ChapterGoalEvidence {
-            quote: draft[start..end].to_string(),
-            start: start as i64,
-            end: end as i64,
+            quote: candidate.to_string(),
+            start: utf16_start,
+            end: utf16_start + candidate.encode_utf16().count() as i64,
         },
     )
 }

@@ -16,6 +16,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(operation: ReviewRevisionOperation) -> Self {
+        Self::with_goal(operation, None)
+    }
+    fn with_goal(operation: ReviewRevisionOperation, goal: Option<(&str, &str)>) -> Self {
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
         conn.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -24,7 +27,18 @@ impl Fixture {
             [],
         )
         .unwrap();
-        let source = "作者原始正文。".repeat(20);
+        let source = if goal.is_some() {
+            "🔑开场。甲\r\n乙。e\u{301}尾声。".into()
+        } else {
+            "作者原始正文。".repeat(20)
+        };
+        if let Some((text, _)) = goal {
+            conn.execute(
+                "INSERT INTO blueprints(chapter_number,key_events) VALUES (1,?1)",
+                [text],
+            )
+            .unwrap();
+        }
         conn.execute("INSERT INTO contents(body) VALUES (?1)", [&source])
             .unwrap();
         let content_id = conn.last_insert_rowid();
@@ -94,7 +108,18 @@ impl Fixture {
         let attempt = &reserved.attempt.attempt_id;
         service.runs.mark_dispatched(&conn, attempt).unwrap();
         let text = if prepared.context.operation == ReviewRevisionOperation::ReviewChapter {
-            json!({"summary":"合成审稿","items":[{"category":"剧情连贯性","severity":"pass","description":"未发现矛盾"}]}).to_string()
+            let mut value = json!({"summary":"合成审稿","items":[{"category":"剧情连贯性","severity":"pass","description":"未发现矛盾"}]});
+            if let Some((_, quote)) = goal {
+                let id = &prepared
+                    .context
+                    .frozen_goals
+                    .items
+                    .first()
+                    .expect("准备阶段必须读取作者蓝图目标")
+                    .id;
+                value["goalReviews"] = json!([{"id":id,"status":"completed","description":"已展示","evidence":[{"quote":quote}]}]);
+            }
+            value.to_string()
         } else {
             "修订后的测试正文。".repeat(20)
         };
@@ -152,6 +177,28 @@ impl Fixture {
             .unwrap()
     }
 }
+#[test]
+fn goal_locator_uses_utf16_offsets_without_normalizing_source() {
+    let source = "🔑开场。甲\r\n乙。e\u{301}尾声。";
+    for (quote, start, end) in [("甲\r\n乙", 5, 9), ("e\u{301}", 10, 12)] {
+        let proof = locate_goal_evidence(Some(quote), source).unwrap();
+        assert_eq!(proof.quote, quote);
+        assert_eq!((proof.start, proof.end), (start, end));
+    }
+}
+#[test]
+fn goal_locator_restores_quoted_fallback_but_not_ambiguous_fallback() {
+    for quoted in ["“甲乙”", "\"甲乙\""] {
+        let proof = locate_goal_evidence(Some(quoted), "🔑甲乙。尾声").unwrap();
+        assert_eq!(proof.quote, "甲乙");
+        assert_eq!((proof.start, proof.end), (2, 4));
+        assert!(locate_goal_evidence(Some(quoted), "甲乙甲乙").is_none());
+    }
+    assert!(locate_goal_evidence(Some("“哈哈”"), "哈哈哈").is_none());
+    // 基线正常命中取首处；只有剥离引号的回退分支要求唯一，不能擅改产品合同。
+    assert!(locate_goal_evidence(Some("哈哈"), "哈哈哈").is_some());
+}
+
 #[test]
 fn review_commit_has_cycle_and_replays_same_receipt() {
     let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
@@ -310,4 +357,119 @@ fn discarded_artifact_cannot_commit_business_rows() {
         "Error: GENERATION_REVIEW_ARTIFACT_INVALID"
     );
     assert_eq!(f.count("reviews"), 0);
+}
+
+#[test]
+fn utf16_goal_survives_real_sqlite_commit_cycle_and_recovery() {
+    let f = Fixture::with_goal(
+        ReviewRevisionOperation::ReviewChapter,
+        Some(("展示合成证据", "e\u{301}")),
+    );
+    let receipt = f.review().expect("Unicode证据必须能贯穿报告、周期和回执");
+    let body: Value = serde_json::from_str(&receipt.content).unwrap();
+    let proof = &body["goalReview"]["items"][0]["evidence"][0];
+    assert_eq!(proof["quote"], "e\u{301}");
+    assert_eq!(proof["start"], 10);
+    assert_eq!(proof["end"], 12);
+    assert_eq!(f.count("review_cycles"), 1);
+    assert_eq!(receipt.source.content, "🔑开场。甲\r\n乙。e\u{301}尾声。");
+    let recovery = f
+        .service
+        .read_recovery(
+            &f.conn,
+            &ReviewRevisionGeneration::handle_of(&f.run),
+            |_| true,
+            |_| Some(serde_json::to_value(&f.artifact).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(recovery.saved, Some(receipt));
+    assert!(
+        recovery.context_id.is_none(),
+        "已提交收据不能再签发可提交上下文"
+    );
+}
+#[test]
+fn recovery_rebuilds_prepared_context_without_dispatching_again() {
+    let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    PREPARED_CONTEXTS
+        .lock()
+        .unwrap()
+        .remove(&f.prepared.context_id);
+    let handle = ReviewRevisionGeneration::handle_of(&f.run);
+    let recovery = f
+        .service
+        .read_recovery(
+            &f.conn,
+            &handle,
+            |_| true,
+            |_| Some(serde_json::to_value(&f.artifact).unwrap()),
+        )
+        .unwrap();
+    assert!(recovery.can_resume);
+    assert!(recovery.saved.is_none());
+    let context_id = recovery.context_id.unwrap();
+    assert_ne!(context_id, f.prepared.context_id);
+    assert_eq!(
+        recovery.latest_artifact_finish_reason.as_deref(),
+        Some("stop")
+    );
+    f.service
+        .commit_review(
+            &f.conn,
+            &ReviewGenerationCommitRequest {
+                context_id,
+                handle,
+                artifact: ReviewArtifactRef {
+                    artifact_id: f.artifact.artifact_id.clone(),
+                    revision: f.artifact.revision,
+                    text_hash: f.artifact.text_hash.clone(),
+                },
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(f.count("generation_attempts"), 1);
+    assert_eq!(f.count("reviews"), 1);
+}
+#[test]
+fn recovery_with_source_drift_exposes_copy_only_without_prepared_context() {
+    let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    let recovery = f
+        .service
+        .read_recovery(
+            &f.conn,
+            &ReviewRevisionGeneration::handle_of(&f.run),
+            |_| false,
+            |_| Some(serde_json::to_value(&f.artifact).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(recovery.source_status, "conflict");
+    assert!(!recovery.can_resume);
+    assert!(recovery.context_id.is_none());
+    assert!(recovery.saved.is_none());
+    assert!(
+        recovery.latest_artifact.is_some(),
+        "冲突候选仍允许复制，不删除或重放"
+    );
+    assert_eq!(f.count("generation_attempts"), 1);
+    assert_eq!(f.count("reviews"), 0);
+}
+#[test]
+fn recovery_of_saved_receipt_does_not_authorize_a_new_execution_on_source_drift() {
+    let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    let saved = f.review().unwrap();
+    let recovery = f
+        .service
+        .read_recovery(
+            &f.conn,
+            &ReviewRevisionGeneration::handle_of(&f.run),
+            |_| false,
+            |_| Some(serde_json::to_value(&f.artifact).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(recovery.saved, Some(saved));
+    assert!(!recovery.can_resume);
+    assert!(recovery.context_id.is_none());
+    assert_eq!(f.count("generation_attempts"), 1);
+    assert_eq!(f.count("reviews"), 1);
 }

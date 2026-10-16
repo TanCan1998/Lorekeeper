@@ -1482,7 +1482,7 @@ fn parse_chapter_goal_review(value: &Value) -> Option<ChapterGoalReview> {
             let quote = nonempty_string(evidence_record.get("quote"))?;
             let start = evidence_record.get("start")?.as_i64()?;
             let end = evidence_record.get("end")?.as_i64()?;
-            if start < 0 || end != start + quote.chars().count() as i64 {
+            if start < 0 || Some(end) != start.checked_add(quote.encode_utf16().count() as i64) {
                 return None;
             }
             evidence.push(ChapterGoalEvidence { quote, start, end });
@@ -1589,6 +1589,19 @@ impl RevisionContextBuilder {
 mod serialization_contract_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn goal_evidence_uses_utf16_and_rejects_overflow() {
+        let goal = |start: i64, end: i64| {
+            json!({"version":1,"chapterNumber":1,"coverage":"complete","items":[{
+                "id":"goal-1","text":"合成目标","status":"completed","description":"已展示",
+                "evidence":[{"quote":"🔑","start":start,"end":end}]
+            }]})
+        };
+        assert!(parse_chapter_goal_review(&goal(3, 5)).is_some());
+        assert!(parse_chapter_goal_review(&goal(3, 4)).is_none());
+        assert!(parse_chapter_goal_review(&goal(i64::MAX, i64::MAX)).is_none());
+    }
 
     #[test]
     fn continuity_projection_preserves_camel_case_contract() {

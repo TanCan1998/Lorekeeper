@@ -42,6 +42,10 @@
 //! 错误码（`REVIEW_CYCLE_TRANSACTION_REQUIRED` / `REVIEW_CYCLE_INPUT_INVALID`
 //! / `REVIEW_CYCLE_CONFLICT`）逐字对齐基线；「Error: 」前缀由命令层添加。
 
+#[cfg(test)]
+#[path = "review_cycle_repository_tests.rs"]
+mod evidence_tests;
+
 use std::collections::HashMap;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -458,7 +462,7 @@ fn parse_saved_report(body: &str) -> Option<SavedReport> {
                 || !is_safe_integer(proof.get("start"), 0)
                 || proof.get("end")?.as_i64()?
                     != proof.get("start")?.as_i64()?
-                        + js_string(proof.get("quote")?).chars().count() as i64
+                        + js_string(proof.get("quote")?).encode_utf16().count() as i64
             {
                 return None;
             }
@@ -572,8 +576,11 @@ fn parse_saved_report(body: &str) -> Option<SavedReport> {
 
 /// 基线 `locateUnique`：引文在源文中唯一出现时返回其 UTF-16 码元区间
 fn locate_unique(source: &str, quote: &str) -> Option<(i64, i64)> {
+    if quote.is_empty() {
+        return None;
+    }
     let start = utf16_find(source, quote, 0)?;
-    if utf16_find(source, quote, start + quote.len() as i64).is_some() {
+    if utf16_find(source, quote, start + 1).is_some() {
         return None;
     }
     Some((
@@ -1877,7 +1884,7 @@ fn parse_chapter_goal_review(value: &Value) -> Option<ChapterGoalReview> {
                 || !is_safe_integer(proof.get("start"), 0)
                 || proof.get("end")?.as_i64()?
                     != proof.get("start")?.as_i64()?
-                        + js_string(proof.get("quote")?).chars().count() as i64
+                        + js_string(proof.get("quote")?).encode_utf16().count() as i64
             {
                 return None;
             }
