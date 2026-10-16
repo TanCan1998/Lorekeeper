@@ -1,23 +1,24 @@
 # 当前交接入口
 
-- 最新快照：[2026-10-16-tauri-migration-status.md](./2026-10-16-tauri-migration-status.md)，第 **68** 次。
-- 最新代码 `4c03d515`，前一产品修正 `a6655558`，云频道 `0f0c9d19`；
-  均已推送origin/master。未派发代理，无遗留窗口/后台进程。
-- 云备份八频道完成，模拟DAV完整链路通过；**真实云供应商尚未验收**。
-- 用户已确认修正Tauri构建入口；真实 `tauri build --debug --no-bundle` 成功。
-  隔离根 `.pi/tmp/b117-gui-home` 的真实原生窗口进入空书架，产品身份、
-  启动门禁与正常关闭通过；这是窗口冒烟，不是所有GUI流程验收。
-- 前端非浏览器全量最新实测：**186文件，2101通过、0失败、1跳过**，
-  `.pi/tmp/b118-final.json` / `b118-final.log`，对应 `4c03d515`。
-  typecheck/lint通过；浏览器仅本轮定向1文件2项，不是浏览器全量。
-- Rust全量沿用云切片 `0f0c9d19` 的 **1552通过、0失败**（65.24s），
-  `.pi/tmp/b116-full.log`；all-targets无告警，全量后Rust逻辑切片累计 **0**。
-  后续仅构建入口/前端品牌及测试夹具修改，未重新归属Rust全量。
-- **覆盖口径纠正**：Rust结构性覆盖 **289/290**，注册290、事件7；
-  但审稿 `review-revision:*` 四频道仍刻意关闭生产前端，实际渲染开放 **285/290**。
-  不能把测试中模拟审稿权威后端、或Rust已注册，当作审稿可用。
-- 下步：审查审稿四频道的真实准入/提交/收据/恢复门禁后再决定开放；
-  真实模型、MCP、云供应商及完整GUI仍待验收。遗留旧版导入继续暂缓，
-  没有已确认的Lorekeeper旧版输入，不读Electron/.vela/LanceDB，不做占位。
-- 活动状态：[pipeline-state](../../.pi/tmp/pipeline-state.md)；
-  [频道清单](../plans/tauri-migration-channel-inventory.md)。
+- 最新快照：[2026-10-16-tauri-migration-status.md](./2026-10-16-tauri-migration-status.md)，第 **69** 次。
+- 最新代码 **`f14e1ef8`** 已推送origin/master：审稿/修稿正文、生成效果收据、
+  旧pending状态和审稿周期在同一IMMEDIATE事务提交；修稿采用持久组合的真实产物引用。
+- 新增7项真实SQLite回归：成功/幂等、收据与周期失败回滚、旧pending保全、
+  旧句柄/源漂移/已丢弃产物拒绝及故障排除后的重试。修复周期校验SQL列错位。
+- **Rust最新全量1559通过、0失败**，59.25s；all-targets无告警。
+  `.pi/tmp/b119-full.log`、`b119-check.log`；定向7项 `b119-tests.log`。
+  全量后Rust逻辑切片累计 **0**。
+- **生产前端门禁未开放**：审稿四频道仍刻意关闭；本轮门禁3文件14项通过，
+  `.pi/tmp/b119-gates.json`。Rust结构性覆盖 **289/290（99.7%）**；
+  实际渲染开放 **285/290（98.3%）**；事件7。这不是产品整体完成率。
+- 前端最近非浏览器全量沿用 `4c03d515`：186文件，**2101通过、0失败、1跳过**，
+  `b118-final.json` / `b118-final.log`；typecheck/lint通过。
+  本轮未改TS；不把这次14项定向测试称为新的前端全量。
+- 云备份八频道与本地DAV端到端完成；归档恢复及连接级冻结门禁完成。
+  **真实云供应商、真实模型/MCP和完整GUI流程尚未验收**。
+- 构建/GUI证据沿用 `a6655558`：真实debug/no-bundle构建成功，隔离数据根窗口
+  进入空书架、设定司/Lorekeeper身份及正常关闭通过；不是最新Rust修复后的窗口复验。
+- 下步：继续审查审稿周期的效果证明、恢复及UTF-16锚点一致性，再决定开放四频道；
+  遗留旧版导入因没有已确认的Lorekeeper旧版输入继续暂缓，不跨栈、不做占位。
+- 主会话直接开发，不派子代理；无遗留窗口/后台运行。
+  [活动状态](../../.pi/tmp/pipeline-state.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。
