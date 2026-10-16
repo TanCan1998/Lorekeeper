@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto'
+import { vi } from 'vitest'
+import { ipc } from '../../../ipc-client'
+import type { AllInvokeChannels, InvokeChannel, ProjectSessionContext } from '../../../../shared/ipc-channels'
 import type { WorkflowGenerationRuntimeDependencies } from '../base-command'
 import type { ReviewRevisionCommandSource } from '../review-revision-command'
 import type { PrepareReviewRevisionRequest, PreparedReviewRevisionContext, ReviewRevisionRecovery } from '../../../../shared/review-revision-generation'
@@ -17,6 +20,49 @@ import { buildReviewCycleRecheckReport } from '../../../../shared/review-cycle'
 const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 type Backend = (channel: string, ...args: unknown[]) => Promise<unknown>
 
+/** 业务消费测试只模拟审稿权威后端；不修改生产适配器的四频道关闭门禁。
+ * 真实传输是否关闭由channel-migration-coverage及专门的传输合同测试独立验证。 */
+export function installReviewConsumerTransport(fixture:ReviewRevisionRuntimeFixture):void{
+  const original=ipc.invokeWithProjectSession
+  const mock:typeof original = async <C extends InvokeChannel>(session:ProjectSessionContext,channel:C,...args:AllInvokeChannels[C]['args']):Promise<AllInvokeChannels[C]['return']>=>{
+    if(channel.startsWith('review-revision:')){
+      const project=useProjectStore.getState().currentProject
+      if(!project||project.id!==session.projectId||project.sessionLease!==session.leaseId||project.path!==session.projectPath){
+        throw new Error('GENERATION_PROJECT_SESSION_CHANGED')
+      }
+      return await fixture.invoke(channel,...args) as AllInvokeChannels[C]['return']
+    }
+    return original(session,channel,...args)
+  }
+  vi.spyOn(ipc,'invokeWithProjectSession').mockImplementation(mock)
+}
+
+/** 把夹具内部的契约位置参数转换为现行命名参数；不放宽未知命令。
+ * 夹具模拟的是权威后端查询，不会调用Electron渲染预加载。 */
+export function reviewFixtureBackend(invoke:(command:string,args:Record<string,unknown>,options?:unknown)=>Promise<unknown>):Backend{
+  const names:Record<string,string[]>={
+    'db:draft-get-meta':['id','expectedProjectPath'],
+    'db:draft-get-full':['id','expectedProjectPath'],
+    'db:review-get-full':['id','expectedProjectPath'],
+    'db:review-create':['params','expectedProjectPath'],
+    'db:revision-replace-pending':['params','expectedProjectPath'],
+    'db:project-core-get':['expectedProjectPath'],
+    'db:blueprint-get-all':['expectedProjectPath'],
+    'db:blueprint-get':['chapterNumber','expectedProjectPath'],
+    'db:continuity-list-before':['chapterNumber','expectedProjectPath'],
+    'db:consistency-exemption-list':['expectedProjectPath'],
+    'db:character-get-all':['expectedProjectPath'],
+  }
+  return (channel,...args)=>{
+    if(!channel.includes(':')) return invoke(channel,args[0] as Record<string,unknown>,undefined)
+    const keys=names[channel]
+    if(!keys) throw new Error('unexpected fixture contract: '+channel)
+    const named:Record<string,unknown>={}
+    keys.forEach((key,index)=>{if(args[index]!==undefined) named[key]=args[index]})
+    return invoke(channel.replace(/[:-]/g,'_'),named,undefined)
+  }
+}
+
 /** Consumer-only transport double. Legacy backend callbacks retain their existing domain assertions;
  * actual main authority/SQLite/ledger tests live in the Electron suites, not in this adapter. */
 export class ReviewRevisionRuntimeFixture {
@@ -33,6 +79,22 @@ export class ReviewRevisionRuntimeFixture {
   private sequence = 0
   private activeHandle?: ReviewRevisionRecovery['handle']
   constructor(private readonly backend: Backend) {}
+
+  /** 把真实Tauri命名信封转换为夹具使用的契约参数；其它命令仍交给严格后端。 */
+  async invokeTauri(command:string,named:Record<string,unknown>):Promise<unknown>{
+    const channels: Record<string,string> = {
+      review_revision_prepare:'review-revision:prepare',
+      review_revision_commit_review:'review-revision:commit-review',
+      review_revision_commit_revision:'review-revision:commit-revision',
+      review_revision_read_recovery:'review-revision:read-recovery',
+      generation_bind_material_decision:'generation:bind-material-decision',
+    }
+    if(channels[command]) return this.invoke(channels[command],named.request)
+    if(command==='generation_read_visible_composition') return this.invoke('generation:read-visible-composition',named.handle)
+    if(command==='generation_compose_visible') return this.invoke('generation:compose-visible',
+      named.handle,named.artifactIds,named.expectedTextHash,named.algorithm)
+    return this.backend(command,named)
+  }
 
   private async optional<T>(channel: string, fallback: T, ...args: unknown[]): Promise<T> {
     try { return await this.backend(channel, ...args) as T ?? fallback } catch (error) {

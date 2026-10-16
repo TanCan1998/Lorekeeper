@@ -58,9 +58,8 @@ describe('启动门禁（startup:*）传输合同', () => {
   })
 
   it('启动门禁已迁移不改变其它未迁移频道的前置拦截', async () => {
-    await expect(ipc.invokeWithProjectSession(
-      { projectId: 'project-A', leaseId: 'lease-A', projectPath: 'C:/projects/A' },
-      'project:overview-current',
+    await expect(ipc.invoke(
+      'project:import-legacy-copy', 'source-grant', 'target-grant',
     )).rejects.toThrow('尚未迁移')
     expect(tauriInternals.invoke).not.toHaveBeenCalled()
   })

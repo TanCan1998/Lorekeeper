@@ -48,7 +48,7 @@ describe('知识库文档副本传输合同', () => {
   })
 
   it('不扩大其它未开放域的权限', async () => {
-    await expect(ipc.invokeWithProjectSession(session, 'project:overview-current')).rejects.toThrow('尚未迁移')
+    await expect(ipc.invoke('project:import-legacy-copy', 'source-grant', 'target-grant')).rejects.toThrow('尚未迁移')
     expect(runtime.invoke).not.toHaveBeenCalled()
   })
 })

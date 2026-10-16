@@ -18,7 +18,7 @@ import { runPostProcessPipeline } from '../../workflow-utils'
 import { createBoundedCompletionError } from '../../bounded-completion'
 import { workflowRuntimeDependencies } from './workflow-generation-runtime.fixture'
 import type { CommandExecuteParams } from '../base-command'
-import { ReviewRevisionRuntimeFixture } from './review-revision-runtime.fixture'
+import { ReviewRevisionRuntimeFixture, reviewFixtureBackend, installReviewConsumerTransport } from './review-revision-runtime.fixture'
 
 let mainFixture: ReviewRevisionRuntimeFixture
 import { parseFinalizedCharacterStateResponse, type FinalizedCharacterContext, type FinalizedSourceIdentity } from '../../../../shared/finalized-continuity'
@@ -202,25 +202,14 @@ function stubLlm(command: object, response: string): void {
 }
 
 function stubVelaIpc(invoke: (channel: string, args: Record<string, unknown>, _options?: unknown) => Promise<unknown>): void {
-  // ReviewRevisionRuntimeFixture（非本写面）内部仍以契约频道名 + 位置参数路由
-  // db:draft-get-meta / db:draft-get-full 两个草稿读取（含 optional() 兜底语义）；
-  // 适配器把它的旧式后端调用按 CHANNEL_ARG_NAMES 语义转成 Tauri 命令名 + 命名参数。
-  const fixtureBackend = async (channel: string, ...args: unknown[]): Promise<unknown> => {
-    switch (channel) {
-      case 'db:draft-get-meta':
-      case 'db:draft-get-full':
-        return invoke(channel.replace(/[:-]/g, '_'), { id: args[0], expectedProjectPath: args[1] }, undefined)
-      default:
-        // fixture 透传层收到的已是 (Tauri 命令名, 命名参数) 形态。
-        return invoke(channel, args[0] as Record<string, unknown>, undefined)
-    }
-  }
+  const fixtureBackend = reviewFixtureBackend(invoke)
   mainFixture = new ReviewRevisionRuntimeFixture(fixtureBackend)
+  installReviewConsumerTransport(mainFixture)
   vi.stubGlobal('window', {
     __TAURI_INTERNALS__: {
       invoke: (channel: string, args: Record<string, unknown> = {}, options?: unknown) => (
         channel === 'finalized_character_read_context'
-          ? Promise.resolve({ contextId: 'synthetic-context', context: characterContexts.get(args.draftId as number), originProjectId: characterContextOrigin })
+          ? Promise.resolve({ contextId: 'synthetic-context', context: characterContexts.get((args.request as { draftId:number }).draftId), originProjectId: characterContextOrigin })
           : channel === 'prompt_load_global'
           ? Promise.resolve({ templates: [], diagnostics: [] })
           : channel === 'fs_check_exists' && String(args.filePath).endsWith('/.lore/prompts')
@@ -231,7 +220,7 @@ function stubVelaIpc(invoke: (channel: string, args: Record<string, unknown>, _o
                   args.id,
                   args.expectedProjectPath,
                 )
-              : mainFixture.selected ? mainFixture.invoke(channel, args) : invoke(channel, args, options)
+              : mainFixture.selected ? mainFixture.invokeTauri(channel, args) : invoke(channel, args, options)
       ),
     },
   })

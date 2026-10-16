@@ -111,7 +111,7 @@ describe('FinalizeChapterCommand blueprint character fallback', () => {
     const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
       switch (channel) {
         case 'finalization_generation_read': {
-          const slot = (args as { slot: { source: unknown; stepKey: string } }).slot
+          const slot = (args.request as { slot: { source: unknown; stepKey: string } }).slot
           return { view: { handle: { projectId: PROJECT_SESSION.projectId, epoch: PROJECT_SESSION.leaseId, rootActionId: 'main-root', runId: slot.stepKey }, artifacts: [], status: 'completed' },
             modelId: 'original-main-model', context: { slot }, sourceStatus: 'current',
             effect: slot.stepKey === 'chapter_notes' ? { success: true, stepKey: slot.stepKey, chapterNotes: '韩峥被洪水卷入排水井，当场死亡。', factCount: 1, blueprintUpdated: true }
@@ -232,8 +232,8 @@ describe('FinalizeChapterCommand blueprint character fallback', () => {
       undefined,
     )
     expect(invoke.mock.calls.filter(([channel]) => channel === 'finalization_generation_read').map(([, request]) => request)).toEqual([
-      { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'chapter_notes' }, projectSession: PROJECT_SESSION },
-      { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'character_cards' }, projectSession: PROJECT_SESSION },
+      { request: { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'chapter_notes' } }, projectSession: PROJECT_SESSION },
+      { request: { slot: { source: { draftId: 33, finalizationId: 'finalization-3', chapterNumber: 3, contentHash: CONTENT_HASH }, stepKey: 'character_cards' } }, projectSession: PROJECT_SESSION },
     ])
     expect(invoke.mock.calls.some(([channel]) => ['db_continuity_save_finalized', 'db_blueprint_update_notes', 'finalization_generation_begin', 'finalization_generation_execute', 'finalization_generation_commit'].includes(channel))).toBe(false)
     expect(completedSteps).toEqual(new Set(['kb_import', 'chapter_notes', 'character_cards']))

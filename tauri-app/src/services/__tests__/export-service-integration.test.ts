@@ -6,19 +6,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 type IpcHandler = (...args: unknown[]) => Promise<unknown>
 
-const electronMocks = vi.hoisted(() => ({
-  handlers: new Map<string, IpcHandler>(),
-}))
-
-vi.mock('electron', () => ({
-  app: { getLocale: () => 'zh-CN' },
-  dialog: { showOpenDialog: vi.fn() },
-  ipcMain: {
-    handle: vi.fn((channel: string, handler: IpcHandler) => {
-      electronMocks.handlers.set(channel, handler)
-    }),
-  },
-}))
+const electronMocks = vi.hoisted(() => {
+  const handlers = new Map<string, IpcHandler>()
+  return { handlers, api: {
+    app: { getLocale: () => 'zh-CN' }, dialog: { showOpenDialog: vi.fn() },
+    ipcMain: { handle: vi.fn((channel: string,handler:IpcHandler)=>{ handlers.set(channel,handler) }) },
+  } }
+})
+vi.mock('electron',()=>electronMocks.api)
+// 双依赖树解析到不同Electron实例；只在测试中对基线实例也装同一桩。
+vi.mock('../../../../node_modules/electron',()=>electronMocks.api)
 
 import { registerExternalFileGrantController } from '@baseline/controllers/external-file-grant-controller'
 import { closeProjectDatabase, getProjectDb } from '@baseline/database'
@@ -104,18 +101,23 @@ describe('authoritative finalized export integration', () => {
     const event = { sender: { id: 17, once: vi.fn() } }
     vi.stubGlobal('window', {
       __TAURI_INTERNALS__: {
-        invoke: vi.fn(async (channel: string, ...args: unknown[]) => {
-          if (channel === 'db:draft-export-snapshot') {
-            expect(args).toEqual([projectPath, projectSession])
+        invoke: vi.fn(async (command: string, named: Record<string,unknown>) => {
+          if (command === 'db_draft_export_snapshot') {
+            expect(named).toEqual({expectedProjectPath:projectPath,projectSession})
             return FinalizationRepository.listAuthoritativeForExport()
           }
-          if (channel === 'db:draft-export-authority-current') {
-            expect(args.slice(1)).toEqual([projectPath, projectSession])
-            return FinalizationRepository.matchesAuthoritativeExportReceipt(args[0] as never)
+          if (command === 'db_draft_export_authority_current') {
+            expect(named).toEqual({receipt:expect.any(Object),expectedProjectPath:projectPath,projectSession})
+            return FinalizationRepository.matchesAuthoritativeExportReceipt(named.receipt as never)
           }
-          const ipcHandler = electronMocks.handlers.get(channel)
-          if (!ipcHandler) throw new Error(`Missing IPC handler: ${channel}`)
-          return ipcHandler(event, ...args)
+          const shapes:Record<string,{channel:string;keys:string[]}>={
+            fs_grant_mkdir:{channel:'fs:grant-mkdir',keys:['grantId','relativePath']},
+            fs_grant_write_file:{channel:'fs:grant-write-file',keys:['grantId','relativePath','content']},
+          }
+          const shape=shapes[command]
+          const handler=shape && electronMocks.handlers.get(shape.channel)
+          if(!handler) throw new Error('未登记的导出测试命令：'+command)
+          return handler(event,...shape.keys.map(key=>named[key]))
         }),
       },
     })

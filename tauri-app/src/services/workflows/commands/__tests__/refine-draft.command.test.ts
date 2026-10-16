@@ -22,7 +22,7 @@ import { RefineDraftCommand as RuntimeRefineDraftCommand } from '../refine-draft
 import { RefineFromReviewCommand as RuntimeRefineFromReviewCommand } from '../refine-from-review.command'
 import { ReviewChapterCommand as RuntimeReviewChapterCommand } from '../review-chapter.command'
 import type { CommandExecuteParams, WorkflowGenerationRuntimeDependencies } from '../base-command'
-import { ReviewRevisionRuntimeFixture } from './review-revision-runtime.fixture'
+import { ReviewRevisionRuntimeFixture, reviewFixtureBackend, installReviewConsumerTransport } from './review-revision-runtime.fixture'
 
 
 let mainFixture: ReviewRevisionRuntimeFixture
@@ -177,20 +177,9 @@ function stubIpc(
   invoke: (channel: string, args: Record<string, unknown>, _options?: unknown) => Promise<unknown>,
   projectPromptDirectoryExists?: () => Promise<boolean>,
 ): void {
-  // ReviewRevisionRuntimeFixture（非本写面）内部仍以契约频道名 + 位置参数路由
-  // db:draft-get-meta / db:draft-get-full 两个草稿读取（含 optional() 兜底语义）；
-  // 适配器把它的旧式后端调用按 CHANNEL_ARG_NAMES 语义转成 Tauri 命令名 + 命名参数。
-  const fixtureBackend = async (channel: string, ...args: unknown[]): Promise<unknown> => {
-    switch (channel) {
-      case 'db:draft-get-meta':
-      case 'db:draft-get-full':
-        return invoke(channel.replace(/[:-]/g, '_'), { id: args[0], expectedProjectPath: args[1] }, undefined)
-      default:
-        // fixture 透传层收到的已是 (Tauri 命令名, 命名参数) 形态。
-        return invoke(channel, args[0] as Record<string, unknown>, undefined)
-    }
-  }
+  const fixtureBackend = reviewFixtureBackend(invoke)
   mainFixture = new ReviewRevisionRuntimeFixture(fixtureBackend)
+  installReviewConsumerTransport(mainFixture)
   vi.stubGlobal('window', {
     __TAURI_INTERNALS__: {
       invoke: (channel: string, args: Record<string, unknown> = {}) => (
@@ -204,7 +193,7 @@ function stubIpc(
                   args.id,
                   args.expectedProjectPath,
                 )
-              : mainFixture.invoke(channel, args)
+              : mainFixture.invokeTauri(channel, args)
       ),
     },
   })
@@ -472,7 +461,7 @@ describe('RefineDraftCommand bounded visible completion', () => {
     expect(completeWithLease.mock.calls.map(([request]) => request.leaseId))
       .toEqual(['model-lease-refine', 'model-lease-refine'])
     expect(invoke.mock.calls.filter(([channel]) => channel === 'db_revision_replace_pending')).toEqual([
-      ['db_revision_replace_pending', expect.objectContaining({ params: expect.objectContaining({ content: expected }) })],
+      ['db_revision_replace_pending', expect.objectContaining({ params: expect.objectContaining({ content: expected }) }), undefined],
     ])
     expect(useEditorStore.getState().tabs).toEqual([
       expect.objectContaining({ type: 'diff', content: expected }),
@@ -681,6 +670,7 @@ describe('RefineDraftCommand bounded visible completion', () => {
           },
         }),
       }),
+      undefined,
     ]])
   })
 
@@ -870,9 +860,7 @@ describe('RefineFromReviewCommand bounded visible completion', () => {
     expect(invoke).toHaveBeenCalledWith(
       'db_review_get_full',
       {
-        baseDraftId: CONFIRMATION_REVIEW_ID,
-        expectedProjectPath: PROJECT_PATH,
-        projectSession: PROJECT_SESSION,
+        id: CONFIRMATION_REVIEW_ID,
       },
       undefined,
     )
@@ -1183,6 +1171,7 @@ describe('ReviewChapterCommand reasoning stage', () => {
           },
         }),
       }),
+      undefined,
     ]])
   })
 
