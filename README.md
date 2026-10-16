@@ -24,7 +24,7 @@
 > - **已接通**：生产短锁与关闭围栏、事件、Agent轮次/恢复、材料/短细纲/对账、普通重启、启动门禁、知识库原文副本三频道；仅开放已登记的 `generate_draft → chapter-draft` 工作流。
 > - **最近验证**：代码 `4c9364c4` 的Rust全量 **1415通过/0失败（56.63s）**、全目标检查无告警；知识库定向74项、前端传输13项与IPC结构体合同1项通过，typecheck/lint退出0。最近前端非浏览器全量沿用B91的 **1929通过/123失败/1跳过**（本轮未重跑）。
 > - **仍待完成**：前端既存失败、真实模型与完整 GUI 验收；其他工作流和特殊域未开放。B3仍在进行中，不宣称完整端到端完成。
-> - **接续入口**：[迁移总览](docs-fork/README.md)、[当前交接](docs-fork/handoffs/CURRENT.md)、[第73次快照](docs-fork/handoffs/2026-10-16-tauri-migration-status.md)。按“继续迁移”推进，开发子代理仍禁止派发。
+> - **接续入口**：[迁移总览](docs-fork/README.md)、[当前交接](docs-fork/handoffs/CURRENT.md)、[第74次快照](docs-fork/handoffs/2026-10-17-tauri-migration-status.md)。按“继续迁移”推进，开发子代理仍禁止派发。
 >
 > 以下内容与原项目一致。
 

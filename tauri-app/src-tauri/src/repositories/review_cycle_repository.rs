@@ -2659,11 +2659,35 @@ fn prove_revision_effect(
             if !seen.insert(id) {
                 return false;
             }
-            let data:Option<(String,String,i64,String,String,String,String)>=match conn.query_row("SELECT a.attempt_id,a.run_id,a.revision,a.status,a.artifact_json,t.attempt_json,t.usage_receipt_json FROM generation_artifacts a JOIN generation_attempts t ON t.attempt_id=a.attempt_id WHERE a.artifact_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional(){Ok(v)=>v,Err(_)=>return false,};
-            let Some((aid, rid, revision, status, raw, attempt_raw, usage_raw)) = data else {
+            let data: Option<(String, String, i64, String, String, String, String, String, String)> =
+                match conn.query_row(
+                    "SELECT a.attempt_id,a.run_id,a.revision,a.status,a.artifact_json,
+                            t.attempt_json,t.usage_receipt_json,t.run_id,t.root_action_id
+                     FROM generation_artifacts a JOIN generation_attempts t ON t.attempt_id=a.attempt_id
+                     WHERE a.artifact_id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,
+                        r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?)),
+                ).optional() { Ok(v) => v, Err(_) => return false };
+            let Some((
+                aid,
+                rid,
+                revision,
+                status,
+                raw,
+                attempt_raw,
+                usage_raw,
+                attempt_run,
+                attempt_root,
+            )) = data
+            else {
                 return false;
             };
-            if rid != *run_id || status == "discarded" {
+            if rid != *run_id
+                || attempt_run != *run_id
+                || attempt_root != *root_id
+                || status == "discarded"
+            {
                 return false;
             }
             let art: Value = match serde_json::from_str(&raw) {

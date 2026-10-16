@@ -6,6 +6,15 @@ fn generate(
     prepared: &PreparedReviewRevisionContext,
     text: &str,
 ) -> (DurableGenerationRun, VisibleArtifact) {
+    generate_with_finish(f, prepared, text, "stop")
+}
+
+fn generate_with_finish(
+    f: &Fixture,
+    prepared: &PreparedReviewRevisionContext,
+    text: &str,
+    finish_reason: &str,
+) -> (DurableGenerationRun, VisibleArtifact) {
     let request = OpenGenerationRunRequest {
         project_id: f.run.binding.project_id.clone(),
         epoch: f.run.binding.epoch.clone(),
@@ -27,6 +36,16 @@ fn generate(
         parent_root_action_id: prepared.parent_root_action_id.clone(),
     };
     let run = f.service.runs.open(&f.conn, &request).unwrap();
+    let artifact = append_artifact(f, &run, text, finish_reason);
+    (run, artifact)
+}
+
+fn append_artifact(
+    f: &Fixture,
+    run: &DurableGenerationRun,
+    text: &str,
+    finish_reason: &str,
+) -> VisibleArtifact {
     let attempt = f
         .service
         .runs
@@ -38,7 +57,7 @@ fn generate(
             100,
             100,
             None,
-            Some(prepared.context.operation.as_str()),
+            Some(run.binding.source_manifest["operation"].as_str().unwrap()),
             None,
             None,
             false,
@@ -50,9 +69,16 @@ fn generate(
     let artifact = f.service.runs.snapshot(&f.conn, &attempt, 0, text).unwrap();
     f.service
         .runs
-        .settle(&f.conn, &attempt, None, Some("stop".into()), None, None)
+        .settle(
+            &f.conn,
+            &attempt,
+            None,
+            Some(finish_reason.into()),
+            None,
+            None,
+        )
         .unwrap();
-    (run, artifact)
+    artifact
 }
 
 fn prepare(
@@ -91,6 +117,13 @@ fn merged_fixture() -> (Fixture, String) {
 }
 
 fn merged_fixture_with_failure(inject_failure: bool) -> (Fixture, String) {
+    merged_fixture_with_chunks(
+        inject_failure,
+        &["🔑开场。甲与乙共同完成了合成任务，问题已经调整。e\u{301}尾声。"],
+    )
+}
+
+fn merged_fixture_with_chunks(inject_failure: bool, chunks: &[&str]) -> (Fixture, String) {
     let f = Fixture::with_report(
         ReviewRevisionOperation::ReviewChapter,
         Some(("展示合成证据", "甲\r\n乙")),
@@ -139,19 +172,29 @@ fn merged_fixture_with_failure(inject_failure: bool) -> (Fixture, String) {
         Some((confirmed.id, confirmation)),
         None,
     );
-    let revised = "🔑开场。甲与乙共同完成了合成任务，问题已经调整。e\u{301}尾声。";
-    let (run, artifact) = generate(&f, &prepared, revised);
+    assert!(!chunks.is_empty());
+    let (run, first) = generate_with_finish(
+        &f,
+        &prepared,
+        chunks[0],
+        if chunks.len() > 1 { "length" } else { "stop" },
+    );
+    let mut artifact_ids = vec![first.artifact_id];
+    for chunk in &chunks[1..] {
+        artifact_ids.push(append_artifact(&f, &run, chunk, "stop").artifact_id);
+    }
     let composition = f
         .service
         .runs
         .compose_visible(
             &f.conn,
             &run.run_id,
-            &[artifact.artifact_id.clone()],
-            Some(&artifact.text_hash),
+            &artifact_ids,
+            None,
             "visible-append-v1",
         )
         .unwrap();
+    let revised = composition.text.as_str();
     let receipt = f
         .service
         .commit_revision(
@@ -547,3 +590,6 @@ fn real_sqlite_chain_redacted_history_is_readable_but_cannot_replay() {
     drop(conn);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[path = "review_revision_continuation_tests.rs"]
+mod continuation_tests;
