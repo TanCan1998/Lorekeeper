@@ -34,6 +34,17 @@ impl Fixture {
             [],
         )
         .unwrap();
+        if let Some(world) = report
+            .as_ref()
+            .and_then(|value| value.get("worldSetting"))
+            .and_then(Value::as_str)
+        {
+            conn.execute(
+                "UPDATE project_core SET world_setting=?1 WHERE id='main'",
+                [world],
+            )
+            .unwrap();
+        }
         let source = if goal.is_some() {
             "🔑开场。甲\r\n乙。e\u{301}尾声。".into()
         } else {
@@ -130,6 +141,9 @@ impl Fixture {
                 value["items"] = report["items"].clone();
                 if let Some(status) = report.get("goalStatus") {
                     value["goalReviews"][0]["status"] = status.clone();
+                }
+                if let Some(goals) = report.get("goalReviews") {
+                    value["goalReviews"] = goals.clone();
                 }
             }
             value.to_string()

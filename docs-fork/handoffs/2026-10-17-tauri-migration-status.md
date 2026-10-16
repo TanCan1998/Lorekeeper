@@ -1,42 +1,43 @@
 # Tauri 迁移进度快照（2026-10-17）
 
-> 当前入口 [CURRENT.md](./CURRENT.md)；规则见 [开发指南 §9](../agents/pi-development.md)。上一轮见 [第73次快照](./2026-10-16-tauri-migration-status.md)。
+> 当前入口 [CURRENT.md](./CURRENT.md)；规则见 [开发指南 §9](../agents/pi-development.md)。上一日快照：[第73次](./2026-10-16-tauri-migration-status.md)。
 
-## 已验证状态（第 74 次 —— 多段修稿来源归属与续写回归）
+## 已验证状态（第 75 次 —— 必现/作者豁免混合复核与历史策略）
 
-- master，提交前 HEAD/本地 origin/master 均为 `afe6321d`，接续时工作区干净。
-- 主会话直接推进，不派发子代理；本轮为普通内部校验切片，按既有授权自检后提交推送，最终 SHA 见本机 pipeline。
-- **完整 proveEffect 审计仍未收口，审稿四频道保持关闭。**
+- master，接续时 HEAD/本地 origin/master 均为 `3b4c2265`，工作区干净；主会话直接推进，无子代理。
+- 本轮普通内部证明校验切片按既有授权自检后提交推送；最终 Git 结果与 SHA 见本机 pipeline。
+- **完整 proveEffect 审计尚未收口，审稿四频道继续关闭。**
 
-| 指标 | 结果 | 验证版本/范围 | verifiedAt | 证据路径（本机，不入库） |
+| 指标 | 结果 | 验证范围/版本 | verifiedAt | 证据（本机，不入库） |
 |---|---|---|---|---|
-| 审稿域定向 | **51通过，0失败**，含本轮新增7项续写测试 | afe6321d + 本轮三个Rust文件 | 2026-10-17 | .pi/tmp/recovery/continuation-directed.log |
-| Rust格式及差异 | 三文件rustfmt --check、git diff --check通过 | 同一最终代码 | 2026-10-17 | 工具输出 |
-| 最近Rust全量 | **1581通过，0失败**，库62.27秒；非本轮重跑 | afe6321d代码基线 | 2026-10-16 | .pi/tmp/recovery/chain-full.log |
-| 最近all-targets | 无告警；非本轮重跑 | afe6321d代码基线 | 2026-10-16 | .pi/tmp/recovery/chain-check.log |
-| invoke/事件/前端/GUI | 本轮未重测、未开放频道 | 沿用前次口径，不是本轮验收 | 历史 | 上次快照 |
+| 审稿域定向 | **58通过，0失败**，含新增7项混合/历史测试 | 3b4c2265 + 本轮四个Rust文件 | 2026-10-17 | .pi/tmp/recovery/mixed-directed.log |
+| 格式与差异 | 四文件rustfmt --check、git diff --check通过 | 同一最终代码 | 2026-10-17 | 工具输出 |
+| 最近Rust全量 | **1581通过，0失败**；库62.27秒，非本轮重跑 | afe6321d代码基线 | 2026-10-16 | .pi/tmp/recovery/chain-full.log |
+| 最近all-targets | 无告警，非本轮重跑 | afe6321d代码基线 | 2026-10-16 | .pi/tmp/recovery/chain-check.log |
+| 前端/GUI/频道 | 本轮未重测、未开放频道 | 沿用历史口径，不是本轮验收 | 历史 | 前次快照 |
 
-本轮为内部私有证明查询与测试改动，相关目标已由定向测试编译；未改公共签名、准入规则、schema或构建目标，按分层验证策略不机械重跑all-targets/全量。此切片提交后，距最近全量累计1个Rust语义切片。
+本轮仅私有审稿证明逻辑与测试，定向完成编译；未改公共接口、schema、权限/会话准入及构建目标，按分层策略不重复all-targets/全量。本轮提交后全量以来累计2个Rust语义切片；阶段收口或满5个时再触发全量。
 
 ## 本次更新
 
-- 任务范围：多段修稿续写与持久来源归属，新增 `review_revision_continuation_tests.rs`；复用真实初审/确认/修稿/合并SQLite链。
-- 提取测试用生成/追加产物辅助；双段链首段合法以length结束、末段以stop结束，保持可见产物原字节与业务修稿正文分离。
-- 覆盖双段正文保存和只读恢复（不新建attempt）、达到既有48字符门槛的重叠去重、重复正文/纯标点无增长拒绝且无业务写入。
-- **复现并修复归属漏洞**：此前只验证首段artifact的run_id及attempt JSON身份；物理attempt的数据库run_id被移至同根另一run时仍可通过。现交叉验证各段artifact、attempt的数据库run_id与root_action_id，不能借JSON自述掩盖数据库归属漂移。
-- 新增14项首段JSON篡改矩阵（归入一个测试）：artifact身份/epoch/fingerprint/revision/hash、attempt身份/终态、receipt产物身份/epoch/结束原因/失败码。每次恢复原值重新通过。
-- 验证合成来源乱序、重复、遗漏首段均拒绝；新增物理attempt根列被移至另一真实root的拒绝回归。
-- 初始重叠夹具不足48字符导致断言失败，已按既有去重合同修正夹具，未改去重算法；复现日志 `continuation-before.log` 中另一个失败为真实attempt归属漏洞。
-- 没有改schema/依赖/生产权限/ADR/频道开放；根配置与锁文件、Electron、上游docs不变。
+- 新增 `review_revision_mixed_tests.rs`，用真实SQLite初审/确认/修稿/合并/复核链同时覆盖：已锚定目标、无原稿引文的必现目标、作者明确豁免的文风建议。
+- 新执行维持保守策略：模型声称resolved不会自动解决问题；无锚点必现项保持unverified，作者豁免不再进入复核。
+- **复现并修复作者豁免证明缺口**：原先只校验确认正文哈希与索引存在，不核对该索引实际指向的作者选择。现在双向验证确认快照与持久状态，并逐项核对schemaVersion/cycleId/findingId/origin/decision，拒绝越界、错项、把apply伪造为waive以及清除既有豁免。
+- **复现并修复历史v1兼容问题**：历史效果验证不能沿用新执行计划对resolved项的过滤。提取内部重建函数，历史验证保留已解决项，正常新计划仍排除，未放宽执行准入。
+- 合成重建v1冻结上下文、报告、证据映射与持久状态，验证历史resolved事实仍可证明和只读恢复，但不授权新执行；不涉及旧库导入、原始收据伪造或originalReceiptVerified提升。
+- 新增7项回归：混合正常复核、v2模型resolved保守状态、豁免索引篡改、伪造豁免、历史v1正向、清除持久豁免、降级/未知回执策略拒绝。
+- 漏洞复现证据：`mixed-before.log`（错误豁免索引仍通过）、`mixed-history-before.log`（历史resolved上下文漏项）；最终定向均通过。
+- 未改schema/依赖/生产权限/ADR；根配置与锁文件、Electron、上游docs保持不变。
 
-### 仍待完成
+### 同日已完成范围（沿用3b4c2265验证）
 
-1. 必现目标与作者豁免混合复核、历史报告/策略版本兼容性。
-2. 全链跨root/run组合及唯一效果证明继续审计；本轮只覆盖多段来源关系，不宣称完整proveEffect等价。
-3. 真实模型与GUI恢复全链验收仍未完成，不能以定向测试通过开放审稿频道。
+- 第74次新增7项多段修稿回归，修复各段artifact与物理attempt数据库run/root归属漏检。
+- 覆盖length→stop双段保存/恢复、48字符门槛重叠去重、无增长拒绝、首段14项篡改矩阵、合成来源乱序/重复/遗漏及跨run/root关系。
+- 当时审稿域定向51通过（`continuation-directed.log`）；不是本轮新增测试，也不是全量。
 
-## 交接给下次会话
+## 交接与下一步
 
-- 先核对 HEAD、工作区及 `.pi/tmp/pipeline-state.md`，最新运行状态/代码指纹以该文件为准。
-- 下一步优先构建必现/作者豁免混合fixture并审计历史策略；保持作者事实、冻结历史不可重放及originalReceiptVerified=false边界。
-- 本轮定向不是全量；最新全量仍为afe6321d基线。累计满5个Rust代码切片或阶段收口时按规则触发全量。
+1. 核对最新HEAD、工作区及 `.pi/tmp/pipeline-state.md`，保留全量基线与累计数。
+2. 继续审计完整finding集合来源重建、未参与复核项的持久状态、效果唯一性及剩余跨root/run组合；当前两处修复不等于完整proveEffect等价。
+3. 历史可选上下文字段与版本组合仍需扩展；新执行不得借历史策略降级，冻结恢复不可重放，不伪造originalReceiptVerified。
+4. 真实模型、GUI导入恢复全链验收尚未完成；频道开放必须另行完整验收，不能由测试通过推断。

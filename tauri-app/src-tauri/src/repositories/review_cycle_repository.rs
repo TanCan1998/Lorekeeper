@@ -1433,6 +1433,15 @@ fn recheck_context(
     cycle: &RecheckCycleRow,
     conn: &Connection,
 ) -> Result<ReviewCycleRecheckContext, String> {
+    rebuild_recheck_context(cycle, conn, false)
+}
+
+/// 历史效果验证须保留已resolved项；新执行计划仍排除已解决项，不能据历史重新准入。
+fn rebuild_recheck_context(
+    cycle: &RecheckCycleRow,
+    conn: &Connection,
+    include_resolved_history: bool,
+) -> Result<ReviewCycleRecheckContext, String> {
     let rows: Vec<RecheckFindingRow> = {
         let mut stmt = conn
             .prepare(
@@ -1468,7 +1477,8 @@ fn recheck_context(
     let merged_body = &cycle.merged_body;
     let mut findings = Vec::new();
     for row in &rows {
-        if ["unverified", "resolved", "author-waived"].contains(&row.status.as_str())
+        if ["unverified", "author-waived"].contains(&row.status.as_str())
+            || (!include_resolved_history && row.status == "resolved")
             || row.target_id.is_none()
             || row.span_start.is_none()
             || row.span_end.is_none()
@@ -2795,7 +2805,7 @@ fn verify_recheck_projection(
     receipt: &Map<String, Value>,
     report: &Value,
 ) -> bool {
-    let rebuilt = match recheck_context(
+    let rebuilt = match rebuild_recheck_context(
         &RecheckCycleRow {
             cycle_id: cycle.cycle_id.clone(),
             root_action_id: cycle.root_action_id.clone(),
@@ -2810,6 +2820,7 @@ fn verify_recheck_projection(
             merged_body: merged_body.to_string(),
         },
         conn,
+        true,
     ) {
         Ok(context) => context,
         Err(_) => return false,
@@ -3269,6 +3280,17 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
             {
                 return false;
             }
+            if bind_author_waivers(
+                &cycle.cycle_id,
+                confirmation_content_hash,
+                &snapshot,
+                conn,
+                false,
+            )
+            .is_err()
+            {
+                return false;
+            }
             Some(snapshot)
         }
     };
@@ -3672,6 +3694,37 @@ fn verify_finding_row(
         };
         if finding.evidence_hash.as_deref() != Some(confirmation_content_hash.as_str())
             || finding.confirmation_item_index.is_none()
+        {
+            return false;
+        }
+        let Some(confirmation_id) = cycle.confirmation_review_id else {
+            return false;
+        };
+        let body: String = match conn.query_row(
+            "SELECT c.body FROM reviews r JOIN contents c ON c.id=r.content_id WHERE r.id=?1",
+            [confirmation_id],
+            |r| r.get(0),
+        ) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let Some(snapshot) = parse_human_confirmed_review_snapshot(&body) else {
+            return false;
+        };
+        let Some(index) = finding
+            .confirmation_item_index
+            .and_then(|index| usize::try_from(index).ok())
+        else {
+            return false;
+        };
+        let Some(item) = snapshot.items.get(index) else {
+            return false;
+        };
+        if snapshot.schema_version != 2
+            || snapshot.cycle_id.as_deref() != Some(cycle.cycle_id.as_str())
+            || item.finding_id.as_deref() != Some(finding.finding_id.as_str())
+            || item.origin != "ai"
+            || item.decision != "waive"
         {
             return false;
         }

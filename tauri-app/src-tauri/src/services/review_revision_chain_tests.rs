@@ -593,3 +593,6 @@ fn real_sqlite_chain_redacted_history_is_readable_but_cannot_replay() {
 
 #[path = "review_revision_continuation_tests.rs"]
 mod continuation_tests;
+
+#[path = "review_revision_mixed_tests.rs"]
+mod mixed_tests;
