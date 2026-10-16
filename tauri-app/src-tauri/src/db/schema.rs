@@ -249,6 +249,47 @@ BEGIN
 END;
 "#;
 
+/// 批次 B112a：便携归档策略表要求、但 Tauri 侧此前缺失的三张基线表。
+///
+/// 逐字平移基线定义（Tauri 是全新库，改为 `IF NOT EXISTS` 以幂等）：
+/// - `text_metric_versions`：`electron/services/draft-unit-migration.ts` 的字数算法版本标记
+///   （3 列，便携策略码 `B` = rebuild-stale）；
+/// - `import_legacy_identity_bridge`：旧库身份桥密文（5 列，便携策略码 `X`，**导出时中和**）；
+/// - `import_effect_ledger`：导入效应台账 + 状态索引（`electron/migrations/m04-import-effect-ledger.ts`，10 列）。
+///
+/// 三张表承载的功能频道（导入效应台账 / 旧库身份桥 / 字数指标迁移）尚未迁移到 Tauri，
+/// 故当前恒为空表；先建表是为了让便携导出/恢复的 `assertPortableSourceSchema` 与基线同口径 ——
+/// 缺失字段会被 fail-closed 拒绝。
+pub const CREATE_PORTABLE_ALIGNED_TABLES: &str = r#"
+CREATE TABLE IF NOT EXISTS text_metric_versions (
+  metric TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS import_legacy_identity_bridge (
+  id TEXT PRIMARY KEY,
+  ciphertext_hex TEXT NOT NULL,
+  iv_hex TEXT NOT NULL,
+  auth_tag_hex TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS import_effect_ledger (
+  run_id TEXT NOT NULL REFERENCES import_runs(id) ON DELETE CASCADE,
+  stage TEXT NOT NULL,
+  batch_id TEXT NOT NULL,
+  effect_namespace TEXT NOT NULL,
+  effect_key TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('complete','partial','unknown')),
+  evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('receipt','knowledge-receipt','legacy-checkpoint','terminal')),
+  diagnostic_code TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(run_id,stage,batch_id),
+  UNIQUE(effect_namespace,effect_key),
+  CHECK((state='unknown' AND diagnostic_code<>'') OR (state<>'unknown'))
+);
+CREATE INDEX IF NOT EXISTS idx_import_effect_ledger_state ON import_effect_ledger(run_id,state,stage);
+"#;
 pub const CREATE_CONTENTS: &str = r#"
 CREATE TABLE IF NOT EXISTS contents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -956,6 +997,8 @@ pub fn create_tables(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(CREATE_CHARACTERS)?;
     // 批次 B1-W2：角色身份域（m02 六表，外键依赖 characters）
     conn.execute_batch(CREATE_CHARACTER_IDENTITY)?;
+    // 批次 B112a：便携策略表对齐（三张基线表；随各自功能频道迁移后启用写入）
+    conn.execute_batch(CREATE_PORTABLE_ALIGNED_TABLES)?;
     // 批次 B110：角色头像资产（外键引用 characters，故在其后建表）
     conn.execute_batch(CREATE_CHARACTER_AVATAR_ASSETS)?;
     conn.execute_batch(CREATE_CONTENTS)?;
@@ -1589,7 +1632,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(legacy, 0, "import_legacy_identity_bridge 已批准为不建");
+        assert_eq!(legacy, 1, "B112a 起该表随便携策略对齐一并创建");
 
         for column in [
             "effect_namespace",
