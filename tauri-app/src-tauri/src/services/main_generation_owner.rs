@@ -2085,6 +2085,7 @@ impl MainGenerationOwner {
             false,
             false,
             false,
+            false,
             None,
         )
     }
@@ -2098,6 +2099,7 @@ impl MainGenerationOwner {
         import_admission: bool,
         finalization_admission: bool,
         graph_admission: bool,
+        legacy_admission: bool,
         retry_attempt_id: Option<&str>,
     ) -> Result<PreparedMainGenerationExecution, String> {
         let handle = request.get("handle").cloned().unwrap_or(Value::Null);
@@ -2129,16 +2131,10 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
         }
-        if matches!(
-            run_operation.as_str(),
-            "finalized-chapter-notes" | "finalized-character-state"
-        ) {
-            return Err(mutating_error("GENERATION_FINALIZATION_ADMISSION_REQUIRED"));
-        }
         if GRAPH_OPERATIONS.contains(&run_operation.as_str()) && !graph_admission {
             return Err(mutating_error("GENERATION_GRAPH_ADMISSION_REQUIRED"));
         }
-        if run_operation == "legacy-character-roster-repair" {
+        if run_operation == "legacy-character-roster-repair" && !legacy_admission {
             return Err(mutating_error("GENERATION_LEGACY_ADMISSION_REQUIRED"));
         }
         // 基线 :516-517——任务形状断言（`assertSemanticGenerationTask`）：
@@ -3599,6 +3595,7 @@ impl MainGenerationOwner {
             false,
             false,
             false,
+            false,
             Some(failed),
         )
     }
@@ -4415,12 +4412,8 @@ impl MainGenerationOwner {
     /// `buildLegacyRosterJsonRepairTask` 修复重试）→ 产物解析 →
     /// `generation_attempts.usage_receipt_json` 回执写入。
     ///
-    /// ⚠️ 诚实化占位：基线 :988-1019 的双阶段 LLM 执行循环依赖
-    /// 主生成分发核心（`service.execute` 的 LLM 流式分发 +
-    /// `generation:snapshot` / `generation:reasoning` 事件发射，
-    /// B3 未迁移）——本命令 fail-closed 于执行入口
-    /// （`GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED` 为迁移占位码、
-    /// 非基线码），待 LLM 执行循环迁移波次活化。
+    /// 每轮尝试走既有执行入口（准备 → 阻塞分发 → 回执投影），`length` 截断时
+    /// 以「续写提示词」重构造任务，JSON 解析失败时进入 `repair` 阶段。
     pub fn execute_legacy_roster_generation(
         &self,
         conn: &Connection,
@@ -4437,14 +4430,156 @@ impl MainGenerationOwner {
         let repository = self.repository.clone();
         let project_id = self.session.project_id.clone();
         let roster = LegacyRosterGeneration::new(conn, repository, &project_id, &proposals);
-        // 基线 :985 legacyRosters.require(request.handle) 身份校验（就位）
-        roster.require(&handle)?;
-        // 基线 :988-1019 双阶段 LLM 执行循环依赖主生成分发核心
-        // （service.execute 的 LLM 流式分发 + 事件发射，B3 未迁移）
-        // —— fail-closed 于执行入口（占位码，见方法头注）。
-        Err(mutating_error(
-            "GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED",
-        ))
+        // 基线 :985 legacyRosters.require(request.handle) 身份校验。
+        let mut run = roster.require(&handle)?;
+        // 基线 :988-1019 双阶段循环：`initial` → `repair`，每阶段至多 3 次尝试。
+        let context = crate::services::legacy_roster_generation_context::
+            read_legacy_roster_generation_context(&run)?;
+        let mut stage_task = roster.task(&run)?;
+        let mut total = 0i64;
+        for stage in ["initial", "repair"] {
+            let mut previous_text: Option<String> = None;
+            let mut ordinal = 0usize;
+            while ordinal < 3 {
+                let task = match &previous_text {
+                    None => stage_task.clone(),
+                    Some(text) =>
+                        crate::services::legacy_roster_generation_pure::
+                            build_legacy_roster_replacement_task(
+                                &stage_task,
+                                text,
+                                &context.source.writing_language,
+                            ),
+                };
+                let invocation_nonce = format!("legacy:{stage}:{ordinal}");
+                let request_hash = text_hash(
+                    &json!([
+                        task,
+                        run.binding.fingerprint.model_lease_revision,
+                        run.binding.fingerprint.policy_hash
+                    ])
+                    .to_string(),
+                );
+                let prior = self
+                    .repository
+                    .find_invocation(conn, &run.run_id, &invocation_nonce, &request_hash)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?;
+                if prior.is_none() {
+                    roster
+                        .assert_mutable(&run)
+                        .map_err(|error| mutating_error(&error))?;
+                    let attempt_count: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM generation_attempts WHERE run_id=?",
+                            [&run.run_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| mutating_error(&error.to_string()))?;
+                    if attempt_count != total {
+                        return Err(mutating_error("GENERATION_LEGACY_ATTEMPT_CONFLICT"));
+                    }
+                }
+                let exec_request = json!({
+                    "handle": handle_of(&run),
+                    "invocationNonce": invocation_nonce,
+                    "task": task,
+                });
+                // 执行准入由 legacy 专用标志放行（通用 IPC 仍拒绝 legacy 操作）。
+                let prepared = self.prepare_execution_with_retry(
+                    conn,
+                    &exec_request,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    true,
+                    None,
+                )?;
+                let result = prepared.execute_blocking(conn)?;
+                let outcome = self.finish_prepared_execution(conn, &prepared, &result)?;
+                run = self
+                    .repository
+                    .get(conn, &run.run_id)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?;
+                total += 1;
+                ordinal += 1;
+                // 基线 `result.outcome.receipt.visibleArtifact` 与
+                // `result.run.candidates ?? result.run.artifacts`。
+                let reference_id = outcome["outcome"]["receipt"]["visibleArtifact"]["artifactId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let candidate = outcome["run"]["candidates"]
+                    .as_array()
+                    .or_else(|| outcome["run"]["artifacts"].as_array())
+                    .and_then(|items| {
+                        items.iter().find(|item| {
+                            item.get("artifactId").and_then(Value::as_str)
+                                == Some(reference_id.as_str())
+                        })
+                    })
+                    .cloned();
+                let eligible = candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.get("compositionEligible"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let cancelled = self
+                    .repository
+                    .budget(conn, &run.root_action_id)
+                    .map_err(|error| mutating_error(map_generation_error(&error)))?
+                    .root
+                    .status
+                    == "cancelled";
+                if !eligible || cancelled {
+                    return Ok(outcome);
+                }
+                let candidate_text = candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let candidate_hash = candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.get("textHash"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if text_hash(&candidate_text) != candidate_hash {
+                    return Err(mutating_error("GENERATION_LEGACY_ARTIFACT_INVALID"));
+                }
+                let finish_reason = outcome["outcome"]["finishReason"]
+                    .as_str()
+                    .unwrap_or_default();
+                if finish_reason == "length" {
+                    if ordinal == 3 {
+                        return Ok(outcome);
+                    }
+                    previous_text = Some(candidate_text);
+                    continue;
+                }
+                let status = outcome["outcome"]["status"].as_str().unwrap_or_default();
+                if finish_reason != "stop" || status != "completed" {
+                    return Ok(outcome);
+                }
+                if crate::services::legacy_roster_generation_pure::parse_legacy_roster_json(
+                    &candidate_text,
+                )
+                .is_ok()
+                {
+                    return Ok(outcome);
+                }
+                if stage == "repair" {
+                    return Ok(outcome);
+                }
+                stage_task = crate::services::legacy_roster_generation_pure::
+                    build_legacy_roster_json_repair_task(&candidate_text);
+                total += 1;
+                break;
+            }
+        }
+        Err(mutating_error("GENERATION_LEGACY_ATTEMPT_CONFLICT"))
     }
 
     /// 基线 `stageLegacyRosterGeneration`（main-generation-owner.ts:1023-1027）：
@@ -4706,7 +4841,9 @@ impl MainGenerationOwner {
             "task": task_value,
         });
 
-        self.prepare_execution_with_retry(conn, &request, false, true, false, false, false, None)
+        self.prepare_execution_with_retry(
+            conn, &request, false, true, false, false, false, false, None,
+        )
     }
 
     // ===== B95: import-generation 生成子域 =====
@@ -4945,6 +5082,7 @@ impl MainGenerationOwner {
             false,
             false,
             true,
+            false,
             false,
             false,
             None,
@@ -5752,6 +5890,7 @@ impl MainGenerationOwner {
             false,
             true,
             false,
+            false,
             None,
         )
     }
@@ -6355,6 +6494,7 @@ impl MainGenerationOwner {
             false,
             false,
             true,
+            false,
             None,
         )
     }
@@ -16187,6 +16327,34 @@ data: [DONE]
             .unwrap_err();
         assert_eq!(err, mutating_error("GENERATION_GRAPH_REQUEST_INVALID"));
     }
+    // ===== B107: legacy-roster 执行活化 =====
+
+    #[test]
+    fn legacy_roster_execute_reaches_real_identity_guard_test() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let owner = owner_with(&conn);
+
+        // 请求形状仍严格校验。
+        assert_eq!(
+            owner
+                .execute_legacy_roster_generation(&conn, &json!({ "wrong": 1 }))
+                .unwrap_err(),
+            mutating_error("GENERATION_LEGACY_REQUEST_INVALID")
+        );
+        // 未知运行的失败来自真实身份校验，而不是迁移占位码。
+        let error = owner
+            .execute_legacy_roster_generation(
+                &conn,
+                &json!({ "handle": { "runId": "missing-run" } }),
+            )
+            .unwrap_err();
+        assert!(
+            !error.contains("GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED"),
+            "{error}"
+        );
+    }
+
     // ===== B106: legacy-roster 创建活化 =====
 
     #[test]
