@@ -94,6 +94,20 @@ tauri-plugin-dialog = "2"
 # 渲染层不引入 `@tauri-apps/plugin-opener`，故**未**在 capabilities 中开放 opener 权限
 # （权限系统只门禁「渲染层→插件命令」，我们不开这条通道）。
 tauri-plugin-opener = "2"
+# 批次 B111（Ask first 已批准 2026-10-16）：便携项目归档（.ainovel）容器读写。
+#
+# 动因：基线 `electron/services/portable-project-archive.ts` 是标准 ZIP —— 自研 writer 写
+# **store** 模式 + yauzl 读取，含 Zip64 / data descriptor / UTF-8 文件名标志；Rust 侧容器层
+# 需要同构的读写面（B112 导出 / B113 恢复频道消费）。
+#
+# 选官方 `zip` 而非自研：Zip64 / central directory / CRC32 已成熟且纯 Rust（自身无 C 绑定）。
+# 本机 `cargo add` 实测增量：**4 个包约 0.66 MB**（zip 172KB + typed-path 110KB +
+# zopfli 51KB + nix 339KB，其中 nix 仅 Unix 编译），首次 `cargo check` 约 +3.7 秒。
+#
+# `default-features = false` 关掉 aes / bzip2 / zstd / lzma / ppmd / deflate64 与 chrono 等
+# 无关算法及 `zstd-sys`（C 构建链），只保留 `deflate` 以读取**可能存在的 deflate 条目**；
+# 写出恒用 `Stored`，与基线 writer 的压缩方法一致（`zlib-rs` 为纯 Rust，无构建链）。
+zip = { version = "9.0.3", default-features = false, features = ["deflate"] }
 
 # 批次 G1（Ask first 已批准 2026-10-10）：Windows 文件标识。
 #
