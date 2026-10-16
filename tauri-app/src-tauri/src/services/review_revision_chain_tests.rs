@@ -132,6 +132,10 @@ fn merged_fixture_with_chunks(inject_failure: bool, chunks: &[&str]) -> (Fixture
             "description":"合成检查"}]}),
         ),
     );
+    merge_reviewed_fixture(f, inject_failure, chunks)
+}
+
+fn merge_reviewed_fixture(f: Fixture, inject_failure: bool, chunks: &[&str]) -> (Fixture, String) {
     let reviewed = f.review().unwrap();
     let cycle: String = f
         .conn
@@ -140,7 +144,7 @@ fn merged_fixture_with_chunks(inject_failure: bool, chunks: &[&str]) -> (Fixture
     let finding: String = f
         .conn
         .query_row(
-            "SELECT finding_id FROM review_findings WHERE span_start IS NOT NULL",
+            "SELECT finding_id FROM review_findings WHERE target_id='ch1:keyEvents:1'",
             [],
             |r| r.get(0),
         )
@@ -596,3 +600,6 @@ mod continuation_tests;
 
 #[path = "review_revision_mixed_tests.rs"]
 mod mixed_tests;
+
+#[path = "review_revision_finding_tests.rs"]
+mod finding_tests;

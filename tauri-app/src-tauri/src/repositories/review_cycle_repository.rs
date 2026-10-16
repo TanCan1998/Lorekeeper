@@ -3059,11 +3059,128 @@ pub(crate) fn verify_m03_review_cycle(conn: &Connection) -> bool {
         {
             return false;
         }
+        if !verify_finding_origins_and_unchanged_states(conn, cycle, &findings) {
+            return false;
+        }
         let mut seen_anchors = Vec::new();
         for finding in &findings {
             if !verify_finding_row(finding, cycle, conn, &mut seen_anchors) {
                 return false;
             }
+        }
+    }
+    true
+}
+
+/// 先从已证明的初审报告重建集合，再区分有复核证据的项与必须保持初始状态的项。
+fn verify_finding_origins_and_unchanged_states(
+    conn: &Connection,
+    cycle: &CycleVerifyRow,
+    findings: &[FindingRow],
+) -> bool {
+    let review = match source_bound_row(conn, "reviews", cycle.review_id) {
+        Ok(Some(row)) => row,
+        _ => return false,
+    };
+    let report = match parse_saved_report(&review.body) {
+        Some(report) => report,
+        None => return false,
+    };
+    let binding_raw: String = match conn.query_row(
+        "SELECT r.binding_json FROM generation_attempts a
+         JOIN generation_runs r ON r.run_id=a.run_id
+         WHERE a.root_action_id=?1
+           AND json_extract(a.usage_receipt_json,'$.reviewRevisionEffect.kind')='review'
+           AND json_extract(a.usage_receipt_json,'$.reviewRevisionEffect.id')=?2",
+        rusqlite::params![cycle.root_action_id, cycle.review_id],
+        |r| r.get(0),
+    ) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let binding: Value = match serde_json::from_str(&binding_raw) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let (Some(project), Some(epoch), Some(revision), Some(content)) = (
+        binding.get("projectId").and_then(Value::as_str),
+        binding.get("epoch").and_then(Value::as_str),
+        review.source_draft_version,
+        review.source_content.as_deref(),
+    ) else {
+        return false;
+    };
+    let rebuilt = match build_findings(
+        &report,
+        &ReviewCycleSource {
+            project_id: project.to_string(),
+            epoch: epoch.to_string(),
+            source_id: format!("draft:{}", review.base_draft_id),
+            revision,
+            content_hash: hash(content),
+        },
+        content,
+    ) {
+        Ok(findings) => findings,
+        Err(_) => return false,
+    };
+    if rebuilt.len() != findings.len()
+        || canonical_m03_finding_set_hash(&rebuilt) != cycle.finding_set_hash
+    {
+        return false;
+    }
+    // 只有已证明的复核上下文才能授权状态变化；无锚点必现项并不获得可写事实身份。
+    let mut rechecked = std::collections::HashSet::new();
+    if cycle.recheck_count == 1 {
+        let Some(attempt) = cycle.recheck_attempt_id.as_deref() else {
+            return false;
+        };
+        let raw: String = match conn.query_row(
+            "SELECT r.binding_json FROM generation_attempts a
+             JOIN generation_runs r ON r.run_id=a.run_id WHERE a.attempt_id=?1",
+            [attempt],
+            |r| r.get(0),
+        ) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let value: Value = match serde_json::from_str(&raw) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let Some(context) = value.pointer("/sourceManifest/reviewRevisionContext") else {
+            return false;
+        };
+        let context: crate::services::review_revision_context::ReviewRevisionContext =
+            match serde_json::from_value(context.clone()) {
+                Ok(value) => value,
+                Err(_) => return false,
+            };
+        let Some(recheck) = context.recheck else {
+            return false;
+        };
+        for item in recheck.findings {
+            if item.must_show != Some(true) {
+                rechecked.insert(item.finding_id);
+            }
+        }
+    }
+    for item in &rebuilt {
+        let Some(persisted) = findings
+            .iter()
+            .find(|finding| finding.finding_id == item.finding_id)
+        else {
+            return false;
+        };
+        if persisted.status == "author-waived" || rechecked.contains(&item.finding_id) {
+            // 作者豁免与参与复核项的状态/证据已由独立证明分支严格核对。
+            continue;
+        }
+        if FindingStatus::parse(&persisted.status) != item.status
+            || persisted.evidence_hash.is_some()
+            || persisted.confirmation_item_index.is_some()
+        {
+            return false;
         }
     }
     true
