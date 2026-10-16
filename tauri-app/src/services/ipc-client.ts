@@ -29,6 +29,7 @@ import type {
 import type { ProjectSessionContext } from '../shared/ipc-channels'
 import { getActiveProjectSessionContext } from '../shared/project-session-context'
 import { MIGRATED_CHANNELS } from '../shared/migrated-channels'
+import unsupportedChannels from '../shared/unsupported-channels.json'
 
 /**
  * 频道 → invoke 命名参数名登记表（camelCase，与 Rust `#[tauri::command]`
@@ -478,6 +479,10 @@ function invokeWithSession<C extends InvokeChannel>(
   args: AllInvokeChannels[C]['args'],
   context?: ProjectSessionContext,
 ): Promise<AllInvokeChannels[C]['return']> {
+  // 首版范围外在获取会话/文件授权及触达传输前返回，原生命令同样失败关闭。
+  if (channel === 'project:import-legacy-copy') {
+    return Promise.resolve({ state: 'blocked', code: unsupportedChannels['project:import-legacy-copy'] }) as Promise<AllInvokeChannels[C]['return']>
+  }
   let projectSession: ProjectSessionContext | undefined
   if (isProjectScopedChannel(channel)) {
     projectSession = context ?? getActiveProjectSessionContext() ?? undefined

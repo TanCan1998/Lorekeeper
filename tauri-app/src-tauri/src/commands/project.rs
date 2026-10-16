@@ -440,7 +440,7 @@ const SELECT_LEGACY_PROJECT_TITLE: &str = "选择旧版小说项目文件夹";
 /// 迁移自 `electron/controllers/project-controller.ts:327`：取消返回 `null`；选中后签发
 /// 一次性（`maxUses = 1`，对齐基线 `issueDirectory` 的默认值）`legacy-import` 用途目录授权，
 /// 返回 `{ grantId, displayName }`。渲染层随后凭该 `grantId` 调用 `project:import-legacy-copy`
-/// （该频道尚未迁移），路径不经过 IPC。
+/// （首版明确返回blocked，不执行转换），路径不经过IPC。
 #[tauri::command]
 pub async fn dialog_select_legacy_project(
     app: tauri::AppHandle,
@@ -484,6 +484,30 @@ pub async fn dialog_select_legacy_project(
         grant_id,
         display_name,
     }))
+}
+
+#[cfg(test)]
+#[path = "project_legacy_tests.rs"]
+mod legacy_tests;
+
+/// 首版明确不支持旧库转换；类型中没有ready分支，不接收状态/授权注册表。
+#[derive(Debug, Clone, Serialize)]
+pub struct LegacyImportBlocked {
+    state: &'static str,
+    code: &'static str,
+}
+
+/// 保留IPC合同，但不解析授权、不读取源库、不创建目标副本。
+#[tauri::command]
+pub fn project_import_legacy_copy(
+    source_grant_id: String,
+    target_grant_id: String,
+) -> LegacyImportBlocked {
+    let _ = (source_grant_id, target_grant_id);
+    LegacyImportBlocked {
+        state: "blocked",
+        code: "LEGACY_IMPORT_UNSUPPORTED",
+    }
 }
 
 // ===== 骨架占位（批次 C 数据库层接入后启用）=====

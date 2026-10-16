@@ -17,12 +17,20 @@ afterEach(() => {
   setActiveProjectSessionContext(priorSession)
 })
 describe('未开放特殊域的 Tauri 传输边界', () => {
-  it('遗留导入在传输前拒绝，不因其它特殊域迁移而误开放', async () => {
+  it('首版旧库转换明确blocked，不因其它特殊域迁移而误开放', async () => {
     expect(MIGRATED_CHANNELS.has('project:import-legacy-copy')).toBe(false)
     await expect(ipc.invoke('project:import-legacy-copy', 'source-grant', 'target-grant'))
-      .rejects.toThrow(/频道 project:import-legacy-copy 尚未迁移/u)
+      .resolves.toEqual({ state: 'blocked', code: 'LEGACY_IMPORT_UNSUPPORTED' })
     expect(tauri.invoke).not.toHaveBeenCalled()
   })
+  it.each([['', ''], ['missing', 'missing'], ['../synthetic', 'C:/synthetic-target']])('无效/重复授权标识仍明确blocked且不读取会话或调用主进程：%s', async (source, target) => {
+    expect(getActiveProjectSessionContext()).toBeNull()
+    for (let i = 0; i < 2; i++) {
+      await expect(ipc.invoke('project:import-legacy-copy', source, target)).resolves.toEqual({ state: 'blocked', code: 'LEGACY_IMPORT_UNSUPPORTED' })
+    }
+    expect(tauri.invoke).not.toHaveBeenCalled()
+  })
+
   it('缺少项目会话时先拒绝，而不是借用外部授权或触达主进程', async () => {
     await expect(ipc.invoke('graph-generation:begin',
       { input: { kind: 'plot' }, modelId: 'synthetic-model', uiActionNonce: 'synthetic-action' }))

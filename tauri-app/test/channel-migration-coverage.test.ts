@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { MIGRATED_CHANNELS } from '../src/shared/migrated-channels'
+import unsupportedChannels from '../src/shared/unsupported-channels.json'
 import { collectContractChannels } from '../scripts/channel-contract.mjs'
 import { readNormalizedSource } from './source-contract'
 import { ipc } from '../src/services/ipc-client'
@@ -118,10 +119,21 @@ function collectRegisteredArgNames(): Map<string, string[]> {
 }
 
 describe('channel migration coverage', () => {
+  it('明确不支持的首版边界保留合同/注册，但不计入功能覆盖', () => {
+    expect(unsupportedChannels).toEqual({ 'project:import-legacy-copy': 'LEGACY_IMPORT_UNSUPPORTED' })
+    const registered = collectRegisteredCommands()
+    const invoke = collectInvokeChannels()
+    for (const channel of Object.keys(unsupportedChannels)) {
+      expect(invoke.has(channel)).toBe(true)
+      expect(registered.has(commandName(channel))).toBe(true)
+      expect(MIGRATED_CHANNELS.has(channel)).toBe(false)
+    }
+  })
+
   it('migrated-channels.ts 恰好等于 lib.rs 注册命令所覆盖的契约频道', () => {
     const registered = collectRegisteredCommands()
     const expected = [...collectInvokeChannels()]
-      .filter((channel) => registered.has(commandName(channel)))
+      .filter((channel) => registered.has(commandName(channel)) && !Object.hasOwn(unsupportedChannels, channel))
       .sort()
 
     expect([...MIGRATED_CHANNELS].sort()).toEqual(expected)
@@ -145,7 +157,7 @@ describe('channel migration coverage', () => {
       (channel) => !MIGRATED_CHANNELS.has(channel),
     )
     const registered = collectRegisteredCommands()
-    expect(unmigrated.filter(channel => registered.has(commandName(channel)))).toEqual([])
+    expect(unmigrated.filter(channel => registered.has(commandName(channel))).sort()).toEqual(Object.keys(unsupportedChannels).sort())
   })
   it('迁移状态断言：已迁频道在集合内，批次 G2 依赖的频道仍被前置拦截', () => {
     // 批次 G1：作者原稿导入已迁移

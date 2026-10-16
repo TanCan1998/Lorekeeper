@@ -167,6 +167,8 @@ pub fn run() {
             commands::dialog_select_project_archive,
             commands::dialog_select_project_restore_target,
             commands::dialog_select_legacy_project,
+            // 首版范围外：仅返回明确blocked，不计入功能迁移覆盖。
+            commands::project_import_legacy_copy,
             // 批次 B112b-3：便携归档导出（project:archive-export）
             commands::project_archive_export,
             commands::project_archive_restore,

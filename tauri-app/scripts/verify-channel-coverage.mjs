@@ -34,6 +34,8 @@ const repoRoot = path.resolve(appRoot, '..')
 // 契约闭包 = 自 `src/shared/ipc-channels.ts` 递归跟随相对 import 的全部文件。
 const libFile = path.join(appRoot, 'src-tauri/src/lib.rs')
 const migratedFile = path.join(appRoot, 'src/shared/migrated-channels.ts')
+// 范围外的明确拒绝不是功能迁移，不以注册blocked命令凑100%。
+const unsupported = new Set(Object.keys(JSON.parse(fs.readFileSync(path.join(appRoot, 'src/shared/unsupported-channels.json'), 'utf8'))))
 const quiet = process.argv.includes('--quiet')
 const emit = process.argv.includes('--emit')
 
@@ -68,6 +70,7 @@ function emitMigratedChannels(channels) {
     ' * 生成：`pnpm run check:channels --emit`',
     ' * 事实源：`src-tauri/src/lib.rs` 的 `generate_handler!` 命令注册',
     ' *         ↔ `src/shared/ipc-channels.ts` 的 invoke 频道（机械映射 `:`/`-` → `_`）。',
+    ' * 首版范围外：依据 shared/unsupported-channels.json 排除；blocked注册不计入功能迁移。',
     ' *',
     ' * 用途：ipc-client 对未迁移频道直接给出「尚未迁移」的友好提示，',
     ' *       而不是 Tauri 原生的 `Unknown Error: Command xxx not found`。',
@@ -95,6 +98,7 @@ const registered = collectRegistered()
 const migrated = []
 const missing = []
 for (const channel of [...invoke].sort()) {
+  if (unsupported.has(channel)) continue
   if (registered.has(commandName(channel))) migrated.push(channel)
   else missing.push(channel)
 }
@@ -119,7 +123,8 @@ const byPrefix = (list) => {
 }
 
 console.log(`契约 invoke 频道 ${invoke.size}（事件频道 ${events.size}）`)
-console.log(`已注册命令 ${registered.size} → 覆盖 invoke 频道 ${migrated.length}`)
+console.log(`已注册命令 ${registered.size} → 注册契约频道 ${[...invoke].filter(channel => registered.has(commandName(channel))).length}`)
+console.log(`功能迁移 ${migrated.length}/${invoke.size}；首版明确不支持 ${unsupported.size}（不计功能覆盖）`)
 console.log(`未迁移 invoke 频道 ${missing.length}${missing.length ? `  [${byPrefix(missing)}]` : ''}`)
 
 if (!quiet && missing.length > 0) {

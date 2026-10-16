@@ -4,6 +4,7 @@
  * 生成：`pnpm run check:channels --emit`
  * 事实源：`src-tauri/src/lib.rs` 的 `generate_handler!` 命令注册
  *         ↔ `src/shared/ipc-channels.ts` 的 invoke 频道（机械映射 `:`/`-` → `_`）。
+ * 首版范围外：依据 shared/unsupported-channels.json 排除；blocked注册不计入功能迁移。
  *
  * 用途：ipc-client 对未迁移频道直接给出「尚未迁移」的友好提示，
  *       而不是 Tauri 原生的 `Unknown Error: Command xxx not found`。

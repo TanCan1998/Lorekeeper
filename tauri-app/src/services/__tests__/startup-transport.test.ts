@@ -57,10 +57,10 @@ describe('启动门禁（startup:*）传输合同', () => {
     ])
   })
 
-  it('启动门禁已迁移不改变其它未迁移频道的前置拦截', async () => {
+  it('启动门禁不授权旧库转换，范围外请求返回明确blocked且不触达传输', async () => {
     await expect(ipc.invoke(
       'project:import-legacy-copy', 'source-grant', 'target-grant',
-    )).rejects.toThrow('尚未迁移')
+    )).resolves.toEqual({ state: 'blocked', code: 'LEGACY_IMPORT_UNSUPPORTED' })
     expect(tauriInternals.invoke).not.toHaveBeenCalled()
   })
 })

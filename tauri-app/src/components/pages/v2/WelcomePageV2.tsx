@@ -19,9 +19,6 @@ export interface WelcomePageV2Props {
   recentProjects: readonly { id: string; name: string; onPreview: () => void; onOpen: () => void }[]
   onNewProject: () => void
   onOpenProject: () => void
-  onImportLegacyProject?: () => void
-  legacyImportNotice?: string
-  legacyImportBusy?: boolean
   onImportNovel: () => void
   onContinue?: () => void
   onDeleteCurrentProject?: () => void
@@ -32,7 +29,7 @@ export interface WelcomePageV2Props {
 const count = (value: number | null | undefined) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('zh-CN') : null
 
 /** The caller supplies authorized, current facts. No cache, IO, model or persistence lives here. */
-export default function WelcomePageV2({ overview, recentProjects, onNewProject, onOpenProject, onImportLegacyProject, legacyImportNotice, legacyImportBusy, onImportNovel, onContinue, onDeleteCurrentProject, backup, updates }: WelcomePageV2Props) {
+export default function WelcomePageV2({ overview, recentProjects, onNewProject, onOpenProject, onImportNovel, onContinue, onDeleteCurrentProject, backup, updates }: WelcomePageV2Props) {
   const text = useLocaleStore(state => state.text)
   const stageNames: Record<ProjectOverviewStageId, string> = {
     configuration: text('配置', 'Configuration'), architecture: text('架构', 'Architecture'),
@@ -46,10 +43,10 @@ export default function WelcomePageV2({ overview, recentProjects, onNewProject, 
     <div className="writer-welcome-actions">
       <button type="button" onClick={onNewProject}><Plus size={17} />{text('新建作品', 'New project')}</button>
       <button type="button" onClick={onOpenProject}><FolderOpen size={17} />{text('打开作品', 'Open project')}</button>
-      {onImportLegacyProject && <button type="button" onClick={onImportLegacyProject} disabled={legacyImportBusy}>{text('导入旧项目副本', 'Import legacy project copy')}</button>}
+      <button type="button" disabled aria-describedby="legacy-import-unavailable">{text('导入旧项目（首版不支持）', 'Legacy import (not supported in this release)')}</button>
       <button type="button" onClick={onImportNovel}>{text('小说拆解', 'Novel deconstruction')}</button>
     </div>
-    {legacyImportNotice && <p role="status">{legacyImportNotice}</p>}
+    <p id="legacy-import-unavailable" role="note">{text('首版不支持旧库导入，不会读取或修改旧项目。可新建作品后导入作者原稿，或恢复Lorekeeper归档。', 'This release does not import legacy databases or read or modify old projects. Create a project and import your manuscript, or restore a Lorekeeper archive.')}</p>
     <section className="writer-overview" aria-label={text('作品概览', 'Project overview')} aria-busy={overview.state === 'loading'}>
       <div className="v3-current-project-actions"><div className="v3-overview-kicker">{text('当前作品 · CURRENT PROJECT', 'CURRENT PROJECT')}</div>{onDeleteCurrentProject && <button type="button" title={text('删除项目', 'Delete project')} onClick={onDeleteCurrentProject}><Trash2 size={14} />{text('删除项目', 'Delete project')}</button>}</div>
       {overview.state !== 'ready' ? <p role="status">{{ loading: text('正在读取作品信息…', 'Loading project information…'), empty: text('尚未打开作品，选择一本书或开始新的故事。', 'Choose a book or start a new story.'), unavailable: text('暂时无法读取这部作品，请正式打开后查看。', 'Preview is unavailable. Open the project to view it.') }[overview.state]}</p> : <>
