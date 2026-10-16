@@ -2,42 +2,44 @@
 
 > 入口 [CURRENT.md](./CURRENT.md)；规则见 [../agents/pi-development.md](../agents/pi-development.md) §9。
 
-## 已验证状态（第 67 次 —— 云备份八频道与真实构建入口核查）
+## 已验证状态（第 68 次 —— 真实构建窗口冒烟与前端全量收敛）
 
-- 当前代码HEAD `0f0c9d19`，服务层 `0ba0ec2e`，均已推送origin/master。
-- 八个云频道已接通；账户与绑定在Lorekeeper全局根，互斥状态不跨await持锁。
-  未新增crate或修改锁文件，仅给既有tokio启用fs/io-util。
-- WebDAV追加式archive→manifest→completion：条件PUT、读回核验、流式哈希、
-  同源href、禁止重定向、大小限制、在途取消、下载暂存后无覆盖发布。
-- 备份必须显式确认披露；快照后重新认证会话、绑定及账户端点。
-  远端已完成、本机修订冲突时仍报告成功及binding-not-saved。
-- 副本恢复消费目标Create授权，复用已验证恢复服务，不切换活动项目；
-  新绑定为origin-readonly，最近项目记录失败只警告。
-  清除凭据先失配绑定；删除项目仅清理本机绑定，不删远端或共享账户。
-- 操作ID取消后保留至任务结束；暂存按登记文件身份清理，不递归误删陌生内容。
-- 最新验证（本切片最终工作区，对应 `0f0c9d19`）：
-  - Rust全量 **1552 passed / 0 failed**，库测试65.24s；main/doc tests无测试。
-    `.pi/tmp/b116-full.log`，全量后Rust切片累计 **0**。
-  - all-targets无告警：`.pi/tmp/b116-check.log`。
-  - 命令定向5项：`.pi/tmp/b116-command.log`；包括本地DAV完整备份/恢复链路、
-    披露/操作身份、旧会话、只读绑定、绑定CAS冲突及错误脱敏。
-    服务层定向沿用B115的绑定2项、WebDAV5项。
-  - 修复Windows回环夹具接受socket继承非阻塞模式导致大归档分段接收误失败；
-    显式恢复阻塞模式，不降低归档校验或上传体积。
-  - 前端相关2文件11项：`.pi/tmp/b116-vitest.log`；
-    typecheck/lint通过：`b116-typecheck.log`、`b116-lint.log`。
-    这不是前端全量；非浏览器全量仍沿用B91历史结果。
-  - 频道：`.pi/tmp/b116-channels.log`，**289/290**，注册290、事件7；
-    八云频道一一对应，剩余上游遗留 `project:import-legacy-copy`。
-  - 定向格式、差异、双栈与锁文件卫生检查通过。
-- **真实构建入口阻塞**：`pnpm tauri build --debug --no-bundle` 实际退出1，
-  `beforeBuildCommand=pnpm build:frontend` 引用了不存在的脚本；
-  package.json实际已有 `build=tsc && vite build`。证据：`.pi/tmp/b117-build-entry.log`。
-  尚未修改tauri.conf.json；按构建/发布配置边界，先确认只修正这一项。
-- 下一步：确认后修正入口，再执行真实构建和隔离数据根窗口验收。
-  GUI、真实模型、MCP与真实云供应商尚未验收，不能宣称产品迁移完成。
-- **输入范围不变**：没有已确认的旧版Lorekeeper，不把开发期schema演变当旧产品，
-  暂缓遗留导入、不做占位，不读取Electron/.vela/LanceDB。仍不派发子代理。
+- 当前代码 `4c03d515` 已推送origin/master；构建/品牌修正 `a6655558`，
+  云频道 `0f0c9d19`、服务层 `0ba0ec2e`。无代理派发，无残留GUI/后台进程。
+- 云备份八频道已交付：DPAPI凭据、绑定CAS、追加式DAV提交、取消及只读来源副本恢复；
+  本地DAV完整端到端通过，**未验收真实云供应商**。
+- 用户通过确认卡明确同意仅把beforeBuildCommand改为已有的pnpm build；
+  不改CI、打包目标、依赖或权限，不安装新软件。真实debug/no-bundle构建成功，
+  `.pi/tmp/b117-build.log`；仅有Vite大chunk/插件耗时提示，未生成安装器。
+- 用独立根 `.pi/tmp/b117-gui-home` 启动真实exe，原生UIA读取142节点，
+  进入空书架、未配置模型，启动门禁skinRevision=0，正常关闭通过。
+  窗口暴露主框架上游品牌残留，已只修正Tauri品牌/窗口文案/日志页脚为设定司/Lorekeeper，
+  二次构建和窗口身份断言通过。未触碰Electron及工具协议。
+  证据：`b117-gui-ui.txt`、`b117-gui.stderr.log`；这是窗口冒烟，不是完整GUI验收。
+- **最新前端非浏览器全量**（对应 `4c03d515`）：
+  **186文件、2102项：2101通过 / 0失败 / 1跳过**，
+  `.pi/tmp/b118-final.json`、`b118-final.log`。
+  typecheck/lint通过：`b118-typecheck.log`、`b118-lint.log`。
+  浏览器仅定向1文件2项通过（`b117-browser.log`），未做浏览器全量。
+- 从初始110失败收敛的范围：过时的未迁移域断言、双依赖树Electron测试模块桩、
+  Tauri命名request信封、options参数数量，以及审稿消费夹具到模拟权威后端的桥接。
+  保持失败边界、语言/结构合同断言，不新增跳过项。
+- **生产审稿门禁保持关闭**：最初把四频道参数名未登记判断成遗漏，进一步查明
+  `test/channel-migration-coverage.test.ts` 有明确DEFERRED名单后，已撤回未提交的开放尝试。
+  `ipc-client.ts` 相对 `0f0c9d19` 无变化；消费测试显式模拟权威后端，
+  独立测试确认完整形状请求同样在真实传输前被拒绝，不以夹具冒充实际可用。
+- **覆盖口径纠正**：Rust结构性覆盖 **289/290**（注册290、事件7，`b116-channels.log`），
+  不代表前端全开放。审稿四频道刻意关闭，实际渲染开放 **285/290**；
+  再加无已确认输入的遗留导入，不能宣称迁移完成。
+- Rust全量沿用 `0f0c9d19`：**1552通过 / 0失败**，65.24s，
+  `.pi/tmp/b116-full.log`；all-targets无告警 `b116-check.log`。
+  后续只改构建入口/前端品牌/测试，Rust逻辑切片累计 **0**，不把旧全量记到新源码。
+- 下步审查审稿真实准入、提交/收据原子性、源漂移和恢复后再考虑开放。
+  服务头记载外层IMMEDIATE事务与内部仓储BEGIN的偏离，仅源码发现，未故障注入或修改。
+  真实模型、MCP、云供应商和完整GUI仍待验收；不复用或读取现有用户凭据。
+- 输入范围不变：没有已确认旧版Lorekeeper，不读取Electron/.vela/LanceDB；
+  遗留导入暂缓，不做不可用桩凑覆盖。
+
 
 ---
 
