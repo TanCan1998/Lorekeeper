@@ -2400,7 +2400,7 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
         Option<String>,
         String,
     )> = match conn.query_row(
-        "SELECT r.id,r.base_draft_id,r.source_draft_chapter_number,r.source_draft_version,
+        "SELECT r.base_draft_id,r.source_draft_chapter_number,r.source_draft_version,
                 r.source_draft_status,r.source_content,c.body
          FROM reviews r JOIN contents c ON c.id=r.content_id WHERE r.id=?1",
         [cycle.review_id],

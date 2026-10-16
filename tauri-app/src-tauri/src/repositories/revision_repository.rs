@@ -249,7 +249,17 @@ pub fn replace_pending(
     let tx = conn
         .unchecked_transaction()
         .map_err(|error| format!("开启事务失败：{error}"))?;
+    let result = replace_pending_in_transaction(&tx, params)?;
+    tx.commit()
+        .map_err(|error| format!("提交修稿失败：{error}"))?;
+    Ok(result)
+}
 
+/// 复用调用方持有的真实事务；不嵌套BEGIN，不提前提交领域写入。
+pub(crate) fn replace_pending_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    params: &RevisionCreateParams,
+) -> Result<RevisionCreated, String> {
     let expected = guard_source(&tx, params)?.clone();
     let revision_index = next_revision_index(&tx, params.base_draft_id)?;
     let content_id = contents::create(&tx, &params.content)?;
@@ -262,8 +272,6 @@ pub fn replace_pending(
     )
     .map_err(|error| format!("弃用旧修稿失败：{error}"))?;
 
-    tx.commit()
-        .map_err(|error| format!("提交修稿失败：{error}"))?;
     Ok(RevisionCreated { id, revision_index })
 }
 

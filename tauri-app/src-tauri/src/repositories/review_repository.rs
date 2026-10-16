@@ -121,7 +121,17 @@ pub fn create(conn: &Connection, params: &ReviewCreateParams) -> Result<ReviewCr
     let tx = conn
         .unchecked_transaction()
         .map_err(|error| format!("开启事务失败：{error}"))?;
+    let result = create_in_transaction(&tx, params)?;
+    tx.commit()
+        .map_err(|error| format!("提交审稿失败：{error}"))?;
+    Ok(result)
+}
 
+/// 复用调用方持有的真实事务；不嵌套BEGIN，不提前提交领域写入。
+pub(crate) fn create_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    params: &ReviewCreateParams,
+) -> Result<ReviewCreated, String> {
     let Some(expected) = params.expected_source.as_ref() else {
         return Err(SOURCE_DRAFT_CHANGED_MESSAGE.to_string());
     };
@@ -148,8 +158,6 @@ pub fn create(conn: &Connection, params: &ReviewCreateParams) -> Result<ReviewCr
     .map_err(|error| format!("写入审稿失败：{error}"))?;
     let id = tx.last_insert_rowid();
 
-    tx.commit()
-        .map_err(|error| format!("提交审稿失败：{error}"))?;
     Ok(ReviewCreated { id, review_index })
 }
 

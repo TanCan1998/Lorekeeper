@@ -57,16 +57,10 @@
 //!
 //! # 刻意偏离（均有上游语义理由）
 //!
-//! - **事务**：基线 `commitReview` / `commitRevision` 以
-//!   `db.transaction(fn).immediate()` 包裹单一大事务。Rust 侧
-//!   `ReviewRepository.create` / `RevisionRepository.replace_pending`
-//!   按既有仓储约定自行开启 `unchecked_transaction`（见
-//!   `review_repository` / `revision_repository`），在外部事务内
-//!   嵌套 `BEGIN` 会被 SQLite 拒绝（「cannot start a transaction
-//!   within a transaction」，本波已实测），故本服务方法体直接执行、
-//!   不开外层事务；各写操作（审稿创建 / 修稿替换）自身保持原子，
-//!   失败时读侧 `saved` 检测会拒绝重入（`GENERATION_REVIEW_ALREADY_SAVED`
-//!   或返回已存收据），不会产生部分提交的可提交状态。
+//! - **事务**：审稿/修稿提交由服务持有IMMEDIATE事务，仓储显式复用同一事务；
+//!   业务正文、旧pending状态、生成效果收据及审稿周期一并提交或回滚，
+//!   不嵌套BEGIN，不因业务仓储先提交而遗留不可恢复的半成品。
+//!
 //! - **错误信封**：基线 `throw new Error(code)` 经 IPC 序列化为
 //!   `Error: <code>`；Tauri 命令返回 `Result<T, String>`，命令层
 //!   以 `commands::main_generation_owner::mutating_error` 复刻
@@ -92,12 +86,12 @@ use crate::repositories::review_cycle_repository::{
     ReviewCycleRecheckContext, ReviewCycleSource,
 };
 use crate::repositories::review_repository::{
-    self as review_repo, create as create_review_repo, get_full as get_review_full_repo,
-    ReviewCreateParams,
+    self as review_repo, create_in_transaction as create_review_repo,
+    get_full as get_review_full_repo, ReviewCreateParams,
 };
 use crate::repositories::revision_repository::{
     self as revision_repo, get_full as get_revision_full_repo,
-    replace_pending as replace_pending_repo, RevisionCreateParams,
+    replace_pending_in_transaction as replace_pending_repo, RevisionCreateParams,
 };
 
 use crate::draft_source_guard::ExpectedDraftSource;
@@ -910,6 +904,21 @@ impl ReviewRevisionGeneration {
         request: &ReviewGenerationCommitRequest,
         assert_sources: impl FnOnce(&MainGenerationRunHandle) -> Result<(), String>,
     ) -> Result<ReviewRevisionCommitReceipt, String> {
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|error| mutating_error(&error.to_string()))?;
+        let receipt = self.commit_review_in_transaction(&tx, request, assert_sources)?;
+        tx.commit()
+            .map_err(|error| mutating_error(&error.to_string()))?;
+        Ok(receipt)
+    }
+
+    fn commit_review_in_transaction(
+        &self,
+        conn: &rusqlite::Transaction<'_>,
+        request: &ReviewGenerationCommitRequest,
+        assert_sources: impl FnOnce(&MainGenerationRunHandle) -> Result<(), String>,
+    ) -> Result<ReviewRevisionCommitReceipt, String> {
         if request.context_id.is_empty() && request.artifact.artifact_id.is_empty() {
             // 基线 `!request` 空对象守卫；契约层 `deny_unknown_fields`
             // 已保证三键齐备，此处以「全空」近似（与 `prove_artifact` 同例）。
@@ -1059,6 +1068,21 @@ impl ReviewRevisionGeneration {
         request: &RevisionGenerationCommitRequest,
         assert_sources: impl FnOnce(&MainGenerationRunHandle) -> Result<(), String>,
     ) -> Result<ReviewRevisionCommitReceipt, String> {
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|error| mutating_error(&error.to_string()))?;
+        let receipt = self.commit_revision_in_transaction(&tx, request, assert_sources)?;
+        tx.commit()
+            .map_err(|error| mutating_error(&error.to_string()))?;
+        Ok(receipt)
+    }
+
+    fn commit_revision_in_transaction(
+        &self,
+        conn: &rusqlite::Transaction<'_>,
+        request: &RevisionGenerationCommitRequest,
+        assert_sources: impl FnOnce(&MainGenerationRunHandle) -> Result<(), String>,
+    ) -> Result<ReviewRevisionCommitReceipt, String> {
         if request.context_id.is_empty() && request.expected_composition_hash.is_empty() {
             return Err(mutating_error("GENERATION_REVIEW_COMMIT_INVALID"));
         }
@@ -1090,13 +1114,13 @@ impl ReviewRevisionGeneration {
         {
             return Err(mutating_error("GENERATION_REVIEW_COMPOSITION_REQUIRED"));
         }
-        let Some(artifact) = composition.artifact_ids.last().cloned() else {
+        let Some(artifact) = composition.sources.last() else {
             return Err(mutating_error("GENERATION_REVIEW_COMPOSITION_REQUIRED"));
         };
         let artifact_ref = ReviewArtifactRef {
-            artifact_id: artifact.clone(),
-            revision: 0,
-            text_hash: String::new(),
+            artifact_id: artifact.artifact_id.clone(),
+            revision: artifact.revision,
+            text_hash: artifact.text_hash.clone(),
         };
         self.prove_artifact(conn, &run, &artifact_ref)?;
         let content = composition.text.trim().to_string();
@@ -2831,6 +2855,10 @@ fn recheck_item_value(
     }
     Value::Object(record)
 }
+
+#[cfg(test)]
+#[path = "review_revision_generation_tests.rs"]
+mod commit_tests;
 
 #[cfg(test)]
 mod serialization_contract_tests {
