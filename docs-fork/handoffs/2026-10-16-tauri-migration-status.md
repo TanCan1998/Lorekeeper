@@ -2,7 +2,39 @@
 
 > 入口 [CURRENT.md](./CURRENT.md)；规则见 [../agents/pi-development.md](../agents/pi-development.md) §9。
 
-## 已验证状态（第 64 次 —— 便携冻结证据与恢复安装服务）
+## 已验证状态（第 65 次 —— 冻结连接门禁与归档恢复频道）
+
+- 代码提交：`f4ef5e00`（连接级冻结门禁）、`f42ae6f1`（恢复频道），均已推送。
+- 用户已确认启用 rusqlite 的 functions feature 与连接级 TEMP schema；
+  实际仅修改 Tauri Cargo feature，**没有新增 crate、没有修改锁文件或持久 schema**。
+- 每次打开恢复项目，先验证清单、转移权威与历史，再注册连接级守卫与 TEMP 触发器。
+  冻结行的更新、删除、同键插入、UPSERT、REPLACE受保护；借冻结执行父身份续写也被拒绝，
+  新身份可正常创建/更新。recursive_triggers确保REPLACE的隐式唯一键删除也受检查。
+  门禁随连接关闭消失，重新打开重新准入；普通项目保持原行为。
+- `project:archive-restore` 已注册：消费archive read与target create授权，不注入活动项目会话，
+  不切换当前项目；阻塞线程完成恢复，最近项目登记失败保留成功收据及警告。
+  同时修复既有导出失败信封的errorCode camelCase序列化。
+- **本轮最新验证**（`f42ae6f1` 对应工作区）：
+  - Rust全量 **1535 passed / 0 failed**，库测试59.69s，main/doc tests无测试；
+    `.pi/tmp/b113c-full.log`。全量后累计Rust切片 **0**。
+  - `cargo check --all-targets` 无告警：`.pi/tmp/b113c-check.log`。
+  - 归档命令定向9项：`.pi/tmp/b113c-command.log`。
+  - 前端3文件8项：`.pi/tmp/b113c-vitest.log`；
+    typecheck与lint退出0：`.pi/tmp/b113c-typecheck.log`、`.pi/tmp/b113c-lint.log`。
+  - 频道实测 **290 invoke / 7事件 / 282注册 / 281覆盖 / 9未迁移**：
+    `.pi/tmp/b113c-channels.log`。剩余cloud-backup八频道与project:import-legacy-copy。
+  - 定向rustfmt、diff检查及根src/Electron/docs/配置/lockfile隔离检查通过。
+- **下一确认边界**：
+  - 旧版副本导入：上游读取 .vela/vela.db 及 LanceDB；当前本项目决定是不与基线互通、
+    无需解码旧库，因此不能默认为跨栈一次性导入，也不能注册不可用桩冒充覆盖。
+  - 云备份：凭据安全存储方案与平台范围（keyring或Windows DPAPI）未定。
+- GUI/真实模型/MCP仍未验收，不能以本地单元测试替代；前端非浏览器全量沿用B91历史结果。
+
+---
+
+以下为第64次收口时的历史描述，其中“门禁未接线、恢复频道未开放”已被本次实现替代。
+
+## 历史状态（第 64 次 —— 便携冻结证据与恢复安装服务）
 
 - 最新代码 `29c63e11`；存储根修复 `0b746ce2` 已推送，统一从 Tauri 项目的 `.lore` 读取。
 - B109–B112 与 B113a 已在前一接续区间完成：文件对话框、头像、ZIP 容器、字段策略、脱敏副本、
