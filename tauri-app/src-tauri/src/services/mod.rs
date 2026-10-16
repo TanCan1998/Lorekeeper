@@ -12,6 +12,7 @@ pub mod character_asset_service; // 批次 B110：头像资产读写与孤儿登
 pub mod character_proposal;
 pub mod character_proposal_parser;
 pub mod cloud_credential_store;
+pub mod cloud_project_binding_store;
 pub mod cloud_secret_protector;
 pub mod draft_reconciliation;
 pub mod draft_short_outline;
@@ -49,6 +50,7 @@ pub mod portable_project_sanitize; // 批次 B112b-2a：便携脱敏副本（中
 pub mod portable_runtime_freeze;
 pub mod portable_transfer_authority;
 pub mod source_ref;
+pub mod webdav_backup;
 
 // ── 批次 G4-2：提示词渲染与三采集器（agent / editor-inline / finalization）──
 // ── 批次 G4-10c：agent 域工具效应（平移自

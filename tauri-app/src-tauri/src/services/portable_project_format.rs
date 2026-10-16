@@ -250,7 +250,7 @@ fn equals_number(value: &Value, expected: f64) -> bool {
 }
 
 /// 严格 ISO 8601 UTC 毫秒串（等价上游 `new Date(v).toISOString() === v` 的往返判定）
-fn is_exact_iso8601_millis(value: &str) -> bool {
+pub(crate) fn is_exact_iso8601_millis(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 24 {
         return false;

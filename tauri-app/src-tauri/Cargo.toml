@@ -56,7 +56,7 @@ jieba-rs = "0.7.0"
 # 最小 feature 集：sync（读写锁）+ rt/macros（仅单元测试的异步执行器）
 # + time（B3-2b 生成运行服务的 1 秒 flush 定时器与 active-elapsed
 # deadline；tokio 已是直接依赖，启用内置 feature 不新增依赖、不改 lock）。
-tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "fs", "io-util"] }
 # 批次 D2-b：LLM 生成 / 流式（对齐基线 `fetch` + 手写 SSE 行解析）。
 #
 # ⚠️ 必须 `default-features = false`：reqwest 0.13 的 `default = ["default-tls", ...]`，
