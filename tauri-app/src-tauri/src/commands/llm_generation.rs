@@ -957,6 +957,9 @@ mod tests {
                     Err(error) => panic!("{error}"),
                 }
             };
+            // Windows接受的连接可能继承非阻塞模式；夹具读取HTTP报文必须显式恢复阻塞。
+            // 保留既有5秒超时，不靠延长超时或忽略失败掩盖调度竞态。
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

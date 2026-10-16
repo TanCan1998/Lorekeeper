@@ -4,12 +4,14 @@ on:
   push:
     paths:
       - 'tauri-app/src-tauri/**'
+      - 'tauri-app/src/shared/unsupported-channels.json'
       - 'tauri-app/scripts/test-rust-ci*.ps1'
       - '.github/workflows/tauri-rust-ci.yml'
   pull_request:
     branches: [master]
     paths:
       - 'tauri-app/src-tauri/**'
+      - 'tauri-app/src/shared/unsupported-channels.json'
       - 'tauri-app/scripts/test-rust-ci*.ps1'
       - '.github/workflows/tauri-rust-ci.yml'
   workflow_dispatch:
