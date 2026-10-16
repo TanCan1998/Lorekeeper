@@ -1,0 +1,86 @@
+# Tauri 迁移进度快照（2026-10-16）
+
+> 入口 [CURRENT.md](./CURRENT.md)；规则见 [../agents/pi-development.md](../agents/pi-development.md) §9。
+
+## 已验证状态（第 63 次 —— B99–B108 十切片收口：定稿角色提交与生成路径活化）
+
+本轮为**交接收口切片**：B99–B108 的代码已在 2026-10-16 02:02–09:51 之间逐个提交并推送，
+但交接文档仍停在 B98（第 62 次）。本轮不新增代码，只补齐快照、入口与本机实测证据；
+下表"本轮实测"行均为本次收集的真实运行结果。
+
+| 指标 | 结果 | 验证版本/范围 | verifiedAt | 证据路径 |
+|---|---|---|---|---|
+| invoke/事件 | 契约290、事件7；注册272 → **覆盖271**，剩余19 | `712ae602`，check:channels | 2026-10-16 | `.pi/tmp/b63-channels.log` |
+| **Rust全量（最新基线）** | **1480 passed / 0 failed（60.02s）** | `712ae602`，cargo test | 2026-10-16（B108 自检） | `.pi/tmp/b108-full.log`（全量后累计代码切片数：**0**） |
+| Rust全量（区间内过程记录） | B99 1462、B103 1478、B106 1479、B107 1480、B108 1480，均 0 失败 | 各切片提交前 | 2026-10-16 | `.pi/tmp/b99-full.log`、`b103-full.log`、`b106-full.log`、`b107-full.log`、`b108-full.log` |
+| Rust定向（本轮实测） | agent_generation 56、main_generation_owner 180，0 失败 | `712ae602`，cargo test --lib | 2026-10-16 | `.pi/tmp/b108-test2.log`、`b108-test-main_generation_owner.log` |
+| 全目标检查（本轮实测） | 退出 0，无 error/warning | `712ae602`，cargo check --all-targets | 2026-10-16 | `.pi/tmp/b63-at.log` |
+| 前端定向（本轮实测） | 2 文件 9 项通过 | `712ae602`，vitest | 2026-10-16 | `.pi/tmp/b63-vitest.log` |
+| TS/lint/频道自检（本轮实测） | typecheck、lint、check:channels 退出 0 | `712ae602` | 2026-10-16 | `.pi/tmp/b63-typecheck.log`、`b63-lint.log`、`b63-channels.log` |
+| 最近前端非浏览器全量（沿用，非本轮） | 172文件/2053项：1929通过、123失败、1跳过 | B91，启动门禁代码 `74ea2200`；本轮未重跑 | 2026-10-15 | `.pi/tmp/b91-results.json`、`b91-full.log` |
+| GUI/真实模型/MCP | 未验收 | 本地测试不能替代真实窗口验收 | — | — |
+
+## 本次更新：B99–B108 十切片明细（均已提交并推送）
+
+1. **B99 `b9a5ffd7` — 定稿角色状态提交与来源证明（`finalized-character:commit`，本域最后 1 个频道）**：
+   平移 `parseFinalizedCharacterStateResponse`（UTF-16 证据定位/唯一性/身份判定）与
+   `SummaryRepository.commitFinalizedCharacterStates`（派生补丁判定、作者保护候选、候选落库与状态投影推进）；
+   新增 `finalized_character_proof` 模块（`proveFinalizedCharacterGeneration` /
+   `normalizeFinalizedCharacterProposalSource`）并接线角色提案 finalized 分支与来源时效断言；
+   owner 新增 `admit_finalized_character` 生成准入（`finalizedCharacterContextHash` 进入源绑定）；
+   领域提交与效应落盘统一在调用方 IMMEDIATE 事务内完成。新增 14 项 Rust 单测 + 前端契约测试。
+2. **B100 `e0c2a39e` — 角色提案解析器移植**：1:1 平移 `character-proposal-parser.ts`
+   （`extractSingleCompleteJsonObject`、身份清单/槽位/详情解码、素材抽取诊断、
+   12000 UTF-16 码元分块、架构与规划两条解析链），解除三处 PENDING 桩。新增 9 项 Rust 单测。
+3. **B101 `d62f0682` — 导入推演解码与语法修复证据保持**：平移 `import-inference-contract.ts` 解码链与
+   `structured-syntax-repair.ts` 的证据保持判定，接线 character_proposal 的 import 分支；
+   五条来源分支（legacy/finalized/import/directory/generation）至此全部由已移植叶函数服务，
+   `CHARACTER_PROPOSAL_PROOF_PORT_PENDING` 占位码删除。新增 5 项 Rust 单测。
+4. **B102 `76bae7eb` — review-revision 恢复投影改用 owner 真实实现**：`assert_review_sources_current` /
+   `review_revision_sources_match` / `review_revision_candidate_snapshot` 三处保守占位换成真实接线
+   （源漂移与候选投影此前恒通过/恒空）。新增 1 项 owner 单测。
+5. **B103 `0278b233` — 角色提案源现状探针真实化**：`assertSources` 深比较占位改由
+   `assert_binding_current` 承担（`GENERATION_SOURCE_CHANGED` / `GENERATION_MODEL_MISSING`）。新增 1 项 owner 单测。
+6. **B104 `2fc03caa` — 规划续作与大纲恢复源现状探针真实化**：统一由 owner `binding_is_current` 判定，
+   `planning_continuation` 与 `plot_outline_recovery` 源漂移时返回/保持 `source-changed`。新增断言覆盖。
+7. **B105 `2a9973d4` — 活化角色提案批准的 finalized-generation 分支**：
+   改调用 `finalized_character_proof::prove_finalized_character_generation` 取 `currentHandle`
+   （基线 :1261），占位码与过时头注移除。
+8. **B106 `99e16fd4` — 活化 `legacy-roster:begin`**：`begin_internal` 增加 `legacy_initialization` 参数，
+   仅专用入口允许 `legacyRosterKey` 选择键与 `legacy-character-roster-repair` 操作；
+   `legacyRosterKey` 由源绑定展开为 `legacyRosterContext`。新增 1 项 owner 单测。
+9. **B107 `413d5c28` — 活化 `legacy-roster:execute` 双阶段执行与执行面准入**：
+   解除 `finalized-*` / `legacy-character-roster-repair` 的无条件执行拒绝守卫（改由
+   `finalization_admission` / `legacy_admission` 控制）；移植 `initial` → `repair` 双阶段循环
+   （每阶段至多 3 次尝试、长度截断续写提示、`GENERATION_LEGACY_ATTEMPT_CONFLICT` 校验、
+   产物 `visibleArtifact` 匹配与正文哈希校验）。新增 1 项 owner 单测。
+10. **B108 `712ae602` — 清理 agent 轮次执行的遗留 fail-closed 死路径**：删除服务层
+    `GENERATION_AGENT_ROUND_UNMIGRATED` 死路径与 owner `agent_round` 包装及过时注释，
+    测试改为断言真实准备段身份门禁（`GENERATION_AGENT_IDENTITY_MISMATCH`）。
+
+**接入面**：`finalized-character` 域 5 频道全部完成；本区间只新增 1 个频道覆盖（270 → 271），
+B100–B108 均为既有域的实现补齐与占位桩清理，不新增频道。频道覆盖 271/290（93.4%）；
+已注册命令 272、事件 7、未迁移 19。
+
+## 未解除边界与待确认项
+
+1. 剩余 19 个频道全部落在**需先确认边界**的特殊域：
+   `cloud-backup` 8（安全存储、网络与凭据策略）、`character-avatar` 4（图片存储与裁剪方案）、
+   `dialog` 4（项目归档等文件弹窗）、`project` 3（ZIP 归档导出/恢复/旧版导入方案）。
+2. 浏览器/真实 GUI/真实模型/MCP 未验收；真实 `tauri dev`/`build` 窗口首验与启动门禁
+   （`SKIN_SNAPSHOT_NOT_READY` 分类）仍未开始。
+3. Agent/draft 跨会话在途收据×关闭重开×多会话导航、unknown result×父根生命周期仍待处理。
+
+## 交接给下次会话
+
+- 分支 `master` @ `712ae602`，工作区干净，与 `origin/master` 同步（0/0 未推送差异）。
+- 当前状态入口：`.pi/tmp/pipeline-state.md`（本机活动队列，不入库）。
+- 下一步（前置条件）：
+  1. 先向用户确认特殊域边界（安全存储/网络、图片存储、ZIP 归档、文件弹窗），再按域切片推进 19 频道；
+  2. 未确认前沿线可做真实 `tauri dev` 窗口首验与启动门禁分类；
+  3. 普通切片自检后可直接提交推送（2026-10-14 授权），schema/新依赖/权限/CI/ADR/归档/头像/云备份仍须先确认。
+- 过时描述的当前处理：CURRENT.md 与 `docs-fork/README.md` 此前写"266/290、第 61 次快照"、
+  `.pi/tmp/pipeline-state.md` 停在 B98 —— 已在当前状态统一纠正为 271/290 与第 63 次；
+  冻结快照正文不改，历史以来源链接追溯。
+- 验证命令与目录：均为 `tauri-app/` 与 `tauri-app/src-tauri/` 下执行；
+  代码版本 `712ae602`；证据见上表 `.pi/tmp/b63-*.log`、`b99..b108-*.log`。
