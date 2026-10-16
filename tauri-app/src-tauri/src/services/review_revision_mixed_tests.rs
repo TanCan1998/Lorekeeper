@@ -444,3 +444,6 @@ fn mixed_review_rejects_downgrading_or_unknown_persisted_recheck_policy() {
         assert!(review_cycle::verify_m03_review_cycle(&f.conn));
     }
 }
+
+#[path = "review_revision_history_tests.rs"]
+mod history_tests;

@@ -142,6 +142,11 @@ fn effect_proof_rejects_malformed_rehashed_review_artifact_without_panicking() {
             matches!(result, Ok(false)),
             "不可信报告必须失败关闭，不能panic"
         );
+        let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f.service.saved(&f.conn, &f.run)
+        }));
+        assert!(saved.is_ok(), "保存结果恢复也不能因畸形历史报告panic");
+        assert!(saved.unwrap().is_err());
         f.conn
             .execute_batch("ROLLBACK TO synthetic_invalid_report; RELEASE synthetic_invalid_report")
             .unwrap();

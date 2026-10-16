@@ -7,12 +7,26 @@ use crate::services::review_revision_context::{
 };
 use serde_json::json;
 
+// 每个fixture只释放自己登记的缓存项，避免并行回归挤满生产缓存并随机淘汰在用上下文。
+struct TestPreparedContexts(Vec<String>);
+impl Drop for TestPreparedContexts {
+    fn drop(&mut self) {
+        let mut contexts = PREPARED_CONTEXTS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for id in &self.0 {
+            contexts.remove(id);
+        }
+    }
+}
+
 struct Fixture {
     conn: Connection,
     service: ReviewRevisionGeneration,
     prepared: PreparedReviewRevisionContext,
     run: DurableGenerationRun,
     artifact: VisibleArtifact,
+    prepared_contexts: std::cell::RefCell<TestPreparedContexts>,
 }
 impl Fixture {
     fn new(operation: ReviewRevisionOperation) -> Self {
@@ -158,6 +172,9 @@ impl Fixture {
         Self {
             conn,
             service,
+            prepared_contexts: std::cell::RefCell::new(TestPreparedContexts(vec![prepared
+                .context_id
+                .clone()])),
             prepared,
             run,
             artifact,

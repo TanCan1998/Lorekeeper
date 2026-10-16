@@ -459,6 +459,9 @@ impl ReviewRevisionGeneration {
             };
             return Ok(serde_json::to_string_pretty(&body).expect("复核报告 JSON 序列化不得失败"));
         }
+        // 恢复与首次提交都可能遇到不可信产物，先解析再进入要求合同有效的重建器。
+        parse_review_generation_result(&proved.artifact.text, report_version)
+            .map_err(|_| mutating_error("GENERATION_REVIEW_ARTIFACT_INVALID"))?;
         let built = build_review_generation_report(&BuildReviewGenerationReportInput {
             content: proved.artifact.text.clone(),
             source_content: context.source.content.clone(),

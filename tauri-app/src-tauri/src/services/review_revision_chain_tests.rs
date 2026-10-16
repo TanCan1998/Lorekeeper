@@ -15,6 +15,10 @@ fn generate_with_finish(
     text: &str,
     finish_reason: &str,
 ) -> (DurableGenerationRun, VisibleArtifact) {
+    f.prepared_contexts
+        .borrow_mut()
+        .0
+        .push(prepared.context_id.clone());
     let request = OpenGenerationRunRequest {
         project_id: f.run.binding.project_id.clone(),
         epoch: f.run.binding.epoch.clone(),
