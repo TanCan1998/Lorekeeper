@@ -1,6 +1,6 @@
 //! 便携资产枚举 —— 平移自 `electron/services/portable-project-assets.ts` 的**原始资产**部分。
 //!
-//! 覆盖：项目存储根（`.ai-novel/`）下允许进入归档的原始文件白名单
+//! 覆盖：项目存储根（本项目为 `.lore/`，上游基线为 `.ai-novel/`）下允许进入归档的原始文件白名单
 //! （`prompts` / `skills` / `writing-skills.json` / `partial_arch` / `partial_arch.json` /
 //! `chapter_creation_log.json`），以及其余顶层条目的**显式省略清单**校验：
 //! 顶层出现清单外的名字一律 `PORTABLE_ASSET_UNSAFE`（fail closed，避免未知文件被静默漏掉）。
@@ -312,7 +312,7 @@ pub fn same_files(left: &[PortableProvidedFile], right: &[PortableProvidedFile])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::portable_project_format::CANONICAL_PROJECT_DIRECTORY;
+    use crate::db::PROJECT_DIR_NAME;
 
     fn temp_root(name: &str) -> (PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!(
@@ -320,7 +320,7 @@ mod tests {
             crate::project_access::random_uuid_v4()
         ));
         let _ = std::fs::remove_dir_all(&base);
-        let storage = base.join("project").join(CANONICAL_PROJECT_DIRECTORY);
+        let storage = base.join("project").join(PROJECT_DIR_NAME);
         std::fs::create_dir_all(&storage).unwrap();
         (
             std::fs::canonicalize(&base).unwrap(),

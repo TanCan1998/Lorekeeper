@@ -1,8 +1,9 @@
 //! 便携项目格式：manifest 契约 + 路径规范键 + 归档限额。
 //!
 //! 上游事实源：`electron/services/portable-project-format.ts`（manifest 部分）。
-//! 本模块同时保留批次 G4-1 的目录常量 [`CANONICAL_PROJECT_DIRECTORY`]：
-//! `portable_runtime_freeze` 等同波模块从本模块导入，禁止各自硬编码。
+//! 本模块同时保留上游目录常量 [`CANONICAL_PROJECT_DIRECTORY`]（`.ai-novel`）
+//! 作上游对齐：本项目存储根是 `.lore`（[`crate::db::PROJECT_DIR_NAME`]），G4-1 波次模块
+//! 已陆续切到该口径，禁止再用来拼存储根路径。
 //!
 //! 迁移口径（1:1）：
 //! - 错误一律以基线错误码字符串上浮（`PORTABLE_*`），由命令层折叠进契约判别联合；
@@ -20,9 +21,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use unicode_normalization::UnicodeNormalization;
 
-/// 规范项目目录名（上游 `CANONICAL_PROJECT_DIRECTORY`，值 `.ai-novel`）。
-/// 项目存储根 = `<项目根>/.ai-novel`（L3 双栈隔离：Tauri 专用 `.lore/` 为
-/// 另一层目录，见 `AGENTS.md`；本常量是**便携项目归档**内的目录名约定）。
+/// 上游 `CANONICAL_PROJECT_DIRECTORY`（值 `.ai-novel`，常量值保持逐字一致）。
+///
+/// 本项目项目存储根是 `<项目根>/.lore`（[`crate::db::PROJECT_DIR_NAME`]，L3 双栈隔离）；
+/// 便携归档条目一律相对存储根、不带前缀，故本常量**不再参与任何路径拼接**。
 pub const CANONICAL_PROJECT_DIRECTORY: &str = ".ai-novel";
 
 /// 便携归档格式版本（上游 `PORTABLE_PROJECT_FORMAT_VERSION`）

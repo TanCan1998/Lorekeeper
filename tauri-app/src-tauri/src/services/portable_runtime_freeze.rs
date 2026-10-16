@@ -24,8 +24,6 @@ use std::sync::LazyLock;
 
 use serde_json::{Map, Value};
 
-use crate::services::portable_project_format::CANONICAL_PROJECT_DIRECTORY;
-
 /// 权威侧车字节上限（上游 `AUTHORITY_MAX_BYTES = 4 * 1024 * 1024`，模块私有）。
 const AUTHORITY_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// 冻结历史侧车字节上限（上游 `PORTABLE_RUNTIME_HISTORY_MAX_BYTES`，导出常量）。
@@ -467,7 +465,9 @@ pub fn read_portable_runtime_freeze(
     let Some(project_root) = project_root else {
         return Ok(inactive());
     };
-    let storage_root = resolve_lexical(project_root).join(CANONICAL_PROJECT_DIRECTORY);
+    // 本项目口径（L3 双栈隔离）：存储根是 .lore（db::PROJECT_DIR_NAME），不是上游的
+    // .ai-novel（CANONICAL_PROJECT_DIRECTORY 只作便携归档内的目录约定保留）。
+    let storage_root = resolve_lexical(project_root).join(crate::db::PROJECT_DIR_NAME);
     match fs::symlink_metadata(&storage_root) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(inactive()),
@@ -615,7 +615,7 @@ mod tests {
         }
 
         fn storage_root(&self) -> PathBuf {
-            self.base.join(CANONICAL_PROJECT_DIRECTORY)
+            self.base.join(crate::db::PROJECT_DIR_NAME)
         }
     }
 
@@ -748,7 +748,7 @@ mod tests {
 
         let project = TempProject::new("no-storage");
         let guard = read_portable_runtime_freeze(Some(&project.base.to_string_lossy()), None)
-            .expect("missing .ai-novel is a normal project");
+            .expect("missing .lore is a normal project");
         assert!(!guard.active());
     }
 

@@ -14,7 +14,7 @@
 //!
 //! # 与基线的差异（本项目口径）
 //!
-//! - 不产出基线式逐行历史投影文件（`historyProjectionIds` 只承载头像引用占位，见 `omittedItems` 说明）；
+//! - 项目存储根是 `<项目根>/.lore`（`db::PROJECT_DIR_NAME`），不是上游的 `.ai-novel`：导出从该根\n//!   收集库、头像与原始资产，归档条目一律相对该根、不带任何前缀；\n//! - 不产出基线式逐行历史投影文件（`historyProjectionIds` 只承载头像引用占位，见 `omittedItems` 说明）；
 //! - 派生索引（FTS5 `kb_fts`、HNSW 向量快照）一律按 `rebuild-stale` 省略，知识**事实**在库副本内；
 //! - 基线依赖 Electron 备份 API 二次快照做「源未变」复核；本项目在归档写出前复核一次
 //!   （容器层已对每个源文件做「读取前后四次身份复核 + sha256 校验」，等价强度，少一次整库快照）。
@@ -24,12 +24,12 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
+use crate::db::PROJECT_DIR_NAME;
 use crate::services::portable_project_archive::{
     safe_directory, write_portable_project_archive, PortableArchiveReceipt, PortableArchiveSource,
     WritePortableProjectArchiveInput, MANIFEST_PATH,
 };
 use crate::services::portable_project_assets::{enumerate_raw_files, PortableProvidedFile};
-use crate::services::portable_project_format::CANONICAL_PROJECT_DIRECTORY;
 use crate::services::portable_project_format::{
     PortableArchiveLimits, PortableEntryDisposition, PortableOmissionItem, PortableOmissionReason,
     PortableProjectManifest, PortableProjectManifestEntry, PORTABLE_PROJECT_FORMAT_VERSION,
@@ -272,7 +272,7 @@ pub fn export_portable_project(
     }
     safe_directory(&source_root)?;
     safe_directory(&attempt_parent)?;
-    let storage_root = source_root.join(CANONICAL_PROJECT_DIRECTORY);
+    let storage_root = source_root.join(PROJECT_DIR_NAME);
     safe_directory(&storage_root)?;
     let source_database = storage_root.join(PORTABLE_DATABASE_ENTRY);
     if std::fs::symlink_metadata(&source_database).is_err() {
@@ -508,7 +508,7 @@ fn discard_attempt(attempt: &crate::services::portable_project_archive::StagingA
 /// 读取源库中「是否存在指针」等只读判定（诊断用）
 pub fn source_database_exists(source_project_root: &Path) -> bool {
     source_project_root
-        .join(CANONICAL_PROJECT_DIRECTORY)
+        .join(PROJECT_DIR_NAME)
         .join(PORTABLE_DATABASE_ENTRY)
         .exists()
 }
@@ -528,7 +528,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&base);
         let project = base.join("project");
-        let storage = project.join(CANONICAL_PROJECT_DIRECTORY);
+        let storage = project.join(PROJECT_DIR_NAME);
         std::fs::create_dir_all(storage.join("prompts")).unwrap();
         let canonical_base = std::fs::canonicalize(&base).unwrap();
         let canonical_project = std::fs::canonicalize(&project).unwrap();
@@ -708,7 +708,7 @@ mod tests {
 
         // 源库缺失 → ASSET_MISSING
         let empty_project = base.join("empty");
-        std::fs::create_dir_all(empty_project.join(CANONICAL_PROJECT_DIRECTORY)).unwrap();
+        std::fs::create_dir_all(empty_project.join(PROJECT_DIR_NAME)).unwrap();
         assert_eq!(
             export_portable_project(&ExportPortableProjectInput {
                 source_project_root: &std::fs::canonicalize(&empty_project).unwrap(),

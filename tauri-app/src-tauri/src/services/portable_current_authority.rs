@@ -68,7 +68,7 @@ impl std::error::Error for PortableCurrentAuthorityError {}
 /// `readPortableCurrentAuthority` 输入（上游对象参数）。
 pub struct ReadPortableCurrentAuthorityInput<'a> {
     pub database: &'a Connection,
-    /// 项目存储根（`<projectRoot>/.ai-novel`）。
+    /// 项目存储根（本项目为 `<projectRoot>/.lore`；上游基线为 `.ai-novel`）。
     pub project_storage_root: &'a str,
     /// 期望的目标项目 ID（`authority.targetProjectId` 必须等于它）。
     pub project_id: &'a str,
@@ -173,7 +173,7 @@ mod tests {
         }
 
         fn storage_root(&self) -> PathBuf {
-            self.base.join(".ai-novel")
+            self.base.join(crate::db::PROJECT_DIR_NAME)
         }
     }
 
