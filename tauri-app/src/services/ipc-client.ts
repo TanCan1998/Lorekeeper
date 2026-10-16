@@ -294,8 +294,9 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   // 无需登记）
   'generation:read': ['handle'],
   'generation:read-visible-composition': ['handle'],
-  'generation:read-context': ['handle'],
-  'generation:read-batch': ['batchId'],
+  // 这两个合同的首参是请求包装，不是裸句柄或批次 ID。
+  'generation:read-context': ['request'],
+  'generation:read-batch': ['request'],
   // Agent 频道均为单一 request 对象，会话由项目域尾参注入。
   'agent-generation:begin': ['request'],
   'agent-generation:read': ['request'],

@@ -478,19 +478,25 @@ pub async fn generation_list_batches(
     })
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GenerationReadContextRequest {
+    pub handle: MainGenerationRunHandle,
+}
+
 /// `generation:read-context` —— 运行恢复上下文
 /// （基线 `readContext(handle)`，main-generation-owner.ts:834-876）。
 #[tauri::command]
 pub async fn generation_read_context(
     state: State<'_, AppState>,
-    handle: MainGenerationRunHandle,
+    request: GenerationReadContextRequest,
     project_session: Option<ProjectSessionContext>,
 ) -> Result<Value, String> {
     let state = state.inner();
     let cache = &state.generation_owners;
     let mut guard = authorized_gate(&cache, state, project_session.as_ref())?;
     let epoch = guard.session().lease_id.clone();
-    let handle = serde_json::to_value(&handle)
+    let handle = serde_json::to_value(&request.handle)
         .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
     let owner = guard.owner();
     state.with_project_db(|conn| read_recovery_context(conn, owner, &epoch, &handle))
@@ -3043,6 +3049,19 @@ pub async fn finalized_character_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_read_context_accepts_contract_wrapper_and_rejects_nested_or_bare_handles() {
+        let handle = json!({"projectId":"合成项目","epoch":"合成租约","rootActionId":"合成根","runId":"合成运行"});
+        let request: GenerationReadContextRequest =
+            serde_json::from_value(json!({"handle":handle})).unwrap();
+        assert_eq!(request.handle.project_id, "合成项目");
+        assert!(serde_json::from_value::<GenerationReadContextRequest>(handle.clone()).is_err());
+        assert!(serde_json::from_value::<GenerationReadContextRequest>(
+            json!({"handle":{"handle":handle}})
+        )
+        .is_err());
+    }
 
     #[test]
     fn assert_planning_action_range_accepts_baseline_domain_test() {
