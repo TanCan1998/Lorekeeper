@@ -40,19 +40,25 @@ pub const CANONICAL_RAW_PROJECT_ASSETS: &[&'static str] = &[
     "chapter_creation_log.json",
 ];
 
-/// 上游 `KNOWN_OMITTED_TOP_LEVEL`：已知会被省略的顶层条目（出现即合法，但不入档）
+/// 已知会被省略的顶层条目（出现即合法，但不入档）。
+///
+/// **本项目口径**（2026-10-16 用户确认「不与基线互通、按本项目方案存储恢复」）：
+/// 清单按 Tauri 实际存储根（`<项目根>/.lore/`）登记 —— 库文件 `lorekeeper.db`（及其 WAL/SHM/journal）、
+/// 项目清单 `project.json`、派生向量索引目录 `kb/`（HNSW 快照，`rebuild-stale`）、
+/// 头像目录 `avatars/`（作为 `avatar-asset` 条目单独入档，此处只声明其顶层合法性）、
+/// 知识副本 `knowledge-copies/`、迁移期文件 `portable-transfer-authority.json` 与
+/// `portable-runtime-freeze.json`，以及运行期目录 `cache` / `logs` / `temp` / `trash`。
+///
+/// 与基线的差异：基线清单以 `project.db` / `lancedb` / `vectors.json` 为名（Electron 存储形态），
+/// 本项目不再列举这些名称（Tauri 项目不会出现），新增 `lorekeeper.db*` 与 `kb`。
 pub const KNOWN_OMITTED_TOP_LEVEL: &[&'static str] = &[
     "avatars",
-    "project.db",
-    "project.db-wal",
-    "project.db-shm",
-    "project.db-journal",
+    "lorekeeper.db",
+    "lorekeeper.db-wal",
+    "lorekeeper.db-shm",
+    "lorekeeper.db-journal",
     "project.json",
-    "lancedb",
-    "embedding-spaces.json",
-    "vectors.json",
-    "vectors.json.migrated",
-    "vectors.json.migration-journal.json",
+    "kb",
     "portable-transfer-authority.json",
     "portable-runtime-freeze.json",
     PORTABLE_KNOWLEDGE_SOURCE_PATH,
@@ -339,7 +345,7 @@ mod tests {
         // 已知省略项：合法但不入档
         std::fs::create_dir_all(storage.join("cache")).unwrap();
         std::fs::write(storage.join("cache").join("junk.bin"), b"x").unwrap();
-        std::fs::write(storage.join("project.db"), b"db").unwrap();
+        std::fs::write(storage.join("lorekeeper.db"), b"db").unwrap();
 
         let files = enumerate_raw_files(&storage).unwrap();
         let paths: Vec<&str> = files
