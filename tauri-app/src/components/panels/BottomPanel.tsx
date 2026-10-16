@@ -1,5 +1,6 @@
 import { CharacterProposalSelectionPanel } from '../characters/CharacterProposalSelectionPanel'
 import { ipc } from '../../services/ipc-client'
+import { APP_BRAND } from '../../shared/brand'
 import { useState, useRef, useEffect, useMemo } from 'react'
 import {
   Trash2, ChevronsDown, Loader2, CheckCircle2, XCircle, Clock,
@@ -626,7 +627,7 @@ function LogsView() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between gap-1 px-2 py-1 flex-shrink-0">
-        <span className="text-[0.68rem] text-[var(--color-text-muted)]">AI Novel Writer v{__APP_VERSION__}</span>
+        <span className="text-[0.68rem] text-[var(--color-text-muted)]">{APP_BRAND.enName} v{__APP_VERSION__}</span>
         <div className="flex items-center gap-1">
           <Button
             variant="ghost" size="icon"

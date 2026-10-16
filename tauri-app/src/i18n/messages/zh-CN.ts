@@ -17,7 +17,7 @@ export const zhCN = {
   'appearance.skinsDescription': '皮肤与颜色主题彼此独立，且不会改变可读性设置。',
   'appearance.theme': '主题',
   'appearance.themeDescription': '选择标题栏和界面控件使用的颜色主题。',
-  'app.windowTitle': 'AI小说作家 — AI Novel Writer',
+  'app.windowTitle': '设定司 — Lorekeeper',
   'common.backup': '备份',
   'common.close': '关闭',
   'common.export': '导出',

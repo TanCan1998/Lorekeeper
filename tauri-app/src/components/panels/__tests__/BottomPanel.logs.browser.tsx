@@ -41,7 +41,7 @@ afterEach(async () => {
 
 describe('workflow logs', () => {
   it('shows the running application version in the log view', () => {
-    expect(container.textContent).toContain(`AI Novel Writer v${__APP_VERSION__}`)
+    expect(container.textContent).toContain(`Lorekeeper v${__APP_VERSION__}`)
   })
 
   it('shows a readable candidate preview and explicit confirmation actions', async () => {

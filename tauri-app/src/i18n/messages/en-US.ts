@@ -15,7 +15,7 @@ export const enUS = {
   'appearance.skinsDescription': 'A skin is independent from the color theme and never changes readability settings.',
   'appearance.theme': 'Theme',
   'appearance.themeDescription': 'Choose the color theme used by the title bar and interface controls.',
-  'app.windowTitle': 'AI Novel Writer',
+  'app.windowTitle': 'Lorekeeper',
   'common.backup': 'Backup',
   'common.close': 'Close',
   'common.export': 'Export',
