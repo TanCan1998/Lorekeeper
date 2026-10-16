@@ -5,9 +5,6 @@ import type { ProjectSessionContext } from '../../shared/ipc-channels'
 import { getActiveProjectSessionContext, setActiveProjectSessionContext } from '../../shared/project-session-context'
 import { installTauriInternals, type TauriInternalsHandle } from '../../../test/helpers/tauri-internals'
 
-const session: ProjectSessionContext = {
-  projectId: 'synthetic-project', leaseId: 'synthetic-lease', projectPath: 'C:/synthetic-project',
-}
 let tauri: TauriInternalsHandle
 let priorSession: ProjectSessionContext | null
 beforeEach(() => {
@@ -22,19 +19,23 @@ afterEach(() => {
 
 // 使用真实适配器而非 ipc mock，证明前端不会把未迁移特殊域送到主进程。
 // 已成为正式迁移面的频道（graph-generation / finalization-generation /
-// finalized-character 读面）不再属于本回归；改用仍未迁移的域：
-// character-avatar 头像域（finalized-character 全五频道已成为正式迁移面）。
+// finalized-character 全五频道 / character-avatar 四频道）不再属于本回归；
+// 改用仍未迁移的 cloud-backup 域（需先确认凭据安全存储与网络策略）。
 const cases = [
-  { channel: 'character-avatar:commit',
-    invoke: () => ipc.invokeWithProjectSession(session, 'character-avatar:commit', 'synthetic-character', 'c3ludGhldGlj') },
-  { channel: 'character-avatar:choose',
-    invoke: () => ipc.invokeWithProjectSession(session, 'character-avatar:choose', 'synthetic-character') },
-  { channel: 'character-avatar:read-batch',
-    invoke: () => ipc.invokeWithProjectSession(session, 'character-avatar:read-batch', ['synthetic-character']) },
+  { channel: 'cloud-backup:connect',
+    invoke: () => ipc.invoke('cloud-backup:connect',
+      { endpoint: 'https://example.invalid', username: 'synthetic', secret: 'synthetic' }) },
+  { channel: 'cloud-backup:list',
+    invoke: () => ipc.invoke('cloud-backup:list',
+      { localEndpointAccountId: 'synthetic', cloudBookId: 'synthetic' }) },
+  { channel: 'cloud-backup:restore-copy',
+    invoke: () => ipc.invoke('cloud-backup:restore-copy',
+      { localEndpointAccountId: 'synthetic', cloudBookId: 'synthetic', operationId: 'synthetic',
+        generationId: 'synthetic', targetGrantId: 'synthetic' }) },
 ] as const
 
 describe('未开放特殊域的 Tauri 传输边界', () => {
-  it.each(cases)('$channel 即使提供冻结会话也在传输前拒绝', async ({ channel, invoke }) => {
+  it.each(cases)('$channel 在传输前被拒绝', async ({ channel, invoke }) => {
     expect(MIGRATED_CHANNELS.has(channel)).toBe(false)
     await expect(invoke()).rejects.toThrow(new RegExp(`频道 ${channel} 尚未迁移`))
     expect(tauri.invoke).not.toHaveBeenCalled()

@@ -353,6 +353,11 @@ pub fn run() {
             commands::character_proposal_approve,
             commands::character_proposal_cancel,
             commands::character_identity_read,
+            // 批次 B110：角色头像（character-avatar:* 4 频道）
+            commands::character_avatar_choose,
+            commands::character_avatar_commit,
+            commands::character_avatar_read_batch,
+            commands::character_avatar_remove,
             // 批次 G4-10c：agent 生成（agent-generation:* 8 频道）
             commands::agent_generation_begin,
             commands::agent_generation_read,

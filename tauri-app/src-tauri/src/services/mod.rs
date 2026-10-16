@@ -8,6 +8,7 @@
 //! 约定：纯逻辑、无 Tauri 依赖，由 commands 层按需调用。
 
 pub mod avatar_image;
+pub mod character_asset_service; // 批次 B110：头像资产读写与孤儿登记
 pub mod character_proposal;
 pub mod character_proposal_parser;
 pub mod draft_reconciliation;

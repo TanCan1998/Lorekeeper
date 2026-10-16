@@ -205,6 +205,12 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   // 无参频道（select-project-archive / select-legacy-project）无需登记。
   'dialog:select-project-archive-export': ['suggestedName'],
   'dialog:select-project-restore-target': ['suggestedName'],
+  // 批次 B110：角色头像（项目域，自动注入 projectSession）
+  // 注：返回契约判别联合 `{ success, cancelled?/image?/avatars?/error? }`。
+  'character-avatar:choose': ['characterId'],
+  'character-avatar:commit': ['characterId', 'base64'],
+  'character-avatar:read-batch': ['characterIds'],
+  'character-avatar:remove': ['characterId'],
   'db:import-run-author-preview': ['inspectionId', 'expectedProjectPath'],
   // 批次 G2a：导入运行读面（3 频道）
   'db:import-run-get': ['runId', 'expectedProjectPath'],

@@ -209,6 +209,46 @@ INSERT OR IGNORE INTO character_identity_meta(id, revision, legacy_count) VALUES
 "#;
 
 /// contents —— 文本内容池（正文与元数据分离）
+/// 批次 B110：角色头像资产（m05 两表 + 索引 + 「删除角色时保留资产」触发器）。
+///
+/// 平移自 `electron/migrations/m05-character-assets.ts` 的 `M05_CHARACTER_ASSET_SQL`：
+/// 列集、CHECK 约束、索引与触发器语义逐字对齐；仅为幂等改为 `IF NOT EXISTS`
+/// （Tauri 侧 `create_tables` 在每次打开项目时执行）。
+pub const CREATE_CHARACTER_AVATAR_ASSETS: &str = r#"
+CREATE TABLE IF NOT EXISTS character_avatar_assets (
+  character_id TEXT PRIMARY KEY REFERENCES characters(character_id) ON DELETE CASCADE,
+  asset_revision INTEGER NOT NULL CHECK(asset_revision > 0),
+  relative_path TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+  mime TEXT NOT NULL CHECK(mime IN ('image/png','image/jpeg','image/webp')),
+  byte_size INTEGER NOT NULL CHECK(byte_size > 0),
+  source_reference TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS character_avatar_unresolved (
+  record_id TEXT PRIMARY KEY,
+  disposition TEXT NOT NULL CHECK(disposition IN ('orphan','ambiguous','unknown-fork','reference-only')),
+  source_reference TEXT NOT NULL,
+  source_relative_path TEXT NOT NULL,
+  preserved_relative_path TEXT UNIQUE CHECK(CASE WHEN disposition = 'reference-only' THEN preserved_relative_path IS NULL ELSE preserved_relative_path IS NOT NULL END),
+  content_hash TEXT CHECK(CASE WHEN disposition = 'reference-only' THEN content_hash IS NULL ELSE content_hash IS NOT NULL AND length(content_hash) = 64 END),
+  mime TEXT CHECK(CASE WHEN disposition = 'reference-only' THEN mime IS NULL ELSE mime IS NOT NULL AND mime IN ('image/png','image/jpeg','image/webp','application/octet-stream') END),
+  byte_size INTEGER CHECK(CASE WHEN disposition = 'reference-only' THEN byte_size IS NULL ELSE byte_size IS NOT NULL AND byte_size > 0 END),
+  candidate_character_ids_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_character_avatar_revision ON character_avatar_assets(asset_revision);
+CREATE TRIGGER IF NOT EXISTS retain_character_avatar_on_delete BEFORE DELETE ON characters
+WHEN EXISTS(SELECT 1 FROM character_avatar_assets WHERE character_id=OLD.character_id)
+BEGIN
+ INSERT OR IGNORE INTO character_avatar_unresolved(
+  record_id,disposition,source_reference,source_relative_path,preserved_relative_path,
+  content_hash,mime,byte_size,candidate_character_ids_json
+ ) SELECT 'character-delete:' || OLD.character_id || ':' || asset_revision,
+  'orphan','character-delete:' || OLD.character_id,relative_path,relative_path,
+  content_hash,mime,byte_size,json_array(OLD.character_id)
+ FROM character_avatar_assets WHERE character_id=OLD.character_id;
+END;
+"#;
+
 pub const CREATE_CONTENTS: &str = r#"
 CREATE TABLE IF NOT EXISTS contents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -916,6 +956,8 @@ pub fn create_tables(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(CREATE_CHARACTERS)?;
     // 批次 B1-W2：角色身份域（m02 六表，外键依赖 characters）
     conn.execute_batch(CREATE_CHARACTER_IDENTITY)?;
+    // 批次 B110：角色头像资产（外键引用 characters，故在其后建表）
+    conn.execute_batch(CREATE_CHARACTER_AVATAR_ASSETS)?;
     conn.execute_batch(CREATE_CONTENTS)?;
     conn.execute_batch(CREATE_DRAFTS)?;
     conn.execute_batch(CREATE_REVISIONS)?;
