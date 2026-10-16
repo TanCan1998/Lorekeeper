@@ -603,3 +603,6 @@ mod mixed_tests;
 
 #[path = "review_revision_finding_tests.rs"]
 mod finding_tests;
+
+#[path = "review_revision_effect_tests.rs"]
+mod effect_tests;

@@ -2156,7 +2156,22 @@ fn exact_schema(conn: &Connection, table: &str, columns: &[&str], fragments: &[&
         .all(|fragment| compact.contains(&fragment.replace(' ', "").to_lowercase()))
 }
 
-/// 从冻结上下文、回执与可见产物验证初审效果；仅接受一个匹配的 attempt。
+/// 效果身份属于业务行，不属于root；跨root复制收据同样必须拒绝。
+fn has_unique_effect_claim(conn: &Connection, kind: &str, id: i64) -> bool {
+    matches!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM generation_attempts
+         WHERE json_extract(usage_receipt_json,'$.reviewRevisionEffect.kind')=?1
+           AND json_type(usage_receipt_json,'$.reviewRevisionEffect.id')='integer'
+           AND json_extract(usage_receipt_json,'$.reviewRevisionEffect.id')=?2",
+            rusqlite::params![kind, id],
+            |r| r.get::<_, i64>(0),
+        ),
+        Ok(1)
+    )
+}
+
+/// 从冻结上下文、回执与可见产物验证初审效果；仅接受一个匹配的attempt。
 fn prove_review_effect(
     conn: &Connection,
     cycle: &CycleVerifyRow,
@@ -2164,6 +2179,9 @@ fn prove_review_effect(
     source: &crate::draft_source_guard::ExpectedDraftSource,
     review_body: &str,
 ) -> bool {
+    if !has_unique_effect_claim(conn, "review", cycle.review_id) {
+        return false;
+    }
     let mut stmt = match conn.prepare("SELECT a.attempt_id,a.run_id,a.root_action_id,a.attempt_json,a.usage_receipt_json,
         r.root_action_id,r.binding_json FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id
         WHERE a.root_action_id=?1 ORDER BY a.rowid") { Ok(stmt) => stmt, Err(_) => return false };
@@ -2451,6 +2469,9 @@ fn prove_revision_effect(
     revision_body: &str,
     attempts: &[(String, String, String, String, String, String, String)],
 ) -> bool {
+    if !has_unique_effect_claim(conn, "revision", revision_id) {
+        return false;
+    }
     let mut matched = 0usize;
     for (attempt_id, run_id, root_id, attempt_json, usage_json, run_root, binding_json) in attempts
     {
@@ -3333,7 +3354,11 @@ fn verify_cycle_row(cycle: &CycleVerifyRow, conn: &Connection) -> bool {
         Some(Value::Object(map)) => map,
         _ => return false,
     };
-    if !is_nonempty_string(action.get("projectId")) || !is_nonempty_string(action.get("epoch")) {
+    if !is_nonempty_string(action.get("projectId"))
+        || !is_nonempty_string(action.get("epoch"))
+        || action.get("rootActionId").and_then(Value::as_str) != Some(cycle.root_action_id.as_str())
+        || action.get("operation").and_then(Value::as_str) != Some("review-chapter")
+    {
         return false;
     }
     let Some(source_content_value) = source_content.as_ref() else {

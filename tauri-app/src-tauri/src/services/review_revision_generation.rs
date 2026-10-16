@@ -1619,6 +1619,8 @@ pub(crate) fn rebuild_review_report_hash(
         if persisted_recheck_version.is_some() {
             return None;
         }
+        // 历史产物不可信；先验证解析合同，避免重建器的内部expect把拒绝变成panic。
+        parse_review_generation_result(artifact_text, report_version).ok()?;
         let report = build_review_generation_report(&BuildReviewGenerationReportInput {
             content: artifact_text.to_string(),
             source_content: context.source.content.clone(),
