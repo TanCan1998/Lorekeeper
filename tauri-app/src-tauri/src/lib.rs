@@ -167,6 +167,8 @@ pub fn run() {
             commands::dialog_select_project_archive,
             commands::dialog_select_project_restore_target,
             commands::dialog_select_legacy_project,
+            // 批次 B112b-3：便携归档导出（project:archive-export）
+            commands::project_archive_export,
             // 批次 B：外部文件授权（骨架：等 tauri-plugin-dialog）
             commands::fs_grant_read_file,
             commands::fs_grant_write_file,

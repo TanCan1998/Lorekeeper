@@ -249,6 +249,7 @@ export const MIGRATED_CHANNELS: ReadonlySet<string> = new Set([
   'mcp:load-config',
   'model-provider-resource:open',
   'official-homepage:open',
+  'project:archive-export',
   'project:create',
   'project:delete',
   'project:get-runtime-context',

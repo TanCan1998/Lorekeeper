@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::project::file_path_to_string;
@@ -283,6 +283,144 @@ pub async fn dialog_select_project_restore_target(
     }))
 }
 
+// ===== project:archive-export =====
+
+/// 便携归档错误码全集（对齐基线 `PORTABLE_ERROR_CODES`）：
+/// 只有集合内的码才进 `errorCode`，其余折叠为仅带 `error` 文本的失败信封。
+const PORTABLE_ERROR_CODES: &[&'static str] = &[
+    "PORTABLE_ARCHIVE_INVALID",
+    "PORTABLE_ARCHIVE_LIMIT_EXCEEDED",
+    "PORTABLE_ARCHIVE_SOURCE_CHANGED",
+    "PORTABLE_ARCHIVE_SOURCE_UNSAFE",
+    "PORTABLE_ARCHIVE_PUBLISH_UNSUPPORTED",
+    "PORTABLE_ARCHIVE_TARGET_EXISTS",
+    "PORTABLE_ASSET_MISSING",
+    "PORTABLE_ASSET_UNSAFE",
+    "PORTABLE_CONTEXT_INVALID",
+    "PORTABLE_GRANT_INVALID",
+    "PORTABLE_SCHEMA_UNSUPPORTED",
+    "PORTABLE_SOURCE_CHANGED",
+    "PORTABLE_TARGET_INSIDE_SOURCE",
+    "PORTABLE_UNSAFE_PROJECTION",
+    "PORTABLE_RESTORE_CANCELLED",
+    "PORTABLE_RESTORE_INVALID",
+    "PORTABLE_RESTORE_TARGET_EXISTS",
+    "PORTABLE_RESTORE_UNSAFE_TARGET",
+];
+
+/// 契约 `PortableProjectExportRequest`
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableProjectExportRequest {
+    /// `dialog:select-project-archive-export` 签发的 `create` 授权（渲染进程不携带路径）
+    pub target_archive_grant_id: String,
+    pub project_session: crate::security::ProjectSessionContext,
+}
+
+/// 契约联合 `{ success: true; receipt } | PortableProjectOperationFailure`
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum PortableProjectExportResponse {
+    Success {
+        success: bool,
+        receipt: crate::services::portable_project_export::ExportPortableProjectReceipt,
+    },
+    Failure {
+        success: bool,
+        error: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
+    },
+}
+
+/// 基线 `failure(error)`：错误码只在集合内时上报，其余折叠为纯文本失败。
+fn portable_failure(error: String) -> PortableProjectExportResponse {
+    let error_code = if PORTABLE_ERROR_CODES.contains(&error.as_str()) {
+        Some(error)
+    } else {
+        None
+    };
+    PortableProjectExportResponse::Failure {
+        success: false,
+        error: error_code
+            .clone()
+            .unwrap_or_else(|| "便携归档操作失败".to_string()),
+        error_code,
+    }
+}
+
+/// 基线 `resolveGrantedPath(grants, event, grantId, operation)`：
+/// 无授权 / 范围不符 / 过期 / 已消费一律折叠为 `PORTABLE_GRANT_INVALID`（不含路径）。
+fn resolve_granted_path(
+    state: &AppState,
+    grant_id: &str,
+    operation: GrantOperation,
+) -> Result<std::path::PathBuf, String> {
+    if grant_id.is_empty() {
+        return Err("PORTABLE_GRANT_INVALID".to_string());
+    }
+    let mut registry = state
+        .external_grants
+        .lock()
+        .map_err(|_| GRANT_REGISTRY_POISONED.to_string())?;
+    registry
+        .resolve_exact_path(grant_id, operation)
+        .map_err(|_| "PORTABLE_GRANT_INVALID".to_string())
+}
+
+/// `project:archive-export` —— 把当前项目导出为便携归档（`.ainovel`）。
+///
+/// 迁移自 `electron/controllers/project-archive-controller.ts` 的同名频道：
+/// 目标位置只以 `dialog:select-project-archive-export` 签发的一次性 `create` 授权表达，
+/// 由主进程解析成路径（渲染进程从不携带路径）；会话租约在此完成校验。
+#[tauri::command]
+pub fn project_archive_export(
+    state: State<'_, AppState>,
+    request: PortableProjectExportRequest,
+) -> Result<PortableProjectExportResponse, String> {
+    let state = state.inner();
+    let active = state.active_project_snapshot();
+    if crate::security::assert_current_project_context(&request.project_session, active.as_ref())
+        .is_err()
+    {
+        return Ok(portable_failure("PORTABLE_CONTEXT_INVALID".to_string()));
+    }
+    let Some(active) = active else {
+        return Ok(portable_failure("PORTABLE_CONTEXT_INVALID".to_string()));
+    };
+    let target = match resolve_granted_path(
+        state,
+        &request.target_archive_grant_id,
+        GrantOperation::Create,
+    ) {
+        Ok(path) => path,
+        Err(error) => return Ok(portable_failure(error)),
+    };
+    let attempt_parent = match target.parent() {
+        Some(parent) => parent.to_path_buf(),
+        None => return Ok(portable_failure("PORTABLE_ARCHIVE_INVALID".to_string())),
+    };
+    let created_at = crate::commands::project::iso8601_utc_from_millis(
+        crate::commands::project::epoch_millis_now(),
+    );
+    match crate::services::portable_project_export::export_portable_project(
+        &crate::services::portable_project_export::ExportPortableProjectInput {
+            source_project_root: std::path::Path::new(&active.root_path),
+            origin_project_id: &active.project_id,
+            target_archive_path: &target,
+            attempt_parent_path: &attempt_parent,
+            snapshot_generation: None,
+            created_at: &created_at,
+            limits: None,
+        },
+    ) {
+        Ok(receipt) => Ok(PortableProjectExportResponse::Success {
+            success: true,
+            receipt,
+        }),
+        Err(error) => Ok(portable_failure(error)),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +508,82 @@ mod tests {
             .unwrap();
         assert_eq!(resolved, std::fs::canonicalize(&dir).unwrap().join(&name));
         assert!(!resolved.exists(), "授权只固定目标名，不预先创建它");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn portable_failure_reports_only_contract_codes_test() {
+        let known = portable_failure("PORTABLE_ARCHIVE_TARGET_EXISTS".to_string());
+        match known {
+            PortableProjectExportResponse::Failure {
+                success,
+                error,
+                error_code,
+            } => {
+                assert!(!success);
+                assert_eq!(error, "PORTABLE_ARCHIVE_TARGET_EXISTS");
+                assert_eq!(
+                    error_code.as_deref(),
+                    Some("PORTABLE_ARCHIVE_TARGET_EXISTS")
+                );
+            }
+            other => panic!("应为失败信封：{other:?}"),
+        }
+        // 集合外的内部码折叠为纯文本失败（不把内部码泄漏到契约面）
+        match portable_failure("PORTABLE_MANIFEST_INVALID".to_string()) {
+            PortableProjectExportResponse::Failure {
+                error, error_code, ..
+            } => {
+                assert!(error_code.is_none(), "集合外错误码不得上报");
+                assert_eq!(error, "便携归档操作失败");
+            }
+            other => panic!("应为失败信封：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_granted_path_rejects_missing_grant_test() {
+        // 空授权 id 一律折叠为 PORTABLE_GRANT_INVALID（不含路径）
+        let state = AppState::new();
+        assert_eq!(
+            resolve_granted_path(&state, "", GrantOperation::Create).unwrap_err(),
+            "PORTABLE_GRANT_INVALID"
+        );
+        assert_eq!(
+            resolve_granted_path(&state, "no-such-grant", GrantOperation::Create).unwrap_err(),
+            "PORTABLE_GRANT_INVALID"
+        );
+    }
+
+    #[test]
+    fn resolve_granted_path_consumes_create_grant_once_test() {
+        let dir = temp_dir("export-grant");
+        let target = dir.join("book.ainovel");
+        let state = AppState::new();
+        let grant_id = {
+            let mut registry = state.external_grants.lock().unwrap();
+            registry
+                .issue_new_child(
+                    &dir,
+                    "book.ainovel",
+                    vec![GrantOperation::Create],
+                    ARCHIVE_GRANT_TTL,
+                    Some(1),
+                )
+                .unwrap()
+        };
+        let resolved = resolve_granted_path(&state, &grant_id, GrantOperation::Create).unwrap();
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(&dir).unwrap().join("book.ainovel"),
+            "授权只解析出目标路径，不预先创建它"
+        );
+        assert!(!target.exists());
+        // 一次性授权再取即失败（对齐基线 maxUses: 1 的消费语义）
+        assert_eq!(
+            resolve_granted_path(&state, &grant_id, GrantOperation::Create).unwrap_err(),
+            "PORTABLE_GRANT_INVALID"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
