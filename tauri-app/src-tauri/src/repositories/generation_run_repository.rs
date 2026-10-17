@@ -2044,6 +2044,21 @@ fn default_is_frozen(_table: GenerationFreezeTable, _record_id: &str) -> bool {
     false
 }
 
+/// 便携脱敏绑定占位判定（列表读面专用）。
+///
+/// 只承认「没有可证明身份」的两种形态：空白串（本项目便携口径的中和值），以及解析
+/// 后是 JSON 对象但缺字符串 `projectId`（基线中和为 `{}` 的等价形态）。保留
+/// `projectId` 的畸形值**不算**脱敏历史——那是真实损坏，必须继续报错。
+fn is_redacted_run_binding(binding_json: &str) -> bool {
+    if binding_json.trim().is_empty() {
+        return true;
+    }
+    parse_json::<Value>(binding_json)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|object| !matches!(object.get("projectId"), Some(Value::String(_))))
+}
+
 /// 事务包装（基线 `db.transaction(fn).immediate()` 的等价物；
 /// 失败时 `Transaction` drop 即回滚，与基线语义一致）。
 fn in_transaction<T>(
@@ -2096,6 +2111,63 @@ impl GenerationRunRepository {
             binding,
             status,
         })
+    }
+
+    /// 列表读面的绑定解码（对齐基线 `list()` 的宽松语义）。
+    ///
+    /// 基线 `list()` 把 `binding_json` 交给 `JSON.parse` 后按
+    /// `binding.projectId === deps.projectId` 过滤：便携脱敏后的中和绑定
+    /// （基线中和为 `{}`）因缺 `projectId` **逐行被过滤掉**，列表本身仍然成功。
+    /// 本项目便携口径把 R 列中和为**空串**，严格解码必然失败——若照旧抛出，整份
+    /// 历史列表会一起失败（2026-10-17 隔离 GUI 实测 `GENERATION_REQUEST_FAILED`）。
+    ///
+    /// 因此这里逐行区分：
+    /// - 完整可解码且属于当前项目 → `Some(run)`；
+    /// - 中和占位（空白串、或解析为对象但无字符串 `projectId`）或其他项目的绑定
+    ///   → `None`：脱敏历史只读、不可列举、不可继续，也**不伪造身份**；
+    /// - 其余（保留 `projectId` 却解码失败、非 JSON 坏值）→ `Err`：
+    ///   fail-closed，不把真实损坏静默隐藏成脱敏历史。
+    pub fn read_listable_run(
+        &self,
+        conn: &Connection,
+        run_id: &str,
+        project_id: &str,
+    ) -> Result<Option<DurableGenerationRun>, String> {
+        let (root_action_id, binding_json, status) = conn
+            .query_row(
+                "SELECT root_action_id,binding_json,status FROM generation_runs WHERE run_id=?",
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| GENERATION_RUN_MISSING.to_string())?;
+        match parse_json::<RunBinding>(&binding_json) {
+            Ok(mut binding) => {
+                binding.extra.remove("$runEffects");
+                if binding.project_id != project_id {
+                    return Ok(None);
+                }
+                Ok(Some(DurableGenerationRun {
+                    run_id: run_id.to_string(),
+                    root_action_id,
+                    binding,
+                    status,
+                }))
+            }
+            Err(error) => {
+                if is_redacted_run_binding(&binding_json) {
+                    return Ok(None);
+                }
+                Err(error)
+            }
+        }
     }
 
     fn author_edited_root(&self, conn: &Connection, root_id: &str) -> Result<bool, String> {
@@ -2802,6 +2874,20 @@ impl GenerationRunRepository {
             .optional()
             .map_err(|error| error.to_string())?;
         if let Some(existing_run_id) = existing {
+            // 便携脱敏历史的中和绑定没有可比较的身份：无法证明「同一请求」，因此既
+            // 不复用该运行也不再执行。基线把中和后的 `{}` 绑定视为不相等并报
+            // `GENERATION_NONCE_CONFLICT`；这里对齐同一结果，并在写入门禁解码之前
+            // 判定，避免泄漏底层 JSON 解析错误。
+            let existing_binding: String = tx
+                .query_row(
+                    "SELECT binding_json FROM generation_runs WHERE run_id=?",
+                    [existing_run_id.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if is_redacted_run_binding(&existing_binding) {
+                return Err(GENERATION_NONCE_CONFLICT.to_string());
+            }
             self.assert_plot_outline_writable(tx, &existing_run_id)?;
             let prior = self.get(tx, &existing_run_id)?;
             if !values_equal(&prior.binding.source_manifest, &frozen.source_manifest)
@@ -3726,6 +3812,11 @@ impl GenerationRunRepository {
         let rows = self.query_usage_receipts(conn, None)?;
         let mut result = Vec::new();
         for (run_id, usage_receipt_json) in rows {
+            // 便携脱敏历史：中和（或基线 `NULL`）的执行收据没有目录进度，跳过该行；
+            // 非空坏值仍在下面严格报错，不静默隐藏真实损坏。
+            if usage_receipt_json.trim().is_empty() {
+                continue;
+            }
             let stored_value: Value = parse_json(&usage_receipt_json)?;
             let Some(stored) = stored_value
                 .get("directoryProgress")
@@ -3845,8 +3936,14 @@ impl GenerationRunRepository {
             None => "SELECT run_id,usage_receipt_json FROM generation_attempts ORDER BY rowid",
         };
         let mut stmt = conn.prepare(sql).map_err(|error| error.to_string())?;
-        let read_receipt_row =
-            |row: &rusqlite::Row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?));
+        let read_receipt_row = |row: &rusqlite::Row| {
+            // 基线中和把执行收据写成 `NULL`，本项目便携口径写成空串：两者都按
+            // 「没有收据」读取，交给调用方决定是否跳过，而不是在列类型上失败。
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
+        };
         let rows = match run_id {
             Some(run_id) => stmt.query_map([run_id], read_receipt_row),
             None => stmt.query_map([], read_receipt_row),

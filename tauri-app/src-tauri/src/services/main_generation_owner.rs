@@ -1180,6 +1180,10 @@ impl MainGenerationOwner {
     /// 基线 `list()`（main-generation-owner.ts:292-296）：`generation:list`
     /// 频道——按创建时间倒序（`created_at_ms DESC, rowid DESC`）列出当前
     /// 项目的全部运行视图。
+    ///
+    /// 便携恢复副本的运行绑定可能已被脱敏中和：这类行按基线 `projectId` 过滤语义
+    /// 逐行跳过（见 `GenerationRunRepository::read_listable_run`），既不进入可继续
+    /// 列表，也不会让整个列表失败；只有**当前项目**的坏绑定才报错。
     pub fn list(&self, conn: &Connection) -> Result<Value, String> {
         self.assert_current()?;
         let mut statement = conn
@@ -1192,11 +1196,14 @@ impl MainGenerationOwner {
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
         let views: Vec<Value> = run_ids
             .iter()
-            .map(|run_id| self.repository.get(conn, run_id))
+            .map(|run_id| {
+                self.repository
+                    .read_listable_run(conn, run_id, &self.session.project_id)
+            })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| mutating_error(map_generation_error(&error)))?
             .into_iter()
-            .filter(|run| run.binding.project_id == self.session.project_id)
+            .flatten()
             .map(|run| self.view_of(conn, &run))
             .collect::<Result<_, _>>()?;
         Ok(Value::Array(views))
@@ -12514,7 +12521,172 @@ data: [DONE]
     fn handle_of_run(run: &DurableGenerationRun) -> Value {
         handle_of(run)
     }
+    #[test]
+    fn list_skips_portable_redacted_history_and_keeps_current_project_runs() {
+        use crate::services::portable_project_sanitize::{
+            sanitize_portable_database, SanitizePortableDatabaseInput,
+        };
+        let root = std::env::temp_dir().join(format!(
+            "lorekeeper-owner-list-{}",
+            crate::project_access::random_uuid_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let source = root.join("source.db");
+        let target = root.join("portable.db");
+        {
+            let conn = Connection::open(&source).expect("source db");
+            crate::db::schema::create_tables(&conn).expect("schema");
+            open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("run");
+            open_run(&conn, "project-1", "lease-1", "review-chapter").expect("run");
+        }
+        // 上游入口自己完成 `VACUUM INTO` 复制 + 逐列脱敏；目标不得已存在。
+        sanitize_portable_database(&SanitizePortableDatabaseInput {
+            source_database_path: &source,
+            target_database_path: &target,
+            limits: None,
+        })
+        .expect("sanitize portable database");
+        let restored = Connection::open(&target).expect("portable db");
+        let neutralized: Vec<String> = restored
+            .prepare("SELECT binding_json FROM generation_runs ORDER BY rowid")
+            .expect("select bindings")
+            .query_map([], |row| row.get(0))
+            .expect("query bindings")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect bindings");
+        assert_eq!(
+            neutralized,
+            vec![String::new(), String::new()],
+            "便携口径把 R 列中和成空串"
+        );
+        let (redacted_run_id, redacted_root_id): (String, String) = restored
+            .query_row(
+                "SELECT run_id,root_action_id FROM generation_runs ORDER BY rowid LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("redacted identity");
 
+        let owner = owner_with(&restored);
+        // 脱敏历史不进入可继续列表，也不得让整份列表失败
+        // （2026-10-17 隔离 GUI 曾在恢复副本上收到 GENERATION_REQUEST_FAILED）。
+        assert_eq!(owner.list(&restored).expect("list redacted"), json!([]));
+        // 脱敏运行也不可按句柄寻址：只读历史没有被证明的可继续身份。
+        let redacted_handle = json!({
+            "projectId": "project-1",
+            "epoch": "lease-1",
+            "rootActionId": redacted_root_id,
+            "runId": redacted_run_id,
+        });
+        let error = owner
+            .read_run(&restored, &redacted_handle)
+            .expect_err("脱敏运行不可寻址");
+        assert_eq!(error, mutating_error(GENERATION_REQUEST_FAILED));
+        // 同一身份的请求不能被复用或重放：脱敏绑定无法证明「同一请求」，
+        // 按基线语义报 `GENERATION_NONCE_CONFLICT`，而不是泄漏 JSON 解析错误。
+        let conflict = open_run(&restored, "project-1", "lease-1", "chapter-draft")
+            .expect_err("脱敏历史不得复用");
+        assert_eq!(
+            conflict, "GENERATION_NONCE_CONFLICT",
+            "实际错误：{conflict}"
+        );
+        // 恢复后的新身份仍可列出：脱敏历史不等于整库只读。
+        let fresh =
+            open_run(&restored, "project-1", "lease-2", "editor-inline").expect("fresh run");
+        let listed = owner.list(&restored).expect("list fresh");
+        let listed = listed.as_array().expect("view array");
+        assert_eq!(listed.len(), 1, "只列出可解码的当前项目运行");
+        assert_eq!(listed[0]["handle"]["runId"], json!(fresh.run_id.clone()));
+        assert_eq!(listed[0]["handle"]["epoch"], json!("lease-2".to_string()));
+        assert_eq!(listed[0]["status"], json!("running"));
+
+        assert_eq!(
+            restored
+                .query_row("SELECT COUNT(*) FROM generation_runs", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("run count"),
+            3,
+            "拒绝复用/重放脱敏历史，只新增一条新身份运行"
+        );
+        assert_eq!(draft_count(&restored), 0, "只读历史不得产生草稿效果");
+        drop(restored);
+        std::fs::remove_dir_all(root).expect("cleanup temp root");
+    }
+
+    #[test]
+    fn list_fails_closed_on_corrupt_bindings_and_skips_foreign_or_placeholder_bindings() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("own run");
+        open_run(&conn, "project-2", "lease-9", "chapter-draft").expect("foreign run");
+        let owner = owner_with(&conn);
+        assert_eq!(
+            owner
+                .list(&conn)
+                .expect("list")
+                .as_array()
+                .expect("array")
+                .len(),
+            1,
+            "外域项目的运行不列出（基线 projectId 过滤语义）"
+        );
+        // 保留 projectId 的畸形值与非 JSON 坏值都是真实损坏：不能静默隐藏成脱敏历史。
+        for corrupt in [
+            "{\"projectId\":\"project-1\"",
+            "{\"projectId\":\"project-1\"}",
+            "not-json-at-all",
+        ] {
+            conn.execute(
+                "UPDATE generation_runs SET binding_json=?1 WHERE run_id=?2",
+                [corrupt, run.run_id.as_str()],
+            )
+            .expect("corrupt binding");
+            let error = owner.list(&conn).expect_err("坏绑定必须失败");
+            assert_eq!(error, mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        // 本项目中和值（空串/空白）与基线中和形态（`{}`）一样按脱敏历史跳过。
+        for neutralized in ["{}", "", "   "] {
+            conn.execute(
+                "UPDATE generation_runs SET binding_json=?1 WHERE run_id=?2",
+                [neutralized, run.run_id.as_str()],
+            )
+            .expect("neutralized binding");
+            assert_eq!(owner.list(&conn).expect("list redacted"), json!([]));
+        }
+    }
+
+    #[test]
+    fn directory_progress_skips_portable_neutralized_receipts_and_rejects_corrupt_values() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::db::schema::create_tables(&conn).expect("schema");
+        let run = open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("run");
+        conn.execute(
+            "INSERT INTO generation_attempts VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                "attempt-1",
+                "reservation-1",
+                run.run_id,
+                run.root_action_id,
+                "{}",
+                "",
+                "nonce-1"
+            ],
+        )
+        .expect("attempt");
+        let repository = GenerationRunRepository::default();
+        // 中和（或基线 NULL）的执行收据没有目录进度：跳过该行，而不是让整份清单失败。
+        assert!(repository
+            .list_directory_progress(&conn)
+            .expect("progress")
+            .is_empty());
+        // 非空坏值仍然 fail-closed。
+        conn.execute(
+            "UPDATE generation_attempts SET usage_receipt_json='not-json' WHERE attempt_id='attempt-1'",
+            [],
+        )
+        .expect("corrupt receipt");
+        assert!(repository.list_directory_progress(&conn).is_err());
+    }
     #[test]
     fn read_run_returns_view_with_handle_and_ledger() {
         let conn = Connection::open_in_memory().expect("memory db");
