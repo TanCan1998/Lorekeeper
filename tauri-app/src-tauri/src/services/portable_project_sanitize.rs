@@ -604,6 +604,96 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_recovery_candidate_keeps_visible_integrity_without_replaying_source_test() {
+        use crate::repositories::{
+            blueprint_repository as blueprints, recovery_candidate_repository as recovery,
+        };
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_runtime_freeze,
+        };
+
+        for corrupt_visible_text in [false, true] {
+            let (base, source, target) = temp_paths("recovery-read");
+            seed(&source);
+            let id;
+            {
+                let conn = Connection::open(&source).unwrap();
+                let blueprint = serde_json::from_value(serde_json::json!({
+                    "chapterNumber": 1, "title": "合成章"
+                }))
+                .unwrap();
+                blueprints::upsert(&conn, &blueprint).unwrap();
+                let request = serde_json::from_value(serde_json::json!({
+                    "runId": "recovery-run", "stepId": "recovery-step", "chapterNumber": 1,
+                    "source": {"chapterNumber": 1, "title": "合成章"},
+                    "visibleText": "合成可见片段", "failureCode": "TIMEOUT"
+                }))
+                .unwrap();
+                let candidate = recovery::record(&conn, "source-project", &request).unwrap();
+                assert!(candidate.source_current);
+                id = candidate.candidate_id;
+            }
+            sanitize_portable_database(&SanitizePortableDatabaseInput {
+                source_database_path: &source,
+                target_database_path: &target,
+                limits: None,
+            })
+            .unwrap();
+            let conn = Connection::open(&target).unwrap();
+            // 中和的源快照只有在已验证的便携冻结上下文中才能只读展示。
+            assert!(recovery::list_pending(&conn).is_err());
+            if corrupt_visible_text {
+                conn.execute(
+                    "UPDATE recovery_candidates SET visible_text='已篡改片段'",
+                    [],
+                )
+                .unwrap();
+            }
+            let document = portable_project_history::freeze_document(
+                &conn,
+                "123e4567-e89b-12d3-a456-426614174000",
+                "gen-recovery-read",
+            )
+            .unwrap();
+            let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+                &serde_json::to_vec(&document).unwrap(),
+            )
+            .unwrap();
+            portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+            if corrupt_visible_text {
+                assert_eq!(
+                    recovery::list_pending(&conn).unwrap_err(),
+                    "恢复候选完整性校验失败"
+                );
+            } else {
+                let history = recovery::list_pending(&conn).unwrap();
+                assert_eq!(history.len(), 1);
+                assert_eq!(history[0].candidate_id, id);
+                assert_eq!(history[0].visible_text, "合成可见片段");
+                assert_eq!(
+                    history[0].content_hash,
+                    recovery::sha256_hex("合成可见片段")
+                );
+                assert!(history[0].source_hash.is_empty());
+                assert!(!history[0].source_current);
+                assert!(conn
+                    .execute("UPDATE recovery_candidates SET status='continued'", [])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("PORTABLE_RUNTIME_FROZEN"));
+            }
+            let source_conn = Connection::open(&source).unwrap();
+            let current = recovery::list_pending(&source_conn).unwrap();
+            assert!(current[0].source_current);
+            assert!(!current[0].source_hash.is_empty());
+            assert_eq!(current[0].visible_text, "合成可见片段");
+            drop(source_conn);
+            drop(conn);
+            std::fs::remove_dir_all(base).unwrap();
+        }
+    }
+
+    #[test]
     fn sanitize_rejects_unsafe_relative_value_and_existing_target_test() {
         let (base, source, target) = temp_paths("reject");
         seed(&source);

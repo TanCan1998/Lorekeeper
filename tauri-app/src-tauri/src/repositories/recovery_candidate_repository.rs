@@ -253,8 +253,9 @@ fn source_is_current(conn: &Connection, row: &CandidateRow) -> Result<bool, Stri
 }
 
 /// 对齐基线 `toCandidate`：读取时强制完整性校验（快照 / 正文哈希逐字节比对）
-fn to_candidate(row: &CandidateRow) -> Result<RecoveryCandidate, String> {
-    if sha256_hex(&row.source_snapshot) != row.source_hash
+fn to_candidate(row: &CandidateRow, frozen: bool) -> Result<RecoveryCandidate, String> {
+    // 冻结历史的源快照已脱敏，不再声称源时效；可见正文仍必须通过完整性校验。
+    if (!frozen && sha256_hex(&row.source_snapshot) != row.source_hash)
         || sha256_hex(&row.visible_text) != row.content_hash
     {
         return Err("恢复候选完整性校验失败".to_string());
@@ -283,9 +284,10 @@ fn to_candidate(row: &CandidateRow) -> Result<RecoveryCandidate, String> {
 fn to_candidate_with_conn(
     conn: &Connection,
     row: &CandidateRow,
+    frozen: bool,
 ) -> Result<RecoveryCandidate, String> {
-    let mut candidate = to_candidate(row)?;
-    candidate.source_current = source_is_current(conn, row)?;
+    let mut candidate = to_candidate(row, frozen)?;
+    candidate.source_current = !frozen && source_is_current(conn, row)?;
     Ok(candidate)
 }
 
@@ -386,7 +388,7 @@ pub fn record(
     .map_err(|e| e.to_string())?;
 
     let row = get_row(conn, &candidate_id)?.ok_or("恢复候选写入后读取失败")?;
-    to_candidate_with_conn(conn, &row)
+    to_candidate_with_conn(conn, &row, false)
 }
 
 /// 基线 `RecoveryCandidateRepository.listPending`
@@ -399,7 +401,14 @@ pub fn list_pending(conn: &Connection) -> Result<Vec<RecoveryCandidate>, String>
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     rows.iter()
-        .map(|r| to_candidate_with_conn(conn, r))
+        .map(|row| {
+            let frozen = crate::services::portable_project_guard::frozen_row(
+                conn,
+                "recovery_candidates",
+                &row.candidate_id,
+            );
+            to_candidate_with_conn(conn, row, frozen)
+        })
         .collect()
 }
 
@@ -411,7 +420,7 @@ pub fn update_pending(
 ) -> Result<RecoveryCandidate, String> {
     let id = assert_text(candidate_id, "恢复候选身份", MAX_IDENTITY_TEXT)?;
     let row = get_pending_row(conn, &id)?.ok_or("恢复候选不存在或已处理")?;
-    to_candidate_with_conn(conn, &row)?;
+    to_candidate_with_conn(conn, &row, false)?;
     if !source_is_current(conn, &row)? {
         return Err("恢复候选的源章节已变化，已拒绝保存".to_string());
     }
@@ -427,7 +436,7 @@ pub fn update_pending(
     .map_err(|e| e.to_string())?;
 
     let row = get_row(conn, &id)?.ok_or("恢复候选不存在或已处理")?;
-    to_candidate_with_conn(conn, &row)
+    to_candidate_with_conn(conn, &row, false)
 }
 
 /// 基线 `RecoveryCandidateRepository.resolve`（status 仅接受 continued / discarded）
@@ -521,6 +530,45 @@ mod tests {
         let listed = list_pending(&conn).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].candidate_id, candidate.candidate_id);
+    }
+
+    #[test]
+    fn frozen_intact_candidate_never_claims_current_source_or_becomes_mutable_test() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_runtime_freeze,
+        };
+        let conn = memory_db();
+        blueprints::upsert(&conn, &matching_blueprint(1)).unwrap();
+        let candidate = record(&conn, "proj-1", &request(1)).unwrap();
+        assert!(candidate.source_current);
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "gen-intact",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        let history = list_pending(&conn).unwrap();
+        assert_eq!(history[0].candidate_id, candidate.candidate_id);
+        assert_eq!(history[0].content_hash, candidate.content_hash);
+        assert!(
+            !history[0].source_current,
+            "即使源哈希仍匹配，也不能给冻结历史声明当前权威"
+        );
+        assert!(update_pending(&conn, &candidate.candidate_id, "修改片段")
+            .unwrap_err()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+        assert!(resolve(&conn, &candidate.candidate_id, STATUS_CONTINUED)
+            .unwrap_err()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+        assert_eq!(
+            list_pending(&conn).unwrap()[0].visible_text,
+            candidate.visible_text
+        );
     }
 
     #[test]
