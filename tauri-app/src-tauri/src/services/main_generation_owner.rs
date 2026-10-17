@@ -815,6 +815,39 @@ impl MainGenerationOwner {
         Ok(())
     }
 
+    fn review_revision_service(
+        &self,
+    ) -> crate::services::review_revision_generation::ReviewRevisionGeneration {
+        crate::services::review_revision_generation::ReviewRevisionGeneration::new(
+            self.repository.clone(),
+            crate::services::review_revision_generation::ReviewRevisionScope {
+                project_id: self.session.project_id.clone(),
+                epoch: self.session.lease_id.clone(),
+            },
+        )
+    }
+
+    fn assert_review_mutable(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+    ) -> Result<(), String> {
+        if run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            .is_some_and(|operation| {
+                crate::services::review_revision_context::REVIEW_REVISION_OPERATIONS
+                    .contains(&operation)
+            })
+        {
+            self.review_revision_service()
+                .assert_mutable(conn, &run.run_id)?;
+        }
+        Ok(())
+    }
+
     /// 基线 `handleOf(run)` 的句柄比对等价物（main-generation-owner.ts:145）：
     /// 运行的项目归属 + 句柄四元组（`projectId` / `epoch` / `rootActionId` /
     /// `runId`）必须与入参逐字段一致，否则 `GENERATION_RUN_IDENTITY_MISMATCH`。
@@ -1736,16 +1769,15 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_IMPORT_SLOT_REQUIRED"));
         }
-        if crate::services::review_revision_context::REVIEW_REVISION_OPERATIONS.contains(&operation)
-            || selection
-                .get("reviewRevisionContextId")
+        let review_revisions = self.review_revision_service();
+        let review_admitted = review_revisions.admit(conn, selection)?.is_some();
+        if !agent_initialization
+            && !draft_workflow
+            && !batch_admitted
+            && !review_admitted
+            && selection
+                .get("parentRootActionId")
                 .is_some_and(|value| !value.is_null())
-            || (!agent_initialization
-                && !draft_workflow
-                && !batch_admitted
-                && selection
-                    .get("parentRootActionId")
-                    .is_some_and(|value| !value.is_null()))
             || selection
                 .get("continueDirectoryOperationId")
                 .is_some_and(|value| !value.is_null())
@@ -1804,6 +1836,13 @@ impl MainGenerationOwner {
             .admit_finalized_character(&tx, selection)
             .map_err(|error| mutating_error(&error))?;
         let mut frozen_selection = selection.clone();
+        // 与落库处于同一写事务，再捕获审修来源与谱系；只使用主进程缓存的上下文。
+        if let Some(prepared) = review_revisions.admit(&tx, selection)? {
+            frozen_selection["reviewRevisionContext"] =
+                serde_json::to_value(&prepared.context).expect("审修上下文可序列化");
+            frozen_selection["authorInputs"] = json!([{"id":"review-revision-context",
+                "text":serde_json::to_string(&prepared.context).expect("审修上下文可序列化")}]);
+        }
         if let Some(hash) = &finalized_character_context_hash {
             frozen_selection["finalizedCharacterContextHash"] = json!(hash);
         }
@@ -2654,6 +2693,7 @@ impl MainGenerationOwner {
                     .map(PreparedExecutionPlan::Replay);
             }
         }
+        self.assert_review_mutable(conn, run)?;
         if task_purpose == DRAFT_SHORT_OUTLINE_PURPOSE
             && self
                 .repository
@@ -3141,6 +3181,7 @@ impl MainGenerationOwner {
         self.repository
             .assert_plot_outline_writable(conn, &run.run_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        self.assert_review_mutable(conn, &run)?;
         // 已接入领域先验证自身合同；未接入领域不能借恢复绕过准入。
         let manifest = &run.binding.source_manifest;
         let operation = manifest
@@ -3399,6 +3440,7 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_AGENT_CONTROL_IMMUTABLE"));
         }
+        self.assert_review_mutable(conn, &run)?;
         // 基线 :1385-1386：候选必须存在且非进行中。
         let view = self.view_of(conn, &run)?;
         let discardable = view
@@ -8055,6 +8097,10 @@ mod batch_tests;
 #[cfg(test)]
 #[path = "main_generation_specialized_tests.rs"]
 mod specialized_tests;
+
+#[cfg(test)]
+#[path = "main_generation_review_tests.rs"]
+mod review_tests;
 
 #[cfg(test)]
 mod tests {

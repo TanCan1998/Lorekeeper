@@ -8,10 +8,8 @@
 //! 基线 `ReviewRevisionGeneration` 由主进程 owner 持有（per-session
 //! 实例），`contexts` 是实例内存缓存。Tauri 命令是无状态的，故
 //! `contexts` 缓存平移为**进程级静态 `Mutex<HashMap>`**：
-//! `contextId` 为 UUID v4（全局唯一），按 `contextId` 查找与
-//! 项目归属无关；项目归属由 `requireRun` 的
-//! `run.binding.projectId === scope.projectId` 门禁等价保证。
-//! 容量上限（64）与 FIFO 淘汰逐字对齐基线 `remember`。
+//! 每个缓存项绑定项目与epoch；旧会话的contextId不能作为新阶段准入凭据。
+//! 全局容量上限为64；运行与正式效果仍由持久账本证明。
 //!
 //! # 依赖注入（基线闭包回调的 Rust 等价物）
 //!
@@ -196,11 +194,15 @@ pub struct ReviewRevisionGeneration {
 
 /// 进程级 `contexts` 缓存（基线 `private readonly contexts = new Map()`，
 /// 容量 64 + FIFO 淘汰，见 `remember`）。
-static PREPARED_CONTEXTS: LazyLock<Mutex<HashMap<String, PreparedReviewRevisionContext>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PREPARED_CONTEXTS: LazyLock<
+    Mutex<HashMap<String, (ReviewRevisionScope, PreparedReviewRevisionContext)>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// 基线 `contexts` 容量上限。
 const CONTEXT_CACHE_CAPACITY: usize = 64;
+
+#[path = "review_revision_admission.rs"]
+mod admission;
 
 impl ReviewRevisionGeneration {
     /// 基线 `new ReviewRevisionGeneration(deps.database, repository, scope, assertCurrent)`
@@ -230,6 +232,7 @@ impl ReviewRevisionGeneration {
 
     /// 基线 `remember(context, lineage)`：缓存 prepared 上下文（容量 64 + FIFO）。
     fn remember(
+        &self,
         context: &ReviewRevisionContext,
         lineage: Lineage,
     ) -> PreparedReviewRevisionContext {
@@ -248,7 +251,10 @@ impl ReviewRevisionGeneration {
                 contexts.remove(&oldest);
             }
         }
-        contexts.insert(prepared.context_id.clone(), prepared.clone());
+        contexts.insert(
+            prepared.context_id.clone(),
+            (self.scope.clone(), prepared.clone()),
+        );
         prepared
     }
 
@@ -803,14 +809,10 @@ impl ReviewRevisionGeneration {
 
     /// 基线 `assertPrepared(contextId, run)`
     fn assert_prepared(&self, context_id: &str, run: &DurableGenerationRun) -> Result<(), String> {
-        let contexts = PREPARED_CONTEXTS
-            .lock()
-            .expect("审稿修稿上下文缓存不得被污染");
-        let cached = contexts
-            .get(context_id)
-            .map(|prepared| prepared.context.clone());
-        drop(contexts);
-        let cached = cached.ok_or_else(|| mutating_error("GENERATION_REVIEW_CONTEXT_REQUIRED"))?;
+        let cached = self
+            .prepared_context(context_id)
+            .map(|prepared| prepared.context)
+            .ok_or_else(|| mutating_error("GENERATION_REVIEW_CONTEXT_REQUIRED"))?;
         if !is_deep_strict_equal(
             &serde_json::to_value(&cached).unwrap_or(Value::Null),
             &serde_json::to_value(&self.context_of(run)?).unwrap_or(Value::Null),
@@ -881,7 +883,7 @@ impl ReviewRevisionGeneration {
             let context = capture_review_revision_context(tx, request, &scope.project_id, None)
                 .map_err(|error| mutating_error(&error))?;
             let lineage = Self::parent_in(tx, &runs, &scope, &context)?;
-            Ok(Self::remember(&context, lineage))
+            Ok(self.remember(&context, lineage))
         })?;
         Ok(result)
     }
@@ -1317,7 +1319,10 @@ impl ReviewRevisionGeneration {
             }
         }
         let context_id = if can_resume && saved.is_none() {
-            Some(Self::remember(&context, self.parent(conn, &context)?).context_id)
+            Some(
+                self.remember(&context, self.parent(conn, &context)?)
+                    .context_id,
+            )
         } else {
             None
         };
