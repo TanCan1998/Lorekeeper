@@ -325,6 +325,11 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'generation:compose-visible': ['handle', 'artifactIds', 'expectedTextHash', 'algorithm'],
   // 批次 G4-6c：主生成 owner 草稿上下文准备（generation:* 1 频道）
   'generation:prepare-draft-context': ['request'],
+  // 审稿/修稿的准备、提交与只读恢复使用同一显式请求信封。
+  'review-revision:prepare': ['request'],
+  'review-revision:commit-review': ['request'],
+  'review-revision:commit-revision': ['request'],
+  'review-revision:read-recovery': ['request'],
   // 批次 G4-8b：旧名册生成（legacy-roster:* 6 带参频道；
   // read-source 无参不登记）
   'legacy-roster:adopt-existing': ['request'],

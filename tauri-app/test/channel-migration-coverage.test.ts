@@ -9,12 +9,8 @@ import { readNormalizedSource } from './source-contract'
 import { ipc } from '../src/services/ipc-client'
 import { installTauriInternals } from './helpers/tauri-internals'
 
-// Rust 已登记不代表渲染层已开放；这些频道暂不登记命名参数，保持传输前拒绝。
+// 仅在真实隐藏 UI 闭环与对应 SHA 全量核对后移出延后名单；后续频道仍沿用同一门禁。
 const DEFERRED_RENDERER_CHANNELS = [
-  'review-revision:prepare',
-  'review-revision:commit-review',
-  'review-revision:commit-revision',
-  'review-revision:read-recovery',
 ] as const
 
 /** `tauri-app/` 根目录（本文件位于 `tauri-app/test/`）。 */
