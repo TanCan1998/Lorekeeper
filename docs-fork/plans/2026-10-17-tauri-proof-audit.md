@@ -1,6 +1,16 @@
-# Tauri 首版证明与本机验收审计（第90次）
+# Tauri 首版证明与本机验收审计（第92次）
 
-当前全量验证代码：`80a3228ce37c67778fe6dee5e75afd28ccb71bb6`。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+当前全量验证代码：`f7f5658e61a01b74c972f148215fc7fbc3f13678`。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+
+## 第92次：冻结审修历史逐行豁免、导入收据读面与CI提速
+
+- f7f5658e / [39051391021](https://github.com/TanCan1998/Lorekeeper/actions/runs/39051391021)：**1677/0**，库253.00秒，all-targets 38.98秒无告警；完整expected/tested SHA一致、两个退出码0、state=passed，artifact与两日志已核对。同SHA提交规范/秘密扫描成功。本轮Rust语义切片累计2。
+- 便携副本按H策略保留审修原始行，但执行链收据（R/X列）已中和。`verify_m03_review_cycle`原先对整库要求可重放证明，导致恢复副本里认证冻结的历史被当成当前损坏，并连带拒绝同库新周期。现按认证冻结键**逐行**跳过执行链校验；表结构、外键、merge/snapshot计数一致性检查全部保留，非冻结行仍逐行严格。
+- 豁免不等于授权：`get_by_review_id`仍不发布投影、连接守卫拒绝改写、重放仍被拒。新增便携脱敏回归同时断言「无守卫连接仍拒绝」与「空冻结集仍拒绝」两个对照，证明豁免来自认证冻结键而非放宽校验；既有 `real_sqlite_chain_redacted_history_is_readable_but_cannot_replay` 的断言按新语义拆分，其余读面/写保护/重放证据保留。
+- 导入侧（3607e6c2）：认证冻结 `import_runs` 的 effect receipt 读面返回 None，不再退化成泛化「receipt 损坏」；便携脱敏对参与 `UNIQUE(...)` 的 R/X 文本列改用 `portable-neutral:<行身份>` 确定性中和，修复多条 `import_run_receipts` 恢复时撞唯一约束报 `PORTABLE_UNSAFE_PROJECTION`。
+- 本机定向：review_revision 66/0、review_cycle 9/0、portable 86/0、冻结导入收据1/1、脱敏导入历史1/1；`cargo fmt --check` 与 git diff 通过。
+- 构建/CI提速（2f60163e）：`[profile.test] debug=0`（本机增量重编70.9s→48.6s）、CI缓存键去掉提交SHA（命中后不再上传GB级target）；云端热缓存作业5分26秒，优化前基线6分32秒。实测 cargo-nextest 比 libtest 慢约45%且会改动证据契约，不采用；rust-lld 本机仅快约4.4s且CI需额外组件，不启用。
+- 仍待：恢复副本中**新**审修完整链的实际执行验证、旧handle泛化拒绝错误的规范化（须先失败回归）、其他便携/导入读面收口。
 
 ## 第90次：专用在途合并、收据重放与旧epoch拒绝
 
