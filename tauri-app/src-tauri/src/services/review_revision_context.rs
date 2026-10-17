@@ -929,7 +929,8 @@ pub fn capture_review_revision_context(
         }
         confirmation = Some(ReviewConfirmation {
             review_source_id: stored.meta.id,
-            content: serialize_human_confirmed_review_snapshot(&snapshot),
+            // 语义校验使用解析快照，身份/哈希必须保留数据库中作者实际保存的字节。
+            content: stored.content.clone(),
             original_review_content_hash: text_hash(&original.content),
             snapshot,
         });

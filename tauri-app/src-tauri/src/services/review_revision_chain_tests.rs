@@ -162,7 +162,9 @@ fn merge_reviewed_fixture(f: Fixture, inject_failure: bool, chunks: &[&str]) -> 
     });
     let confirmation: crate::services::review_revision_context::HumanConfirmedReviewSnapshot =
         serde_json::from_value(confirmation).unwrap();
-    let confirmation = serde_json::to_string_pretty(&confirmation).unwrap();
+    // 模拟前端保存的合法 JSON 键序；内容身份不能被 Rust 重新序列化改变。
+    let confirmation =
+        serde_json::to_string_pretty(&serde_json::to_value(&confirmation).unwrap()).unwrap();
     let confirmed = review_repo::create(
         &f.conn,
         &ReviewCreateParams {
