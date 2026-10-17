@@ -1799,6 +1799,10 @@ fn database_evidence(conn: &Connection) -> Result<String, String> {
 }
 
 #[cfg(test)]
+#[path = "portable_project_round_trip_tests.rs"]
+mod round_trip_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::schema::create_tables;

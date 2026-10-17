@@ -682,6 +682,28 @@ mod tests {
                     .to_string()
                     .contains("PORTABLE_RUNTIME_FROZEN"));
             }
+            if !corrupt_visible_text {
+                let request = serde_json::from_value(serde_json::json!({
+                    "runId": "fresh-recovery-run", "stepId": "fresh-step", "chapterNumber": 1,
+                    "source": {"chapterNumber": 1, "title": "合成章"},
+                    "visibleText": "合成新候选片段"
+                }))
+                .unwrap();
+                let fresh = recovery::record(&conn, "restored-project", &request).unwrap();
+                assert!(fresh.source_current);
+                let mixed = recovery::list_pending(&conn).unwrap();
+                assert_eq!(mixed.len(), 2);
+                assert!(!mixed[0].source_current);
+                assert!(
+                    mixed[1].source_current,
+                    "不能因同项目存在冻结历史而禁用新候选"
+                );
+                recovery::update_pending(&conn, &fresh.candidate_id, "合成更新片段").unwrap();
+                recovery::resolve(&conn, &fresh.candidate_id, recovery::STATUS_CONTINUED).unwrap();
+                let remaining = recovery::list_pending(&conn).unwrap();
+                assert_eq!(remaining.len(), 1);
+                assert_eq!(remaining[0].candidate_id, id);
+            }
             let source_conn = Connection::open(&source).unwrap();
             let current = recovery::list_pending(&source_conn).unwrap();
             assert!(current[0].source_current);
