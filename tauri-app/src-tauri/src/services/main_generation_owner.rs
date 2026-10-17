@@ -12521,6 +12521,72 @@ data: [DONE]
     fn handle_of_run(run: &DurableGenerationRun) -> Value {
         handle_of(run)
     }
+    /// 便携恢复副本的项目关闭回归（2026-10-17 隔离 GUI 实测缺陷）。
+    ///
+    /// 修复前 `author_edited_root` 对中和后的 `binding_json` 直接 `json_type`，
+    /// 抛 malformed JSON，`recover_interrupted` 让整条关闭链失败，用户看到
+    /// 「打开项目失败：项目数据库初始化失败」。
+    #[test]
+    fn portable_restored_copy_suspends_without_parse_errors_and_stays_read_only() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_project_sanitize,
+            portable_runtime_freeze,
+        };
+        let root = std::env::temp_dir().join(format!(
+            "lorekeeper-owner-suspend-{}",
+            crate::project_access::random_uuid_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root");
+        let source = root.join("source.db");
+        let target = root.join("portable.db");
+        {
+            let conn = Connection::open(&source).expect("source db");
+            crate::db::schema::create_tables(&conn).expect("schema");
+            open_run(&conn, "project-1", "lease-1", "chapter-draft").expect("run");
+        }
+        portable_project_sanitize::sanitize_portable_database(
+            &portable_project_sanitize::SanitizePortableDatabaseInput {
+                source_database_path: &source,
+                target_database_path: &target,
+                limits: None,
+            },
+        )
+        .expect("sanitize portable database");
+        let restored = Connection::open(&target).expect("portable db");
+        let document = portable_project_history::freeze_document(
+            &restored,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "gen-1",
+        )
+        .expect("freeze document");
+        let record = document["records"]
+            .as_array()
+            .expect("records")
+            .iter()
+            .find(|record| record["table"] == Value::String("generation_runs".to_string()))
+            .expect("generation_runs 冻结记录");
+        assert_eq!(record["nonReplayable"], Value::Bool(true));
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).expect("serialize"),
+        )
+        .expect("guard");
+        portable_project_guard::install_guard_for_test(&restored, guard).expect("install guard");
+
+        let mut owner = owner_with(&restored);
+        owner
+            .suspend_with_database(&restored)
+            .expect("脱敏恢复副本必须能正常挂起关闭");
+        assert!(owner.closed);
+        // 关闭路径不得因为「跳过冻结历史」而放开写面：中和历史仍然只读。
+        let error = restored
+            .execute("UPDATE generation_runs SET status='paused'", [])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("PORTABLE_RUNTIME_FROZEN"), "实际：{error}");
+        drop(restored);
+        std::fs::remove_dir_all(root).expect("cleanup temp root");
+    }
+
     #[test]
     fn list_skips_portable_redacted_history_and_keeps_current_project_runs() {
         use crate::services::portable_project_sanitize::{

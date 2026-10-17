@@ -2059,6 +2059,34 @@ fn is_redacted_run_binding(binding_json: &str) -> bool {
         .is_some_and(|object| !matches!(object.get("projectId"), Some(Value::String(_))))
 }
 
+/// 便携冻结行判定（生产路径的写/读关口）。
+///
+/// 注入缝 `is_frozen` 只在单测里表达冻结；生产由
+/// `portable_project_guard` 在连接上安装的 TEMP 标量函数
+/// `_lorekeeper_history_frozen(table, id)` 表达。二者取或，否则恢复副本的
+/// **脱敏历史行**会被写路径当成可变历史去解析中和后的 JSON（实测：项目关闭时
+/// `recover_interrupted` 解析空 `action_json` 报 malformed JSON，用户看到
+/// 「打开项目失败」）。
+fn frozen_row(
+    conn: &Connection,
+    is_frozen: fn(GenerationFreezeTable, &str) -> bool,
+    table: GenerationFreezeTable,
+    id: &str,
+) -> bool {
+    if is_frozen(table, id) {
+        return true;
+    }
+    match conn.query_row(
+        "SELECT _lorekeeper_history_frozen(?1, ?2)",
+        params![table, id],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(value) => value != 0,
+        // 普通项目连接没有该守卫函数；查询失败一律不视为冻结。
+        Err(_) => false,
+    }
+}
+
 /// 事务包装（基线 `db.transaction(fn).immediate()` 的等价物；
 /// 失败时 `Transaction` drop 即回滚，与基线语义一致）。
 fn in_transaction<T>(
@@ -2171,8 +2199,12 @@ impl GenerationRunRepository {
     }
 
     fn author_edited_root(&self, conn: &Connection, root_id: &str) -> Result<bool, String> {
+        // `json_valid` 前置：便携恢复副本的 R 列已被中和（本项目口径为空白串，
+        // 基线口径为 `{}`）。直接 `json_type` 会抛 malformed JSON，使项目关闭时的
+        // `recover_interrupted`/粘贴准入整链失败（用户看到「打开项目失败」）。
+        // 中和绑定无法证明作者已编辑 → 视为未编辑；真实损坏仍在 `get()` 等处报错。
         conn.query_row(
-            "SELECT 1 FROM generation_runs WHERE root_action_id=? AND json_type(binding_json,?) IS NOT NULL LIMIT 1",
+            "SELECT 1 FROM generation_runs WHERE root_action_id=? AND json_valid(binding_json) AND json_type(binding_json,?) IS NOT NULL LIMIT 1",
             params![root_id, AUTHOR_EFFECT_PATH],
             |row| row.get::<_, i64>(0),
         )
@@ -2201,7 +2233,9 @@ impl GenerationRunRepository {
         run_id: &str,
     ) -> Result<bool, String> {
         conn.query_row(
-            "SELECT 1 FROM generation_runs WHERE root_action_id=(SELECT root_action_id FROM generation_runs WHERE run_id=?) AND json_extract(binding_json,'$.sourceManifest.policy.planning.outlineProtocol')='chapter-parts-v2' LIMIT 1",
+            // `json_valid` 前置：便携恢复副本的绑定已被中和，`json_extract` 会抛
+            // malformed JSON；中和绑定不属于"私有规划历史"，由便携冻结守卫负责只读。
+            "SELECT 1 FROM generation_runs WHERE root_action_id=(SELECT root_action_id FROM generation_runs WHERE run_id=?) AND json_valid(binding_json) AND json_extract(binding_json,'$.sourceManifest.policy.planning.outlineProtocol')='chapter-parts-v2' LIMIT 1",
             [run_id],
             |row| row.get::<_, i64>(0),
         )
@@ -3359,7 +3393,12 @@ impl GenerationRunRepository {
             .filter(|row| {
                 row.artifact_run_id.as_deref() == Some(run_id)
                     && row.artifact_status.as_deref() != Some("discarded")
-                    && !(self.is_frozen)(FREEZE_TABLE_GENERATION_ATTEMPTS, &row.attempt_id)
+                    && !frozen_row(
+                        conn,
+                        self.is_frozen,
+                        FREEZE_TABLE_GENERATION_ATTEMPTS,
+                        &row.attempt_id,
+                    )
             })
             .filter_map(|row| row.artifact_id.clone())
             .collect();
@@ -3519,8 +3558,12 @@ impl GenerationRunRepository {
                             .unwrap_or(true)
                     })
                     .unwrap_or(false)
-                && !(self.is_frozen)(FREEZE_TABLE_GENERATION_ATTEMPTS, &attempt_id)
-            {
+                && !frozen_row(
+                    read.conn,
+                    self.is_frozen,
+                    FREEZE_TABLE_GENERATION_ATTEMPTS,
+                    &attempt_id,
+                ) {
                 value.receipt.artifact.clone()
             } else {
                 None
@@ -4553,7 +4596,7 @@ impl GenerationRunRepository {
         if self.author_edited_root(conn, root_id)? {
             return Ok(true);
         }
-        if (self.is_frozen)(FREEZE_TABLE_GENERATION_ROOTS, root_id) {
+        if frozen_row(conn, self.is_frozen, FREEZE_TABLE_GENERATION_ROOTS, root_id) {
             return Ok(true);
         }
         let run_ids = self.query_column(
@@ -4563,7 +4606,7 @@ impl GenerationRunRepository {
         )?;
         if run_ids
             .iter()
-            .any(|run_id| (self.is_frozen)(FREEZE_TABLE_GENERATION_RUNS, run_id))
+            .any(|run_id| frozen_row(conn, self.is_frozen, FREEZE_TABLE_GENERATION_RUNS, run_id))
         {
             return Ok(true);
         }
@@ -4572,9 +4615,14 @@ impl GenerationRunRepository {
             "SELECT attempt_id FROM generation_attempts WHERE root_action_id=?",
             root_id,
         )?;
-        Ok(attempt_ids
-            .iter()
-            .any(|attempt_id| (self.is_frozen)(FREEZE_TABLE_GENERATION_ATTEMPTS, attempt_id)))
+        Ok(attempt_ids.iter().any(|attempt_id| {
+            frozen_row(
+                conn,
+                self.is_frozen,
+                FREEZE_TABLE_GENERATION_ATTEMPTS,
+                attempt_id,
+            )
+        }))
     }
 
     fn query_column(
@@ -4613,7 +4661,12 @@ impl GenerationRunRepository {
         };
         let mut artifacts = Vec::new();
         for attempt_id in rows {
-            if (self.is_frozen)(FREEZE_TABLE_GENERATION_ATTEMPTS, &attempt_id) {
+            if frozen_row(
+                conn,
+                self.is_frozen,
+                FREEZE_TABLE_GENERATION_ATTEMPTS,
+                &attempt_id,
+            ) {
                 continue;
             }
             // 便携历史保留可见文本但没有当前执行收据。
@@ -4772,6 +4825,101 @@ mod tests {
             max_output_per_request: 512,
             max_active_elapsed_ms: 60000,
         }
+    }
+
+    /// 便携脱敏历史的写路径回归（2026-10-17 隔离 GUI 实测缺陷）。
+    ///
+    /// 修复前：恢复副本的 R 列已被中和（空白串），`author_edited_root` 直接
+    /// `json_type('')` 抛 malformed JSON，`recover_interrupted` 随项目关闭整链失败，
+    /// 用户看到「打开项目失败：项目数据库初始化失败」。
+    #[test]
+    fn portable_redacted_history_is_skipped_by_recovery_and_stays_frozen() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_runtime_freeze,
+        };
+        let conn = memory_db();
+        conn.execute(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json) VALUES ('root-1','key-1','{}','{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key) VALUES ('run-1','root-1','{}','running',0,'open-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO generation_attempts VALUES('attempt-1','reservation-1','run-1','root-1','{}','{}','nonce-1')",
+            [],
+        )
+        .unwrap();
+        // 本项目便携口径把 R 列中和为空白串（基线口径为 `{}`）。
+        conn.execute(
+            "UPDATE generation_roots SET action_json='',budget_json=''",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE generation_runs SET binding_json=''", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE generation_attempts SET attempt_json='',usage_receipt_json=''",
+            [],
+        )
+        .unwrap();
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "gen-1",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        assert!(guard.is_frozen(
+            portable_runtime_freeze::PortableRuntimeFreezeTable::GenerationRuns,
+            "run-1"
+        ));
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+
+        let repository = GenerationRunRepository::default();
+        // 冻结历史整根跳过：不得解析中和后的账本 JSON。
+        assert!(repository.frozen_root(&conn, "root-1").unwrap());
+        assert!(!repository.author_edited_root(&conn, "root-1").unwrap());
+        assert_eq!(repository.recover_interrupted(&conn).unwrap(), ());
+        // 只读性质：中和绑定不进可列举/可继续读面。
+        assert!(repository
+            .read_listable_run(&conn, "run-1", "project-1")
+            .unwrap()
+            .is_none());
+        // 冻结行仍不可写：连接级临时触发器继续拒绝。
+        let error = conn
+            .execute(
+                "UPDATE generation_roots SET blocked_code='x' WHERE root_action_id='root-1'",
+                [],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("PORTABLE_RUNTIME_FROZEN"), "实际：{error}");
+    }
+
+    #[test]
+    fn neutralized_history_without_portable_guard_still_fails_closed() {
+        let conn = memory_db();
+        conn.execute(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json) VALUES ('root-1','key-1','','')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key) VALUES ('run-1','root-1','','running',0,'open-1')",
+            [],
+        )
+        .unwrap();
+        let repository = GenerationRunRepository::default();
+        // 没有便携守卫就不是冻结历史：损坏账本继续 fail-closed，不静默跳过。
+        assert!(!repository.frozen_root(&conn, "root-1").unwrap());
+        assert!(repository.recover_interrupted(&conn).is_err());
     }
 
     #[test]
