@@ -301,7 +301,7 @@ fn review_owner_real_commit_seals_candidate_but_keeps_saved_ack_and_invocation_r
 }
 
 #[test]
-fn revision_owner_accepts_draft_visible_composition_but_review_rejects_test() {
+fn review_revision_owner_default_composition_uses_registered_append_contract_test() {
     for operation in [
         ReviewRevisionOperation::RefineDraft,
         ReviewRevisionOperation::ReviewChapter,
@@ -309,19 +309,24 @@ fn revision_owner_accepts_draft_visible_composition_but_review_rejects_test() {
         let (_temp, conn, owner, _) = source_owner_fixture();
         let (_service, selection) = prepare_review(&owner, &conn, operation);
         let view = owner.begin(&conn, &selection, false, false).unwrap();
-        let result =
-            owner.compose_visible(&conn, &view["handle"], &[], None, Some("draft-visible-v2"));
-        let error = result.unwrap_err();
-        if operation == ReviewRevisionOperation::RefineDraft {
-            assert!(
-                !error.contains("GENERATION_COMPOSITION_ALGORITHM_INVALID"),
-                "修稿使用同一正文合成算法：{error}"
-            );
-        } else {
-            assert_eq!(
-                error,
-                mutating_error("GENERATION_COMPOSITION_ALGORITHM_INVALID")
-            );
-        }
+        // 空列表继续被来源合同拒绝，但不得先落入不存在的默认算法。
+        let error = owner
+            .compose_visible(&conn, &view["handle"], &[], None, None)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            mutating_error(if operation == ReviewRevisionOperation::ReviewChapter {
+                "GENERATION_COMPOSITION_OUTPUT_INVALID"
+            } else {
+                "GENERATION_COMPOSITION_INVALID"
+            })
+        );
+        let error = owner
+            .compose_visible(&conn, &view["handle"], &[], None, Some("draft-visible-v2"))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            mutating_error("GENERATION_COMPOSITION_ALGORITHM_INVALID")
+        );
     }
 }

@@ -1342,7 +1342,7 @@ impl MainGenerationOwner {
         expected_text_hash: Option<&str>,
         algorithm: Option<&str>,
     ) -> Result<Value, String> {
-        let algorithm = algorithm.unwrap_or("visible-continuation-v1");
+        let algorithm = algorithm.unwrap_or("visible-append-v1");
         let first = self.require_run(conn, handle, false)?;
         if first
             .binding
@@ -1361,16 +1361,13 @@ impl MainGenerationOwner {
         if budget.root.status == "cancelled" {
             return Err(mutating_error("GENERATION_ACTION_CANCELLED"));
         }
-        // 修稿与写稿共享正文净化/续接合同；审稿等结构化操作仍不得使用。
         if is_draft_visible_text_version(algorithm)
-            && !matches!(
-                first
-                    .binding
-                    .source_manifest
-                    .get("operation")
-                    .and_then(Value::as_str),
-                Some("chapter-draft" | "refine-draft" | "refine-from-review")
-            )
+            && first
+                .binding
+                .source_manifest
+                .get("operation")
+                .and_then(Value::as_str)
+                != Some("chapter-draft")
         {
             return Err(mutating_error("GENERATION_COMPOSITION_ALGORITHM_INVALID"));
         }
