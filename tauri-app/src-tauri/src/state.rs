@@ -292,11 +292,18 @@ impl AppState {
     }
 
     /// 批次 A 收口：渲染层回应关窗确认（`window:resolve-close`）
-    pub(crate) fn resolve_window_close(&self, request_id: &str, proceed: bool) -> bool {
-        match self.window_close_guard.lock() {
-            Ok(mut guard) => guard.resolve(request_id, proceed),
-            Err(_) => false,
-        }
+    pub(crate) fn resolve_window_close(
+        &self,
+        request_id: &str,
+        proceed: bool,
+    ) -> Result<bool, String> {
+        let mut guard = self
+            .window_close_guard
+            .lock()
+            .map_err(|_| "窗口关闭状态被污染".to_string())?;
+        // 持有关闭决策锁直到挂起完成，阻止重复/交错决策抢先放行窗口。
+        // 项目关闭流程不获取窗口锁，仍由既有owner/DB锁协议管理分发退出。
+        guard.resolve_after_suspend(request_id, proceed, || self.close_project_database())
     }
 
     /// 项目数据库状态快照（对齐基线 `databaseStateFor`）
@@ -481,6 +488,73 @@ mod tests {
         state.invalidate_current_session().unwrap();
         assert!(state.generation_owners.is_empty());
         assert!(state.active_project_snapshot().is_none());
+    }
+
+    #[test]
+    fn confirmed_window_close_suspends_real_owner_and_failed_suspend_remains_retryable_test() {
+        for fail in [false, true] {
+            let (_temp, _conn, _binding, global, project) =
+                crate::services::main_generation_sources::tests::fixture("zh-CN");
+            let state = AppState::new();
+            let active = ActiveProject {
+                project_id: "project-1".into(),
+                lease_id: "lease-1".into(),
+                root_path: project.to_string_lossy().into_owned(),
+            };
+            state.activate_project(active.clone()).unwrap();
+            let session = crate::security::ProjectSessionContext {
+                project_id: active.project_id.clone(),
+                lease_id: active.lease_id.clone(),
+                project_path: active.root_path.clone(),
+            };
+            state
+                .llm_leases
+                .lock()
+                .unwrap()
+                .begin_at(
+                    &crate::app_paths::models_config_path_at(&global),
+                    "fixture",
+                    "window-close-lease".into(),
+                    state.started_at_ms,
+                )
+                .unwrap();
+            state
+                .generation_owners
+                .authorized_owner(&session, Some(&active))
+                .unwrap()
+                .owner()
+                .record_run_lease("window-run".into(), "window-close-lease".into());
+            let (_, request) = state.request_window_close("main");
+            let request = request.unwrap();
+            if fail {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _guard = state.project_db.lock().unwrap();
+                    panic!("合成退出挂起故障");
+                }));
+            }
+            assert!(!state.resolve_window_close("wrong", true).unwrap());
+            assert_eq!(state.llm_leases.lock().unwrap().live_lease_count(), 1);
+            let result = state.resolve_window_close(&request, true);
+            if fail {
+                assert!(result.is_err());
+                assert!(state.active_project_snapshot().is_some());
+                assert_eq!(state.generation_owners.len(), 1);
+                assert_eq!(state.llm_leases.lock().unwrap().live_lease_count(), 1);
+                state.project_db.clear_poison();
+                let (allow, next) = state.request_window_close("main");
+                assert!(!allow);
+                let next = next.unwrap();
+                assert_ne!(next, request);
+                assert!(state.resolve_window_close(&next, true).unwrap());
+            } else {
+                assert!(result.unwrap());
+            }
+            assert!(state.active_project_snapshot().is_none());
+            assert!(!state.project_database_open());
+            assert!(state.generation_owners.is_empty());
+            assert_eq!(state.llm_leases.lock().unwrap().live_lease_count(), 0);
+            assert!(state.request_window_close("main").0);
+        }
     }
 
     #[test]

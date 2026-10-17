@@ -4,6 +4,7 @@ import GenerationBudgetDiagnostics from './GenerationBudgetDiagnostics'
 import type { GenerationBatchHistory, GenerationRecoveryContext } from '../../shared/generation-owner-contract'
 import type { ReviewRevisionRecovery } from '../../shared/review-revision-generation'
 import type { EditorInlineRecovery } from '../../shared/editor-inline-generation'
+import { createEditorInlineGeneration } from '../../services/editor-inline-generation'
 import { createReviewRevisionRecoveryWorkflow } from '../../services/workflows/review-revision-recovery-workflow'
 import type { MainGenerationRunView } from '../../services/generation/generation-runtime'
 import { createDraftRecoveryWorkflow, createBatchRecoveryWorkflow } from '../../services/workflows/draft-recovery-workflow'
@@ -366,10 +367,11 @@ function MainDraftRecoverySection({ session, locale, refreshKey }: {
         <button type="button" className="icon-btn px-2" style={candidateTextButtonStyle} onClick={() => { void act(() => navigator.clipboard.writeText(tail.text)) }}>{runText(locale, '复制未保存文字', 'Copy unsaved text')}</button>
       </div>)}
       <button type="button" className="icon-btn px-2" style={candidateTextButtonStyle} onClick={() => { void act(() => navigator.clipboard.writeText(recovery.context.documentText)) }}>{runText(locale, '复制原文稿', 'Copy original manuscript')}</button>
-      <button type="button" className="icon-btn px-2" style={candidateTextButtonStyle} disabled={busy || recovery.sourceStatus !== 'current' || recovery.view.status === 'cancelled'
+      <button type="button" className="icon-btn px-2" style={candidateTextButtonStyle} disabled={busy || (recovery.sourceStatus !== 'current' && recovery.view.handle.epoch === session.leaseId) || recovery.view.status === 'cancelled'
         || recovery.view.ledger?.physicalRequests !== 0 || Boolean(recovery.view.candidates?.length || recovery.view.artifacts.length)}
         onClick={() => { void act(async () => {
-          await ipc.invokeWithProjectSession(session, 'editor-inline:execute', { handle: recovery.view.handle })
+          const client = createEditorInlineGeneration(session)
+          try { await client.open({ handle: recovery.view.handle }); await client.execute() } finally { client.detach() }
           if (sameProjectSessionContext(session, projectSessionContextFromProject(useProjectStore.getState().currentProject))) setGenerationRefresh(value => value + 1)
         }) }}>{runText(locale, '继续原选区任务', 'Continue original selection task')}</button>
     </article>)}

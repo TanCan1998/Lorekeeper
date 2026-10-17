@@ -61,6 +61,25 @@ impl WindowCloseGuard {
         (false, Some(request_id))
     }
 
+    /// 仅匹配的退出确认可执行挂起；失败重置本次确认，绝不预先授予关闭许可。
+    pub(crate) fn resolve_after_suspend(
+        &mut self,
+        request_id: &str,
+        proceed: bool,
+        suspend: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        if self.pending_request_id.as_deref() != Some(request_id) {
+            return Ok(false);
+        }
+        if proceed {
+            if let Err(error) = suspend() {
+                self.resolve(request_id, false);
+                return Err(error);
+            }
+        }
+        Ok(self.resolve(request_id, proceed))
+    }
+
     /// 渲染层回应确认请求（对齐 `window:resolve-close`）。
     ///
     /// 返回 `false` 表示请求不匹配（须回 `{ success: false }`）。
@@ -150,7 +169,7 @@ pub fn window_close(app: AppHandle) -> Result<WindowOperationResponse, String> {
 
 /// `window:resolve-close`（两段式关窗协议的第二段）
 #[tauri::command]
-pub fn window_resolve_close(
+pub async fn window_resolve_close(
     app: AppHandle,
     request_id: String,
     decision: ResolveCloseDecision,
@@ -160,7 +179,16 @@ pub fn window_resolve_close(
     };
     let proceed = matches!(decision, ResolveCloseDecision::Proceed);
     let state = app.state::<AppState>();
-    if !state.resolve_window_close(&request_id, proceed) {
+    // 退出挂起可能等待在途任务结算，不占用窗口消息线程或Tokio调度工作线程。
+    let resolved = tokio::task::block_in_place(|| state.resolve_window_close(&request_id, proceed))
+        .map_err(|error| {
+            if error.starts_with("Error: ") {
+                error
+            } else {
+                format!("Error: {error}")
+            }
+        })?;
+    if !resolved {
         return Ok(WindowOperationResponse { success: false });
     }
     if proceed {
@@ -173,6 +201,104 @@ pub fn window_resolve_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_close_requires_matching_confirmation_and_successful_suspend_test() {
+        let mut guard = WindowCloseGuard::default();
+        let (_, request) = guard.on_close_requested("main");
+        let request = request.unwrap();
+        let calls = std::cell::Cell::new(0);
+        assert!(!guard
+            .resolve_after_suspend("wrong", true, || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(calls.get(), 0);
+        assert!(guard
+            .resolve_after_suspend(&request, false, || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(calls.get(), 0);
+        let (_, request) = guard.on_close_requested("main");
+        let request = request.unwrap();
+        assert_eq!(
+            guard
+                .resolve_after_suspend(&request, true, || Err("挂起失败".into()))
+                .unwrap_err(),
+            "挂起失败"
+        );
+        assert!(!guard.approved);
+        assert!(guard.pending_request_id.is_none());
+        let (allow, next) = guard.on_close_requested("main");
+        assert!(!allow);
+        let next = next.unwrap();
+        assert_ne!(next, request);
+        assert!(guard
+            .resolve_after_suspend(&next, true, || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .unwrap());
+        assert_eq!(calls.get(), 1);
+        assert_eq!(guard.on_close_requested("main"), (true, None));
+        assert!(!guard
+            .resolve_after_suspend(&next, true, || panic!("重复确认不可再次挂起"))
+            .unwrap());
+    }
+
+    #[test]
+    fn concurrent_window_close_decisions_cannot_approve_before_suspend_or_repeat_it_test() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc, Mutex,
+        };
+        let guard = Arc::new(Mutex::new(WindowCloseGuard::default()));
+        let request = guard.lock().unwrap().on_close_requested("main").1.unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = {
+            let guard = guard.clone();
+            let request = request.clone();
+            let calls = calls.clone();
+            std::thread::spawn(move || {
+                guard
+                    .lock()
+                    .unwrap()
+                    .resolve_after_suspend(&request, true, || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(())
+                    })
+            })
+        };
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(guard.try_lock().is_err());
+        let second = {
+            let guard = guard.clone();
+            let calls = calls.clone();
+            std::thread::spawn(move || {
+                guard
+                    .lock()
+                    .unwrap()
+                    .resolve_after_suspend(&request, true, || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+            })
+        };
+        release_tx.send(()).unwrap();
+        assert!(first.join().unwrap().unwrap());
+        assert!(!second.join().unwrap().unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(guard.lock().unwrap().approved);
+    }
 
     #[test]
     fn window_operation_response_serializes() {

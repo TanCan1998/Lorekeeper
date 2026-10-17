@@ -264,3 +264,36 @@ describe('AI output recovery candidates', () => {
     expect(button('放弃')).not.toBeDisabled()
   })
 })
+
+// 历史侧栏不自行重绑身份；显式继续复用专用客户端的主进程重认证。
+it.each([false,true])('旧租约行内任务侧栏显式恢复，后端拒绝=%s', async denied => {
+  const body = '合成原文'
+  const documentHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body))), b => b.toString(16).padStart(2, '0')).join('')
+  const oldHandle = { projectId: session.projectId, epoch: 'old-editor-lease', rootActionId: 'editor-root', runId: 'editor-run' }
+  const recovery = { view: { handle: oldHandle, operation: 'editor-inline', status: 'paused', ledger: { physicalRequests: 0 }, artifacts: [] as unknown[] }, modelId: 'synthetic', sourceStatus: 'conflict', context: { kind: 'author-draft', action: 'refine', documentText: body, documentHash, from: 0, to: 2, selectedText: '合成' } }
+  const previous = invoke.getMockImplementation() as (command: string, args: Record<string, unknown>) => Promise<unknown>
+  invoke.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === 'generation_list') return [structuredClone(recovery.view)]
+    if (command === 'generation_read_context') return { operation: 'editor-inline' }
+    if (command === 'editor_inline_read_recovery') return structuredClone(recovery)
+    if (command === 'generation_resume') {
+      if (denied) throw new Error('GENERATION_RECOVERY_UNAUTHORIZED')
+      recovery.view.handle = { ...oldHandle, epoch: session.leaseId }; recovery.sourceStatus = 'current'; recovery.view.status = 'running'
+      return structuredClone(recovery.view)
+    }
+    if (command === 'editor_inline_execute') {
+      expect(args.request).toEqual({ handle: { ...oldHandle, epoch: session.leaseId } })
+      recovery.view.ledger.physicalRequests = 1
+      recovery.view.artifacts = [{ artifactId: 'suggestion', text: '恢复后的合成建议', status: 'completed' }]
+      return { run: structuredClone(recovery.view), outcome: { status: 'completed', content: '恢复后的合成建议', finishReason: 'stop' } }
+    }
+    return previous(command, args)
+  })
+  await renderWriter()
+  await vi.waitFor(() => expect(button('继续原选区任务')).toBeDefined())
+  expect(button('继续原选区任务')?.disabled).toBe(false)
+  expect(invoke.mock.calls.some(([c]) => c === 'generation_resume')).toBe(false)
+  await act(async () => button('继续原选区任务')?.click())
+  await vi.waitFor(() => expect(container?.textContent).toContain(denied ? 'GENERATION_RECOVERY_UNAUTHORIZED' : '恢复后的合成建议'))
+  expect(invoke.mock.calls.some(([c]) => c === 'editor_inline_execute')).toBe(!denied)
+})
