@@ -30,7 +30,7 @@ gh run view <run-id> --repo TanCan1998/Lorekeeper
 - [工作流入口](https://github.com/TanCan1998/Lorekeeper/actions/workflows/tauri-rust-ci.yml)。
 - 最多60分钟；首次无缓存可能明显慢于本机增量编译，不承诺提速。
 - 独立RUSTUP_HOME/CARGO_HOME与Lorekeeper合成根；关闭增量与调试信息以降低托管runner磁盘占用。
-- 缓存仅公开依赖与target，key包含OS/架构/固定Rust/manifest+lock哈希/提交SHA，复用同工具链和锁的先前编译。不缓存整个用户目录、凭据文件或业务数据。
+- 缓存仅公开依赖与target，key包含OS/架构/固定Rust/manifest+lock哈希，**不含提交SHA**：命中后不再上传新条目，避免每次提交写入GB级target并挤占仓库10GB配额（配额淘汰会让后续运行重新冷编译）。restore-keys保留v1前缀以复用历史缓存。不缓存整个用户目录、凭据文件或业务数据。
 - 仅contents:read，checkout不保留凭据。无Secrets输入、仓库写入、打包、签名或发布步骤。
 - 只上传validation.json、cargo-test.log、cargo-check.log，保留14天。validation记录SHA、lock哈希、运行编号、工具链、两个独立退出码和时间；test失败不会被check成功覆盖，异常路径也保存失败状态。
 
@@ -45,6 +45,26 @@ gh run view <run-id> --repo TanCan1998/Lorekeeper
 | [actions/upload-artifact](https://github.com/actions/upload-artifact/releases/tag/v7.0.2) | v7.0.2 | cf430e030ddbb5b0abf93d22962f4752f3646cd9 |
 
 使用GitHub托管runner满足这些Action的运行时要求，不更改既有Electron工作流的Action版本。Context7查询本轮额度耗尽，版本与接口改用官方release/tag及action.yml核实。
+
+## 构建与测试提速实测（2026-10-17，16核本机）
+
+保留结论与触发条件，避免重复试错；改动均为构建配置，不改变验证证据语义（仍为 `cargo test --locked` + `cargo check --locked --all-targets`）。
+
+| 场景 | 耗时 | 说明 |
+|---|---|---|
+| 修改一行源码后 `cargo test --lib --no-run`，debug=1 / incremental=false | 70.9s | link.exe |
+| 同上，改用 rust-lld 链接 | 66.5s | 仅省约4.4s，瓶颈在 rustc codegen 而非链接 |
+| 同上，`[profile.test] debug = 0` | 48.6s | 已写入 `Cargo.toml`，panic 仍显示文件:行 |
+| 全量 lib 测试运行（libtest，16线程） | 79.8s | 1675 通过 |
+| 全量 lib 测试运行（cargo-nextest 0.9.148） | 115.6s | 单测试独立进程，慢链测试各占27–32s，反而更慢 |
+| 云端全量（Windows 2022，4 vCPU） | 192s + check 37s，整作业6分32秒 | 缓存恢复21s、工具链安装11s |
+
+结论与取舍：
+
+- **不采用 cargo-nextest**：本机实测比 libtest 慢约45%，且会改动 `testCommand`/日志名，破坏现有验证契约与脚本合同（`test-rust-ci.contract.ps1` 只认 `test`/`check` 两次调用）。nextest 仅在需要进程隔离或慢测试报告时手动使用，不作为CI证据链。
+- **CI不启用rust-lld**：runner用`--profile minimal`不含llvm-tools，需额外下载组件，而本机实测收益仅约6%，不划算。本机可选用会话脚本启用。
+- **`[profile.test] debug = 0`**：本机增量重编从70.9s降到48.6s；需要断点调试时用 `CARGO_PROFILE_TEST_DEBUG=1` 覆盖，不影响CI证据（CI另有同名env显式设置）。
+- 本机会话提速脚本（不入库）：`D:\Environment\cargo-fast.ps1`，设置 `RUSTUP_HOME`/`CARGO_HOME`、可选 rust-lld、`CARGO_PROFILE_TEST_DEBUG=0`。
 
 ## 本机接续记录
 

@@ -86,8 +86,11 @@ jobs:
             ${{ env.CARGO_HOME }}/registry/src
             ${{ env.CARGO_HOME }}/git/db
             tauri-app/src-tauri/target
-          key: tauri-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}-${{ github.sha }}
+          # key 不含提交 SHA：actions/cache 命中后不再上传新条目，避免每次提交写入 GB 级
+          # target 并挤占仓库 10GB 缓存配额（配额淘汰会让后续运行重新冷编译）。
+          key: tauri-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}
           restore-keys: |
+            tauri-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}
             tauri-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}-
 
       - name: 运行全量测试与所有目标检查

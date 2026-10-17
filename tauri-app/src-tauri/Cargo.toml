@@ -132,3 +132,10 @@ windows-sys = { version = "0.61", features = [
 
 [profile.dev]
 incremental = true
+# 测试构建提速（2026-10-17 实测，16 核本机）：
+# - debug = 0：改一行源码后的重编 + 链接从 ~70.9s 降到 ~48.6s（panic 仍显示文件:行）；
+#   需要断点调试时用 CARGO_PROFILE_TEST_DEBUG=1 临时覆盖。
+# - incremental = false：单一大 crate 的增量缓存帮助有限，却长期占用 GB 级磁盘。
+[profile.test]
+debug = 0
+incremental = false
