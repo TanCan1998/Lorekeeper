@@ -4017,7 +4017,10 @@ fn row_to_effect_receipt_inner(
 
 // ---------- effect receipts：公开 API ----------
 
-/// 平移自 `getEffectReceipt`（读频道：失败 reject）
+/// 平移自 `getEffectReceipt`（读频道：失败 reject）。
+///
+/// 本项目口径：认证冻结的导入历史不发布执行投影，直接返回 `None`；
+/// 冻结行本身仍受连接守卫写保护，非冻结行继续走原严格校验（损坏即 reject）。
 pub fn get_effect_receipt(
     conn: &Connection,
     run_id: &str,
@@ -4044,6 +4047,10 @@ pub fn get_effect_receipt(
         return Ok(None);
     };
     let run = read_run_row(conn, run_id)?.ok_or_else(|| corrupted_receipt())?;
+    // 冻结历史缺少可重放的执行权威，不向当前会话发布收据。
+    if crate::services::portable_project_guard::frozen_row(conn, "import_runs", run_id) {
+        return Ok(None);
+    }
     row_to_effect_receipt(conn, &row, &run).map(Some)
 }
 
@@ -6738,6 +6745,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn frozen_run_effect_receipt_is_withheld_while_frozen_rows_stay_sealed_test() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_runtime_freeze,
+        };
+
+        let (dir, conn) = receipt_file_conn("receipt-frozen-history");
+        let now = now_ms();
+        prepare_style_receipt(&conn, now);
+        // 非冻结项目：prepared 收据仍按原规则可重放。
+        let live = get_effect_receipt(&conn, "receipt-run", "style", "done")
+            .expect("非冻结 receipt 应可读")
+            .expect("prepared receipt 应存在");
+        assert_eq!(live.state, "prepared");
+
+        // 便携副本会中和执行归属列（X 策略），这里先还原该形态再装守卫。
+        conn.execute(
+            "UPDATE import_runs SET execution_owner = '', execution_epoch = 0, \
+             lease_expires_at = 0 WHERE id = 'receipt-run'",
+            [],
+        )
+        .expect("执行归属列应可中和");
+
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "gen-receipt-frozen",
+        )
+        .expect("冻结文档应生成");
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).expect("冻结文档应序列化"),
+        )
+        .expect("冻结文档应可解析");
+        assert!(guard.is_frozen(
+            portable_runtime_freeze::PortableRuntimeFreezeTable::ImportRuns,
+            "receipt-run"
+        ));
+        portable_project_guard::install_guard_for_test(&conn, guard).expect("守卫应安装");
+
+        // 认证冻结的历史不发布执行投影：既不把中和后的收据当成可重放，
+        // 也不把历史读面退化成泛化的「receipt 损坏」错误。
+        assert!(
+            get_effect_receipt(&conn, "receipt-run", "style", "done")
+                .expect("冻结历史读面不应报损坏")
+                .is_none(),
+            "冻结 receipt 不应发布执行投影"
+        );
+        // 冻结的章节快照保留原值，历史只读仍可查。
+        let chapters = list_chapter_batch(&conn, "receipt-run", 0, 10).expect("冻结章节应可读");
+        assert_eq!(chapters.len(), 1);
+        assert_eq!(chapters[0].content, RECEIPT_CONTENT);
+        // 冻结行仍受写保护，执行租约也不能重新取得。
+        let error = conn
+            .execute(
+                "UPDATE import_run_receipts SET payload_json = '{}' WHERE run_id = 'receipt-run'",
+                [],
+            )
+            .expect_err("冻结 receipt 不可改写");
+        assert!(error.to_string().contains("PORTABLE_RUNTIME_FROZEN"));
+        let error = start_or_resume(&conn, "receipt-run", "renderer-b", now + 1_000, 60_000)
+            .expect_err("冻结运行不得重新取得租约");
+        assert!(error.contains("PORTABLE_RUNTIME_FROZEN"), "实际：{error}");
+
+        cleanup_receipt_dir(conn, &dir);
+    }
     #[test]
     fn receipt_reopens_committed_blueprint_after_durable_character_sync_test() {
         let (dir, conn) = receipt_file_conn("receipt-blueprint-reopen");

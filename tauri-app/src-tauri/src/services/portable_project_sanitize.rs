@@ -22,6 +22,9 @@
 //!   标记历史不可重放，不携带原始收据或机器字段摘要。
 //! - 基线的 P 列校验对空串也报错；本项目把空串视为未赋值直接放行（`target_file_name` 等列允许空默认值），
 //!   非空值仍严格校验；
+//! - 参与表级 `UNIQUE(...)` 的 R/X 文本列（如 `import_run_receipts` 的
+//!   `effect_namespace`/`effect_key`）若一律中和为常量，多行时会撞唯一约束；
+//!   本项目改用「`portable-neutral:` + 行身份」的确定性中和值：不含原值、同库可重复生成、逐行唯一。
 //! - 基线用 `better-sqlite3` 备份 API，本项目用 `VACUUM INTO`（同一语义、零新依赖）。
 
 use std::collections::BTreeMap;
@@ -151,6 +154,65 @@ fn neutral_value(column: &ColumnInfo) -> Value {
     }
 }
 
+/// 表的唯一索引列组（表级 `UNIQUE(...)`；`PRIMARY KEY` 索引跳过，主键列不中和）。
+///
+/// 表达式索引的列名为 `NULL`，无法安全派生，直接跳过（本项目 schema 未使用）。
+fn unique_index_columns(conn: &Connection, table: &str) -> Result<Vec<Vec<String>>, String> {
+    let quoted = format!("'{}'", table.replace('\'', "''"));
+    let mut statement = conn
+        .prepare(&format!("PRAGMA index_list({quoted})"))
+        .map_err(|_| unsafe_projection())?;
+    let indexes = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|_| unsafe_projection())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|_| unsafe_projection())?;
+    let mut groups = Vec::new();
+    for (name, unique, origin) in indexes {
+        if unique == 0 || origin == "pk" {
+            continue;
+        }
+        let quoted_name = format!("'{}'", name.replace('\'', "''"));
+        let mut info = conn
+            .prepare(&format!("PRAGMA index_info({quoted_name})"))
+            .map_err(|_| unsafe_projection())?;
+        let columns: Vec<Option<String>> = info
+            .query_map([], |row| row.get::<_, Option<String>>(2))
+            .map_err(|_| unsafe_projection())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|_| unsafe_projection())?;
+        if columns.iter().any(Option::is_none) {
+            continue;
+        }
+        groups.push(columns.into_iter().flatten().collect());
+    }
+    Ok(groups)
+}
+
+/// 行身份的确定性 SQL 表达式：主键列拼接，无声明主键时退回 `rowid`。
+fn row_identity_expression(columns: &[ColumnInfo]) -> String {
+    let mut keys: Vec<&ColumnInfo> = columns.iter().filter(|column| column.primary_key).collect();
+    keys.sort_by(|left, right| left.name.cmp(&right.name));
+    if keys.is_empty() {
+        return "CAST(rowid AS TEXT)".to_string();
+    }
+    keys.iter()
+        .map(|column| {
+            format!(
+                "COALESCE(CAST({} AS TEXT),'')",
+                quote_identifier(&column.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" || ':' || ")
+}
+
 /// 便携相对路径校验（上游 `portablePathKey`）：空串视为未赋值放行
 fn validate_relative_value(value: &str, max_path_bytes: usize) -> Result<(), String> {
     if value.is_empty() {
@@ -245,10 +307,26 @@ pub fn sanitize_portable_database(
             }
         }
 
-        // R / X 列：中和值只由列决定（与行无关），故每列一条 UPDATE。
+        // R / X 列：常量中和值只由列决定（与行无关），故每列一条 UPDATE；
+        // 但参与 `UNIQUE(...)` 的文本列统一置常量会撞唯一约束（如
+        // `import_run_receipts` 的 `effect_namespace`/`effect_key`，多行时必然冲突）。
+        // 这些列改用「常量前缀 + 行身份」的确定性中和值：不含原值、同库可重复生成，且逐行唯一。
+        let unique_groups = unique_index_columns(&conn, &table)?;
+        let identity = row_identity_expression(&columns);
         for (column, _) in &updates {
             let quoted_column = quote_identifier(&column.name);
             let neutral = neutral_value(column);
+            let unique_text_column = matches!(neutral, Value::Text(_))
+                && unique_groups
+                    .iter()
+                    .any(|group| group.iter().any(|name| name == &column.name));
+            if unique_text_column {
+                let sql = format!(
+                    "UPDATE {quoted_table} SET {quoted_column}='portable-neutral:' || {identity}"
+                );
+                conn.execute_batch(&sql).map_err(|_| unsafe_projection())?;
+                continue;
+            }
             let sql = match &neutral {
                 Value::Null => format!("UPDATE {quoted_table} SET {quoted_column}=NULL"),
                 other => {
@@ -521,6 +599,25 @@ mod tests {
                 rusqlite::params![id, purpose, "a".repeat(64), status],
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO import_run_chapters (run_id,chapter_number,source_id,source_chapter_number,
+                 title,content_fingerprint,content_size,content_snapshot)
+                 VALUES (?1,1,'src-1',1,'第1章',?2,9,'正文甲')",
+                rusqlite::params![id, crate::import::parsing::sha256_hex("正文甲")],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO import_run_receipts (run_id,schema_version,effect_namespace,effect_key,
+                 stage,batch_id,kind,payload_json,payload_hash,state)
+                 VALUES (?1,1,?2,?3,'global','done','project-global-facts','{}',?4,'prepared')",
+                rusqlite::params![
+                    id,
+                    format!("import:{purpose}:{id}"),
+                    format!("global-facts:{id}"),
+                    "c".repeat(64)
+                ],
+            )
+            .unwrap();
         }
 
         let (base, source, target) = temp_paths("import-read");
@@ -572,6 +669,33 @@ mod tests {
                     .contains("PORTABLE_RUNTIME_FROZEN")
             );
         }
+        // 收据的唯一索引列（`UNIQUE(effect_namespace, effect_key)`）改用确定性中和值：
+        // 不含原值、同库可重复生成，多行收据不再撞唯一约束。
+        let neutral_namespace: String = conn
+            .query_row(
+                "SELECT effect_namespace FROM import_run_receipts
+                 WHERE run_id = 'old-reference-ready' AND stage = 'global'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(neutral_namespace.starts_with("portable-neutral:"));
+        assert!(!neutral_namespace.contains("import:"));
+
+        // 冻结历史的章节快照（D 策略）保留原值，历史只读仍可查。
+        let chapters = imports::list_chapter_batch(&conn, "old-reference-ready", 0, 10).unwrap();
+        assert_eq!(chapters.len(), 1);
+        assert_eq!(chapters[0].content, "正文甲");
+        // 冻结历史的执行收据不发布投影：不报泛化损坏，也不声称可重放。
+        for (id, _, _) in &ids {
+            assert!(
+                imports::get_effect_receipt(&conn, id, "global", "done")
+                    .expect("冻结收据读面不应报损坏")
+                    .is_none(),
+                "冻结收据不应发布执行投影：{id}"
+            );
+        }
+
         // 同一连接上的新身份仍正常列举与执行，不能把整个恢复项目禁用。
         insert_import(&conn, "new-import", "reference", "ready");
         let live = imports::list_resumable(&conn).unwrap();
@@ -588,6 +712,11 @@ mod tests {
         )
         .unwrap();
         assert!(imports::list_resumable(&conn).is_err());
+        // 未冻结运行上的损坏收据仍按原规则拒绝，不用跳过历史掩盖当前数据错误。
+        // `new-import` 的收据在种子里就是「载荷与哈希不匹配」的损坏行。
+        let error = imports::get_effect_receipt(&conn, "new-import", "global", "done")
+            .expect_err("未冻结损坏收据应拒绝");
+        assert!(error.contains("receipt 损坏"), "实际：{error}");
         let source_conn = Connection::open(&source).unwrap();
         assert_eq!(
             imports::list_resumable(&source_conn).unwrap().len(),
