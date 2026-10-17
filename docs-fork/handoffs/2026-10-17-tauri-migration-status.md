@@ -2,44 +2,55 @@
 
 > [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [首版决策](../plans/2026-10-17-tauri-completion-decisions.md) · [证明/GUI审计矩阵](../plans/2026-10-17-tauri-proof-audit.md)。动态进度仅在docs-fork展示，同日改写当前摘要。
 
-## 已验证状态（第86次）
+## 已验证状态（第87次）
 
-当前代码：`e5562957aafd16090b33fe71d4afdc3c25c282ba`，master，已推送origin。后续为文档收口。
+当前代码：`43a00848a73ec331295d15182d0fbf9164382b12`，master，已推送origin；后续为文档收口。前一代码`7fb424dda402b8d13f87f4e61f3f273452abcc32`也已推送并独立云端通过。
 
 | 范围 | 结果/版本 | 证据 |
 |---|---|---|
-| 当前SHA云端 | Rust CI运行中，未登记全量通过 | [39000071204](https://github.com/TanCan1998/Lorekeeper/actions/runs/39000071204)；同SHA提交规范39000071191、Gitleaks39000071223最后查询运行中 |
-| 最近成功Rust云端全量 | **1638通过/0失败**，库232.47秒，SHA=`61ab33bc` | [38999595785](https://github.com/TanCan1998/Lorekeeper/actions/runs/38999595785)，run completed/success；本机`.pi/tmp/recovery/ci-61ab33bc/` |
-| 最近成功all-targets | 同61ab33bc成功无告警，35.97秒 | artifact expectedSha/testedSha一致、testExitCode/checkExitCode均0、state=passed；两日志逐项核对 |
-| 本轮本机定向 | 导入仓储50/0、生成仓储30/0、便携74/0、`generation_owner`过滤187/0、run服务38/0、db命令30/0 | 本机`import-history-read-fix-evidence.md`；不相加冒充全量 |
-| 本轮新增回归 | 实际脱敏导入历史：修复前1失败、修复后1通过，已包含在便携74项 | `sanitized_import_history_is_readable_but_not_listed_as_resumable_test` |
-| 本轮编译/格式 | 本机`cargo check --all-targets --locked`通过无告警，4文件rustfmt与diff通过 | 因抽取跨模块冻结读函数追加检查；无持久schema/权限/租约规则改动 |
-| 前端沿用 | 188文件2111通过/1跳过，typecheck/lint及上次build通过 | 本轮无前端改动，未重跑，不算当前新增验收 |
-| 频道口径 | 注册291、契约注册290、事件7；功能289/290、业务285/290 | 本轮不变；四生产审稿频道继续关闭 |
+| 最新Rust云端全量 | **1643通过/0失败**，库247.67秒，SHA=43a00848，run completed/success | [39012654458](https://github.com/TanCan1998/Lorekeeper/actions/runs/39012654458)，本机`.pi/tmp/recovery/ci-43a00848/` |
+| 同SHA all-targets | 成功无告警，34.78秒 | artifact expectedSha/testedSha一致、两个退出码0、state=passed，两日志已核对 |
+| 同SHA提交规范/秘密扫描 | 均success | 39012654472 / 39012654462 |
+| 本轮本机定向 | recovery仓储6/0、便携最终77/0、db命令30/0 | 恢复候选脱敏回归先失败后通过；最后扩展同连接新旧混合、复杂往返和资产漂移 |
+| 格式/构建 | 相关文件rustfmt/diff通过；隐藏配置开发构建与恢复默认配置构建均通过 | 隐藏覆盖仅在会话环境，无跟踪配置改动；当前debug二进制已恢复默认行为 |
+| 后端复杂归档 | 首次恢复、重复重开、再次导出及第三身份恢复通过；资产漂移拒读/拒覆盖/拒导出 | `portable_project_round_trip_tests.rs`两测试；原始源库逐字节不变 |
+| 真实隐藏WebView | 窗口隐藏/不聚焦；项目真实关闭/重开后旧会话读写被拒；正常标题栏关闭 | `background-session.json`所指隔离工作目录的initial-window、stale-session-close-reopen、closed-window等本机证据 |
+| 批量创作GUI | **失败，未验收**：启动立即GENERATION_REQUEST_FAILED，尚未进入暂停边界 | batch-pause-resume.json；草稿0/批次0/合成模型请求0；源码遗留batchIntent/batchId拒绝分支 |
+| 前端沿用 | 188文件2111通过/1跳过，typecheck/lint与上次build通过 | 无前端源码变动，未重跑，不算新增TS验收 |
 
-最近全量基线更新为61ab33bc，**其后Rust语义切片累计1**；当前云端未完成，不清零。前一基线183d4886/38997082671为1637/0，已被替代。
+最新全量基线43a00848，**其后Rust语义切片累计0**。更早e5562957/39000071204=1639/0、7fb424dd/39012194665=1641/0均下载核对，但不混作当前版本结果。
 
-## 本轮修复与有界结论
+## 本轮代码与有界结论
 
-- 基线`electron/repositories/import-run-repository.ts::listResumable`会过滤`freeze.isFrozen('import_runs', row.id)`；Tauri读面漏迁，实际脱敏历史仍显示为可继续任务，尽管原连接触发器拒绝续写。
-- `repositories/import_run_repository.rs::list_resumable`在构建快照前跳过冻结运行。`get`仍保留历史字段，不把历史`resumable`状态改写为当前执行权威；启动、租约、准入和权限规则均未改动。
-- 将已有连接级冻结查询抽为`services/portable_project_guard.rs::frozen_row`，导入/生成读面共用；生成仓储包装继续保持注入缝∨连接守卫、短路与错误处理语义，不新增各自判空规则。
-- 实际源库→脱敏副本→冻结侧车→连接守卫回归覆盖reference/author-manuscript两用途、ready/running/failed/cancelled四状态：冻结行从可继续列表排除；`get`可查、脱敏字段保持中和；原写保护拒绝start_or_resume；同连接新身份正常列举/启动，当前损坏checkpoint仍报错；源库不变。
-- 本轮未启动GUI/服务、未派子代理，未调用真实模型/MCP/业务云。不将数据库合成回归等同GUI验收、全部历史读面已通或安全认证。
+### 冻结恢复候选（7fb424dd）
 
-## 最近切片与GUI基线（非本轮新增GUI验收）
+- 基线RecoveryCandidateRepository的冻结历史只读映射已允许源快照脱敏，同时始终校验visible_text/content_hash并令sourceCurrent=false；Tauri原先未迁入，恢复副本list_pending报完整性失败。
+- 修复仅在列表读面读取统一连接冻结事实；普通候选及record/update路径保持严格源快照校验，不改写触发器、准入或生命周期。
+- 实际源库→sanitizer→冻结侧车→连接守卫回归先失败后通过：无守卫的中和数据仍拒绝，冻结正文篡改仍拒绝，可见历史可读但不获当前源权威；完整未中和源被标记冻结也必须sourceCurrent=false且拒写。
 
-- 第85次`61ab33bc`：按指定运行读取候选先通过`frozen_row`跳过冻结运行，避免在过滤attempt前解析中和绑定/预算。实际脱敏回归覆盖全局/指定运行空候选、无守卫损坏拒绝、缺失运行拒绝、冻结产物拒写及源库不变。该版本现已云端全量通过。
-- 第84次`a25eab90/183d4886`：修复脱敏生成列表及恢复副本关闭/再次打开失败；统一冻结事实来源并给相关JSON查询加`json_valid`前置。Rust真实合成副本list/recover/suspend/重开成功，源副本list=4。
-- 第84次Windows开发窗口（当轮临时前台授权已结束）：恢复→源→恢复→恢复连续打开成功，generation:list为0/4/0/0。恢复AI面板无错误/无可继续候选；源面板显示候选、预算与确认继续。源4条read-context成功、篡改leaseId拒绝。证据`transport-gui-*`与`portable-history-read-fix-evidence.md`。
-- 当轮窗口经标题栏正常关闭，Vite5190/合成端点19537及9226均收口；本轮无启动，无本机测试服务在飞。默认后台、不置顶/激活/抢焦点，不使用全局键鼠/SendKeys。
+### 复杂往返与漂移（43a00848，仅测试）
 
-## 接续与尚未解除的缺口
+- 合成项目包含作者草稿及审稿材料、冻结生成账本、导入任务、恢复候选、正式PNG头像/孤儿头像、原始prompt资产；经正式导出/恢复和ProjectDatabase准入打开。
+- 验证两次身份转移、每份副本重复重开；草稿号/版本/内容、审稿源稿、候选可见文本、资产字节保持一致；历史来源projectId不伪装为新执行身份，冻结历史不能继续，源库哈希不变。
+- 正式头像服务read_many返回正确内容，record_reclaimable_orphans不误新增；人为改变恢复副本头像后读面跳过，同档恢复拒绝覆盖，二次导出拒绝漂移且不发布归档、不遗留暂存目录。
+- 扩展同连接新旧恢复候选回归：旧历史只读，新身份正常创建/编辑/继续；不能把恢复项目整体禁用。
+- 以上不证明完整审修效果链、定稿生命周期或原生归档GUI。
 
-1. 查询当前SHA云端39000071204；成功后下载核对validation.json及两份日志，才能更新全量基线/累计数。
-2. 暂停/恢复GUI完整链、失效会话交错GUI仍待验收；启动前须有不抢焦点后台方案，旧前台脚本不得原样复用。
-3. 含冻结历史、脱敏审稿与资产的复杂归档，以及完整审稿→作者确认→修稿→差异合并→复核GUI未完成，四生产审稿频道继续关闭。
-4. 更广历史读面（审修材料、图生成、导入推理等）仍需逐一验证；本轮仅补导入任务列表，不等同导入推理完整链。定位看原始错误，不以map_generation_error收敛码掩盖根因。
-5. 功能/业务计数不变；真实模型、外部MCP、业务云、发布未授权，macOS/Linux未认证。
+## 本轮后台窗口与新阻塞
 
-活动状态及本机证据入口见`.pi/tmp/pipeline-state.md`；临时日志、合成数据及凭据不入库。
+- 通过TAURI_CONFIG会话构建覆盖将主窗口visible=false/focus=false；启动前核对无显示/聚焦调用，启动后Win32确认Tauri主窗口不可见且非前台，Tauri API同样false/false。Tao线程事件目标不是可交互主窗口。
+- 新隔离home与合成项目，仅127.0.0.1 Vite/假模型服务；无真实模型/MCP/业务云。经正式IPC保存两章蓝图、角色名单和合成配置，不触碰真实材料。
+- 同路径关闭/重开后lease更新：关闭后的旧会话读取reject，重开后的旧会话修改返回success=false及Error前缀，chapter99不存在、原两章保留。正式project-store关闭动作和欢迎页重开、IPC及渲染共同验证；不等同穷尽所有在途请求交错。
+- **批量创作实际失败**：选择草稿待审、两章，启动后任务立刻失败；暂无草稿/批次且合成端点零请求。静态定位`MainGenerationOwner::begin_internal`的通用拒绝条件包含batchIntent/batchId，`begin_batch`内部初始化也不能越过。不是按钮定位或网络故障，暂停/恢复不能登记通过。
+- 修复会涉及批次根/子代准入及父根、章节顺序、前驱草稿、作者输入和批次预算接线。**须先具体确认**；拟仅补draft_review，继续拒绝auto_finalize，不改变会话/文件权限/定稿规则或生产审稿开放。
+- 测试窗口按标题栏正常关闭，Vite/假服务按PID与命令行核对后停止，9226/5190/19537均无监听。已清除会话覆盖并重建默认debug二进制；下次后台测试必须重新按隐藏配置构建，不能直接运行默认二进制。
+
+## 尚未解除的缺口与下一步
+
+1. 待具体授权后补批次草稿待审准入，先失败回归→定向/全量→后台GUI暂停/恢复；自动定稿保持当前拒绝，不借修复顺带开放。
+2. 完整审稿→作者确认→修稿→合并→复核GUI未验收，四生产审稿频道继续关闭；本轮只验证审稿材料存储往返。
+3. 原生归档GUI覆盖复杂资产/审修仍待验收；后端复杂往返已补，不能互相替代。更广审修、图生成、导入推理读面继续按域核对。
+4. 同路径旧会话交错已补有界验证，任意在途/跨项目组合未穷尽，不宣称全链安全。
+5. 注册291/契约290/事件7及旧扫描口径289/290、前端路由285/290沿用；**不代表批量业务可用**，明确缺口见频道清单。真实模型/MCP/业务云/发布未授权，macOS/Linux未认证。
+
+活动状态见`.pi/tmp/pipeline-state.md`；本机临时日志、合成数据、构建产物和凭据不入库。无子代理、无本机服务在飞。

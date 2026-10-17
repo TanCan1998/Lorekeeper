@@ -1,10 +1,19 @@
-# Tauri 首版证明与本机验收审计（第86次）
+# Tauri 首版证明与本机验收审计（第87次）
 
 上轮全量验证代码：`183d488633dc26d264b12b68bfc2d0640ddfb1f5`（上一版为24291a43）。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
 
+## 第87次：冻结恢复候选、复杂往返与后台WebView
+
+- 当前最终代码43a00848 / [39012654458](https://github.com/TanCan1998/Lorekeeper/actions/runs/39012654458)：1643/0、all-targets无告警；run成功，artifact SHA/两个退出码/state已核对，语义切片累计0。上一切片7fb424dd / 39012194665也独立1641/0通过。
+- 冻结恢复候选按基线只读展示，不校验已中和源快照但始终校验可见正文哈希，sourceCurrent=false；非冻结源校验、旧写保护不变。无守卫中和数据、正文篡改拒绝；完整源冻结也不获当前权威。
+- 合成归档包含草稿/审稿材料、冻结生成/导入历史、恢复候选、正式/孤儿PNG与原始资产；两次身份转移、每份重复重开、二次导出恢复通过。源库/源资产不变，正式头像服务可读，孤儿核对不误改；恢复头像漂移拒读、同档恢复不覆盖、再导出拒绝且不发布。不是完整审修效果证明或原生GUI归档验收。
+- 本机恢复候选6/0、便携最终77/0、db命令30/0，相关rustfmt/diff与隐藏/默认两种开发构建通过；本轮无前端源码改动。
+- 真实隐藏WebView通过会话配置visible=false/focus=false，Win32/Tauri确认主窗口隐藏且非前台；同路径真实关闭/欢迎页重开后，旧lease读写拒绝，chapter99未写入、原两章未变。未用全局键鼠；窗口正常关闭，三端口已收口，debug二进制已恢复默认配置。
+- **新阻塞**：草稿待审批量启动返回GENERATION_REQUEST_FAILED；源码通用分支仍拒绝batchIntent/batchId。草稿/批次/模型请求均0，暂停/恢复未验收。批次准入接线须先具体确认，不自行放开auto_finalize/生产审稿。
+
 ## 第86次：冻结导入任务列表
 
-- 当前代码`e5562957aafd16090b33fe71d4afdc3c25c282ba`已推送；[云端39000071204](https://github.com/TanCan1998/Lorekeeper/actions/runs/39000071204)待完成。最新成功全量已更新为61ab33bc/38999595785：1638/0、all-targets无告警，run成功且artifact SHA/两个退出码/state已核对；其后语义切片累计1。下文183d4886证明点仍是历史绑定，不冒充当前版全量。
+- 当前代码`e5562957aafd16090b33fe71d4afdc3c25c282ba`已推送；[云端39000071204](https://github.com/TanCan1998/Lorekeeper/actions/runs/39000071204)现已成功1639/0、all-targets无告警，artifact已核对。当轮成功全量为61ab33bc/38999595785：1638/0、all-targets无告警，run成功且artifact SHA/两个退出码/state已核对；其后语义切片累计1。下文183d4886证明点仍是历史绑定，不冒充当前版全量。
 - 对齐基线listResumable的冻结过滤，历史get仍可查看；抽取连接级frozen_row共用查询，生成仓储继续保持注入缝取或，不改触发器/租约/准入/权限。
 - 实际脱敏回归先失败后通过：两用途×四状态冻结任务从可继续列表排除，get可查且字段保持中和、原写保护拒绝启动；新身份正常列举/启动，当前损坏checkpoint拒绝，源库不变。
 - 本机导入仓储50/0、生成仓储30/0、便携74/0、generation_owner过滤187/0、run服务38/0、db命令30/0；4文件rustfmt/diff及本机all-targets通过无告警。未启动GUI，不扩大旧GUI结论。

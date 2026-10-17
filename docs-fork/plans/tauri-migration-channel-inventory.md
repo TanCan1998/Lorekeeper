@@ -62,6 +62,12 @@ Rust命令已注册不等于生产前端可调用。第82次代码729cda50注册
 审稿消费测试的模拟权威后端不能作为生产开放依据；仍须审查真实准入、提交与恢复门禁。
 2026-10-17已决策首版不支持旧库转换；15ed11f4落实禁用入口和适配器/原生命令blocked结果，不读取旧库、不创建副本、不消耗授权。范围清单unsupported-channels.json用于生成器排除该项；保持原290分母，见[首版决策](./2026-10-17-tauri-completion-decisions.md)。
 
+## 批量生成实际接线缺口（第87次）
+
+2026-10-17在SHA43a00848真实隐藏WebView后台实测，`generation:begin-batch`从草稿待审界面启动立即返回`Error: GENERATION_REQUEST_FAILED`，尚未创建批次/草稿或调用模型。`MainGenerationOwner::begin_batch`已注册，但其调用的`begin_internal`遗留通用分支仍无条件拒绝`batchIntent`/`batchId`；因此本频道为**已注册但业务接线未完成**，暂停/恢复未通过。不能以既有频道扫描289/290或前端路由285/290推断此业务可用，也不改分母掩盖缺口。
+
+后续须具体确认批次根/子代准入修复范围，拟仅补`draft_review`及父根/章节顺序/前驱草稿/作者输入/预算绑定，`auto_finalize`保持当前拒绝；不借此变更会话权限、定稿规则或四生产审稿频道。实际代码、验证及授权状态见[CURRENT](../handoffs/CURRENT.md)与pipeline。
+
 ## 云备份频道映射补充（B115–B116）
 
 八个 `cloud-backup:*` 频道分别对应 `cloud_backup_*` 命令；所有显式会话均来自契约，
