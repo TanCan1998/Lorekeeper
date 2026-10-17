@@ -25,6 +25,15 @@ export function createEditorInlineGeneration(sessionInput: ProjectSessionContext
     if (hash !== input.documentHash) throw new Error('EDITOR_INLINE_CONTEXT_INVALID')
     return value
   }
+  // 只有显式继续/确认才向主进程申请新租约重认证，读取历史本身不授予恢复权威。
+  async function resumeEpoch() {
+    if (!recovery || recovery.view.handle.epoch === session.leaseId) return
+    const previous = recovery.view.handle
+    const view = await ipc.invokeWithProjectSession(session, 'generation:resume', previous)
+    if (identity(previous) !== identity(view.handle) || view.handle.epoch !== session.leaseId) throw new Error('EDITOR_INLINE_IDENTITY_MISMATCH')
+    recovery.view = view
+    await read()
+  }
   async function cancelKnown() {
     if (recovery && !cancelPromise) cancelPromise = (async () => {
       const original = recovery!.view.handle
@@ -58,7 +67,9 @@ export function createEditorInlineGeneration(sessionInput: ProjectSessionContext
     async execute() {
       if (!opening) throw new Error('EDITOR_INLINE_NOT_OPEN')
       await opening
-      if (cancelled || detached || !recovery || recovery.sourceStatus !== 'current') throw new Error('EDITOR_INLINE_NOT_EXECUTABLE')
+      if (cancelled || detached || !recovery) throw new Error('EDITOR_INLINE_NOT_EXECUTABLE')
+      await resumeEpoch()
+      if (cancelled || detached || recovery.sourceStatus !== 'current') throw new Error('EDITOR_INLINE_NOT_EXECUTABLE')
       const handle = recovery.view.handle
       const receipt = await ipc.invokeWithProjectSession(session, 'editor-inline:execute', { handle })
       const next = receipt.run.handle

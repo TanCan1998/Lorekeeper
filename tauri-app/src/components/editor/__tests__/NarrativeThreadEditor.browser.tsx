@@ -900,7 +900,8 @@ describe('NarrativeThreadEditor', () => {
 
 describe('main-owned graph recovery', () => {
   function fixture(sourceStatus = 'current') {
-    const handle = { projectId: 'thread-project', epoch: 'old-lease', rootActionId: 'original-root', runId: 'original-run' }
+    // 本组验证当前有效租约内的候选恢复；跨租约重认证在专用恢复测试单独覆盖。
+    const handle = { projectId: 'thread-project', epoch: 'thread-lease', rootActionId: 'original-root', runId: 'original-run' }
     const candidates = ['原线索甲', '原线索乙'].map(title => ({ title, type: '伏笔', targetStartChapter: 2, targetEndChapter: 4, authorIntent: '在终章揭示。' }))
     const recovery = { view: { handle, operation: 'narrative-thread-plan-candidate', status: 'completed', artifacts: [] },
       context: { projectId: 'thread-project', kind: 'plan', input: { kind: 'plan', chapterNumber: 2 } },
@@ -912,7 +913,7 @@ describe('main-owned graph recovery', () => {
       if (command === 'generation_list') return [recovery.view]
       if (command === 'graph_generation_read') return structuredClone(recovery)
       if (command === 'graph_generation_confirm') {
-        const request = args.input as { index: number }
+        const request = args.request as { index: number }
         const effect = { success: true, kind: 'plan', index: request.index, plan: { id: request.index + 30 } }
         recovery.effects.push(effect)
         return effect
@@ -948,7 +949,7 @@ describe('main-owned graph recovery', () => {
     await act(async () => Array.from(document.querySelectorAll('button')).find(button => button.textContent === '生成候选')?.click())
     await vi.waitFor(() => expect(document.body.textContent).toContain('原线索甲'))
     expect(began).toBe(true)
-    const request = invoke.mock.calls.find(([channel]) => channel === 'graph_generation_begin')?.[1]
+    const request = invoke.mock.calls.find(([channel]) => channel === 'graph_generation_begin')?.[1]?.request
     expect(request).toEqual({ input: { kind: 'plan', chapterNumber: 2 }, modelId: 'glm', uiActionNonce: expect.any(String) })
     expect(invoke.mock.calls.some(([channel]) => ['graph_generation_confirm', 'db_narrative_thread_plan_create'].includes(channel))).toBe(false)
   })
@@ -962,8 +963,8 @@ describe('main-owned graph recovery', () => {
       await vi.waitFor(() => expect(document.body.textContent).not.toContain(title))
     }
     const confirms = invoke.mock.calls.filter(([channel]) => channel === 'graph_generation_confirm')
-    expect(confirms.map(([, request]) => request.index)).toEqual([0, 1])
-    expect(confirms.every(([, request]) => JSON.stringify(request.artifact) === JSON.stringify(recovery.artifact))).toBe(true)
+    expect(confirms.map(([, args]) => args.request.index)).toEqual([0, 1])
+    expect(confirms.every(([, args]) => JSON.stringify(args.request.artifact) === JSON.stringify(recovery.artifact))).toBe(true)
     expect(invoke.mock.calls.some(([channel]) => ['graph_generation_begin', 'graph_generation_execute', 'db_narrative_thread_plan_create'].includes(channel))).toBe(false)
   })
   it('来源冲突恢复可见但确认禁用，未知请求不重发', async () => {
@@ -1007,7 +1008,7 @@ describe('main-owned graph recovery', () => {
       if (command === 'generation_list') return [recovery.view]
       if (command === 'graph_generation_read') return structuredClone(recovery)
       if (command === 'graph_generation_confirm') {
-        const request = args.input as { index: number }
+        const request = args.request as { index: number }
         const effect = { index: request.index, success: true, kind: 'event', event: { id: request.index + 80 } }
         recovery.effects.push(effect)
         return effect
@@ -1024,7 +1025,7 @@ describe('main-owned graph recovery', () => {
       await act(async () => section.querySelector<HTMLButtonElement>('button')!.click())
       await vi.waitFor(() => expect(document.body.textContent).not.toContain(evidence))
     }
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'graph_generation_confirm').map(([, request]) => request.index)).toEqual([0, 1])
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'graph_generation_confirm').map(([, args]) => args.request.index)).toEqual([0, 1])
     expect(invoke.mock.calls.some(([channel]) => ['db_narrative_thread_event_confirm', 'db_draft_get_full', 'graph_generation_execute'].includes(channel))).toBe(false)
   })
 })

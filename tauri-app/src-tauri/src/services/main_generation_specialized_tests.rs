@@ -640,3 +640,269 @@ fn specialized_unverifiable_receipts_remain_attempt_conflicts_without_side_effec
         }
     }
 }
+
+// 新租约必须显式恢复；只更新运行绑定，冻结任务/历史收据不重新采样。
+#[test]
+fn specialized_resume_revalidates_new_epoch_without_replacing_frozen_context_test() {
+    for kind in ["graph", "editor"] {
+        let (_temp, conn, mut owner, _) = source_owner_fixture();
+        seed_graph_facts(&conn);
+        let input = if kind == "graph" {
+            json!({"kind":"plan","chapterNumber":1})
+        } else {
+            editor_input("refine")
+        };
+        let recovery = begin(&owner, &conn, kind, &input, "resume-ready").unwrap();
+        let old = &recovery["view"]["handle"];
+        let before = owner
+            .repository
+            .get(&conn, old["runId"].as_str().unwrap())
+            .unwrap();
+        let mut next = MainGenerationOwner::new(ProjectSessionContext {
+            lease_id: "resumed-epoch".into(),
+            ..owner.session.clone()
+        });
+        next.global_data_root = owner.global_data_root.clone();
+        owner.suspend_with_database(&conn).unwrap();
+        assert!(prepare_specialized(&next, &conn, kind, old).is_err());
+        let resumed = next.resume(&conn, old).unwrap();
+        let handle = &resumed["handle"];
+        assert_eq!(handle["epoch"], "resumed-epoch");
+        assert_eq!(handle["runId"], old["runId"]);
+        assert_eq!(handle["rootActionId"], old["rootActionId"]);
+        let run = next
+            .repository
+            .get(&conn, handle["runId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(run.binding.source_manifest, before.binding.source_manifest);
+        assert_eq!(run.binding.fingerprint, before.binding.fingerprint);
+        assert!(prepare_specialized(&next, &conn, kind, old).is_err());
+        let prepared = prepare_specialized(&next, &conn, kind, handle).unwrap();
+        assert!(matches!(prepared.plan, PreparedExecutionPlan::Dispatch(_)));
+        assert_eq!(resumed["ledger"]["physicalRequests"], 0);
+    }
+}
+
+#[test]
+fn specialized_resume_rejects_drift_cancelled_task_tampering_foreign_scope_and_outer_transaction_test(
+) {
+    for kind in ["graph", "editor"] {
+        for failure in [
+            "source",
+            "model",
+            "cancelled",
+            "task",
+            "foreign",
+            "transaction",
+        ] {
+            let (_temp, conn, mut owner, _) = source_owner_fixture();
+            seed_graph_facts(&conn);
+            let input = if kind == "graph" {
+                json!({"kind":"plot"})
+            } else {
+                editor_input("refine")
+            };
+            let recovery = begin(&owner, &conn, kind, &input, "resume-reject").unwrap();
+            let handle = &recovery["view"]["handle"];
+            if failure == "cancelled" {
+                owner.cancel(&conn, handle).unwrap();
+            }
+            let mut next = MainGenerationOwner::new(ProjectSessionContext {
+                lease_id: "rejected-epoch".into(),
+                ..owner.session.clone()
+            });
+            next.global_data_root = owner.global_data_root.clone();
+            owner.suspend_with_database(&conn).unwrap();
+            match failure {
+                "source" => {
+                    conn.execute(
+                        "UPDATE project_core SET writing_language='en-US' WHERE id='main'",
+                        [],
+                    )
+                    .unwrap();
+                }
+                "model" => {
+                    let path = crate::app_paths::models_config_path_at(&next.global_data_root);
+                    let mut models: Value =
+                        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                    models[0]["modelName"] = json!("synthetic-changed");
+                    std::fs::write(path, serde_json::to_string(&models).unwrap()).unwrap();
+                }
+                "task" => {
+                    let field = if kind == "graph" {
+                        "$.sourceManifest.graphGenerationTaskHash"
+                    } else {
+                        "$.sourceManifest.editorInlineTaskHash"
+                    };
+                    conn.execute("UPDATE generation_runs SET binding_json=json_set(binding_json,?1,?2) WHERE run_id=?3",rusqlite::params![field,"a".repeat(64),handle["runId"].as_str().unwrap()]).unwrap();
+                }
+                "foreign" => {
+                    next.session.project_id = "foreign-project".into();
+                }
+                "transaction" => {
+                    conn.execute_batch("BEGIN").unwrap();
+                }
+                _ => {}
+            }
+            let changes: i64 = conn
+                .query_row("SELECT total_changes()", [], |r| r.get(0))
+                .unwrap();
+            let leases = next.lease_store.lock().unwrap().live_lease_count();
+            assert!(
+                next.resume(&conn, handle).is_err(),
+                "{kind}/{failure}不得恢复"
+            );
+            assert_eq!(
+                conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                changes,
+                "{kind}/{failure}不得写入"
+            );
+            assert_eq!(
+                next.lease_store.lock().unwrap().live_lease_count(),
+                leases,
+                "{kind}/{failure}不得泄漏租约"
+            );
+            if failure == "transaction" {
+                conn.execute_batch("ROLLBACK").unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn specialized_resume_preserves_historical_attempt_artifact_and_receipt_without_duplicate_dispatch_test(
+) {
+    for kind in ["graph", "editor"] {
+        let (_temp, conn, mut owner, _) = source_owner_fixture();
+        seed_graph_facts(&conn);
+        let input = if kind == "graph" {
+            json!({"kind":"plot"})
+        } else {
+            editor_input("refine")
+        };
+        let recovery = begin(&owner, &conn, kind, &input, "resume-settled").unwrap();
+        let old = &recovery["view"]["handle"];
+        let prepared = prepare_specialized(&owner, &conn, kind, old).unwrap();
+        let receipt = reserve_prepared(&owner, &conn, &prepared, None, None);
+        let attempt_id = receipt.attempt.attempt_id.clone();
+        owner
+            .repository
+            .mark_dispatched(&conn, &attempt_id)
+            .unwrap();
+        owner
+            .repository
+            .snapshot(
+                &conn,
+                &attempt_id,
+                receipt.artifact.unwrap().revision,
+                "合成历史输出",
+            )
+            .unwrap();
+        owner
+            .repository
+            .settle(&conn, &attempt_id, None, Some("stop".into()), None, None)
+            .unwrap();
+        drop(prepared);
+        let original = owner.repository.receipt(&conn, &attempt_id, None).unwrap();
+        let metadata: String = conn
+            .query_row(
+                "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?1",
+                [&attempt_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut next = MainGenerationOwner::new(ProjectSessionContext {
+            lease_id: "history-resumed-epoch".into(),
+            ..owner.session.clone()
+        });
+        next.global_data_root = owner.global_data_root.clone();
+        owner.suspend_with_database(&conn).unwrap();
+        let resumed = next.resume(&conn, old).unwrap();
+        let handle = &resumed["handle"];
+        let historical = next.repository.receipt(&conn, &attempt_id, None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&historical.attempt).unwrap(),
+            serde_json::to_value(&original.attempt).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&historical.artifact).unwrap(),
+            serde_json::to_value(&original.artifact).unwrap()
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT usage_receipt_json FROM generation_attempts WHERE attempt_id=?1",
+                [&attempt_id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            metadata
+        );
+        let changes: i64 = conn
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        let replay = prepare_specialized(&next, &conn, kind, handle).unwrap();
+        assert!(matches!(&replay.plan, PreparedExecutionPlan::Replay(_)));
+        let result = replay.execute_blocking(&conn).unwrap();
+        let outcome = next
+            .finish_prepared_execution(&conn, &replay, &result)
+            .unwrap();
+        assert_eq!(outcome["outcome"]["content"], "合成历史输出");
+        assert_eq!(outcome["run"]["ledger"]["physicalRequests"], 1);
+        assert_eq!(
+            conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            changes
+        );
+    }
+}
+
+#[test]
+fn specialized_resume_refuses_real_connection_frozen_full_context_without_lease_or_writes_test() {
+    use crate::services::{
+        portable_project_guard, portable_project_history, portable_runtime_freeze,
+    };
+    for kind in ["graph", "editor"] {
+        let (_temp, conn, mut owner, _) = source_owner_fixture();
+        seed_graph_facts(&conn);
+        let input = if kind == "graph" {
+            json!({"kind":"plot"})
+        } else {
+            editor_input("refine")
+        };
+        let recovery = begin(&owner, &conn, kind, &input, "resume-frozen").unwrap();
+        let handle = &recovery["view"]["handle"];
+        let mut next = MainGenerationOwner::new(ProjectSessionContext {
+            lease_id: "frozen-next-epoch".into(),
+            ..owner.session.clone()
+        });
+        next.global_data_root = owner.global_data_root.clone();
+        owner.suspend_with_database(&conn).unwrap();
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "specialized-resume",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        assert!(portable_project_guard::frozen_row(
+            &conn,
+            "generation_runs",
+            handle["runId"].as_str().unwrap()
+        ));
+        let changes: i64 = conn
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        assert!(next.resume(&conn, handle).is_err());
+        assert_eq!(
+            conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            changes
+        );
+        assert_eq!(next.lease_store.lock().unwrap().live_lease_count(), 0);
+    }
+}

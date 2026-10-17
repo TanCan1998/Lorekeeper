@@ -3141,7 +3141,7 @@ impl MainGenerationOwner {
         self.repository
             .assert_plot_outline_writable(conn, &run.run_id)
             .map_err(|error| mutating_error(map_generation_error(&error)))?;
-        // 特殊域的可变性合同尚未接入，不能因恢复接线绕过其准入。
+        // 已接入领域先验证自身合同；未接入领域不能借恢复绕过准入。
         let manifest = &run.binding.source_manifest;
         let operation = manifest
             .get("operation")
@@ -3149,6 +3149,26 @@ impl MainGenerationOwner {
             .unwrap_or_default();
         if agent_initialization && operation != "agent-round" {
             return Err(mutating_error("GENERATION_AGENT_ADMISSION_REQUIRED"));
+        }
+        // 已获有界恢复授权：先验证专用冻结任务/可变性，再复用通用来源、模型和预算重认证。
+        // 外层事务回滚不得遗留已移交的模型租约；其余特殊域准入不变。
+        let specialized = GRAPH_OPERATIONS.contains(&operation) || operation == "editor-inline";
+        if specialized && !conn.is_autocommit() {
+            return Err(mutating_error(GENERATION_REQUEST_FAILED));
+        }
+        if GRAPH_OPERATIONS.contains(&operation) {
+            let graphs = crate::services::graph_generation::GraphGeneration::new(
+                conn,
+                self.repository.clone(),
+                &self.session.project_id,
+            );
+            graphs.task(&run).map_err(|error| mutating_error(&error))?;
+            graphs
+                .assert_mutable(&run)
+                .map_err(|error| mutating_error(&error))?;
+        } else if operation == "editor-inline" {
+            crate::services::editor_inline_generation::read_editor_inline_task(&run)
+                .map_err(|error| mutating_error(&error))?;
         }
         // 未完成阶段的租约移交只在独立写入边界成功后生效。
         if agent_initialization && !conn.is_autocommit() {
@@ -3171,8 +3191,6 @@ impl MainGenerationOwner {
             "finalized-chapter-notes" | "finalized-character-state"
         ) {
             Some("GENERATION_FINALIZATION_ADMISSION_REQUIRED")
-        } else if GRAPH_OPERATIONS.contains(&operation) {
-            Some("GENERATION_GRAPH_ADMISSION_REQUIRED")
         } else if operation == "legacy-character-roster-repair" {
             Some("GENERATION_LEGACY_ADMISSION_REQUIRED")
         } else {

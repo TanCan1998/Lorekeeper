@@ -158,7 +158,7 @@ export default function CodeMirrorEditor({
       setAiResult(latest?.text ?? '')
       const applicable = latest?.status === 'completed' && latest.compositionEligible === true && recovery.view.status !== 'cancelled' && recovery.sourceStatus === 'current'
       setAiError(applicable ? null : uiText('恢复的候选尚不可应用，可复制或继续原运行', 'The recovered candidate cannot be applied yet; copy it or continue the original run.'))
-      setCanResumeAI(recovery.sourceStatus === 'current' && recovery.view.status !== 'cancelled' && recovery.view.ledger?.physicalRequests === 0 && candidates.length === 0)
+      setCanResumeAI((recovery.sourceStatus === 'current' || recovery.view.handle.epoch !== session.leaseId) && recovery.view.status !== 'cancelled' && recovery.view.ledger?.physicalRequests === 0 && candidates.length === 0)
       setActiveAIAction(uiText(...AI_ACTIONS.find(action => action.key === target.action)!.label))
       const view = editorRef.current?.view
       const from = Math.min(target.from, view?.state.doc.length ?? 0)
@@ -435,6 +435,12 @@ export default function CodeMirrorEditor({
     const sequence = aiRequestSequenceRef.current
     setCanResumeAI(false)
     try {
+      const target = aiTargetRef.current
+      const view = editorRef.current?.view
+      if (!target || !view || !editableRef.current || target.filePath !== filePathRef.current
+        || target.sessionKey !== JSON.stringify(getActiveProjectSessionContext())
+        || view.state.doc.toString() !== target.documentText
+        || view.state.sliceDoc(target.from, target.to) !== target.selectedText) throw new Error('EDITOR_INLINE_SOURCE_CHANGED')
       const receipt = await inlineRef.current?.execute()
       if (sequence !== aiRequestSequenceRef.current) return
       if (!receipt || receipt.outcome.status !== 'completed' || receipt.outcome.finishReason !== 'stop') throw new Error('EDITOR_INLINE_INCOMPLETE')

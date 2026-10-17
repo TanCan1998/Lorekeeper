@@ -318,3 +318,17 @@ it('点击接受前原候选已丢弃，保留预览但不写入正文', async (
   expect(EditorView.findFromDOM(container.querySelector('.cm-editor')!)!.state.doc.toString()).toBe(documentText)
   await expect.element(page.getByText('候选')).toBeVisible()
 })
+
+// 新租约恢复仍须尊重当前编辑目标，不得先分发再发现正文或权限变化。
+it.each(['正文变化', '文件切换', '变为只读'])('旧epoch未分发候选恢复前拒绝%s', async failure => {
+  const documentText = '原始正文'
+  const documentHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(documentText))), byte => byte.toString(16).padStart(2, '0')).join('')
+  const handle = { projectId: 'editor-project', epoch: 'old-epoch', rootActionId: 'old-root', runId: 'old-run' }
+  invoke.mockResolvedValue({ view: { handle, status: 'paused', ledger: { physicalRequests: 0 }, artifacts: [] }, modelId: 'editor-model', sourceStatus: 'conflict', context: { action: 'refine', kind: 'author-draft', documentText, documentHash, from: 0, to: 2, selectedText: '原始' } })
+  await act(async () => root.render(<CodeMirrorEditor content={failure === '正文变化' ? '作者新正文' : documentText} mode="prose" filePath="draft-one" recoveryHandle={handle} />))
+  await expect.element(page.getByRole('button', { name: '继续原运行' })).toBeVisible()
+  if (failure !== '正文变化') await act(async () => root.render(<CodeMirrorEditor content={documentText} mode="prose" filePath={failure === '文件切换' ? 'draft-two' : 'draft-one'} editable={failure !== '变为只读'} recoveryHandle={handle} />))
+  await act(async () => page.getByRole('button', { name: '继续原运行' }).click())
+  await expect.element(page.getByText('原运行未完整完成，结果不可应用')).toBeVisible()
+  expect(invoke.mock.calls.map(([channel]) => channel)).toEqual(['editor_inline_read_recovery'])
+})

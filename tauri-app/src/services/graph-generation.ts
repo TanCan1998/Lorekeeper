@@ -32,6 +32,15 @@ export function createGraphGeneration(sessionInput: ProjectSessionContext) {
     recovery = validate(await ipc.invokeWithProjectSession(session, 'graph-generation:read', { handle: recovery.view.handle }), recovery.view.handle)
     return recovery
   }
+  // 只有显式继续/确认才向主进程申请新租约重认证，读取历史本身不授予恢复权威。
+  const resumeEpoch = async () => {
+    if (!recovery || recovery.view.handle.epoch === session.leaseId) return
+    const previous = recovery.view.handle
+    const view = await ipc.invokeWithProjectSession(session, 'generation:resume', previous)
+    if (!sameRun(previous, view.handle) || view.handle.epoch !== session.leaseId) throw new Error('GRAPH_GENERATION_IDENTITY_MISMATCH')
+    recovery.view = view
+    await read()
+  }
   const cancelKnown = async () => {
     if (!recovery) return
     if (!cancelPromise) cancelPromise = (async () => {
@@ -60,6 +69,8 @@ export function createGraphGeneration(sessionInput: ProjectSessionContext) {
       if (!opening) throw new Error('GRAPH_GENERATION_NOT_OPEN')
       await opening
       if (!recovery || cancelled || detached) throw new Error('GRAPH_GENERATION_NOT_EXECUTABLE')
+      await resumeEpoch()
+      if (cancelled || detached) throw new Error('GRAPH_GENERATION_CANCELLED')
       if (recovery.result) return read()
       if (!canExecuteGraph(recovery)) throw new Error('GRAPH_GENERATION_OUTCOME_UNKNOWN')
       const handle = recovery.view.handle
@@ -70,6 +81,12 @@ export function createGraphGeneration(sessionInput: ProjectSessionContext) {
       return read()
     },
     async confirm(index: number, expectedHandle?: MainGenerationRunHandle) {
+      const original = await read()
+      if (expectedHandle && !sameRun(original.view.handle, expectedHandle)) throw new Error('GRAPH_GENERATION_IDENTITY_MISMATCH')
+      const saved = original.effects.find(effect => effect.index === index)
+      if (saved) return saved
+      if (cancelled || detached) throw new Error('GRAPH_GENERATION_NOT_CONFIRMABLE')
+      await resumeEpoch()
       const current = await read()
       if (expectedHandle && !sameRun(current.view.handle, expectedHandle)) throw new Error('GRAPH_GENERATION_IDENTITY_MISMATCH')
       const existing = current.effects.find(effect => effect.index === index)
