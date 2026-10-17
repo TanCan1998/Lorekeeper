@@ -1792,11 +1792,19 @@ fn review_revision_author_material(context: &ReviewRevisionContext) -> String {
         ("worldbuilding", Some(context.worldbuilding.as_str())),
     ];
     sources.sort_by(|left, right| {
-        (right.1.map(|value| value.len()).unwrap_or(0))
-            .cmp(&(left.1.map(|value| value.len()).unwrap_or(0)))
+        (right
+            .1
+            .map(|value| value.encode_utf16().count())
+            .unwrap_or(0))
+        .cmp(
+            &(left
+                .1
+                .map(|value| value.encode_utf16().count())
+                .unwrap_or(0)),
+        )
     });
     let author_text = |source: &str, value: Option<&str>| -> Option<String> {
-        let original = value.and_then(|value| {
+        let original = value.filter(|value| !value.is_empty()).and_then(|value| {
             sources.iter().find(|(_, candidate)| {
                 candidate.is_some_and(|candidate| candidate.starts_with(value))
             })
@@ -1847,7 +1855,38 @@ fn review_revision_author_material(context: &ReviewRevisionContext) -> String {
             }
         }
     }
-    parts.push(serde_json::to_string_pretty(&config_value).unwrap_or_default());
+    // 前端对 typed IPC 对象执行 JSON.stringify，必须保留配置声明序。
+    struct OrderedConfig<'a>(&'a Value);
+    impl Serialize for OrderedConfig<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+            let mut map = serializer.serialize_map(None)?;
+            for key in [
+                "genre",
+                "subGenre",
+                "targetAudience",
+                "totalChapters",
+                "wordsPerChapter",
+                "writingLanguage",
+                "creativeStrategy",
+                "narrativeThreadDormantChapterThreshold",
+                "plotStructure",
+                "narrativePov",
+                "writingStyle",
+                "referenceWorks",
+                "goldenFinger",
+                "coreOutline",
+                "worldSetting",
+                "protagonistProfile",
+            ] {
+                if let Some(value) = self.0.get(key) {
+                    map.serialize_entry(key, value)?;
+                }
+            }
+            map.end()
+        }
+    }
+    parts.push(serde_json::to_string_pretty(&OrderedConfig(&config_value)).unwrap_or_default());
     parts.push(text(
         "【作者全局创作指导｜约束而非已发生事实】",
         "[Author global creative guidance | constraints, not established history]",
@@ -1866,26 +1905,22 @@ fn review_revision_author_material(context: &ReviewRevisionContext) -> String {
         "【本章作者指导｜约束】",
         "[Current chapter author guidance | constraints]",
     ));
-    let chapter_blueprints: Vec<Value> = context
+    let chapter_blueprints: Vec<_> = context
         .blueprints
         .iter()
         .filter(|blueprint| blueprint.chapter_number == context.source.chapter_number)
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_default();
-    parts.push(serde_json::to_string_pretty(&Value::Array(chapter_blueprints)).unwrap_or_default());
+        .collect();
+    parts.push(serde_json::to_string_pretty(&chapter_blueprints).unwrap_or_default());
     parts.push(text(
         "【后续蓝图/计划｜非既定历史】",
         "[Future blueprints/plans | not established history]",
     ));
-    let future_blueprints: Vec<Value> = context
+    let future_blueprints: Vec<_> = context
         .blueprints
         .iter()
         .filter(|blueprint| blueprint.chapter_number != context.source.chapter_number)
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_default();
-    parts.push(serde_json::to_string_pretty(&Value::Array(future_blueprints)).unwrap_or_default());
+        .collect();
+    parts.push(serde_json::to_string_pretty(&future_blueprints).unwrap_or_default());
     parts.push(text(
         "【本章冻结目标｜须由正文证明】",
         "[Frozen chapter goals | require manuscript evidence]",
@@ -3728,6 +3763,41 @@ fn source_ref_without_epoch(reference: &SourceRef) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 对齐 typed IPC 对象的 JSON.stringify 键序及空来源语义。
+    #[test]
+    fn review_author_material_matches_renderer_value_order_and_empty_sources_test() {
+        let context: ReviewRevisionContext = serde_json::from_value(serde_json::json!({
+            "version":1,"operation":"review-chapter",
+            "source":{"id":1,"chapterNumber":2,"version":1,"status":"draft","content":"合成正文","contentHash":"a".repeat(64)},
+            "sourceHash":"a".repeat(64),"writingLanguage":"zh-CN","uiLocale":"zh-CN",
+            "config":{"genre":"","subGenre":"","targetAudience":"","totalChapters":2,
+                "wordsPerChapter":2000,"writingLanguage":"zh-CN","creativeStrategy":"",
+                "narrativeThreadDormantChapterThreshold":3,"plotStructure":"","narrativePov":"",
+                "writingStyle":"","referenceWorks":"","globalGuidance":"","goldenFinger":"",
+                "coreOutline":"","worldSetting":"","protagonistProfile":""},
+            "authorInputs":[],"characterStates":"","worldbuilding":"","history":[],
+            "blueprints":[{"chapterNumber":2,"title":"合成标题","role":"发展","purpose":"","keyEvents":"",
+                "characters":[],"suspenseHook":"","userGuidance":"","notes":""}],
+            "frozenGoals":{"chapterNumber":2,"coverage":"complete","items":[{"id":"goal:1","text":"合成目标"}]},
+            "preflightFindings":[]
+        })).unwrap();
+        let material = review_revision_author_material(&context);
+        assert!(
+            !material.contains("本来源原文与"),
+            "空字符串不是已匹配的作者来源"
+        );
+        assert!(
+            material.contains("\"genre\": \"\",\n  \"subGenre\":"),
+            "配置遵循声明序"
+        );
+        assert!(
+            material.contains("\"chapterNumber\": 2,\n    \"title\": \"合成标题\""),
+            "蓝图遵循声明序"
+        );
+        assert!(material.ends_with(r#"{"chapterNumber":2,"coverage":"complete","items":[{"id":"goal:1","text":"合成目标"}]}"#),
+            "目标块必须匹配渲染层键序");
+    }
 
     #[test]
     fn hash_matches_sha256_hex_test() {

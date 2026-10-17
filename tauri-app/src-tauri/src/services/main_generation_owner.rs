@@ -1361,13 +1361,16 @@ impl MainGenerationOwner {
         if budget.root.status == "cancelled" {
             return Err(mutating_error("GENERATION_ACTION_CANCELLED"));
         }
+        // 修稿与写稿共享正文净化/续接合同；审稿等结构化操作仍不得使用。
         if is_draft_visible_text_version(algorithm)
-            && first
-                .binding
-                .source_manifest
-                .get("operation")
-                .and_then(Value::as_str)
-                != Some("chapter-draft")
+            && !matches!(
+                first
+                    .binding
+                    .source_manifest
+                    .get("operation")
+                    .and_then(Value::as_str),
+                Some("chapter-draft" | "refine-draft" | "refine-from-review")
+            )
         {
             return Err(mutating_error("GENERATION_COMPOSITION_ALGORITHM_INVALID"));
         }

@@ -299,3 +299,29 @@ fn review_owner_real_commit_seals_candidate_but_keeps_saved_ack_and_invocation_r
         child_view["handle"]
     );
 }
+
+#[test]
+fn revision_owner_accepts_draft_visible_composition_but_review_rejects_test() {
+    for operation in [
+        ReviewRevisionOperation::RefineDraft,
+        ReviewRevisionOperation::ReviewChapter,
+    ] {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        let (_service, selection) = prepare_review(&owner, &conn, operation);
+        let view = owner.begin(&conn, &selection, false, false).unwrap();
+        let result =
+            owner.compose_visible(&conn, &view["handle"], &[], None, Some("draft-visible-v2"));
+        let error = result.unwrap_err();
+        if operation == ReviewRevisionOperation::RefineDraft {
+            assert!(
+                !error.contains("GENERATION_COMPOSITION_ALGORITHM_INVALID"),
+                "修稿使用同一正文合成算法：{error}"
+            );
+        } else {
+            assert_eq!(
+                error,
+                mutating_error("GENERATION_COMPOSITION_ALGORITHM_INVALID")
+            );
+        }
+    }
+}
