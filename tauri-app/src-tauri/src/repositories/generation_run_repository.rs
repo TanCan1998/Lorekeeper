@@ -4645,6 +4645,12 @@ impl GenerationRunRepository {
         conn: &Connection,
         run_id: Option<&str>,
     ) -> Result<Vec<Option<VisibleArtifact>>, String> {
+        // 按运行读取也须先跳过冻结历史，不能先解析已中和的绑定与预算。
+        if run_id
+            .is_some_and(|id| frozen_row(conn, self.is_frozen, FREEZE_TABLE_GENERATION_RUNS, id))
+        {
+            return Ok(Vec::new());
+        }
         let mut stmt = conn
             .prepare(
                 "SELECT attempt_id FROM generation_artifacts WHERE status!='discarded' AND (? IS NULL OR run_id=?) ORDER BY rowid",

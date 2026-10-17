@@ -433,6 +433,79 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_generation_candidates_skip_frozen_run_before_decoding_budget_test() {
+        use crate::repositories::generation_run_repository::GenerationRunRepository;
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_runtime_freeze,
+        };
+
+        let (base, source, target) = temp_paths("candidate-read");
+        seed(&source);
+        {
+            let conn = Connection::open(&source).unwrap();
+            conn.execute_batch(
+                "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+                 VALUES ('root-1','key-1','{}','{}');
+                 INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+                 VALUES ('run-1','root-1','{}','completed',0,'open-1');
+                 INSERT INTO generation_attempts VALUES
+                 ('attempt-1','reservation-1','run-1','root-1','{}','{}','nonce-1');
+                 INSERT INTO generation_artifacts (artifact_id,attempt_id,run_id,artifact_json,revision,status)
+                 VALUES ('artifact-1','attempt-1','run-1','{}',1,'complete');",
+            )
+            .unwrap();
+        }
+        sanitize_portable_database(&SanitizePortableDatabaseInput {
+            source_database_path: &source,
+            target_database_path: &target,
+            limits: None,
+        })
+        .unwrap();
+        let conn = Connection::open(&target).unwrap();
+        let repository = GenerationRunRepository::default();
+        // 未安装便携守卫时，空绑定仍须作为损坏数据报错。
+        assert!(repository.list_candidates(&conn, Some("run-1")).is_err());
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "gen-candidate-read",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        // 全局与按运行读面一致：冻结候选不再解析中和后的绑定、预算和收据。
+        assert!(repository.list_candidates(&conn, None).unwrap().is_empty());
+        assert!(repository
+            .list_candidates(&conn, Some("run-1"))
+            .unwrap()
+            .is_empty());
+        assert!(repository
+            .list_candidates(&conn, Some("missing-run"))
+            .is_err());
+        assert_eq!(
+            read_column_value(&conn, "generation_runs", "binding_json", 1).unwrap(),
+            Some(Value::Text(String::new()))
+        );
+        // 候选读面不得解冻历史，亦不得影响源库。
+        assert!(conn
+            .execute("UPDATE generation_artifacts SET status='discarded'", [])
+            .unwrap_err()
+            .to_string()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+        let source_conn = Connection::open(&source).unwrap();
+        assert_eq!(
+            read_column_value(&source_conn, "generation_runs", "binding_json", 1).unwrap(),
+            Some(Value::Text("{}".into()))
+        );
+        drop(source_conn);
+        drop(conn);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn sanitize_rejects_unsafe_relative_value_and_existing_target_test() {
         let (base, source, target) = temp_paths("reject");
         seed(&source);
