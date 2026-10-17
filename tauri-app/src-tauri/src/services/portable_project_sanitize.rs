@@ -506,6 +506,104 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_import_history_is_readable_but_not_listed_as_resumable_test() {
+        use crate::repositories::import_run_repository as imports;
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_runtime_freeze,
+        };
+
+        fn insert_import(conn: &Connection, id: &str, purpose: &str, status: &str) {
+            conn.execute(
+                "INSERT INTO import_runs (id,purpose,root_run_id,effect_namespace,
+                 source_fingerprint,manifest_fingerprint,locale,stage,status,
+                 total_chapters,manifest_chapter_count)
+                 VALUES (?1,?2,?1,?1,?3,?3,'zh-CN','prepared',?4,1,1)",
+                rusqlite::params![id, purpose, "a".repeat(64), status],
+            )
+            .unwrap();
+        }
+
+        let (base, source, target) = temp_paths("import-read");
+        seed(&source);
+        let ids: Vec<_> = ["reference", "author-manuscript"]
+            .into_iter()
+            .flat_map(|purpose| {
+                ["ready", "running", "failed", "cancelled"]
+                    .into_iter()
+                    .map(move |status| (format!("old-{purpose}-{status}"), purpose, status))
+            })
+            .collect();
+        {
+            let conn = Connection::open(&source).unwrap();
+            for (id, purpose, status) in &ids {
+                insert_import(&conn, id, purpose, status);
+            }
+            assert_eq!(imports::list_resumable(&conn).unwrap().len(), ids.len());
+        }
+        sanitize_portable_database(&SanitizePortableDatabaseInput {
+            source_database_path: &source,
+            target_database_path: &target,
+            limits: None,
+        })
+        .unwrap();
+        let conn = Connection::open(&target).unwrap();
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "gen-import-read",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        // 两种用途、四种候选状态的冻结行均不能再显示为可继续任务。
+        assert!(imports::list_resumable(&conn).unwrap().is_empty());
+        for (id, _, status) in &ids {
+            let history = imports::get(&conn, id).unwrap().unwrap();
+            assert_eq!(&history.status, status);
+            assert!(history.resumable, "历史字段保留，不改写成当前执行权威");
+            assert!(history.effect_namespace.is_empty());
+            assert!(history.source_display.is_empty());
+            assert!(
+                imports::start_or_resume(&conn, id, "test-owner", 100, 30_000)
+                    .unwrap_err()
+                    .contains("PORTABLE_RUNTIME_FROZEN")
+            );
+        }
+        // 同一连接上的新身份仍正常列举与执行，不能把整个恢复项目禁用。
+        insert_import(&conn, "new-import", "reference", "ready");
+        let live = imports::list_resumable(&conn).unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, "new-import");
+        let started =
+            imports::start_or_resume(&conn, "new-import", "test-owner", 100, 30_000).unwrap();
+        assert_eq!(started.run.status, "running");
+        assert_eq!(started.run.stage, "knowledge");
+        // 未冻结运行的损坏数据继续拒绝，不能用跳过历史掩盖当前数据错误。
+        conn.execute(
+            "UPDATE import_runs SET completed_batches_json='invalid' WHERE id='new-import'",
+            [],
+        )
+        .unwrap();
+        assert!(imports::list_resumable(&conn).is_err());
+        let source_conn = Connection::open(&source).unwrap();
+        assert_eq!(
+            imports::list_resumable(&source_conn).unwrap().len(),
+            ids.len()
+        );
+        assert!(!imports::get(&source_conn, &ids[0].0)
+            .unwrap()
+            .unwrap()
+            .effect_namespace
+            .is_empty());
+        drop(source_conn);
+        drop(conn);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn sanitize_rejects_unsafe_relative_value_and_existing_target_test() {
         let (base, source, target) = temp_paths("reject");
         seed(&source);

@@ -670,7 +670,13 @@ pub fn list_resumable(conn: &Connection) -> Result<Vec<ImportRunSnapshot>, Strin
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    rows.iter().map(|row| row_to_snapshot(conn, row)).collect()
+    // 对齐基线：冻结导入保留历史读面，但不再作为当前项目的可继续任务。
+    rows.iter()
+        .filter(|row| {
+            !crate::services::portable_project_guard::frozen_row(conn, "import_runs", &row.id)
+        })
+        .map(|row| row_to_snapshot(conn, row))
+        .collect()
 }
 
 /// 平移自 `listChapterBatch`（`db:import-run-list-chapters`；`limit` 夹到 1..=100）

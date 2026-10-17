@@ -2073,18 +2073,7 @@ fn frozen_row(
     table: GenerationFreezeTable,
     id: &str,
 ) -> bool {
-    if is_frozen(table, id) {
-        return true;
-    }
-    match conn.query_row(
-        "SELECT _lorekeeper_history_frozen(?1, ?2)",
-        params![table, id],
-        |row| row.get::<_, i64>(0),
-    ) {
-        Ok(value) => value != 0,
-        // 普通项目连接没有该守卫函数；查询失败一律不视为冻结。
-        Err(_) => false,
-    }
+    is_frozen(table, id) || crate::services::portable_project_guard::frozen_row(conn, table, id)
 }
 
 /// 事务包装（基线 `db.transaction(fn).immediate()` 的等价物；

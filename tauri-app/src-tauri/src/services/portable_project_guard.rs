@@ -19,6 +19,18 @@ fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// 仅读取连接上已安装的冻结事实，供历史读面统一过滤，不授予写入权威。
+/// 普通项目没有该函数，查询失败时不视为冻结，后续解析仍按原规则拒绝损坏数据。
+pub(crate) fn frozen_row(conn: &Connection, table: &str, id: &str) -> bool {
+    conn.query_row(
+        "SELECT _lorekeeper_history_frozen(?1, ?2)",
+        rusqlite::params![table, id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .unwrap_or(false)
+}
+
 /// 由项目连接打开入口调用。普通项目不装触发器；恢复项目先验证目标身份及转移历史。
 pub fn admit_connection(conn: &Connection, project_root: &Path) -> Result<(), String> {
     let root = project_root.to_string_lossy();
