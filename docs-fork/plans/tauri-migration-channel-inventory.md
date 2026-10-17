@@ -64,9 +64,13 @@ Rust命令已注册不等于生产前端可调用。第82次代码729cda50注册
 
 ## 批量生成实际接线缺口（第87次）
 
-2026-10-17在SHA43a00848真实隐藏WebView后台实测，`generation:begin-batch`从草稿待审界面启动立即返回`Error: GENERATION_REQUEST_FAILED`，尚未创建批次/草稿或调用模型。`MainGenerationOwner::begin_batch`已注册，但其调用的`begin_internal`遗留通用分支仍无条件拒绝`batchIntent`/`batchId`；因此本频道为**已注册但业务接线未完成**，暂停/恢复未通过。不能以既有频道扫描289/290或前端路由285/290推断此业务可用，也不改分母掩盖缺口。
+**第88次已在具体授权范围内修复草稿待审路径**。第87次SHA43a00848真实后台实测启动立即GENERATION_REQUEST_FAILED，原因是begin_internal遗留通用分支无条件拒绝batchIntent/batchId；该失败记录保留，不以频道注册数冒充业务完成。
 
-后续须具体确认批次根/子代准入修复范围，拟仅补`draft_review`及父根/章节顺序/前驱草稿/作者输入/预算绑定，`auto_finalize`保持当前拒绝；不借此变更会话权限、定稿规则或四生产审稿频道。实际代码、验证及授权状态见[CURRENT](../handoffs/CURRENT.md)与pipeline。
+修复代码80dab6d5只接通draft_review批次根/子代专用准入：真实父根/项目/模型、下一章、精确前驱草稿、冻结作者输入和同根预算，事务前及事务内复核；auto_finalize仍拒绝，无schema/依赖/文件权限/会话/定稿规则变动。首次owner恢复扫描与批次读面排除冻结中和账本，当前坏数据保持拒绝。
+
+5项新增owner回归通过；云端39014411676对应完整SHA，1648/0与all-targets无告警，artifact已核对。真实隐藏WebView通过正式UI两章草稿待审，第一章后稳定暂停、继续完成两稿、定稿0；同路径重开后两稿/同一批次根持久化，旧租约读写拒绝。测试窗口/三端口已收口，默认开发构建恢复。
+
+此结果不开放自动定稿或四生产审稿频道，不替代完整审修/复杂原生归档GUI，也不扩大真实模型/MCP/业务云授权。既有扫描口径289/290、前端路由285/290及分母不变；实际验证边界见[CURRENT](../handoffs/CURRENT.md)与pipeline。
 
 ## 云备份频道映射补充（B115–B116）
 

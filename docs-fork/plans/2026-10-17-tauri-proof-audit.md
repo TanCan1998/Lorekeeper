@@ -1,6 +1,17 @@
-# Tauri 首版证明与本机验收审计（第87次）
+# Tauri 首版证明与本机验收审计（第88次）
 
 上轮全量验证代码：`183d488633dc26d264b12b68bfc2d0640ddfb1f5`（上一版为24291a43）。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+
+## 第88次：授权草稿批次准入与真实后台暂停/恢复
+
+- 当前代码80dab6d5 / [39014411676](https://github.com/TanCan1998/Lorekeeper/actions/runs/39014411676)：**1648/0**、库254.45秒、all-targets38.98秒无告警；run成功，artifact完整SHA/两个退出码0/state=passed已下载核对，语义切片累计0。提交规范/秘密扫描同SHA通过。
+- 用户具体授权只接通draft_review根/子代准入，保持auto_finalize拒绝。根仅内部初始化；子代绑定真实项目、父根、模型、下一章、精确前驱草稿与冻结作者输入，事务前/事务内复核，两个真实草稿共享根预算。5项新增owner回归覆盖错误准入无副作用、幂等、跨项目及回滚。
+- 首次owner声明恢复与草稿批次读取在解析中和JSON前排除冻结run/attempt；非冻结坏绑定/收据仍拒绝，冻结历史不回写、不获执行权威。使用中和样本+正式冻结侧车守卫，不冒充完整便携GUI链。
+- 本机owner192/0、agent56/0、草稿效应2/0、run38/0、generation命令4/0、portable77/0；4文件rustfmt/diff、本机all-targets与隐藏/默认开发构建通过，无前端源码变化。
+- 隐藏真实WebView经正式UI选择两章草稿待审，请求暂停后第一章完成即paused，稳定等待仍仅一稿；继续完成两稿，同一root、下一章null、定稿始终0。关闭/重开后两稿与批次持久化一致；旧租约读写拒绝、chapter99未写入。
+- 合成模型重复正文曾被质量门禁正确拒绝；仅修正本机夹具的不同章节响应、空messages请求计数与联合等待，不降低生产规则。最终独立轮次passed=true。
+- 全程Tauri主窗口隐藏/不聚焦，同SHAWin32按标题和类核对交互主窗口隐藏、非前台；Tao内部事件目标不作为用户窗口。无全局输入，窗口正常关闭、三端口收口、默认构建恢复。
+- 完整审修、复杂资产原生归档GUI仍未验收；四生产审稿频道、自动定稿、真实模型/MCP/业务云与发布不开放。详细证据目录见当前快照与pipeline。
 
 ## 第87次：冻结恢复候选、复杂往返与后台WebView
 
@@ -70,12 +81,12 @@
 
 - 便携恢复的两处缺陷已修复并有回归，但同类更广读面（审修材料、图生成、导入推理等）尚未逐一在恢复副本上验证；不得据两处修复推断全部便携读面已通。
 - 完整审稿→作者确认→修稿→差异合并→复核GUI未验收，四生产审稿频道继续关闭。
-- 暂停/恢复、失效会话交错GUI未完成；含冻结历史、脱敏审稿与资产的复杂归档未完成。两稿正文一致不能替代它们。
+- 草稿待审批次暂停/恢复及有界旧会话交错已于第88次后台验收；任意在途/跨项目组合未穷尽。复杂归档后端往返于第87次补齐，含复杂资产/审修的原生归档GUI仍未完成。
 - 真实模型/外部MCP/业务云/发布未授权；macOS/Linux未认证，不宣称全链安全或发布认证。
 
-## 证据绑定
+## 历史证据绑定（第84次）
 
-- [最新云端38997082671](https://github.com/TanCan1998/Lorekeeper/actions/runs/38997082671)：最终SHA=183d4886，1637/0、库227.11秒，all-targets成功无告警；artifact的expectedSha/testedSha一致，test/check退出0、state=passed。
+- [第84次云端38997082671](https://github.com/TanCan1998/Lorekeeper/actions/runs/38997082671)：最终SHA=183d4886，1637/0、库227.11秒，all-targets成功无告警；artifact的expectedSha/testedSha一致，test/check退出0、state=passed。
 - 中间SHA：6b2c5785 / 38950154610 / 1616；512e759f / 38954708710 / 1629；9c01fe45 / 38955678898 / 1630。均已下载核对，不混用版本。
 - 本机`.pi/tmp/recovery/ci-{提交前缀}/`保存云端日志；artifact保存14天。未脱敏日志/用户数据不入库。
 - 定向/前端：identity-directed、knowledge-*、kb-schema-*、composition-recovery-test、transport-*、final-83-*日志与结果JSON。
