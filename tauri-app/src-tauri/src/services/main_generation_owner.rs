@@ -1635,6 +1635,8 @@ impl MainGenerationOwner {
                     || (agent_initialization
                         && matches!(key.as_str(), "agentInput" | "agentSession"))
                     || (editor_inline_admission && key.as_str() == "editorInlineInput")
+                    || (graph_admission
+                        && matches!(key.as_str(), "graphGenerationInput" | "graphGenerationKey"))
                     || (legacy_initialization && key.as_str() == "legacyRosterKey")
             })
         });
@@ -4694,6 +4696,53 @@ impl MainGenerationOwner {
 
     // ===== B94: editor-inline 生成子域 =====
 
+    /// 专用入口的nonce查询先排除冻结运行/根，再执行模块内固定JSON1谓词。
+    /// 当前坏账本仍报错；谓词与参数均保持原查询合同，不读取中和历史来授权新任务。
+    fn find_unfrozen_nonce_runs(
+        &self,
+        conn: &Connection,
+        nonce: &str,
+        query: &str,
+    ) -> Result<Vec<String>, String> {
+        let rows = {
+            let mut statement = conn.prepare("SELECT r.run_id,r.root_action_id FROM generation_runs r JOIN generation_roots g ON g.root_action_id=r.root_action_id")
+                .map_err(|error|mutating_error(&error.to_string()))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| mutating_error(&error.to_string()))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| mutating_error(&error.to_string()))?
+        };
+        let mut predicate = conn
+            .prepare(query)
+            .map_err(|error| mutating_error(&error.to_string()))?;
+        let mut matching = Vec::new();
+        for (run_id, root_id) in rows {
+            if crate::services::portable_project_guard::frozen_row(conn, "generation_runs", &run_id)
+                || crate::services::portable_project_guard::frozen_row(
+                    conn,
+                    "generation_roots",
+                    &root_id,
+                )
+            {
+                continue;
+            }
+            let found = predicate
+                .query_row(
+                    rusqlite::params![&self.session.project_id, nonce, &run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| mutating_error(&error.to_string()))?;
+            if let Some(id) = found {
+                matching.push(id);
+            }
+        }
+        Ok(matching)
+    }
+
     pub fn begin_editor_inline(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
         self.assert_current()?;
         let Some(obj) = request.as_object() else {
@@ -4722,24 +4771,10 @@ impl MainGenerationOwner {
             return Err(mutating_error("GENERATION_EDITOR_INPUT_INVALID"));
         };
 
-        // 查询幂等性：查找相同 projectId 和 uiActionNonce 的已有 editor-inline 运行
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.run_id FROM generation_runs r
-                 JOIN generation_roots g ON g.root_action_id=r.root_action_id
-                 WHERE json_extract(g.action_json,'$.operation')='editor-inline'
-                   AND json_extract(g.action_json,'$.projectId')=?1
-                   AND json_extract(g.action_json,'$.uiActionNonce')=?2",
-            )
-            .map_err(|e| mutating_error(&e.to_string()))?;
-        let run_ids = stmt
-            .query_map([&self.session.project_id, ui_action_nonce], |r| {
-                r.get::<_, String>(0)
-            })
-            .map_err(|e| mutating_error(&e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| mutating_error(&e.to_string()))?;
-        drop(stmt);
+        let run_ids = self.find_unfrozen_nonce_runs(conn,ui_action_nonce,
+            "SELECT r.run_id FROM generation_runs r JOIN generation_roots g ON g.root_action_id=r.root_action_id
+             WHERE json_extract(g.action_json,'$.operation')='editor-inline'
+               AND json_extract(g.action_json,'$.projectId')=?1 AND json_extract(g.action_json,'$.uiActionNonce')=?2 AND r.run_id=?3")?;
 
         if run_ids.len() > 1 {
             return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
@@ -4759,8 +4794,16 @@ impl MainGenerationOwner {
             let prior_model_id = prior
                 .binding
                 .source_manifest
-                .get("modelId")
+                .get("modelReceipt")
+                .and_then(|receipt| receipt.get("modelId"))
                 .and_then(Value::as_str)
+                .or_else(|| {
+                    prior
+                        .binding
+                        .source_manifest
+                        .get("modelId")
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or_default();
             if prior_input != input_value || prior_model_id != model_id {
                 return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
@@ -4828,8 +4871,15 @@ impl MainGenerationOwner {
         let model_id = run
             .binding
             .source_manifest
-            .get("modelId")
+            .get("modelReceipt")
+            .and_then(|receipt| receipt.get("modelId"))
             .and_then(Value::as_str)
+            .or_else(|| {
+                run.binding
+                    .source_manifest
+                    .get("modelId")
+                    .and_then(Value::as_str)
+            })
             .unwrap_or_default();
         let view = self.view_of(conn, &run)?;
 
@@ -6410,23 +6460,10 @@ impl MainGenerationOwner {
             crate::services::graph_generation_source::validate_graph_generation_input(input_val)
                 .map_err(|e| mutating_error(&e))?;
 
-        // 查重：同一 uiActionNonce
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.run_id FROM generation_runs r \
-                 JOIN generation_roots g ON g.root_action_id=r.root_action_id \
-                 WHERE json_extract(g.action_json,'$.projectId')=? \
-                   AND json_extract(g.action_json,'$.uiActionNonce')=? \
-                   AND json_extract(r.binding_json,'$.sourceManifest.graphGenerationContext') IS NOT NULL",
-            )
-            .map_err(|e| mutating_error(&e.to_string()))?;
-        let rows: Vec<String> = stmt
-            .query_map(rusqlite::params![&self.session.project_id, nonce], |r| {
-                r.get(0)
-            })
-            .map_err(|e| mutating_error(&e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| mutating_error(&e.to_string()))?;
+        let rows = self.find_unfrozen_nonce_runs(conn,nonce,
+            "SELECT r.run_id FROM generation_runs r JOIN generation_roots g ON g.root_action_id=r.root_action_id
+             WHERE json_extract(g.action_json,'$.projectId')=?1 AND json_extract(g.action_json,'$.uiActionNonce')=?2
+               AND json_extract(r.binding_json,'$.sourceManifest.graphGenerationContext') IS NOT NULL AND r.run_id=?3")?;
 
         if rows.len() > 1 {
             return Err(mutating_error("GENERATION_NONCE_CONFLICT"));
@@ -6464,6 +6501,7 @@ impl MainGenerationOwner {
             "skillStages": [],
             "output": "structured-data",
             "graphGenerationInput": input_val,
+            "graphGenerationKey": crate::project_access::random_uuid_v4(),
         });
 
         // 准入：graph_admission = true
@@ -6477,63 +6515,12 @@ impl MainGenerationOwner {
             .get("runId")
             .and_then(Value::as_str)
             .ok_or_else(|| mutating_error("GENERATION_BEGIN_INVALID"))?;
-        let mut run = self
+        // 源绑定已在begin事务内捕获并摘要；不得提交后重采样或改写一套身份。
+        let run = self
             .repository
             .get(conn, run_id)
-            .map_err(|e| mutating_error(&e.to_string()))?;
-
-        let scope = crate::services::graph_generation_source::GraphGenerationScope {
-            project_id: self.session.project_id.clone(),
-            epoch: self.session.lease_id.clone(),
-        };
-        let key = format!("graph:{}:{}", nonce, owner_now_ms());
-        let captured = crate::services::graph_generation_source::capture_graph_generation_context(
-            conn,
-            input_val,
-            &scope,
-            &key,
-            None,
-            &[],
-        )
-        .map_err(|e| mutating_error(&e))?;
-
-        let task = crate::services::graph_generation_source::graph_generation_task(&captured)
-            .map_err(|e| mutating_error(&e))?;
-        let serialized_task =
-            serde_json::to_string(&task).map_err(|e| mutating_error(&e.to_string()))?;
-        let task_hash = crate::services::finalization_generation::text_hash(&serialized_task);
-
-        run.binding.source_manifest.insert(
-            "graphGenerationContext".to_string(),
-            serde_json::to_value(&captured).unwrap(),
-        );
-        run.binding.source_manifest.insert(
-            "graphGenerationKey".to_string(),
-            Value::String(captured.key().to_string()),
-        );
-        run.binding.source_manifest.insert(
-            "graphGenerationTask".to_string(),
-            serde_json::to_value(&task).unwrap(),
-        );
-        run.binding.source_manifest.insert(
-            "graphGenerationTaskHash".to_string(),
-            Value::String(task_hash),
-        );
-
-        conn.execute(
-            "UPDATE generation_runs SET binding_json=? WHERE run_id=?",
-            rusqlite::params![
-                serde_json::to_string(&run.binding).map_err(|e| mutating_error(&e.to_string()))?,
-                run_id
-            ],
-        )
-        .map_err(|e| mutating_error(&e.to_string()))?;
-
-        let updated = self
-            .repository
-            .get(conn, run_id)
-            .map_err(|e| mutating_error(&e.to_string()))?;
-        self.graph_recovery(conn, &updated)
+            .map_err(|error| mutating_error(&error.to_string()))?;
+        self.graph_recovery(conn, &run)
     }
 
     /// graph-generation:execute 频道处理器（执行准备）
@@ -7991,6 +7978,10 @@ pub struct MainGenerationReasoningEventProjection {
 #[cfg(test)]
 #[path = "main_generation_batch_tests.rs"]
 mod batch_tests;
+
+#[cfg(test)]
+#[path = "main_generation_specialized_tests.rs"]
+mod specialized_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2912,6 +2912,11 @@ pub fn build_generation_source_binding(
     }
     if let Some(context) = &graph_context {
         let task: GraphGenerationTask = graph_generation_task(context)?;
+        // 读面校验的是持久化JSON值；不能混用结构体字段序生成另一份摘要。
+        let context_value = serde_json::to_value(context).unwrap_or_default();
+        let context_hash = hash(&stringify(&context_value));
+        let task_value = serde_json::to_value(&task).unwrap_or_default();
+        let task_hash = hash(&stringify(&task_value));
         source_manifest.insert(
             "graphGenerationInput".to_string(),
             serde_json::to_value(context.input()).unwrap_or_default(),
@@ -2920,25 +2925,19 @@ pub fn build_generation_source_binding(
             "graphGenerationKey".to_string(),
             Value::String(context.key().to_string()),
         );
-        source_manifest.insert(
-            "graphGenerationContext".to_string(),
-            serde_json::to_value(context).unwrap_or_default(),
-        );
+        source_manifest.insert("graphGenerationContext".to_string(), context_value);
         source_manifest.insert(
             "graphGenerationContextHash".to_string(),
-            Value::String(hash(&stringify(context))),
+            Value::String(context_hash),
         );
         source_manifest.insert(
             "graphGenerationOriginEpoch".to_string(),
             Value::String(context.origin_epoch().to_string()),
         );
-        source_manifest.insert(
-            "graphGenerationTask".to_string(),
-            serde_json::to_value(&task).unwrap_or_default(),
-        );
+        source_manifest.insert("graphGenerationTask".to_string(), task_value);
         source_manifest.insert(
             "graphGenerationTaskHash".to_string(),
-            Value::String(hash(&stringify(&task))),
+            Value::String(task_hash),
         );
     }
     if let Some(context) = &finalization_context {

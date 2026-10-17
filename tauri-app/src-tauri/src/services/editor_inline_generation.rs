@@ -106,7 +106,33 @@ pub struct EditorInlineContext {
     pub kind: EditorInlineKind,
     pub document_hash: String,
     pub writing_language: WritingLanguage,
+    #[serde(serialize_with = "serialize_context_template")]
     pub template: PromptTemplate,
+}
+
+/// 只稳定行内上下文中的变量字典；保持模板和上下文原有字段顺序。
+/// 不改变全局PromptTemplate类型，也不省略任何参与完整性校验的字段。
+fn serialize_context_template<S: serde::Serializer>(
+    template: &PromptTemplate,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeStruct;
+    let mut value = serializer.serialize_struct("PromptTemplate", 10)?;
+    value.serialize_field("key", &template.key)?;
+    value.serialize_field("writingLanguage", &template.writing_language)?;
+    value.serialize_field("name", &template.name)?;
+    value.serialize_field("description", &template.description)?;
+    value.serialize_field("content", &template.content)?;
+    value.serialize_field("systemSuffix", &template.system_suffix)?;
+    value.serialize_field("systemRole", &template.system_role)?;
+    value.serialize_field("taskGuidance", &template.task_guidance)?;
+    let variables: std::collections::BTreeMap<_, _> = template.variables.iter().collect();
+    value.serialize_field("variables", &variables)?;
+    value.serialize_field(
+        "requiredContextVariables",
+        &template.required_context_variables,
+    )?;
+    value.end()
 }
 
 const INSTRUCTIONS_REFINE: [&str; 2] = [
@@ -162,6 +188,24 @@ fn text_hash(text: &str) -> String {
 /// 其哈希必然不匹配，行为与 TS 抛 TypeError 同为「非法」）。
 fn canonical_json<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_default()
+}
+
+/// 旧内建模板恰有两个变量，历史HashMap只有这两种排列；穷举有界且覆盖完整上下文。
+/// 不尝试任意排列，不重写旧收据，也不因此授予旧源当前执行权威。
+fn legacy_two_variable_context_json(context: &EditorInlineContext) -> Option<String> {
+    if context.template.variables.len() != 2 {
+        return None;
+    }
+    let variables: std::collections::BTreeMap<_, _> = context.template.variables.iter().collect();
+    let reversed = variables
+        .iter()
+        .rev()
+        .map(|(key, value)| format!("{}:{}", canonical_json(key), canonical_json(value)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let needle = format!("\"variables\":{}", canonical_json(&variables));
+    let replacement = format!("\"variables\":{{{reversed}}}");
+    Some(canonical_json(context).replacen(&needle, &replacement, 1))
 }
 
 /// JS `documentText.length`（UTF-16 代码单元数）。
@@ -294,9 +338,10 @@ pub fn read_editor_inline_context(
     else {
         return Err(GENERATION_EDITOR_CONTEXT_INVALID.to_string());
     };
-    if text_hash(&canonical_json(&context)) != expected_context_hash
-        || text_hash(&context.document_text) != context.document_hash
-    {
+    let context_hash_valid = text_hash(&canonical_json(&context)) == expected_context_hash
+        || legacy_two_variable_context_json(&context)
+            .is_some_and(|encoded| text_hash(&encoded) == expected_context_hash);
+    if !context_hash_valid || text_hash(&context.document_text) != context.document_hash {
         return Err(GENERATION_EDITOR_CONTEXT_INVALID.to_string());
     }
     let input_value = manifest.get("editorInlineInput").unwrap_or(&Value::Null);
@@ -393,7 +438,7 @@ fn json_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Map;
+    use serde_json::{json, Map};
 
     fn zh_template() -> PromptTemplate {
         PromptTemplate {
@@ -495,6 +540,65 @@ mod tests {
             Value::String(text_hash(&task_json)),
         );
         manifest
+    }
+
+    #[test]
+    fn context_template_variables_are_stable_without_changing_template_values_test() {
+        let input = valid_input(EditorInlineAction::Refine, "合成正文", 0, 2);
+        let mut template = zh_template();
+        template.variables.extend([
+            ("edit_instruction".into(), "作者要求".into()),
+            ("selected_text".into(), "选区".into()),
+            ("additional".into(), "附加说明".into()),
+        ]);
+        let context =
+            build_editor_inline_context(&input, WritingLanguage::ZhCn, &template).unwrap();
+        let encoded = canonical_json(&context);
+        assert_eq!(
+            serde_json::to_value(&context).unwrap()["template"],
+            serde_json::to_value(&template).unwrap()
+        );
+        for _ in 0..64 {
+            let roundtrip: EditorInlineContext = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(canonical_json(&roundtrip), encoded);
+            let manifest = inline_manifest(&context, &input, &editor_inline_task(&context));
+            assert_eq!(
+                read_editor_inline_context(&test_run(manifest)).unwrap(),
+                context
+            );
+        }
+    }
+
+    #[test]
+    fn known_legacy_two_variable_hash_is_readable_but_tampering_is_rejected_test() {
+        let input = valid_input(EditorInlineAction::Refine, "合成正文", 0, 2);
+        let mut template = zh_template();
+        template.variables.extend([
+            ("edit_instruction".into(), "作者要求".into()),
+            ("selected_text".into(), "选区".into()),
+        ]);
+        let context =
+            build_editor_inline_context(&input, WritingLanguage::ZhCn, &template).unwrap();
+        let legacy = legacy_two_variable_context_json(&context).unwrap();
+        assert_ne!(legacy, canonical_json(&context));
+        assert_eq!(
+            serde_json::from_str::<Value>(&legacy).unwrap(),
+            serde_json::to_value(&context).unwrap()
+        );
+        let mut manifest = inline_manifest(&context, &input, &editor_inline_task(&context));
+        manifest.insert("editorInlineContextHash".into(), json!(text_hash(&legacy)));
+        let mut run = test_run(manifest);
+        for _ in 0..32 {
+            assert_eq!(read_editor_inline_context(&run).unwrap(), context);
+        }
+        run.binding
+            .source_manifest
+            .get_mut("editorInlineContext")
+            .unwrap()["documentText"] = json!("被改变的正文");
+        assert_eq!(
+            read_editor_inline_context(&run).unwrap_err(),
+            GENERATION_EDITOR_CONTEXT_INVALID
+        );
     }
 
     // —— validate_editor_inline_input ——
