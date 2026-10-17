@@ -1,10 +1,10 @@
-# Tauri 首版证明与本机验收审计（第83次）
+# Tauri 首版证明与本机验收审计（第84次）
 
-最终验证代码：`24291a43d878203cf9b44774bb564edc6ef2410a`。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+最终验证代码：`183d488633dc26d264b12b68bfc2d0640ddfb1f5`（上一版为24291a43）。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
 
 ## 已核对的证明点
 
-路径相对`tauri-app/src-tauri/src/`。表内审修回归在最终SHA的云端1631项内通过；审修服务57项另在本机定向执行。不把测试数量等同全部安全性质的证明。
+路径相对`tauri-app/src-tauri/src/`。表内审修回归在最终SHA的云端1637项内通过；审修服务59项另在本机定向执行。不把测试数量等同全部安全性质的证明。
 
 | 核查点 | 源码入口 | 已执行回归与有界结论 |
 |---|---|---|
@@ -36,21 +36,23 @@
 2. 本轮补合成蓝图、角色和本机模型配置；最终代码实际完成知识准备、短细纲、正文流式、合成收据及草稿保存。界面显示617字、流程完成；未点击定稿/审稿。
 3. 另一次流式请求中点击“中止生成”，界面显示取消、账本status=cancelled，草稿数保持2，不将残片保存成完成草稿。不是暂停/恢复验收。
 4. 原生授权导出含两稿及四个生成run的归档，恢复为新projectId，不替换当前项目。打开新副本，两稿章节号/版本/状态/正文SHA256均一致；正常关闭重启后从最近列表重开，617字仍可见。
-5. **生成历史列表失败**：新副本generation:list返回Error: GENERATION_REQUEST_FAILED；只读SQLite观察到4个run的binding_json均已脱敏为空，而源项目均非空。初步定位为活动RunBinding解码与冻结历史读面衔接缺口，尚未修复/补回归，不能算历史恢复成功。
-6. 原生选择曾发生导航/文件未找到提示，后续通过定向控件重新选择。结论依据最终业务收据与实际路径；目标位于本机ci-729cda50目录下的合成副本，不是脚本最初期望路径。不能把UIAutomation调用退出0直接当作成功。
+5. **生成历史列表失败（已修复）**：新副本`generation:list`曾返回Error: GENERATION_REQUEST_FAILED；只读SQLite观察到4个run的binding_json均已脱敏为空，而源项目均非空。
+6. **随后暴露的第二处缺陷（已修复）**：离开并再次打开同一恢复副本时弹出「打开项目失败：项目数据库初始化失败：Error: GENERATION_REQUEST_FAILED」。Rust级复现定位到`suspend_for_project_close → recover_interrupted → frozen_root → author_edited_root → json_type('')`抛malformed JSON：生产冻结只体现在连接级TEMP触发器，仓库`is_frozen`注入缝恒false，脱敏历史被当可变历史解析。修复为`frozen_row`（注入缝∨连接守卫函数）与`json_valid`前置；两项均有合成回归与真实副本端到端证据。详见本机`portable-history-read-fix-evidence.md`。
+7. 修复后的GUI复验：恢复副本→源副本→恢复副本→恢复副本连续切换全部打开成功，`generation:list`为0/4/0/0，无「打开项目失败」与 GENERATION_REQUEST_FAILED；恢复副本AI输出面板挂载且无错误文本、无"部分任务暂时无法读取"、无可继续候选（脱敏历史只读）；同一面板在源副本显示"第1章候选"、预算诊断、已用2/3次请求与"确认继续已选正文"；源副本4条运行`generation:read-context`全部成功；篡改leaseId后同一句柄被拒（失效会话交错IPC层）。
+8. 原生选择曾发生导航/文件未找到提示，后续通过定向控件重新选择。结论依据最终业务收据与实际路径；目标位于本机ci-729cda50目录下的合成副本，不是脚本最初期望路径。不能把UIAutomation调用退出0直接当作成功。
 
 本轮用户临时授权前台激活/定向交互已结束；测试窗口正常关闭，合成服务与Vite停止，恢复默认后台、不置顶/激活/抢焦点、不使用全局键鼠或SendKeys。后续脚本不得因本轮授权而原样复用。
 
 ## 未验收，不得扩大结论
 
-- 新发现的便携恢复主生成历史列表错误优先处理；不得绕过解码或为脱敏历史补造重放权威。
+- 便携恢复的两处缺陷已修复并有回归，但同类更广读面（审修材料、图生成、导入推理等）尚未逐一在恢复副本上验证；不得据两处修复推断全部便携读面已通。
 - 完整审稿→作者确认→修稿→差异合并→复核GUI未验收，四生产审稿频道继续关闭。
 - 暂停/恢复、失效会话交错GUI未完成；含冻结历史、脱敏审稿与资产的复杂归档未完成。两稿正文一致不能替代它们。
 - 真实模型/外部MCP/业务云/发布未授权；macOS/Linux未认证，不宣称全链安全或发布认证。
 
 ## 证据绑定
 
-- [最新云端38956708373](https://github.com/TanCan1998/Lorekeeper/actions/runs/38956708373)：最终SHA，1631/0、库221.99秒，all-targets成功无告警；artifact SHA一致，test/check退出0、state=passed。
+- [最新云端38997082671](https://github.com/TanCan1998/Lorekeeper/actions/runs/38997082671)：最终SHA=183d4886，1637/0、库227.11秒，all-targets成功无告警；artifact的expectedSha/testedSha一致，test/check退出0、state=passed。
 - 中间SHA：6b2c5785 / 38950154610 / 1616；512e759f / 38954708710 / 1629；9c01fe45 / 38955678898 / 1630。均已下载核对，不混用版本。
 - 本机`.pi/tmp/recovery/ci-{提交前缀}/`保存云端日志；artifact保存14天。未脱敏日志/用户数据不入库。
 - 定向/前端：identity-directed、knowledge-*、kb-schema-*、composition-recovery-test、transport-*、final-83-*日志与结果JSON。
