@@ -4,6 +4,11 @@ import type { GraphGenerationInput, GraphGenerationRecovery } from '../shared/gr
 import type { MainGenerationRunHandle } from './generation/generation-runtime'
 
 const sameRun = (a: MainGenerationRunHandle, b: MainGenerationRunHandle) => a.projectId === b.projectId && a.rootActionId === b.rootActionId && a.runId === b.runId
+// IPC对象键序不是输入身份；字段集合、类型和值仍须完全一致。
+function sameGraphInput(a: GraphGenerationInput, b: GraphGenerationInput) {
+  return Object.keys(a).length === Object.keys(b).length
+    && Object.entries(a).every(([key, value]) => Object.prototype.hasOwnProperty.call(b, key) && Reflect.get(b, key) === value)
+}
 export function canExecuteGraph(recovery: GraphGenerationRecovery) {
   return recovery.sourceStatus === 'current' && recovery.view.status !== 'cancelled' && recovery.attemptCount === 0 && !recovery.result
     && !recovery.artifact && (recovery.view.candidates ?? recovery.view.artifacts).length === 0
@@ -44,7 +49,7 @@ export function createGraphGeneration(sessionInput: ProjectSessionContext) {
         recovery = validate('handle' in request
           ? await ipc.invokeWithProjectSession(session, 'graph-generation:read', request)
           : await ipc.invokeWithProjectSession(session, 'graph-generation:begin', request), 'handle' in request ? request.handle : undefined)
-        if ('input' in request && JSON.stringify(recovery.context.input) !== JSON.stringify(request.input)) throw new Error('GRAPH_GENERATION_CONTEXT_MISMATCH')
+        if ('input' in request && !sameGraphInput(recovery.context.input, request.input)) throw new Error('GRAPH_GENERATION_CONTEXT_MISMATCH')
         if (cancelled) { await cancelKnown(); throw new Error('GRAPH_GENERATION_CANCELLED') }
         if (detached) throw new Error('GRAPH_GENERATION_DETACHED')
         return recovery
