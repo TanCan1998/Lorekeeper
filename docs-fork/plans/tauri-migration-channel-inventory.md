@@ -78,7 +78,15 @@ Rust命令已注册不等于生产前端可调用。第82次代码729cda50注册
 
 云端39018418991对应完整SHA，1656/0与all-targets无告警，artifact已核对。隐藏真实WebView正式IPC创建/重读/幂等/拒绝及回环execute通过，各1请求/1候选；图为deterministic兜底。未确认图效果或应用行内输出，草稿/定稿0；不是完整UI链、模型结构化质量或所有图类型验收。
 
-图plan/event与确认、行内选区应用、专用execute重放/重开恢复仍待逐域验收。注册/扫描口径不变，自动定稿/四生产审稿频道继续关闭；不扩大真实模型、MCP、业务云/发布授权。详见[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+第89次时图plan/event与确认、行内选区应用、专用execute重放/重开恢复仍待；第90次已补同epoch重放与重开历史/旧身份拒绝，跨epoch恢复执行仍未接通。注册/扫描口径不变，自动定稿/四生产审稿频道继续关闭；不扩大真实模型、MCP、业务云/发布授权。详见[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+
+## 专用execute重放与旧会话边界（第90次）
+
+代码80a3228c不增加频道或扩大公共begin：图/行内固定nonce的冻结任务、模型修订/策略摘要及真实收据精确匹配后，进入原通用准备/服务层在途合并。未知/不可验证尝试和哈希冲突仍拒绝；身份、epoch、任务合同及实际Dispatch门禁不变，不新建恢复准入。
+
+云端39020182558完整SHA已核对，1661/0、all-targets无告警、artifact两个退出码0/state=passed。隐藏真实WebView的plot/refine均验证已有物理尝试时并发execute及结算后重放，同一候选/版本/哈希、各1次实际请求；关闭重开后历史可读且nonReplayable=true，旧租约/旧epoch执行拒绝，无新模型请求。
+
+本轮图deterministic兜底，effects=0、草稿/定稿0，未确认图/应用编辑。不是所有图类型、完整UI链或跨epoch恢复执行验收；涉及新恢复准入须具体确认。注册/扫描数量和生产关闭边界不变，详见[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
 
 ## 云备份频道映射补充（B115–B116）
 
