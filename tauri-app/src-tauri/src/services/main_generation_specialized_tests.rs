@@ -296,3 +296,347 @@ fn specialized_foreign_handles_and_changed_author_sources_are_not_execution_auth
         0
     );
 }
+
+fn prepare_specialized(
+    owner: &MainGenerationOwner,
+    conn: &Connection,
+    kind: &str,
+    handle: &Value,
+) -> Result<PreparedMainGenerationExecution, String> {
+    if kind == "graph" {
+        owner.prepare_graph_generation_execution(conn, &json!({"handle":handle}))
+    } else {
+        owner.prepare_editor_inline_execution(conn, handle)
+    }
+}
+
+fn reserve_prepared(
+    owner: &MainGenerationOwner,
+    conn: &Connection,
+    prepared: &PreparedMainGenerationExecution,
+    nonce: Option<&str>,
+    hash: Option<&str>,
+) -> GenerationExecutionReceipt {
+    let PreparedExecutionPlan::Dispatch(request) = &prepared.plan else {
+        panic!("首次准备应为分发计划");
+    };
+    owner
+        .repository
+        .reserve(
+            conn,
+            &request.run_id,
+            nonce.unwrap_or(&request.invocation_nonce),
+            hash.unwrap_or(&request.request_hash),
+            request.reserved_tokens,
+            request.requested_output_tokens,
+            Some(&request.usage_policy),
+            request.purpose.as_deref(),
+            request.replay_task.as_ref(),
+            request.budget_decision.as_ref(),
+            request.reconciliation_injected,
+        )
+        .unwrap()
+}
+
+#[test]
+fn specialized_settled_invocations_replay_without_new_attempts_or_author_source_authority_test() {
+    for kind in ["graph", "editor"] {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        seed_graph_facts(&conn);
+        let input = if kind == "graph" {
+            json!({"kind":"plot"})
+        } else {
+            editor_input("refine")
+        };
+        let recovery = begin(&owner, &conn, kind, &input, "settled-replay").unwrap();
+        let handle = &recovery["view"]["handle"];
+        let first = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+        let receipt = reserve_prepared(&owner, &conn, &first, None, None);
+        owner
+            .repository
+            .mark_dispatched(&conn, &receipt.attempt.attempt_id)
+            .unwrap();
+        let artifact = receipt.artifact.unwrap();
+        owner
+            .repository
+            .snapshot(
+                &conn,
+                &receipt.attempt.attempt_id,
+                artifact.revision,
+                "合成回执输出",
+            )
+            .unwrap();
+        owner
+            .repository
+            .settle(
+                &conn,
+                &receipt.attempt.attempt_id,
+                None,
+                Some("stop".into()),
+                None,
+                None,
+            )
+            .unwrap();
+        drop(first);
+        // 改变作者来源后仍只能读回原收据，不能因此再次分发或伪造当前来源。
+        conn.execute(
+            "UPDATE blueprints SET key_events='作者已更新事件' WHERE chapter_number=1",
+            [],
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        let leases = owner.lease_store.lock().unwrap().live_lease_count();
+        let replay = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+        assert!(
+            matches!(&replay.plan, PreparedExecutionPlan::Replay(_)),
+            "{kind}必须是纯收据重放"
+        );
+        // 仅在证明Replay后调用，不允许测试走真实网络分发。
+        let result = replay.execute_blocking(&conn).unwrap();
+        let outcome = owner
+            .finish_prepared_execution(&conn, &replay, &result)
+            .unwrap();
+        assert_eq!(outcome["outcome"]["content"], "合成回执输出");
+        assert_eq!(outcome["run"]["ledger"]["physicalRequests"], 1);
+        assert_eq!(
+            conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), leases);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM generation_attempts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn specialized_pending_invocations_reuse_frozen_request_and_pending_guards_test() {
+    for kind in ["graph", "editor"] {
+        for dispatched in [false, true] {
+            let (_temp, conn, owner, _) = source_owner_fixture();
+            seed_graph_facts(&conn);
+            let input = if kind == "graph" {
+                json!({"kind":"plot"})
+            } else {
+                editor_input("refine")
+            };
+            let recovery = begin(&owner, &conn, kind, &input, "pending-replay").unwrap();
+            let handle = &recovery["view"]["handle"];
+            let first = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+            let receipt = reserve_prepared(&owner, &conn, &first, None, None);
+            if dispatched {
+                owner
+                    .repository
+                    .mark_dispatched(&conn, &receipt.attempt.attempt_id)
+                    .unwrap();
+            }
+            let again = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+            let (PreparedExecutionPlan::Dispatch(left), PreparedExecutionPlan::Dispatch(right)) =
+                (&first.plan, &again.plan)
+            else {
+                panic!("在途请求交回已有服务合并，不冒充完成收据");
+            };
+            assert_eq!(left.request_hash, right.request_hash);
+            assert_eq!(left.invocation_nonce, right.invocation_nonce);
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM generation_attempts", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(owner.pending_invocations.lock().unwrap().len(), 1);
+            drop(again);
+            assert_eq!(owner.pending_invocations.lock().unwrap().len(), 1);
+            drop(first);
+            assert!(owner.pending_invocations.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn specialized_unrelated_attempts_and_request_hash_collisions_stay_rejected_test() {
+    for kind in ["graph", "editor"] {
+        for collision in [false, true] {
+            let (_temp, conn, owner, _) = source_owner_fixture();
+            seed_graph_facts(&conn);
+            let input = if kind == "graph" {
+                json!({"kind":"plot"})
+            } else {
+                editor_input("refine")
+            };
+            let recovery = begin(&owner, &conn, kind, &input, "conflict-replay").unwrap();
+            let handle = &recovery["view"]["handle"];
+            let first = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+            let wrong = "b".repeat(64);
+            reserve_prepared(
+                &owner,
+                &conn,
+                &first,
+                if collision { None } else { Some("unrelated") },
+                if collision { Some(&wrong) } else { None },
+            );
+            let before: i64 = conn
+                .query_row("SELECT total_changes()", [], |r| r.get(0))
+                .unwrap();
+            let error = match prepare_specialized(&owner, &conn, kind, handle) {
+                Ok(_) => panic!("冲突不得重用"),
+                Err(error) => error,
+            };
+            let expected = if collision {
+                "GENERATION_INVOCATION_CONFLICT"
+            } else if kind == "graph" {
+                "GENERATION_GRAPH_ATTEMPT_CONFLICT"
+            } else {
+                "GENERATION_EDITOR_ATTEMPT_CONFLICT"
+            };
+            assert_eq!(error, mutating_error(expected));
+            assert_eq!(
+                conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn specialized_receipt_replay_does_not_admit_old_epochs_or_reactivate_cancelled_roots_test() {
+    for kind in ["graph", "editor"] {
+        let (_temp, conn, owner, _) = source_owner_fixture();
+        seed_graph_facts(&conn);
+        let input = if kind == "graph" {
+            json!({"kind":"plot"})
+        } else {
+            editor_input("refine")
+        };
+        let recovery = begin(&owner, &conn, kind, &input, "epoch-replay").unwrap();
+        let handle = &recovery["view"]["handle"];
+        let first = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+        let receipt = reserve_prepared(&owner, &conn, &first, None, None);
+        owner
+            .repository
+            .mark_dispatched(&conn, &receipt.attempt.attempt_id)
+            .unwrap();
+        owner
+            .repository
+            .settle(
+                &conn,
+                &receipt.attempt.attempt_id,
+                None,
+                Some("stop".into()),
+                None,
+                None,
+            )
+            .unwrap();
+        drop(first);
+        let next = MainGenerationOwner::new(ProjectSessionContext {
+            project_id: owner.session.project_id.clone(),
+            lease_id: "new-epoch".into(),
+            project_path: owner.session.project_path.clone(),
+        });
+        let before: i64 = conn
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        let error = match prepare_specialized(&next, &conn, kind, handle) {
+            Ok(_) => panic!("旧epoch不得借收据执行"),
+            Err(error) => error,
+        };
+        assert_eq!(error, mutating_error("GENERATION_EPOCH_STALE"));
+        assert_eq!(
+            conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        owner
+            .run_service
+            .cancel(&conn, handle["rootActionId"].as_str().unwrap())
+            .unwrap();
+        let before: i64 = conn
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        let replay = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+        assert!(matches!(&replay.plan, PreparedExecutionPlan::Replay(_)));
+        assert_eq!(
+            owner
+                .repository
+                .budget(&conn, handle["rootActionId"].as_str().unwrap())
+                .unwrap()
+                .root
+                .status,
+            "cancelled"
+        );
+        assert_eq!(
+            conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn specialized_unverifiable_receipts_remain_attempt_conflicts_without_side_effects_test() {
+    for kind in ["graph", "editor"] {
+        for metadata in [
+            None,
+            Some("{}"),
+            Some("invalid"),
+            Some("{\"requestHash\":null}"),
+        ] {
+            let (_temp, conn, owner, _) = source_owner_fixture();
+            seed_graph_facts(&conn);
+            let input = if kind == "graph" {
+                json!({"kind":"plot"})
+            } else {
+                editor_input("refine")
+            };
+            let recovery = begin(&owner, &conn, kind, &input, "unverifiable-replay").unwrap();
+            let handle = &recovery["view"]["handle"];
+            let first = prepare_specialized(&owner, &conn, kind, handle).unwrap();
+            let receipt = reserve_prepared(&owner, &conn, &first, None, None);
+            conn.execute(
+                "UPDATE generation_attempts SET usage_receipt_json=?1 WHERE attempt_id=?2",
+                rusqlite::params![metadata, receipt.attempt.attempt_id],
+            )
+            .unwrap();
+            let before: i64 = conn
+                .query_row("SELECT total_changes()", [], |r| r.get(0))
+                .unwrap();
+            let leases = owner.lease_store.lock().unwrap().live_lease_count();
+            let error = match prepare_specialized(&owner, &conn, kind, handle) {
+                Ok(_) => panic!("不可验证尝试不得放行"),
+                Err(error) => error,
+            };
+            let expected = if kind == "graph" {
+                // 图域原有可变性守卫可能先报坏收据，不能为统一文案改写它。
+                let run = owner
+                    .repository
+                    .get(&conn, handle["runId"].as_str().unwrap())
+                    .unwrap();
+                crate::services::graph_generation::GraphGeneration::new(
+                    &conn,
+                    owner.repository.clone(),
+                    &owner.session.project_id,
+                )
+                .assert_mutable(&run)
+                .err()
+                .map(|error| mutating_error(&error))
+                .unwrap_or_else(|| mutating_error("GENERATION_GRAPH_ATTEMPT_CONFLICT"))
+            } else {
+                mutating_error("GENERATION_EDITOR_ATTEMPT_CONFLICT")
+            };
+            assert_eq!(error, expected);
+            assert_eq!(
+                conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                before
+            );
+            assert_eq!(owner.lease_store.lock().unwrap().live_lease_count(), leases);
+        }
+    }
+}

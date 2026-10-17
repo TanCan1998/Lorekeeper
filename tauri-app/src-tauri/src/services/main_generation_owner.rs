@@ -4913,6 +4913,42 @@ impl MainGenerationOwner {
         self.view_of(conn, &run)
     }
 
+    /// 只识别冻结任务、模型修订和策略一致的既有调用；不把任意尝试当作可重放。
+    /// 后续仍走通用准备的身份/epoch/任务合同与服务层在途合并，不新增恢复豁免。
+    fn has_specialized_invocation(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        task: &Value,
+        nonce: &str,
+    ) -> Result<bool, String> {
+        // 旧的裸尝试或坏收据没有可信调用摘要，仍由原可变性/尝试计数门禁拒绝。
+        // 只处理可空/缺失摘要，不吞数据库错误，也不把不可验证尝试视为新调用。
+        let metadata: Option<Option<String>> = conn.query_row(
+            "SELECT usage_receipt_json FROM generation_attempts WHERE run_id=?1 AND invocation_nonce=?2",
+            rusqlite::params![&run.run_id,nonce],|row|row.get(0)
+        ).optional().map_err(|error|mutating_error(&error.to_string()))?;
+        let verifiable = metadata
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .is_some_and(|usage| usage.get("requestHash").is_some_and(Value::is_string));
+        if !verifiable {
+            return Ok(false);
+        }
+        let request_hash = Self::owner_text_hash(
+            &json!([
+                task,
+                run.binding.fingerprint.model_lease_revision,
+                run.binding.fingerprint.policy_hash
+            ])
+            .to_string(),
+        );
+        self.repository
+            .find_invocation(conn, &run.run_id, nonce, &request_hash)
+            .map(|receipt| receipt.is_some())
+            .map_err(|error| mutating_error(map_generation_error(&error)))
+    }
+
     pub(crate) fn prepare_editor_inline_execution(
         &self,
         conn: &Connection,
@@ -4932,6 +4968,13 @@ impl MainGenerationOwner {
         let task = crate::services::editor_inline_generation::read_editor_inline_task(&run)
             .map_err(|e| mutating_error(&e))?;
         let task_value = serde_json::to_value(&task).map_err(|e| mutating_error(&e.to_string()))?;
+        if self.has_specialized_invocation(conn, &run, &task_value, "editor-inline:0")? {
+            let request =
+                json!({"handle":handle,"invocationNonce":"editor-inline:0","task":task_value});
+            return self.prepare_execution_with_retry(
+                conn, &request, false, true, false, false, false, false, None,
+            );
+        }
 
         let attempt_count: i64 = conn
             .query_row(
@@ -6546,6 +6589,25 @@ impl MainGenerationOwner {
         );
         let run = graphs.require(handle).map_err(|e| mutating_error(&e))?;
         let task = graphs.task(&run).map_err(|e| mutating_error(&e))?;
+        let exec_request = json!({"handle":handle,"invocationNonce":"graph:0","task":task});
+        if self.has_specialized_invocation(
+            conn,
+            &run,
+            &serde_json::to_value(&task).map_err(|error| mutating_error(&error.to_string()))?,
+            "graph:0",
+        )? {
+            return self.prepare_execution_with_retry(
+                conn,
+                &exec_request,
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                None,
+            );
+        }
         graphs
             .assert_mutable(&run)
             .map_err(|e| mutating_error(&e))?;
@@ -6560,13 +6622,6 @@ impl MainGenerationOwner {
         if attempt_count != 0 {
             return Err(mutating_error("GENERATION_GRAPH_ATTEMPT_CONFLICT"));
         }
-
-        let invocation_nonce = "graph:0".to_string();
-        let exec_request = json!({
-            "handle": handle,
-            "invocationNonce": invocation_nonce,
-            "task": task
-        });
 
         self.prepare_execution_with_retry(
             conn,
