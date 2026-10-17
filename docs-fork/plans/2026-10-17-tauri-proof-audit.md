@@ -1,6 +1,13 @@
-# Tauri 首版证明与本机验收审计（第84次）
+# Tauri 首版证明与本机验收审计（第85次）
 
-最终验证代码：`183d488633dc26d264b12b68bfc2d0640ddfb1f5`（上一版为24291a43）。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+上轮全量验证代码：`183d488633dc26d264b12b68bfc2d0640ddfb1f5`（上一版为24291a43）。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+
+## 第85次：指定运行候选读面
+
+- 当前代码`61ab33bc822f3864cc2b6c309aa30d265eacbb1b`已推送；[云端38999595785](https://github.com/TanCan1998/Lorekeeper/actions/runs/38999595785)待完成，不能沿用下表183d4886的全量结论。Rust语义切片累计1。
+- `GenerationRunRepository::list_candidates(Some(run_id))`在解析绑定/预算前用`frozen_row`跳过冻结运行，修复实际脱敏副本的JSON解析错误。
+- 新增实际源库→脱敏→冻结侧车→连接守卫→候选读取回归，先失败后通过；覆盖全局/指定运行空候选、无守卫损坏拒绝、缺失运行拒绝、冻结产物拒写与源库不变。
+- 本机仓储30/0、generation_owner过滤187/0、便携73/0、run服务38/0及两文件rustfmt/diff通过。本轮未启动GUI，不扩大下文上轮GUI结论。
 
 ## 已核对的证明点
 
