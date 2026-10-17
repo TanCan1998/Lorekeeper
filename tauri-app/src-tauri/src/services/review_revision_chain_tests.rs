@@ -549,10 +549,17 @@ fn real_sqlite_chain_redacted_history_is_readable_but_cannot_replay() {
         .query_row("SELECT COUNT(*) FROM reviews", [], |r| r.get(0))
         .unwrap();
     assert_eq!(count, 3);
+    // 同一份脱敏文件：没有认证冻结守卫的连接仍按原规则拒绝，
+    // 说明上面的豁免来自认证冻结键，而不是放宽了执行链校验。
+    let unguarded = Connection::open(&target).unwrap();
     assert!(
-        !review_cycle::verify_m03_review_cycle(&conn),
+        !review_cycle::verify_m03_review_cycle(&unguarded),
         "脱敏历史没有原始收据，不能声称执行效果已验证"
     );
+    drop(unguarded);
+    // 认证冻结的历史被显式排除，不再拖垮同库中当前周期的全局校验；
+    // 这仍不代表历史获得执行权威（见下面的读面、写保护与重放拒绝断言）。
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
     let review_id: i64 = conn
         .query_row(
             "SELECT review_id FROM review_cycles WHERE cycle_id=?1",

@@ -445,5 +445,109 @@ fn mixed_review_rejects_downgrading_or_unknown_persisted_recheck_policy() {
     }
 }
 
+/// 便携脱敏副本：审修行全部按 H 策略保留，但执行链收据（R/X 列）已中和。
+/// 认证冻结的历史不得被当成当前损坏（否则同库新周期也被连带拒绝），
+/// 也不得因此获得执行权威。
+#[test]
+fn sanitized_cycle_history_is_frozen_not_corrupted_test() {
+    use crate::services::portable_project_guard;
+    use crate::services::portable_project_history;
+    use crate::services::portable_runtime_freeze;
+
+    let (f, cycle) = mixed_merged_fixture();
+    let review_id: i64 = f
+        .conn
+        .query_row(
+            "SELECT review_id FROM review_cycles WHERE cycle_id=?1",
+            [&cycle],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let (base, conn) = sanitize_chain(&f, "frozen");
+    // 脱敏历史不能自证执行链：未认证冻结时仍按原规则拒绝。
+    assert!(!review_cycle::verify_m03_review_cycle(&conn));
+
+    let document = portable_project_history::freeze_document(
+        &conn,
+        "123e4567-e89b-12d3-a456-426614174000",
+        "gen-review-sanitize",
+    )
+    .unwrap();
+    let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+        &serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    assert!(guard.is_frozen_record("review_cycles", &cycle));
+    portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+
+    // 认证冻结的历史不再拖垮全局验证，且不发布可操作投影。
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
+    assert!(review_cycle::get_by_review_id(review_id, &conn)
+        .unwrap()
+        .is_none());
+    // 冻结行仍受写保护，历史只读不获得当前权威。
+    let error = conn
+        .execute("UPDATE review_cycles SET merged_hash='0'", [])
+        .unwrap_err();
+    assert!(error.to_string().contains("PORTABLE_RUNTIME_FROZEN"));
+    drop(conn);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// 对照：同一份脱敏数据，只要没有认证冻结键（空冻结集），仍必须按损坏拒绝。
+#[test]
+fn sanitized_cycle_without_freeze_keys_is_still_rejected_test() {
+    use crate::services::portable_project_guard;
+    use crate::services::portable_runtime_freeze;
+
+    let (f, _) = mixed_merged_fixture();
+    let (base, conn) = sanitize_chain(&f, "unfrozen");
+    let document = json!({
+        "version": 1,
+        "originProjectId": "123e4567-e89b-12d3-a456-426614174000",
+        "snapshotGeneration": "gen-review-empty",
+        "nonReplayable": true,
+        "requiresRuntimeFreezeGuard": true,
+        "records": [],
+        "avatarReferenceProjections": [],
+    });
+    let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+        &serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+    assert!(!review_cycle::verify_m03_review_cycle(&conn));
+    drop(conn);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// 把内存链库脱敏成便携副本并打开：`VACUUM INTO` + 正式 `sanitizePortableDatabase`。
+fn sanitize_chain(f: &Fixture, label: &str) -> (std::path::PathBuf, Connection) {
+    use crate::services::portable_project_sanitize::{
+        sanitize_portable_database, SanitizePortableDatabaseInput,
+    };
+
+    let base = std::env::temp_dir().join(format!(
+        "lorekeeper-review-sanitize-{label}-{}",
+        crate::project_access::random_uuid_v4()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let source = base.join("source.db");
+    let target = base.join("portable.db");
+    f.conn
+        .execute(
+            "VACUUM INTO ?1",
+            rusqlite::params![source.to_string_lossy().to_string()],
+        )
+        .unwrap();
+    sanitize_portable_database(&SanitizePortableDatabaseInput {
+        source_database_path: &source,
+        target_database_path: &target,
+        limits: None,
+    })
+    .unwrap();
+    (base, Connection::open(&target).unwrap())
+}
 #[path = "review_revision_history_tests.rs"]
 mod history_tests;

@@ -3055,6 +3055,17 @@ pub(crate) fn verify_m03_review_cycle(conn: &Connection) -> bool {
         return false;
     }
     for cycle in &cycles {
+        // 认证冻结的便携历史：审修原始行按 H 策略保留，但执行链收据（R/X 列）已中和，
+        // 无法也不应重放证明。跳过该行的执行链校验，不代表其获得执行权威：
+        // 读面（get_by_review_id）不发布投影，连接守卫仍拒绝一切改写。
+        // 非冻结行继续逐行严格校验，当前损坏仍须拒绝。
+        if crate::services::portable_project_guard::frozen_row(
+            conn,
+            "review_cycles",
+            &cycle.cycle_id,
+        ) {
+            continue;
+        }
         if !verify_cycle_row(cycle, conn) {
             return false;
         }
