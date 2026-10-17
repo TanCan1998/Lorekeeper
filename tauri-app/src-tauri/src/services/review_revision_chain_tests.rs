@@ -553,6 +553,20 @@ fn real_sqlite_chain_redacted_history_is_readable_but_cannot_replay() {
         !review_cycle::verify_m03_review_cycle(&conn),
         "脱敏历史没有原始收据，不能声称执行效果已验证"
     );
+    let review_id: i64 = conn
+        .query_row(
+            "SELECT review_id FROM review_cycles WHERE cycle_id=?1",
+            [&cycle],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        review_cycle::get_by_review_id(review_id, &conn)
+            .unwrap()
+            .is_none(),
+        "冻结周期不发布当前可操作投影，也不因已脱敏收据使历史报告读取失败"
+    );
+    assert!(review_repo::get_full(&conn, review_id).unwrap().is_some());
     assert!(f
         .service
         .read_recovery(&conn, &handle, |_| false, |_| None)

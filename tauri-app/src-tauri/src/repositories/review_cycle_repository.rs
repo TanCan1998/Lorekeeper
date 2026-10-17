@@ -4571,6 +4571,11 @@ pub fn get_by_review_id(
     let Some((cycle_id, review_id, revision_status, merged_hash, recheck_count)) = cycle else {
         return Ok(None);
     };
+    // 已认证冻结周期缺少脱敏后的执行证明，不向当前会话发布可操作投影。
+    // 审稿、修稿与 finding 原始行仍保留；不得把冻结材料当成执行验证成功。
+    if crate::services::portable_project_guard::frozen_row(conn, "review_cycles", &cycle_id) {
+        return Ok(None);
+    }
     if !verify_m03_review_cycle(conn) {
         return conflict();
     }
