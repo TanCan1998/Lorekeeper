@@ -57,9 +57,7 @@ const GENERATION_REQUEST_FAILED: &str = "GENERATION_REQUEST_FAILED";
 
 /// 基线 `AttemptRow`（`generation_attempts` 行投影）。
 struct AttemptRow {
-    /// 基线 SELECT 含 `attempt_id`，但读面（`verifiedCommit` /
-    /// `readBatchSnapshot`）不消费该列（与基线一致），暂抑制死代码警告。
-    #[allow(dead_code)]
+    /// 行身份用于排除冻结历史，不能从中和收据推断当前提交权威。
     attempt_id: String,
     run_id: String,
     usage_receipt_json: String,
@@ -71,7 +69,7 @@ fn attempt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttemptRow> {
     Ok(AttemptRow {
         attempt_id: row.get(0)?,
         run_id: row.get(1)?,
-        usage_receipt_json: row.get(2)?,
+        usage_receipt_json: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
     })
 }
 
@@ -444,8 +442,20 @@ impl GenerationDraftEffects {
                 .query_map([], attempt_row)
                 .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?,
         };
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))
+        let rows = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        // 冻结收据没有当前提交权威；先按统一冻结事实排除，再解析其他当前收据。
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                !crate::services::portable_project_guard::frozen_row(
+                    conn,
+                    "generation_attempts",
+                    &row.attempt_id,
+                )
+            })
+            .collect())
     }
 
     /// 基线私有 `verifiedCommit(row)`（:27-57）：校验 attempt usage

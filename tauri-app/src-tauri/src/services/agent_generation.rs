@@ -561,19 +561,42 @@ impl<'a> AgentGeneration<'a> {
     }
 
     fn recover_dangling_claims_in_transaction(&self) -> Result<(), String> {
-        let rows: Vec<(String, Option<String>)> = self
+        let rows: Vec<(String, Option<String>, String, String)> = self
             .conn
             .prepare(
-                "SELECT a.attempt_id,a.usage_receipt_json FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id WHERE json_extract(r.binding_json,'$.projectId')=? AND json_extract(r.binding_json,'$.sourceManifest.operation')='agent-round'",
+                "SELECT a.attempt_id,a.usage_receipt_json,r.run_id,r.binding_json FROM generation_attempts a JOIN generation_runs r ON r.run_id=a.run_id",
             )
             .map_err(|error| error.to_string())?
-            .query_map([self.project_id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .map_err(|error| error.to_string())?
             .collect::<Result<_, _>>()
             .map_err(|error| error.to_string())?;
-        for (attempt_id, usage_json) in rows {
+        for (attempt_id, usage_json, run_id, binding_json) in rows {
+            // 恢复副本的冻结历史不参与当前声明恢复，亦不能解析已中和的绑定。
+            // 非冻结坏绑定仍报错，不以json_valid过滤掩盖当前账本损坏。
+            if crate::services::portable_project_guard::frozen_row(
+                self.conn,
+                "generation_runs",
+                &run_id,
+            ) || crate::services::portable_project_guard::frozen_row(
+                self.conn,
+                "generation_attempts",
+                &attempt_id,
+            ) {
+                continue;
+            }
+            let binding: Value =
+                serde_json::from_str(&binding_json).map_err(|error| error.to_string())?;
+            if binding.get("projectId").and_then(Value::as_str) != Some(self.project_id)
+                || binding
+                    .pointer("/sourceManifest/operation")
+                    .and_then(Value::as_str)
+                    != Some("agent-round")
+            {
+                continue;
+            }
             // 基线 `JSON.parse(row.usage_receipt_json ?? '{}')`。
             let mut usage: Value = serde_json::from_str(usage_json.as_deref().unwrap_or("{}"))
                 .map_err(|error| error.to_string())?;

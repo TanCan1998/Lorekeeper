@@ -1463,38 +1463,117 @@ impl MainGenerationOwner {
     }
 
     // -----------------------------------------------------------------
-    // B3 迁移占位：生成编排方法（方法体平移自 main-generation-owner.ts
-    // 的同名闭包；契约类型随 `src/shared/generation-owner-contract.ts`
-    // 迁移落地后补齐签名）。
+    // 主生成编排：普通根、专用子代与批次各自通过真实准入后共享账本。
     // -----------------------------------------------------------------
 
-    /// 基线 `begin`（选择 → 建运行 → 返回运行视图，main-generation-owner.ts:351-444）。
-    ///
-    /// 本波次就位**准入校验面**（错误码 / 边界条件逐字对齐基线）：
-    /// - 选择形状校验（:357-363）→ `GENERATION_BEGIN_INVALID`（操作名
-    ///   正则 `^[a-z0-9][a-z0-9:_-]{0,127}$`、`promptKeys` 非空数组、
-    ///   `parentRootActionId` 字符串非空、`uiActionNonce` 字符串非空且
-    ///   ≤256、键集白名单 [`BEGIN_ALLOWED_KEYS`]——IPC 边界初始化
-    ///   标志恒为 false，对齐 generation-controller.ts:173-178 注册形态；
-    ///   `batch_initialization` 标志仅主进程内部 `beginBatch` 初始化
-    ///   调用置 true（IPC 边界恒 false，见
-    ///   [`MainGenerationOwner::begin_batch`]）；`agent_initialization`
-    ///   标志仅主进程内部 agent 子代路径置 true（基线 :897
-    ///   `begin(selection, false, true)`，IPC 边界恒 false——
-    ///   放行 `agentInput` / `agentSession` 条件键、豁免
-    ///   agent-round 准入拒绝与 `admitWorkflow` 子代准入）；
-    /// - 子生成器准入（:364-369、:376）→ 五个 `*_ADMISSION_REQUIRED`；
-    /// - agent 子代准入（:367）→ `agents.admitWorkflow` 校验链
-    ///   （`GENERATION_AGENT_*`，见 [`Self::admit_workflow`]）；
-    /// - agent 子代幂等早退（:371）→ 已登记子代存在时返回其视图；
-    /// - 根行动子代禁令（:379-383，经 `repository.budget`）→ 三个
-    ///   `*_CHILD_FORBIDDEN`；
-    /// - 批量意图主进程独占（:387）→ `GENERATION_BATCH_INTENT_MAIN_ONLY`
-    ///   （`batch_initialization = false` 的 IPC 边界语义；主进程
-    ///   内部批量初始化调用传 `true` 豁免该检查）。
-    /// 普通根运行已接入真实策略、模型租约、源绑定和 immediate 写入。
-    /// 内部 Agent 初始化与后续轮次沿用同一父预算；普通工作流子代、导入、
-    /// 批量、目录续接及审阅修订仍不由此入口豁免准入与生命周期合同。
+    /// 仅接纳已授权的草稿待审批次；自动定稿继续拒绝。
+    /// 子代绑定真实批次根、当前章节、前驱草稿与冻结作者输入，不授予其他父根例外。
+    fn admit_draft_batch(
+        &self,
+        conn: &Connection,
+        selection: &Value,
+        batch_initialization: bool,
+    ) -> Result<bool, String> {
+        let operation = selection.get("operation").and_then(Value::as_str);
+        let intent = selection
+            .get("batchIntent")
+            .filter(|value| !value.is_null());
+        let batch_id = selection.get("batchId").filter(|value| !value.is_null());
+        if let Some(intent) = intent {
+            if !batch_initialization || operation != Some("batch-chapters") {
+                return Err(mutating_error("GENERATION_BATCH_INTENT_MAIN_ONLY"));
+            }
+            assert_generation_batch_intent(intent)?;
+            if intent.get("mode").and_then(Value::as_str) != Some("draft_review") {
+                return Err(mutating_error("GENERATION_BATCH_MODE_UNSUPPORTED"));
+            }
+            if batch_id.is_some()
+                || selection
+                    .get("parentRootActionId")
+                    .is_some_and(|value| !value.is_null())
+            {
+                return Err(mutating_error("GENERATION_BATCH_PROGRESS_CONFLICT"));
+            }
+            return Ok(true);
+        }
+        if batch_initialization || operation == Some("batch-chapters") {
+            return Err(mutating_error("GENERATION_BATCH_INTENT_MAIN_ONLY"));
+        }
+        let Some(batch_id) = batch_id else {
+            return Ok(false);
+        };
+        let batch_id = batch_id
+            .as_str()
+            .ok_or_else(|| mutating_error("GENERATION_BATCH_IDENTITY_INVALID"))?;
+        let batch = GenerationDraftEffects.read_batch(
+            conn,
+            &self.repository,
+            batch_id,
+            &self.session.project_id,
+        )?;
+        if batch.get("mode").and_then(Value::as_str) != Some("draft_review") {
+            return Err(mutating_error("GENERATION_BATCH_MODE_UNSUPPORTED"));
+        }
+        let chapter = selection.get("chapterNumber").and_then(Value::as_i64);
+        let completed = batch
+            .get("completedChapters")
+            .and_then(Value::as_array)
+            .ok_or_else(|| mutating_error("GENERATION_BATCH_PROGRESS_INVALID"))?;
+        if operation != Some("chapter-draft")
+            || chapter.is_none()
+            || chapter != batch.get("nextChapterNumber").and_then(Value::as_i64)
+            || selection.get("parentRootActionId") != batch.pointer("/rootHandle/rootActionId")
+            || selection
+                .get("continueDirectoryOperationId")
+                .is_some_and(|value| !value.is_null())
+            || completed
+                .iter()
+                .any(|item| item.get("chapterNumber").and_then(Value::as_i64) == chapter)
+        {
+            return Err(mutating_error("GENERATION_BATCH_PROGRESS_CONFLICT"));
+        }
+        if selection.get("modelId") != batch.get("modelId") {
+            return Err(mutating_error("GENERATION_BATCH_MODEL_CHANGED"));
+        }
+        let predecessor = completed
+            .iter()
+            .find(|item| {
+                item.get("chapterNumber").and_then(Value::as_i64)
+                    == chapter.map(|number| number - 1)
+            })
+            .and_then(|item| item.get("draftId"))
+            .and_then(Value::as_i64);
+        let selected = selection
+            .get("selectedDraftIds")
+            .and_then(Value::as_array)
+            .ok_or_else(|| mutating_error("GENERATION_BATCH_LINEAGE_INVALID"))?;
+        if selected
+            .iter()
+            .any(|id| id.as_i64().is_none() || id.as_i64() != predecessor)
+            || predecessor.is_some_and(|id| !selected.iter().any(|item| item.as_i64() == Some(id)))
+        {
+            return Err(mutating_error("GENERATION_BATCH_LINEAGE_INVALID"));
+        }
+        let inputs = selection.get("authorInputs").and_then(Value::as_array);
+        if batch
+            .get("authorInputs")
+            .and_then(Value::as_array)
+            .is_some_and(|original| {
+                original.iter().any(|input| {
+                    inputs.and_then(|inputs| {
+                        inputs.iter().find(|item| item.get("id") == input.get("id"))
+                    }) != Some(input)
+                })
+            })
+        {
+            return Err(mutating_error("GENERATION_BATCH_AUTHOR_INPUT_CHANGED"));
+        }
+        Ok(true)
+    }
+
+    /// 基线 begin：选择、主进程准入、真实源绑定、同根预算与事务落库。
+    /// batch_initialization仅由begin_batch内部传入；只允许草稿待审，自动定稿保持拒绝。
+    /// Agent与批次子代各走专用证明，不为其他父根、导入或审阅修订提供准入豁免。
     pub fn begin(
         &self,
         conn: &Connection,
@@ -1641,6 +1720,7 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_BATCH_INTENT_MAIN_ONLY"));
         }
+        let batch_admitted = self.admit_draft_batch(conn, selection, batch_initialization)?;
         let output_contract =
             generation_output_contract(selection).map_err(|error| mutating_error(&error))?;
         // Agent 初始化只能由内部 AgentHost 进入；普通 IPC 的拒绝守卫保留。
@@ -1660,12 +1740,17 @@ impl MainGenerationOwner {
                 .is_some_and(|value| !value.is_null())
             || (!agent_initialization
                 && !draft_workflow
+                && !batch_admitted
                 && selection
                     .get("parentRootActionId")
                     .is_some_and(|value| !value.is_null()))
-            || ["continueDirectoryOperationId", "batchId", "batchIntent"]
-                .iter()
-                .any(|key| selection.get(*key).is_some_and(|value| !value.is_null()))
+            || selection
+                .get("continueDirectoryOperationId")
+                .is_some_and(|value| !value.is_null())
+            || (!batch_admitted
+                && ["batchId", "batchIntent"]
+                    .iter()
+                    .any(|key| selection.get(*key).is_some_and(|value| !value.is_null())))
             || (!draft_workflow
                 && selection
                     .get("agentWorkflowRegistrationId")
@@ -1694,6 +1779,10 @@ impl MainGenerationOwner {
         let tx =
             rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
                 .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+        // 在写事务内复核批次进度；预检和落库之间不能借过期前驱或章节身份。
+        if batch_admitted {
+            self.admit_draft_batch(&tx, selection, batch_initialization)?;
+        }
         // 同一写事务内重新验证登记，避免预检到子代落库之间的身份/源竞态。
         if draft_workflow {
             let admitted = self
@@ -7879,6 +7968,10 @@ pub struct MainGenerationReasoningEventProjection {
 }
 
 #[cfg(test)]
+#[path = "main_generation_batch_tests.rs"]
+mod batch_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::repositories::generation_run_repository::OpenGenerationRunRequest;
@@ -10096,7 +10189,7 @@ mod tests {
         assert_eq!(begin_run_count(&conn), 2);
     }
 
-    fn source_owner_fixture() -> (
+    pub(super) fn source_owner_fixture() -> (
         crate::services::main_generation_sources::tests::TempRoot,
         Connection,
         MainGenerationOwner,
