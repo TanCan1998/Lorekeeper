@@ -2,53 +2,60 @@
 
 > [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [首版决策](../plans/2026-10-17-tauri-completion-decisions.md) · [证明/GUI审计矩阵](../plans/2026-10-17-tauri-proof-audit.md)。动态进度仅在docs-fork展示，同日改写当前摘要。
 
-## 已验证状态（第88次）
+## 已验证状态（第89次）
 
-当前代码：`80dab6d534091d9d81dc9dcb068033ecdae6483e`，master，已推送origin；后续为文档收口。用户已具体授权仅补草稿待审批次根/子代准入，并执行全量与后台暂停/恢复，不开放自动定稿、生产审稿、真实模型或代理。
+当前代码：`fa5cf8aa698d0e2d4748593bcc179d32533209ce`，master，已推送origin；后续为文档收口。用户确认卡`specialized_generation_scope=allow-specialized-generation`具体授权图生成内部专用准入、行内上下文接线、冻结读取、合成回归/全量和后台验证；不扩展schema、依赖、文件权限、定稿、生产审稿、真实模型或代理授权。
 
 | 范围 | 结果/版本 | 证据 |
 |---|---|---|
-| 最新Rust云端全量 | **1648通过/0失败**，库254.45秒，SHA=80dab6d5，run completed/success | [39014411676](https://github.com/TanCan1998/Lorekeeper/actions/runs/39014411676)，本机`.pi/tmp/recovery/ci-80dab6d5/` |
-| 同SHA all-targets | 成功无告警，38.98秒 | artifact expectedSha/testedSha一致、两个退出码0、state=passed，两日志已核对 |
-| 同SHA提交规范/秘密扫描 | 均success | 39014411728 / 39014411699 |
-| 本机定向 | owner192/0、agent56/0、草稿效应2/0、run服务38/0、generation命令4/0、portable77/0 | 5项新增批次回归，先失败后通过；两章真实commit与同根预算，不是只造响应 |
-| 格式/构建 | 4文件rustfmt、diff、本机all-targets通过；隐藏与默认开发构建通过 | 会话配置覆盖，不改跟踪配置；当前debug二进制已恢复默认行为 |
-| 后台批量GUI | **暂停/继续通过**；暂停稳定时仅第一章草稿，继续完成两章，定稿0 | 隔离目录`background-1792223134078`的batch-pause-resume.json |
-| 重开与旧会话 | 同路径正常关闭/重开更换租约，旧读/写拒绝；两稿与同一批次根持久化不变 | 同目录stale-session-close-reopen、batch-reopened-persistence、closed-window |
-| 后台窗口 | Tauri主窗口API隐藏/不聚焦；同SHA Win32按标题/类确认主窗口隐藏、非前台 | `background-1792223444175/win32-window-details.json`；Tao内部事件目标不作为用户窗口 |
-| 前端沿用 | 188文件2111通过/1跳过，typecheck/lint与上次build通过 | 无前端源码变动，未重跑，不算新增TS验收 |
+| 最新Rust云端全量 | **1656通过/0失败**，库249.54秒，SHA=fa5cf8aa，run completed/success | [39018418991](https://github.com/TanCan1998/Lorekeeper/actions/runs/39018418991)，`.pi/tmp/recovery/ci-fa5cf8aa/` |
+| 同SHA all-targets | 成功无告警，36.78秒 | artifact expectedSha/testedSha一致、两个退出码0、state=passed，两日志已核对 |
+| 同SHA提交规范/秘密扫描 | 均success | 39018418990 / 39018418996 |
+| 本机定向 | owner198/0、源绑定4/0、sources6/0、图17/0、行内25/0、portable77/0、run38/0、generation命令4/0 | 5项新增专用owner与2项领域哈希回归；诊断与最终定向日志保留本机 |
+| 格式/构建 | 4文件rustfmt/diff、本机all-targets、隐藏及默认开发构建通过 | 会话配置覆盖，不改跟踪配置；当前debug二进制已恢复默认行为 |
+| 隐藏WebView专用IPC | 两根创建/重读/幂等、行内20次稳定重读、伪造/错选区/模型切换/外项目句柄拒绝 | `background-1792226708206/specialized-ipc.json` passed=true |
+| 同轮回环执行 | 图与行内各1次请求/1份候选，图为deterministic兜底，effects=0，草稿/定稿0 | 同目录specialized-execution.json passed=true；未确认剧情效果或应用编辑输出 |
+| 后台/收口 | Tauri API隐藏/不聚焦，Win32 Tauri Window主窗口隐藏、非前台；正常标题栏关闭 | 同目录win32-owned-window、closed-window、session；5190/9226/19537均无监听 |
+| 前端沿用 | 188文件2111通过/1跳过，typecheck/lint及上次build通过 | 本轮无前端源码改动，未重跑，不算新增TS验收 |
 
-最新全量基线80dab6d5，**其后Rust语义切片累计0**。前轮43a00848/39012654458=1643/0的归档证明仍是历史独立证据，不混用版本。
+最新全量基线fa5cf8aa，**其后Rust语义切片累计0**。前片e9b67f91 / [39015932333](https://github.com/TanCan1998/Lorekeeper/actions/runs/39015932333)独立成功1649/0，库245.63秒、all-targets41.65秒无告警，artifact已核对；不混用版本。
 
-## 本轮代码与授权边界
+## 本轮代码与有界结论
 
-### 草稿待审批次准入
+### 导入生成槽位只读修复（e9b67f91）
 
-- `MainGenerationOwner::admit_draft_batch`只为`begin_batch`内部初始化准入`batch-chapters`根；只接收`draft_review`，根不得伪装子代或附加batchId，自动定稿仍拒绝。
-- 子代必须为该批次当前下一章的`chapter-draft`，真实项目、父根、模型、精确前驱草稿和批次冻结作者输入逐项匹配；拒绝目录续接。开始事务前和immediate写事务内均复核，不为普通父根、Agent或其他业务提供通用豁免。
-- 两章真实生成/提交复用一个根预算；根幂等重放不增加根、run或模型租约。错误父根/模型/章节顺序/输入/前驱、跨项目、事务失败均有拒绝及无多余效果回归。
-- 本轮不改变schema、依赖、文件权限、会话租约规则或定稿不可逆生命周期；不开放四生产审稿频道。
+- `read_import_generation`曾对全表binding_json直接json_extract，实际脱敏副本中无关旧绑定为空，导致malformed JSON。先按统一连接冻结事实排除旧run，再逐行保留原SQLite谓词。
+- 真实源库→sanitizer→冻结侧车/守卫回归先失败后通过：未装守卫的中和数据仍报错；冻结旧槽位返回null，当前新槽位可读；当前重复槽位、非冻结坏绑定仍拒绝，非字符串键保持原SQL比较语义。只读不增加changes，源库字节不变、旧写保护保留。
+- 不扩大导入执行准入，不代表完整导入推理链可用；该片本机owner193/0、import服务16/0、portable77/0、run38/0、命令4/0及格式/all-targets通过。
 
-### 冻结旧账本不干扰当前草稿批次
+### 图生成专用接线（fa5cf8aa）
 
-- 新增中和样本+正式冻结侧车/连接守卫回归，复现首次owner构造恢复扫描对旧绑定`json_extract('')`报错；也覆盖批次全局收据读取对旧空/NULL收据的解析。
-- Agent启动声明恢复在解析绑定/收据前排除冻结run/attempt；草稿效应读取同样排除冻结attempt。旧账本不获当前执行或提交权威，不回写冻结历史。
-- 非冻结坏绑定、坏收据仍拒绝，不用无条件json_valid过滤或默认有效JSON掩盖当前损坏。该回归不是完整归档恢复GUI或生产Agent验收。
+- 对齐基线内部`graphInitialization`：仅graph_admission放行graphGenerationInput/graphGenerationKey，主进程生成UUID；公共BEGIN_ALLOWED_KEYS不增加字段，专用频道也拒绝外部伪造key。
+- 原入口在普通源库先被通用键集拒绝；补后进一步暴露提交后再次捕获/改写上下文，导致key与原摘要/来源绑定不一致。现只复用begin事务内捕获，不提交后重采样，不额外改写账本。
+- 图上下文/任务摘要按实际持久化JSON Value计算，与既有严格读面一致，不混用结构体字段顺序。无事件源仍按原规则拒绝，未绕过NO_EVENT_SOURCES。
 
-## 本轮真实后台GUI与测试夹具修正
+### 行内稳定上下文与nonce读取
 
-- 通过TAURI_CONFIG会话构建覆盖visible=false/focus=false，启动前保持隐藏配置；整个交互只走后台CDP与页面定向按钮，无全局键鼠、SendKeys或置顶/激活。仅独立home/合成项目、127.0.0.1 Vite与合成HTTP/SSE模型。
-- 正式UI选择两章、500字目标、草稿待审，请求“当前章节完成后暂停”。第一章写入后任务paused；稳定等待仍仅第一章、下一章2、定稿0；点击继续后任务completed，两章各v1草稿，同一root、下一章null、定稿仍0。
-- 初版合成模型重复正文，第二章被重演质量门禁拒绝，未保存错误草稿；另一次夹具计数把无messages辅助请求误算为正文。保留失败证据，仅修正本机合成服务和等待逻辑，不降低生产质量/准入门禁。最终独立轮次通过。
-- 同路径正常关闭/欢迎页重开，新租约不同；关闭后的旧读被拒，重开后的旧写返回success=false及Error前缀，chapter99不存在、两章蓝图不变。重开后两稿仍为draft、同一批次根及完成进度可读。
-- Tauri窗口API在各业务快照均false/false；另同SHA Win32复核准确识别Lorekeeper/Tauri Window主窗口隐藏、非前台。全进程“无任何WS_VISIBLE窗口”断言曾误含Tao Thread Event Target，已按标题/类纠正观测范围，保留原始失败记录。
-- 所有测试窗口均按标题栏正常关闭，合成模型正常收口、Vite身份核对后停止，9226/5190/19537均无监听。会话覆盖已清除并重建默认debug二进制；后续后台测试必须重新隐藏构建。
+- 内嵌PromptTemplate.variables为HashMap，原上下文哈希随反序列化随机键序变化，独立夹具重复后复现GENERATION_EDITOR_CONTEXT_INVALID。仅对行内上下文内嵌模板的变量字典稳定排序，保持其余字段/值/字段顺序；不改全局PromptTemplate类型或不可变合同。
+- 旧双变量两种排列仅做有界完整摘要验证，不尝试任意排列、不改写旧收据、不自动授予旧源当前执行权威；正文与选区仍严格校验，未知/不匹配摘要拒绝。
+- 行内恢复/幂等从冻结modelReceipt.modelId读取模型身份，保留旧平面字段只读回退，修复相同请求被误判nonce冲突。
+- 图/行内nonce查重共用私有只读扫描：在JSON1解析前排除冻结run/root，当前非冻结损坏仍报错，不用json_valid静默吞掉。实际sanitizer/守卫回归覆盖冻结旧记录与当前新根共存、幂等/冲突、旧写保护和源库不变。
+- 5项owner回归还覆盖12个独立随机HashMap夹具、多次重读/重建绑定稳定、通用入口越权、事务失败根/run/租约回滚、跨项目句柄、模型切换与作者来源漂移拒绝；不调用模型。
 
-## 沿用的便携归档证明与未完成项
+## 本轮真实隐藏WebView验证边界
 
-- 43a00848的复杂合成归档后端往返覆盖草稿/审稿材料、冻结生成/导入历史、恢复候选、正式/孤儿头像与原始资产；两次身份转移、重复重开、二次导出恢复及资产漂移拒绝。7fb424dd修复冻结恢复候选只读展示，保留正文哈希校验及sourceCurrent=false。两片均独立云端通过。
-- **仍未验收**：完整审稿→作者确认→修稿→合并→复核GUI，四生产审稿频道继续关闭；复杂资产/审修原生归档GUI，不能由后端往返回归代替。
-- 更广审修、图生成、导入推理读面继续按域核对；本轮草稿批次通过不能代替自动定稿或生产Agent工作流。任意在途/跨项目组合未穷尽，不宣称全链安全。
-- 注册291/契约290/事件7，旧扫描289/290、前端路由285/290沿用；只解除已明确复现的草稿待审批次缺口。真实模型/MCP/业务云/发布未授权，macOS/Linux未认证。
+- 独立home/合成项目，TAURI_CONFIG会话覆盖visible=false/focus=false；正式UI打开项目、写合成配置/蓝图，再从真实WebView走正式IPC。全程无置顶/激活、全局键鼠或SendKeys；只用127.0.0.1合成HTTP/SSE端点。
+- 两专用根创建及幂等各保留同一句柄，图重读成功；行内20次重读保持documentHash、sourceStatus=current及正确冻结模型。伪造通用begin、错选区、模型切换、外项目句柄被拒，运行数仅0→2。
+- 同轮正式execute IPC各产生1次物理请求及1份持久候选，来源仍current。图合成响应是普通文本，正式解析走deterministic兜底并可读，不是模型结构化质量或全图种类证明。
+- 未调用graph confirm、未把行内结果应用到正文，effects=0、草稿0、定稿0。该结果是**后台真实WebView的IPC/回环执行验收，不是完整UI确认/编辑应用链验收**。
+- Tauri API反复false/false，Win32仅识别当前进程的Tauri Window主窗口，确认隐藏/非前台，不把Tao内部事件目标当用户窗口。窗口按正常标题栏协议关闭，模型正常收口、Vite身份核对后停止，三端口无监听，默认开发构建已恢复。
 
-活动状态见`.pi/tmp/pipeline-state.md`；临时日志、合成数据、构建产物和凭据不入库。无子代理、无本机服务在飞。
+## 沿用证明、未完成项与下一步
+
+- 第88次`80dab6d5`的两章草稿待审批次UI暂停/继续、同根预算与重开持久化/旧租约拒绝沿用原实测；本轮未重跑批次GUI。自动定稿仍拒绝，原会话/文件权限/定稿规则不变。
+- 第87次43a00848复杂归档后端两次身份转移、重复重开、资产漂移拒绝，以及7fb424dd冻结恢复候选只读证明沿用；不能替代复杂资产/审修原生归档GUI。
+- 后续逐域核对图plan/event、确认效果与行内选区应用UI、专用execute重放/重开恢复及更广便携审修/导入读面；本轮plot兜底和行内候选不覆盖上述链路。
+- 完整审稿→作者确认→修稿→合并→复核GUI仍未验收，四生产审稿频道继续关闭；真实模型/MCP/业务云/发布未授权，macOS/Linux未认证，不宣称全链安全。
+- 注册291/契约290/事件7、旧扫描289/290、前端路由285/290沿用。静态注册/扫描数不代表所有业务路径验收。
+
+活动状态见`.pi/tmp/pipeline-state.md`；临时日志、合成数据、构建产物和凭据不入库。无子代理、无本机服务在飞。下次后台验证须重新隐藏构建，不得直接运行当前默认二进制或旧前台脚本。
