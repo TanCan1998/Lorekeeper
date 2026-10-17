@@ -4936,18 +4936,39 @@ impl MainGenerationOwner {
         let slot_key = crate::services::import_generation_source::import_generation_slot_key(&slot)
             .map_err(|e| mutating_error(&e))?;
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT run_id FROM generation_runs
-                 WHERE json_extract(binding_json, '$.sourceManifest.importSlotKey') = ?1",
-            )
-            .map_err(|e| mutating_error(&e.to_string()))?;
-        let run_ids = stmt
-            .query_map([&slot_key], |r| r.get::<_, String>(0))
-            .map_err(|e| mutating_error(&e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| mutating_error(&e.to_string()))?;
-        drop(stmt);
+        let run_ids = {
+            let mut statement = conn
+                .prepare("SELECT run_id FROM generation_runs")
+                .map_err(|error| mutating_error(&error.to_string()))?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| mutating_error(&error.to_string()))?;
+            let ids = rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| mutating_error(&error.to_string()))?;
+            // 冻结事实必须先于JSON1解析；不能用json_valid吞掉当前坏绑定。
+            // 逐行仍由SQLite比较槽位键，保留NULL及非字符串键的原语义。
+            let mut slot_matches = conn.prepare(
+                "SELECT json_extract(binding_json,'$.sourceManifest.importSlotKey')=?2 FROM generation_runs WHERE run_id=?1"
+            ).map_err(|error| mutating_error(&error.to_string()))?;
+            let mut matching = Vec::new();
+            for id in ids {
+                if crate::services::portable_project_guard::frozen_row(conn, "generation_runs", &id)
+                {
+                    continue;
+                }
+                let matches = slot_matches
+                    .query_row(rusqlite::params![&id, &slot_key], |row| {
+                        row.get::<_, Option<bool>>(0)
+                    })
+                    .map_err(|error| mutating_error(&error.to_string()))?
+                    .unwrap_or(false);
+                if matches {
+                    matching.push(id);
+                }
+            }
+            matching
+        };
 
         let matching_runs = run_ids
             .into_iter()
@@ -16436,6 +16457,148 @@ data: [DONE]
     }
 
     // ===== B95: import-generation 单元测试 =====
+
+    #[test]
+    fn portable_import_generation_read_skips_frozen_bindings_and_keeps_current_slot_checks_test() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_project_sanitize,
+            portable_runtime_freeze,
+        };
+
+        fn attach_slot(conn: &Connection, run: &DurableGenerationRun, slot: &Value) -> Value {
+            let typed = serde_json::from_value(slot.clone()).unwrap();
+            let key = crate::services::import_generation_source::import_generation_slot_key(&typed)
+                .unwrap();
+            let context = json!({"slot": slot, "manifestFingerprint": "a".repeat(64),
+                "totalChapters": 1, "totalWords": 100, "core": {}, "prompts": {}, "chapters": []});
+            let mut binding = run.binding.clone();
+            binding
+                .source_manifest
+                .insert("importSlot".into(), slot.clone());
+            binding
+                .source_manifest
+                .insert("importSlotKey".into(), json!(key));
+            binding
+                .source_manifest
+                .insert("importContext".into(), context.clone());
+            binding
+                .source_manifest
+                .insert("modelId".into(), json!("synthetic-read-model"));
+            conn.execute(
+                "UPDATE generation_runs SET binding_json=?1 WHERE run_id=?2",
+                rusqlite::params![serde_json::to_string(&binding).unwrap(), run.run_id],
+            )
+            .unwrap();
+            context
+        }
+
+        let (_temp, source_conn, owner, _) = source_owner_fixture();
+        let slot = json!({"runId":"historical-import", "stage":"global", "batchId":"done"});
+        let old = open_run(&source_conn, "project-1", "lease-1", "import-global-facts").unwrap();
+        let old_context = attach_slot(&source_conn, &old, &slot);
+        assert_eq!(
+            owner.read_import_generation(&source_conn, &slot).unwrap()["frozenContext"],
+            old_context
+        );
+        let source = PathBuf::from(&owner.session.project_path).join("import-read-source.db");
+        let target = PathBuf::from(&owner.session.project_path).join("import-read-portable.db");
+        source_conn
+            .execute("VACUUM INTO ?1", [source.to_str().unwrap()])
+            .unwrap();
+        let original_source = std::fs::read(&source).unwrap();
+        portable_project_sanitize::sanitize_portable_database(
+            &portable_project_sanitize::SanitizePortableDatabaseInput {
+                source_database_path: &source,
+                target_database_path: &target,
+                limits: None,
+            },
+        )
+        .unwrap();
+        let restored = Connection::open(&target).unwrap();
+        // 未安装冻结事实时，中和绑定仍须按原JSON1路径拒绝，不能全局容错。
+        assert!(owner.read_import_generation(&restored, &slot).is_err());
+        let document = portable_project_history::freeze_document(
+            &restored,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "import-slot-read",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&restored, guard).unwrap();
+        let changes: i64 = restored
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            owner.read_import_generation(&restored, &slot).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            restored
+                .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            changes
+        );
+
+        // 冻结历史和当前新槽位共存：不把整个恢复项目禁用，也不重放旧收据。
+        let current_slot = json!({"runId":"current-import", "stage":"style", "batchId":"done"});
+        let current = open_run(&restored, "project-1", "lease-1", "analyze-writing-style").unwrap();
+        let current_context = attach_slot(&restored, &current, &current_slot);
+        let result = owner
+            .read_import_generation(&restored, &current_slot)
+            .unwrap();
+        assert_eq!(result["view"]["handle"]["runId"], current.run_id);
+        assert_eq!(result["frozenContext"], current_context);
+        assert_eq!(result["modelId"], "synthetic-read-model");
+        assert_eq!(
+            owner.read_import_generation(&restored, &slot).unwrap(),
+            Value::Null
+        );
+
+        // 当前重复槽位仍拒绝；非字符串键仍按原SQLite比较语义视为不匹配。
+        restored.execute("INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+            SELECT 'duplicate-current-import',root_action_id,binding_json,status,created_at_ms,'duplicate-current-import'
+            FROM generation_runs WHERE run_id=?1", [&current.run_id]).unwrap();
+        assert_eq!(
+            owner
+                .read_import_generation(&restored, &current_slot)
+                .unwrap_err(),
+            mutating_error("GENERATION_IMPORT_SLOT_AMBIGUOUS")
+        );
+        restored.execute("UPDATE generation_runs SET binding_json=json_set(binding_json,'$.sourceManifest.importSlotKey',123)
+            WHERE run_id='duplicate-current-import'", []).unwrap();
+        assert_eq!(
+            owner
+                .read_import_generation(&restored, &current_slot)
+                .unwrap()["view"]["handle"]["runId"],
+            current.run_id
+        );
+        // 当前非冻结坏绑定，即使本身不是目标槽位，也不能悄悄跳过。
+        restored.execute("UPDATE generation_runs SET binding_json='invalid' WHERE run_id='duplicate-current-import'", []).unwrap();
+        assert!(owner
+            .read_import_generation(&restored, &current_slot)
+            .unwrap_err()
+            .contains("malformed JSON"));
+        let old_binding: String = restored
+            .query_row(
+                "SELECT binding_json FROM generation_runs WHERE run_id=?1",
+                [&old.run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(old_binding.is_empty());
+        assert!(restored
+            .execute(
+                "UPDATE generation_runs SET status='running' WHERE run_id=?1",
+                [&old.run_id]
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+        assert_eq!(std::fs::read(&source).unwrap(), original_source);
+    }
 
     #[test]
     fn import_generation_read_returns_null_when_not_found_test() {
