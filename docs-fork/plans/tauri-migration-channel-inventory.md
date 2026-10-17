@@ -285,3 +285,12 @@ Tauri 映射：`tauri-plugin-fs` scope 白名单 + 自研 grant 校验，**不�
 > **【L5 偏差 — 文档化接受，不改代码（2026-10-11）】** `db:blueprint-*` 读取面 `characters` 列的 JSON 容错语义差异：上游 `rowToData`（`electron/repositories/blueprint-repository.ts:147-160`）仅对**坏 JSON** try/catch 容错为 `[]`；**NULL**（`JSON.parse(null)` → `null`）与**非数组 JSON** 在运行时原样透传（TS 类型标 `string[]` 而运行可 `null`）。Rust `BlueprintData::from_row`（`tauri-app/src-tauri/src/repositories/blueprint_repository.rs:52-63`）将 NULL/非数组/坏 JSON 三者统一归一为 `vec![]`。接受理由：`upsert` 恒写数组 JSON（仅直改 DB 才可能触发）且结构体字段为非 `Option` 的 `Vec<String>`，改 `Option<Vec<String>>` 波及全部消费者；偏差已在 Rust 源码注释记录。
 
 > **【M5 状态 — 仓储层钩子已就位，真实闭包待 generation-owner 移植批次（2026-10-11）】** 上游 `BlueprintRepository.commitRange`（`blueprint-repository.ts:576`，钩子调用于 `:620`）与 `CharacterRosterRepository.commit`（`character-roster-repository.ts:981`，钩子调用于 `:1012`）带可选 `assertGenerationSources?: () => void` 钩子（事务内、幂等分支后、写入生效前调用）。Rust 仓储层 `commit_range` / `commit` / `commit_range_in_transaction` / `commit_in_transaction` 均已加 `assert_generation_sources: Option<&dyn Fn()>` 形参并按上游同位置调用，全部现有调用点传 `None`；真实闭包（`generationRunHandle` 的 `assertGenerationSourcesCurrent`，上游 `db-controller.ts` 生成分支：蓝图提交 `:569`、角色名单提交 `:684`）待 generation-owner 移植批次接线，不在本轮范围。
+
+
+## 审修与六项验收更新（第91次）
+
+本节覆盖历史“审修生产频道关闭”的当前状态，旧章节保留为阶段记录。8ecfc0fb已接通review-revision:prepare、commit-review、commit-revision、read-recovery四个request信封，DEFERRED_RENDERER_CHANNELS现为空；prepared准入仍绑定当前project/epoch、来源、模型及预算，不是通用生成豁免。
+
+真实隐藏UI已完成有效finding→作者确认→修稿→合并→定向复验持久化1次→末审；图确认、行内应用保护、新租约恢复已验。复杂审修/头像归档原生导出恢复核心链通过，其他便携/导入读面尚未收口，不能由注册数量推导业务全部完成。93b3b27d冻结cycle不发当前执行投影，原材料保留。
+
+当前代码云端39041910917完整核对1674/0、all-targets无告警，前端190文件2121通过/1跳过；精确范围和剩余风险以[第91次快照](../handoffs/2026-10-17-tauri-migration-status.md)为准。

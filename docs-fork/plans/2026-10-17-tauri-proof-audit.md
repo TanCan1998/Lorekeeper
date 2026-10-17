@@ -112,3 +112,13 @@
 - 本机`.pi/tmp/recovery/ci-{提交前缀}/`保存云端日志；artifact保存14天。未脱敏日志/用户数据不入库。
 - 定向/前端：identity-directed、knowledge-*、kb-schema-*、composition-recovery-test、transport-*、final-83-*日志与结果JSON。
 - GUI：transport-gui-cancel、transport-gui-archive-ui、transport-gui-copy、transport-gui-reopened截图/JSON；transport-archive-verification.json只记录合成身份/计数/哈希及历史失败事实。合成正文和本机凭据不入库。
+
+
+## 第91次增量审计（覆盖上述历史待验状态）
+
+- 当前代码93b3b27d：云端39041910917已下载核对完整SHA、1674/0、两个退出码0、state=passed、all-targets无告警。8ecfc0fb/39041387445与7ae31540/39039141837也独立核对1674/0，不混用SHA。
+- 图plan/event/plot真实确认、行内应用/选区移动/正文漂移保护、标题栏正常退出后图/行内新租约恢复已验；冻结旧句柄执行仍拒绝。
+- 审修有效finding→人工明确纳入/确认→修稿保存→合并→定向复验持久化1次→末审2通过完成，四生产request信封于8ecfc0fb开放；仅合成模型，finding未知状态不自动变作者事实，未自动定稿。
+- 复杂头像/审修原生归档核心链通过，正文/审修保留列及资产哈希一致、恢复副本UI可读；93b3b27d修冻结周期不发布当前执行投影，不称脱敏链执行证明成功。
+- 仍待其他便携/导入非空读面、冻结与新周期混存核查；旧handle的泛化/JSON错误仅证明拒绝，不是精确冻结错误合同。本轮不登记六项最终完成。
+- 窗口正常关闭，mock正常退出，Vite停，三端口无监听，默认开发构建恢复。细节、证据路径与断点见[第91次快照](../handoffs/2026-10-17-tauri-migration-status.md)。
