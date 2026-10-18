@@ -158,7 +158,7 @@ jobs:
             tauri-app/src-tauri/target/release/bundle/dmg/*.dmg
             ${{ runner.temp }}/tauri-package/manifest.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
           include-hidden-files: false
 
   publish:

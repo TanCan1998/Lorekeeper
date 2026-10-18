@@ -108,7 +108,7 @@ jobs:
           name: verified-desktop-release-${{ inputs.expected_sha }}
           path: verified-package
           if-no-files-found: error
-          retention-days: 2
+          retention-days: 1
 
   publish:
     needs: plan-and-verify
@@ -179,7 +179,7 @@ jobs:
           name: release-provenance-${{ inputs.expected_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-provenance/release-provenance.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 1
 
       - name: Report retained intermediates when provenance could not be saved
         if: success() && steps.upload-provenance.outcome != 'success'

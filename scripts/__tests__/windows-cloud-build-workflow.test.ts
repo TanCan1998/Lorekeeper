@@ -112,7 +112,7 @@ describe('Windows cloud build workflow contract', () => {
     const upload = namedStep(workflow, 'Upload runtime-verified Windows package')
     expect(upload).toContain('id: upload-qualified')
     expect(upload).toContain('name: qualified-windows')
-    expect(upload).toContain('retention-days: 14')
+    expect(upload).toContain('retention-days: 1')
   })
 
   it('uses an isolated, manual, pinned, runtime-qualified Windows build without release publication', () => {
@@ -174,7 +174,7 @@ describe('Windows cloud build workflow contract', () => {
     const failedArtifact = namedStep(workflow, 'Upload Windows build diagnostics')
     const diagnostics = namedStep(workflow, 'Collect Windows build diagnostics')
     expect(successfulArtifact).toMatch(/if:\s*\$\{\{\s*success\(\)\s*\}\}/)
-    expect(successfulArtifact).toMatch(/retention-days:\s*14/)
+    expect(successfulArtifact).toMatch(/retention-days:\s*1\s*(?:\r?\n|$)/)
     expect(successfulArtifact).toContain('windows-qualified')
     expect(successfulArtifact).not.toContain('win-unpacked')
     expect(successfulArtifact).not.toMatch(/failure\(\)/)

@@ -25,6 +25,7 @@ Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留�
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
 | 查看本机/云端测试分工 | [Tauri Rust混合验证](agents/tauri-rust-ci.md) |
 | 手动打包与发布 | [Tauri受限发布协议](agents/tauri-release.md) |
+| 管理Actions存储 | [1天保留与历史制品清理](agents/actions-storage.md) |
 | 查看预发布说明 | [1.0.0-beta](releases/1.0.0-beta.md) |
 | 查 Tauri 迁移调研 | [`research/`](research/) |
 | 看 fork 改过上游什么 | [`notes-on-upstream-changes.md`](notes-on-upstream-changes.md) |

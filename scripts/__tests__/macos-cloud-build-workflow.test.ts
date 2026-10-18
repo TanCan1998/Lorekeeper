@@ -85,7 +85,7 @@ describe('macOS ARM64 cloud build workflow contract', () => {
     const upload = namedStep(workflow, 'Upload runtime-verified macOS ARM64 package')
     expect(upload).toContain('id: upload-qualified')
     expect(upload).toContain('name: qualified-macos-arm64')
-    expect(upload).toContain('retention-days: 14')
+    expect(upload).toContain('retention-days: 1')
   })
 
   it('uses a manual GitHub-hosted Apple Silicon qualification without Release publication', () => {
@@ -159,7 +159,7 @@ describe('macOS ARM64 cloud build workflow contract', () => {
 
     const artifactStep = namedStep(workflow, 'Upload runtime-verified macOS ARM64 package')
     expect(artifactStep).toMatch(/if:\s*\$\{\{\s*success\(\)\s*\}\}/)
-    expect(artifactStep).toContain('retention-days: 14')
+    expect(artifactStep).toContain('retention-days: 1')
     expect(artifactStep).toContain('macos-arm64-qualified')
 
     const failureDiagnostic = namedStep(workflow, 'Upload redacted A11 exit diagnostic')

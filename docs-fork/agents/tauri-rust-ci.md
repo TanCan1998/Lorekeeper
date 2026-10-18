@@ -32,7 +32,7 @@ gh run view <run-id> --repo TanCan1998/Lorekeeper
 - 独立RUSTUP_HOME/CARGO_HOME与Lorekeeper合成根；关闭增量与调试信息以降低托管runner磁盘占用。
 - 缓存仅公开依赖与target，key包含OS/架构/固定Rust/manifest+lock哈希，**不含提交SHA**：命中后不再上传新条目，避免每次提交写入GB级target并挤占仓库10GB配额（配额淘汰会让后续运行重新冷编译）。restore-keys保留v1前缀以复用历史缓存。不缓存整个用户目录、凭据文件或业务数据。
 - 仅contents:read，checkout不保留凭据。无Secrets输入、仓库写入、打包、签名或发布步骤。
-- 只上传validation.json、cargo-test.log、cargo-check.log，保留14天。validation记录SHA、lock哈希、运行编号、工具链、两个独立退出码和时间；test失败不会被check成功覆盖，异常路径也保存失败状态。
+- 只上传validation.json、cargo-test.log、cargo-check.log，保留1天（2026-10-18用户确认全仓库最短策略）。重要验证证据须及时下载留存；Actions过期后不能再从云端取回原日志。validation记录SHA、lock哈希、运行编号、工具链、两个独立退出码和时间；test失败不会被check成功覆盖，异常路径也保存失败状态。
 
 ## Action版本依据
 

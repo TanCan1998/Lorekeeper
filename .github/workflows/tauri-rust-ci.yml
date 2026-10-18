@@ -112,5 +112,5 @@ jobs:
             ${{ runner.temp }}/tauri-rust-ci-evidence/cargo-test.log
             ${{ runner.temp }}/tauri-rust-ci-evidence/cargo-check.log
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 1
           include-hidden-files: false

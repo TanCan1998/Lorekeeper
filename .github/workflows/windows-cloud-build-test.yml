@@ -168,7 +168,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: qualified-windows
-          retention-days: 14
+          retention-days: 1
           compression-level: 0
           if-no-files-found: error
           path: ${{ runner.temp }}\windows-qualified
@@ -236,6 +236,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-cloud-build-diagnostics
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: warn
           path: ${{ runner.temp }}\ai-novel-cloud-build-diagnostics

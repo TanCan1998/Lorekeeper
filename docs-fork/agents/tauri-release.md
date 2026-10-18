@@ -16,6 +16,8 @@
 6. 原子创建新标签，创建草稿、上传9个资产（四安装包、三平台原清单、SHA256SUMS、release-manifest），核对远端大小/摘要/集合后公开。
 7. 再读回Release与标签SHA。发生错误不覆盖、不自动删除标签或草稿，须核查后处理；不能盲目重跑发布作业覆盖现有版本。
 
+临时Actions安装包与清单仅保留 **1天**，Release assets不受影响。同run发布须在过期前完成，过期应重新完整打包；详见[Actions存储策略](actions-storage.md)。
+
 所有Actions固定commit SHA；本次download-artifact v8.0.2为 `9000827ccba6bdab643e8b6fd33ac0654aef8333`。
 
 ## 离线自检

@@ -125,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: qualified-macos-arm64
-          retention-days: 14
+          retention-days: 1
           compression-level: 0
           if-no-files-found: error
           path: ${{ runner.temp }}/macos-arm64-qualified
@@ -135,6 +135,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: macos-arm64-a11-exit-diagnostic
-          retention-days: 14
+          retention-days: 1
           if-no-files-found: ignore
           path: ${{ env.AI_NOVEL_RELEASE_EVIDENCE_ROOT }}/diagnostics/macos-a11-exit.json

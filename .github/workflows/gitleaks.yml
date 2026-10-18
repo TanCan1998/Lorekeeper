@@ -67,5 +67,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: gitleaks-report
+          retention-days: 1
           path: gitleaks.sarif
           if-no-files-found: ignore

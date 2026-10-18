@@ -373,7 +373,7 @@ describe('Windows official in-app update E2E contract', () => {
     expect(workflow).toContain('workflow_dispatch:')
     expect(workflow).not.toMatch(/^\s*(push|pull_request|schedule):/m)
     expect(workflow).toContain('contents: read')
-    expect(workflow).toContain('retention-days: 7')
+    expect(workflow).toContain('retention-days: 1')
     expect(workflow).toContain('${{ env.AI_NOVEL_UPDATE_E2E_EVIDENCE_ROOT }}/*.json')
     expect(workflow).not.toContain('path: ${{ env.AI_NOVEL_UPDATE_E2E_EVIDENCE_ROOT }}')
     expect(workflow).toContain('node scripts/windows-in-app-update-e2e.mjs run')
