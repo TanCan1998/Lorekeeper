@@ -1,6 +1,13 @@
-# Tauri 首版证明与本机验收审计（第99次）
+# Tauri 首版证明与本机验收审计（第100次）
 
-当前全量验证代码：`7360f4f67f2c80e47839521199470367ecc6ca2c` / 39098085472，1687/0，库175.47秒，all-targets31.08秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+当前全量验证代码：`1cf260b492f0229b57f5e3357a9f9581b85a3ea6` / 39100710833，1688/0，库284.91秒，all-targets38.70秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+
+## 第100次：普通审修回执解析
+
+- 定稿修复确认卡取消，不作授权；未修改该文件。继续普通审修，代码1cf260b4已推送，云端39100710833成功1688/0、check38.70秒无告警；产物31652字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验，累计0。代码SHA提交规范39100710788、秘密扫描39100710805均成功。
+- saved不再吞坏JSON为无效果，正式read_recovery在来源/候选回调前返回Error: GENERATION_REVIEW_RECEIPT_INVALID；SQL NULL内部保留合法JSON null，无回执与当前空白损坏分开。
+- 对齐基线假值无声明行为；NULL/null/false/0/空字符串不伪造效果，对象仍完整证明。新增真实SQLite先失败回归覆盖无写入/无回调与恢复原账本后的完整报告重读。
+- 定向review_revision71/0、portable90/0、generation_owner213/0，格式/diff通过；未改schema/定稿/权限/准入/前端。全库parent/confirmation效果查找不因本片通过就登记全部完成。
 
 ## 第99次：角色提案与旧名册读面
 

@@ -1,19 +1,21 @@
 # Tauri迁移交接快照（2026-10-18）
 
-> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。第 **99** 次交接；同日第95次内容可在提交4646837b查看，上一日快照为[第94次](./2026-10-17-tauri-migration-status.md)。
+> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。第 **100** 次交接；同日第95次内容可在提交4646837b查看，上一日快照为[第94次](./2026-10-17-tauri-migration-status.md)。
 
 ## 当前代码与已验证状态
 
-代码 **7360f4f67f2c80e47839521199470367ecc6ca2c**，master，已推送。云端39098085472成功且产物已核验；前片a9f28824/39097717930被新提交取消，不计独立全量通过，最新SHA全量覆盖累计两片。第99次未启动GUI或调用真实模型。
+代码 **1cf260b492f0229b57f5e3357a9f9581b85a3ea6**，master，已推送。云端39100710833成功且产物已核验；当前文档不改变Rust代码指纹，第100次未启动GUI或调用真实模型。
 
 | 验证 | 结果 | 版本/时间/证据 |
 |---|---|---|
-| 最新云端全量（已下载核验） | 1687通过/0失败；库175.47秒；all-targets 31.08秒无告警 | 7360f4f6 / [39098085472](https://github.com/TanCan1998/Lorekeeper/actions/runs/39098085472)，2026-10-18 04:50 UTC完成 |
+| 最新云端全量（已下载核验） | 1688通过/0失败；库284.91秒；all-targets 38.70秒无告警 | 1cf260b4 / [39100710833](https://github.com/TanCan1998/Lorekeeper/actions/runs/39100710833)，2026-10-18 05:37 UTC完成 |
+| 第99次云端全量 | 1687通过/0失败；库175.47秒；all-targets 31.08秒无告警 | 7360f4f6 / [39098085472](https://github.com/TanCan1998/Lorekeeper/actions/runs/39098085472) |
 | 第98次云端全量 | 1685通过/0失败；库265.84秒；all-targets 42.05秒无告警 | e093d7d4 / [39096912662](https://github.com/TanCan1998/Lorekeeper/actions/runs/39096912662) |
 | 前片云端全量 | 1684通过/0失败；库269.87秒；all-targets 35.45秒无告警 | 39c1c885 / [39095854001](https://github.com/TanCan1998/Lorekeeper/actions/runs/39095854001) |
 | 前片云端全量 | 1682通过/0失败；库255.35秒；all-targets 36.92秒无告警 | 561e91d0 / [39094795752](https://github.com/TanCan1998/Lorekeeper/actions/runs/39094795752) |
 | 前片云端全量 | 1681通过/0失败；库152.81秒；all-targets 32.06秒无告警 | d709125a9af5a2ed242b7f05c56084dc9ab33526 / [39093896169](https://github.com/TanCan1998/Lorekeeper/actions/runs/39093896169)，2026-10-18 |
-| 本机最新定向 | legacy_roster 28/0；portable 90/0；generation_owner 213/0；定向rustfmt/diff通过 | 7360f4f6；legacy-nonce-*日志 |
+| 本机最新定向 | review_revision 71/0；portable 90/0；generation_owner 213/0；定向rustfmt/diff通过 | 1cf260b4；review-receipt-*日志 |
+| 第99次定向 | legacy_roster 28/0；portable 90/0；generation_owner 213/0 | 7360f4f6；legacy-nonce-*日志 |
 | 本轮前片定向 | character_proposal 12/0；portable 90/0；generation_owner 212/0 | a9f28824；character-import-*日志 |
 | 第98次定向 | agent_generation 57/0；portable 89/0；generation_owner 212/0 | e093d7d4；agent-registration-*日志 |
 | 本机前片定向 | graph_generation 23/0；portable 88/0；legacy_roster 27/0；main_generation_owner 211/0 | 39c1c885；read-proof-*日志，过滤范围不同不混用 |
@@ -21,7 +23,7 @@
 | 本机前片定向 | owner 218/0；review_revision 69/0；generation_run_repository 30/0；portable 87/0 | d709125a，2026-10-18；old-handle-*日志 |
 | 本机最近全量lib | 1681/0，74.15秒 | 6b8108dc提交前相同代码；本轮未在最新SHA重跑本机全量 |
 | 前端 | 本轮未改；未重跑TS | 上次Tauri前端全量190文件2121通过/1跳过及typecheck/lint：8ecfc0fb |
-| 提交规范/秘密扫描 | success | 7360f4f6：39098085516 / 39098085462 |
+| 提交规范/秘密扫描 | success | 1cf260b4：39100710788 / 39100710805 |
 | 双栈隔离 | 相对4646837b未修改根配置/lock、electron、src或docs | 本轮git路径差异检查 |
 
 已下载并核验的独立云端证据（完整expectedSha/testedSha匹配、两个独立退出码0、state=passed，lock哈希匹配，两日志无告警）：
@@ -37,7 +39,18 @@
 
 - 7360f4f67f2c80e47839521199470367ecc6ca2c / 39098085472：1687/0，库175.47秒，check31.08秒；产物31554字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验。
 
-按“最近已核验全量后”口径，Rust语义切片当前累计 **0**（7360f4f6全量证据已核验）。
+- 1cf260b492f0229b57f5e3357a9f9581b85a3ea6 / 39100710833：1688/0，库284.91秒，check38.70秒；产物31652字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验。gh watch末次返回1，经独立run view确认success及产物核验后才登记，不把watch退出码单独当验收。
+
+按“最近已核验全量后”口径，Rust语义切片当前累计 **0**（1cf260b4全量证据已核验）。
+
+## 第100次：未获定稿授权后继续普通审修切片
+
+- 定稿后处理修复确认卡已取消；未获具体授权，不修改finalization_generation。继续其他普通迁移路径，不把卡片取消解释为同意或恢复前台GUI权限。
+- **1cf260b4**：审修saved把坏JSON过滤为无效果，正式read_recovery可在尚未提交效果时错过损坏回执。新增回归先复现返回无错误，再严格解析为Error: GENERATION_REVIEW_RECEIPT_INVALID。
+- SQL NULL内部表示改为合法JSON null，保留“尚无回执”与空串/空白坏回执的区别；基线假值null/false/0/空字符串不产生效果声明。对象声明继续走完整证明，不为未知效果编造身份。
+- 回归覆盖坏JSON/空白、NULL与JSON假值、畸形效果、恢复入口拒绝时无来源/候选回调、无回写；恢复真实账本收据后仍可提交并重读完整报告。
+- 最初“已提交报告+额外简化attempt”夹具被账本完整性门禁抢先拒绝，未当作目标缺陷证据；改为尚未提交效果的真实attempt后复现saved误判。未放松账本校验。
+- 定向review_revision71/0、portable90/0、generation_owner213/0；未改schema/依赖/定稿/权限/准入/CI/前端。此切片不等于其余全库parent/confirmation效果查找路径均已验收。
 
 ## 第99次：持续迁移与两处相邻读面
 
@@ -103,10 +116,11 @@
 
 ## 证据与下轮断点
 
-- 本轮证据：.pi/tmp/character-import-{red,character_proposal,portable,generation_owner}.log、legacy-nonce-{red,legacy_roster,portable,generation_owner}.log；云端.pi/tmp/recovery/ci-7360f4f6/；原包D:/Temp/lorekeeper-ci-7360f4f6/evidence.zip。
+- 本轮证据：.pi/tmp/review-receipt-{red,review_revision,portable,generation_owner}.log；云端.pi/tmp/recovery/ci-1cf260b4/；原包D:/Temp/lorekeeper-ci-1cf260b4/evidence.zip。
+- 第99次证据：.pi/tmp/character-import-*.log、legacy-nonce-*.log；云端.pi/tmp/recovery/ci-7360f4f6/。
 - 第98次证据：.pi/tmp/agent-registration-*.log；云端.pi/tmp/recovery/ci-e093d7d4/。
 - 第97次证据：.pi/tmp/graph-receipt-red.log（UTF-16）、read-proof-{graph_generation,portable,legacy_roster,main_generation_owner}.log；云端.pi/tmp/recovery/ci-39c1c885/。
 - 前片证据：.pi/tmp/recovery/ci-{51f3e89f,6b8108dc,d709125a,561e91d0}/；old-handle-*.log、blank-deps-red.log、typed-deps-final-*.log；均不入库。
 - 活动事实源：.pi/tmp/pipeline-state.md；GUI历史位于background-1792229720030，PID仅历史，不视为当前运行。
-- 下一步：① 定稿后处理效果读面修复须具体确认，再继续其余JSON消费路径有界回归；② 新归档规则与恢复后创作的后台GUI验收；③ #30有界收口后再做#31，不能把后端全量当成GUI验收。
+- 下一步：① 定稿后处理效果读面仍未获授权，其他审修parent/confirmation全库效果查找继续有界回归；② 新归档规则与恢复后创作的后台GUI验收；③ #30有界收口后再做#31，不能把后端全量当成GUI验收。
 - 当前没有新GUI/mock/Vite或子代理运行；没有新原生文件授权操作。真实模型、外部MCP、业务云、发布、自动定稿仍未授权；macOS/Linux未认证。
