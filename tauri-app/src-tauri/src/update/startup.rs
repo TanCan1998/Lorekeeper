@@ -17,7 +17,7 @@ use crate::update::types::UpdateState;
 
 /// 装配结果（供日志/诊断与后续项 B14 使用）
 pub struct UpdateStartupOutcome {
-    pub service: Arc<UpdateService>,
+    pub service: UpdateService,
     pub runtime_enabled: bool,
     pub is_packaged_runtime: bool,
 }
@@ -71,7 +71,7 @@ pub fn start_update_runtime(handle: &AppHandle) -> UpdateStartupOutcome {
         })
     });
 
-    let service = Arc::new(UpdateService::new(UpdateServiceOptions {
+    let service = UpdateService::new(UpdateServiceOptions {
         updater: backend,
         current_version: handle.package_info().version.to_string(),
         is_packaged: is_packaged_runtime,
@@ -81,7 +81,7 @@ pub fn start_update_runtime(handle: &AppHandle) -> UpdateStartupOutcome {
         preferences: Arc::new(ConfigUpdatePreferencesStore::new()),
         now_millis: None,
         publish: Some(publish),
-    }));
+    });
 
     // 对齐基线 `update-startup.ts:71`：启动后 fire-and-forget 自动检查（失败不阻塞启动）
     if is_packaged_runtime && !configuration_missing {

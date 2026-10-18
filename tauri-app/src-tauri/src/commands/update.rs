@@ -6,8 +6,6 @@
 //!   命令层不额外发事件；
 //! - `days` 入参按基线语义宽容处理：非数字 → `INVALID_REMINDER_DELAY` 信封（而非 reject）。
 
-use std::sync::Arc;
-
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
@@ -17,7 +15,7 @@ use crate::update::types::{
     updates_disabled_error, UpdateActionResponse, UpdateCheckResponse, UpdateState, UpdateStatus,
 };
 
-fn service(state: &AppState) -> Option<Arc<UpdateService>> {
+fn service(state: &AppState) -> Option<UpdateService> {
     state.update_service()
 }
 

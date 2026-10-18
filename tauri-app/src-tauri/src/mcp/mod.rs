@@ -47,8 +47,18 @@ use serde_json::{json, Value};
 /// `servers` 表持有 `Arc` 运行时：`call_tool` 等只读路径把
 /// 传输句柄克隆出表后即可释放表锁，再阻塞等待 JSON-RPC 回应
 /// （至多 10s），不阻塞其他命令。
-#[derive(Debug, Default)]
+///
+/// 共享所有权语义（M-SERVICES-CLONE）：`Clone` 只复制 `Arc` 句柄，
+/// 调用方不再需要用 `Arc<McpManager>` 包装——公开面不出现包装器
+/// （M-AVOID-WRAPPERS）。
+#[derive(Debug, Default, Clone)]
 pub struct McpManager {
+    inner: Arc<McpManagerInner>,
+}
+
+/// 管理器内核：两张表各由自身 `Mutex` 保护，`Arc` 只承担共享所有权。
+#[derive(Debug, Default)]
+struct McpManagerInner {
     /// 服务器运行时表（基线 `servers`，mcp-manager.ts:100）。
     servers: Mutex<BTreeMap<String, Arc<McpServerRuntime>>>,
     /// 已加载配置表（基线 `loadedConfigs`，mcp-manager.ts:104）。
@@ -68,7 +78,8 @@ impl McpManager {
 
     /// 已加载配置查询（基线 `loadedConfigs.get`，:114）。
     pub fn loaded_config(&self, server_id: &str) -> Option<McpServerConfig> {
-        self.loaded_configs
+        self.inner
+            .loaded_configs
             .lock()
             .ok()
             .and_then(|configs| configs.get(server_id).cloned())
@@ -76,7 +87,7 @@ impl McpManager {
 
     /// 整体替换已加载配置表（基线 `loadedConfigs = ...`，:196）。
     pub fn set_loaded_configs(&self, configs: BTreeMap<String, McpServerConfig>) {
-        if let Ok(mut current) = self.loaded_configs.lock() {
+        if let Ok(mut current) = self.inner.loaded_configs.lock() {
             *current = configs;
         }
     }
@@ -145,6 +156,7 @@ impl McpManager {
         };
         // 基线 :213-215：已连接 → 先断开再重连。
         if self
+            .inner
             .servers
             .lock()
             .ok()
@@ -163,6 +175,7 @@ impl McpManager {
         });
         {
             let mut servers = self
+                .inner
                 .servers
                 .lock()
                 .map_err(|_| "MCP 服务器连接失败".to_string())?;
@@ -172,6 +185,7 @@ impl McpManager {
         let established = establish_connection(&config);
         // 提交结果：仅当表中的运行时未被并发替换时。
         let mut servers = self
+            .inner
             .servers
             .lock()
             .map_err(|_| "MCP 服务器连接失败".to_string())?;
@@ -210,6 +224,7 @@ impl McpManager {
     /// 基线该方法不抛异常 → 恒 `Ok(())`（未命中为无操作成功）。
     pub fn disconnect(&self, server_id: &str) -> Result<(), String> {
         let runtime = self
+            .inner
             .servers
             .lock()
             .ok()
@@ -226,6 +241,7 @@ impl McpManager {
     /// 逐个 kill 子进程、拒绝在途请求、移除运行时。
     pub fn disconnect_all(&self) -> Result<(), String> {
         let server_ids: Vec<String> = self
+            .inner
             .servers
             .lock()
             .map(|servers| servers.keys().cloned().collect())
@@ -260,7 +276,7 @@ impl McpManager {
         // 把传输句柄克隆出表后释放锁：JSON-RPC 请求至多阻塞
         // 10 秒，不应持锁阻塞其他命令。
         let transport = {
-            let Ok(servers) = self.servers.lock() else {
+            let Ok(servers) = self.inner.servers.lock() else {
                 return not_connected();
             };
             let Some(runtime) = servers.get(server_id) else {
@@ -298,7 +314,7 @@ impl McpManager {
 
     /// 聚合全部已连接服务器的工具（基线 `getAllTools`，:458-467）。
     pub fn get_all_tools(&self) -> Vec<MCPToolDescription> {
-        let Ok(servers) = self.servers.lock() else {
+        let Ok(servers) = self.inner.servers.lock() else {
             return Vec::new();
         };
         servers
@@ -310,7 +326,7 @@ impl McpManager {
 
     /// 聚合全部已连接服务器的资源（基线 `getAllResources`，:469-478）。
     pub fn get_all_resources(&self) -> Vec<MCPResourceDescription> {
-        let Ok(servers) = self.servers.lock() else {
+        let Ok(servers) = self.inner.servers.lock() else {
             return Vec::new();
         };
         servers
@@ -324,7 +340,7 @@ impl McpManager {
     /// 子进程意外退出后状态经 `effective_status` 反映为
     /// `disconnected`（基线 :278-284 的 `exit` 事件）。
     pub fn get_servers_status(&self) -> Vec<MCPServerStatus> {
-        let Ok(servers) = self.servers.lock() else {
+        let Ok(servers) = self.inner.servers.lock() else {
             return Vec::new();
         };
         servers
@@ -341,7 +357,7 @@ impl McpManager {
 
     /// 基线 :129：`loadedConfigs.clear()`。
     fn clear_loaded_configs(&self) {
-        if let Ok(mut configs) = self.loaded_configs.lock() {
+        if let Ok(mut configs) = self.inner.loaded_configs.lock() {
             configs.clear();
         }
     }
@@ -354,13 +370,13 @@ impl McpManager {
         // 再逐个 disconnect」的窗口——期间并发 connect 可能让同一 id
         // 复活却被误杀（TOCTOU），保证「读到的就是摘掉的」。
         let stale: Vec<Arc<McpServerRuntime>> = {
-            let Ok(mut servers) = self.servers.lock() else {
+            let Ok(mut servers) = self.inner.servers.lock() else {
                 return;
             };
             // 与 `servers` 同临界区同步 `loaded_configs`：被摘除运行时
             // 的配置一并移除（外部不可见：`load_config` 随后整体写回
             // 新配置表，对齐基线 :196 `this.loadedConfigs = ...`）。
-            let mut loaded_configs = self.loaded_configs.lock().ok();
+            let mut loaded_configs = self.inner.loaded_configs.lock().ok();
             let mut stale = Vec::new();
             servers.retain(|server_id, runtime| {
                 let keep = match configs.get(server_id) {
@@ -636,6 +652,28 @@ mod tests {
 
         assert_eq!(manager.loaded_config("fs"), Some(config));
         assert_eq!(manager.loaded_config("other"), None);
+    }
+
+    /// M-SERVICES-CLONE：`Clone` 只复制共享句柄，不得复制配置表。
+    ///
+    /// 若误实现为深拷贝，命令层每次从 `AppState` 取的克隆体就看不到
+    /// 已加载配置，`connect` 会一律报「未配置」。
+    #[test]
+    fn cloned_manager_shares_tables_test() {
+        let manager = McpManager::new();
+        let handle = manager.clone();
+        assert_eq!(handle.loaded_config("fs"), None);
+
+        let (id, config) = sample_config();
+        let mut configs = BTreeMap::new();
+        configs.insert(id, config.clone());
+        handle.set_loaded_configs(configs);
+
+        assert_eq!(
+            manager.loaded_config("fs"),
+            Some(config),
+            "克隆句柄的写入必须对原句柄可见"
+        );
     }
 
     #[test]

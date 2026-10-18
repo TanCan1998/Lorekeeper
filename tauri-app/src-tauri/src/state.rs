@@ -77,9 +77,12 @@ pub struct AppState {
     ///
     /// 为 `None` 时代表更新运行时**未装配**（理论上不发生），命令层会回退为
     /// `disabled` + `UPDATES_DISABLED` 信封。
-    pub(crate) update: Mutex<Option<std::sync::Arc<crate::update::UpdateService>>>,
+    /// 服务自身实现共享 `Clone`（M-SERVICES-CLONE）：`Clone` 只复制内部
+    /// `Arc` 句柄，故此表按值保存，不再用 `Arc` 二次包装。
+    pub(crate) update: Mutex<Option<crate::update::UpdateService>>,
     /// 批次 H（H4-2）：MCP 连接管理器（进程内存态，随 `AppState` 常驻）。
-    pub(crate) mcp: Mutex<std::sync::Arc<crate::mcp::McpManager>>,
+    /// 同上：共享语义由 `McpManager::clone` 承担。
+    pub(crate) mcp: Mutex<crate::mcp::McpManager>,
 }
 
 impl AppState {
@@ -117,7 +120,7 @@ impl AppState {
             ),
             writing_skill_inspections: Mutex::new(std::collections::HashMap::new()),
             update: Mutex::new(None),
-            mcp: Mutex::new(std::sync::Arc::new(crate::mcp::McpManager::new())),
+            mcp: Mutex::new(crate::mcp::McpManager::new()),
         }
     }
 
@@ -138,17 +141,14 @@ impl AppState {
     }
 
     /// 批次 H（H3）：装配更新服务（`lib.rs` 的 `setup` 中调用；重复装配会替换）
-    pub(crate) fn install_update_service(
-        &self,
-        service: std::sync::Arc<crate::update::UpdateService>,
-    ) {
+    pub(crate) fn install_update_service(&self, service: crate::update::UpdateService) {
         if let Ok(mut guard) = self.update.lock() {
             *guard = Some(service);
         }
     }
 
     /// 批次 H（H3）：当前更新服务（未装配 → `None`）
-    pub(crate) fn update_service(&self) -> Option<std::sync::Arc<crate::update::UpdateService>> {
+    pub(crate) fn update_service(&self) -> Option<crate::update::UpdateService> {
         self.update.lock().ok().and_then(|guard| guard.clone())
     }
 
@@ -156,7 +156,7 @@ impl AppState {
     ///
     /// 锁中毒时恢复内部数据（`into_inner`），不因其它路径的
     /// panic 丢失已装配实例。
-    pub(crate) fn mcp_manager(&self) -> std::sync::Arc<crate::mcp::McpManager> {
+    pub(crate) fn mcp_manager(&self) -> crate::mcp::McpManager {
         self.mcp
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

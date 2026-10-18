@@ -60,11 +60,25 @@ struct Inner {
     checked_available_version: Option<String>,
 }
 
-pub struct UpdateService {
+/// 共享内核：所有克隆句柄指向同一份状态。
+///
+/// 字段全部以 `&self` 访问（状态锁 + 异步串行锁各自内部可变），
+/// 因此 `Arc` 只承担共享所有权，不需要外层 `Mutex`。
+struct UpdateServiceShared {
     options: UpdateServiceOptions,
     now_millis: NowFn,
     inner: Mutex<Inner>,
     check_queue: tokio::sync::Mutex<()>,
+}
+
+/// 应用更新服务（对齐基线 `UpdateService`）。
+///
+/// 共享所有权语义（M-SERVICES-CLONE）：`Clone` 只复制 `Arc` 句柄，
+/// 调用方不再需要用 `Arc<UpdateService>` 包装——公开面不出现包装器
+/// （M-AVOID-WRAPPERS）。
+#[derive(Clone)]
+pub struct UpdateService {
+    shared: Arc<UpdateServiceShared>,
 }
 
 impl UpdateService {
@@ -120,25 +134,30 @@ impl UpdateService {
             error: None,
         };
         Self {
-            options,
-            now_millis,
-            inner: Mutex::new(Inner {
-                state,
-                reminder,
-                downloaded_version: None,
-                checked_available_version: None,
+            shared: Arc::new(UpdateServiceShared {
+                options,
+                now_millis,
+                inner: Mutex::new(Inner {
+                    state,
+                    reminder,
+                    downloaded_version: None,
+                    checked_available_version: None,
+                }),
+                check_queue: tokio::sync::Mutex::new(()),
             }),
-            check_queue: tokio::sync::Mutex::new(()),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         // 状态锁不参与跨线程不变式，污染时直接取回内层值（避免一次 panic 让更新域永久失效）
-        self.inner.lock().unwrap_or_else(|error| error.into_inner())
+        self.shared
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     fn now(&self) -> u64 {
-        (self.now_millis)()
+        (self.shared.now_millis)()
     }
 
     /// 对齐基线 `getState`：叠加当前生效的延后提醒
@@ -183,7 +202,7 @@ impl UpdateService {
     }
 
     fn publish(&self, state: &UpdateState) {
-        if let Some(publish) = &self.options.publish {
+        if let Some(publish) = &self.shared.options.publish {
             publish(state);
         }
     }
@@ -200,11 +219,11 @@ impl UpdateService {
     }
 
     fn read_preferences(&self) -> UpdatePreferences {
-        self.options.preferences.read()
+        self.shared.options.preferences.read()
     }
 
     fn write_preferences(&self, preferences: &UpdatePreferences) -> bool {
-        self.options.preferences.write(preferences)
+        self.shared.options.preferences.write(preferences)
     }
 
     fn response(
@@ -272,10 +291,10 @@ impl UpdateService {
 
     /// 对齐基线 `checkAutomatically`
     pub async fn check_automatically(&self) -> UpdateCheckResponse {
-        if !self.options.is_packaged {
+        if !self.shared.options.is_packaged {
             return self.disabled_response();
         }
-        if self.options.update_configuration_missing {
+        if self.shared.options.update_configuration_missing {
             return self.handle_failure(
                 CheckMode::Automatic,
                 update_configuration_missing_error(),
@@ -314,10 +333,10 @@ impl UpdateService {
 
     /// 对齐基线 `checkManually`
     pub async fn check_manually(&self) -> UpdateCheckResponse {
-        if !self.options.is_packaged {
+        if !self.shared.options.is_packaged {
             return self.disabled_response();
         }
-        if self.options.update_configuration_missing {
+        if self.shared.options.update_configuration_missing {
             return self.handle_failure(
                 CheckMode::Manual,
                 update_configuration_missing_error(),
@@ -346,7 +365,7 @@ impl UpdateService {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = UpdateCheckResponse>,
     {
-        let _guard = self.check_queue.lock().await;
+        let _guard = self.shared.check_queue.lock().await;
         operation().await
     }
 
@@ -367,7 +386,7 @@ impl UpdateService {
         next.error = None;
         self.set_state(next);
 
-        let result = match self.options.updater.check_for_updates().await {
+        let result = match self.shared.options.updater.check_for_updates().await {
             Ok(result) => result,
             Err(error) => {
                 let classified = crate::update::backend::classify_update_failure(
@@ -382,7 +401,9 @@ impl UpdateService {
         let update = result.and_then(|item| item.update_info);
         let is_newer = update
             .as_ref()
-            .map(|item| is_higher_stable_version(&item.version, &self.options.current_version))
+            .map(|item| {
+                is_higher_stable_version(&item.version, &self.shared.options.current_version)
+            })
             .unwrap_or(false);
         if !is_newer {
             {
@@ -423,7 +444,7 @@ impl UpdateService {
         let mut next = self.get_state();
         next.status = UpdateStatus::Available;
         next.available_version = Some(update.version.clone());
-        next.update_action = Some(self.options.update_action);
+        next.update_action = Some(self.shared.options.update_action);
         next.release_name = update.release_name.clone();
         next.release_notes = update.release_notes.clone();
         next.release_date = update.release_date.clone();
@@ -446,8 +467,8 @@ impl UpdateService {
                 inner.downloaded_version.clone(),
             )
         };
-        if !self.options.is_packaged
-            || self.options.update_configuration_missing
+        if !self.shared.options.is_packaged
+            || self.shared.options.update_configuration_missing
             || update_action != Some(UpdateAction::Download)
             || available_version.is_none()
         {
@@ -505,7 +526,7 @@ impl UpdateService {
         next.error = None;
         self.set_state(next);
 
-        if let Err(error) = self.options.updater.download_update().await {
+        if let Err(error) = self.shared.options.updater.download_update().await {
             let failure =
                 crate::update::backend::classify_update_failure(UpdateErrorPhase::Download, &error);
             let mut next = self.get_state();
@@ -533,10 +554,10 @@ impl UpdateService {
                 inner.state.available_version.clone(),
             )
         };
-        if !self.options.is_packaged
+        if !self.shared.options.is_packaged
             || update_action != Some(UpdateAction::OpenRelease)
             || available_version.is_none()
-            || self.options.open_release.is_none()
+            || self.shared.options.open_release.is_none()
         {
             return self.action_response(
                 false,
@@ -549,7 +570,12 @@ impl UpdateService {
                 )),
             );
         }
-        let open_release = self.options.open_release.clone().expect("上方已判空");
+        let open_release = self
+            .shared
+            .options
+            .open_release
+            .clone()
+            .expect("上方已判空");
         match (open_release)().await {
             Ok(()) => self.action_response(true, None),
             Err(_) => self.action_response(
@@ -567,7 +593,7 @@ impl UpdateService {
 
     /// 对齐基线 `deferReminder`
     pub async fn defer_reminder(&self, days: u32) -> UpdateActionResponse {
-        if !self.options.is_packaged {
+        if !self.shared.options.is_packaged {
             return self.action_response(false, Some(updates_disabled_error()));
         }
         if days != 7 && days != 30 {
@@ -630,7 +656,7 @@ impl UpdateService {
 
     /// 对齐基线 `requestInstall`：只响应渲染进程明确发出的安装请求
     pub async fn request_install(&self) -> UpdateActionResponse {
-        if !self.options.is_packaged {
+        if !self.shared.options.is_packaged {
             return self.action_response(false, Some(updates_disabled_error()));
         }
         let (downloaded, available) = {
@@ -656,7 +682,7 @@ impl UpdateService {
                 )),
             );
         }
-        match self.options.updater.quit_and_install() {
+        match self.shared.options.updater.quit_and_install() {
             Ok(()) => self.action_response(true, None),
             Err(_) => self.action_response(
                 false,
@@ -1089,6 +1115,27 @@ mod tests {
             statuses.contains(&UpdateStatus::Checking)
                 && statuses.contains(&UpdateStatus::Available),
             "每次状态变更都必须发布快照：{statuses:?}"
+        );
+    }
+
+    /// M-SERVICES-CLONE：`Clone` 只复制共享句柄，不得复制状态。
+    ///
+    /// 若误实现为深拷贝，克隆体与原件会各自持有独立 `Inner`，
+    /// 命令层从 `AppState` 取到的句柄就看不到正在进行的检查状态。
+    #[tokio::test]
+    async fn cloned_service_shares_state_test() {
+        let backend = StubBackend::with_result(Ok(Some(release("1.2.0"))));
+        let prefs = MemoryPreferences::new(true);
+        let service = service(backend, prefs, true, false, "1.1.0");
+        let handle = service.clone();
+
+        service.check_manually().await;
+        assert_eq!(handle.get_state().status, UpdateStatus::Available);
+
+        handle.defer_reminder(7).await;
+        assert!(
+            service.get_state().is_reminder_deferred,
+            "克隆句柄的写入必须对原句柄可见"
         );
     }
 }
