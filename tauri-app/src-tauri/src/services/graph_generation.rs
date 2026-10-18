@@ -679,15 +679,13 @@ impl<'a> GraphGeneration<'a> {
         for row in rows {
             let (attempt_id, usage_receipt_json) =
                 row.map_err(|_| GENERATION_GRAPH_EFFECT_INVALID.to_string())?;
-            let Some(saved_value) = serde_json::from_str::<Value>(&usage_receipt_json)
-                .ok()
-                .and_then(|receipt| {
-                    receipt
-                        .get("graphEffects")
-                        .filter(|saved| !saved.is_null())
-                        .cloned()
-                })
-            else {
+            // 损坏回执不能降格为「无已确认效果」，否则可变性判定会被误放行。
+            let receipt: Value = serde_json::from_str(&usage_receipt_json)
+                .map_err(|_| GENERATION_GRAPH_EFFECT_INVALID.to_string())?;
+            if receipt.is_null() {
+                return Err(GENERATION_GRAPH_EFFECT_INVALID.to_string());
+            }
+            let Some(saved_value) = receipt.get("graphEffects") else {
                 continue;
             };
             let Some(saved) = saved_value.as_array() else {
@@ -1167,15 +1165,13 @@ impl<'a> GraphGeneration<'a> {
         for row in rows {
             let (attempt_id, usage_receipt_json) =
                 row.map_err(|_| GENERATION_GRAPH_EFFECT_INVALID.to_string())?;
-            let Some(saved_value) = serde_json::from_str::<Value>(&usage_receipt_json)
-                .ok()
-                .and_then(|receipt| {
-                    receipt
-                        .get("graphEffects")
-                        .filter(|saved| !saved.is_null())
-                        .cloned()
-                })
-            else {
+            // 损坏回执不能降格为「无已确认效果」，否则可变性判定会被误放行。
+            let receipt: Value = serde_json::from_str(&usage_receipt_json)
+                .map_err(|_| GENERATION_GRAPH_EFFECT_INVALID.to_string())?;
+            if receipt.is_null() {
+                return Err(GENERATION_GRAPH_EFFECT_INVALID.to_string());
+            }
+            let Some(saved_value) = receipt.get("graphEffects") else {
                 continue;
             };
             let Some(saved) = saved_value.as_array() else {
@@ -1536,6 +1532,97 @@ mod tests {
         // the intra-stack consistency contract (AGENTS.md: Node byte
         // equality is not required across stacks).
         assert!(!values_equal(&json!([1, 2]), &json!([2, 1])));
+    }
+
+    #[test]
+    fn stored_effects_reject_malformed_receipts_in_read_and_transaction_test() {
+        let conn = test_connection();
+        let context = GraphGenerationContext::Plan(plan_context_fixture());
+        let context_value = serde_json::to_value(&context).unwrap();
+        let task = serde_json::to_value(
+            crate::services::graph_generation_source::graph_generation_task(&context).unwrap(),
+        )
+        .unwrap();
+        let run: DurableGenerationRunAlias = serde_json::from_value(json!({
+            "runId": "run-1", "rootActionId": "root-1", "status": "running",
+            "binding": {
+                "projectId": "project-1", "epoch": "epoch-1", "contextSnapshotId": "snapshot-1",
+                "fingerprint": {
+                    "chapterBriefHash": "h", "authorGuidanceHash": "h", "dependencyHash": "h",
+                    "contextSnapshotHash": "h", "templateHash": "h", "skillSnapshotHash": "h",
+                    "modelLeaseRevision": "h", "policyHash": "h", "outputContractHash": "h"
+                },
+                "sourceManifest": {
+                    "operation": "narrative-thread-plan-candidate",
+                    "graphGenerationContext": context_value,
+                    "graphGenerationContextHash": text_hash(&context_value.to_string()),
+                    "graphGenerationOriginEpoch": "epoch-1", "graphGenerationKey": "key-1",
+                    "graphGenerationInput": context.input(),
+                    "graphGenerationTask": task,
+                    "graphGenerationTaskHash": text_hash(&task.to_string())
+                }, "sourceRefs": []
+            }
+        }))
+        .unwrap();
+        read_graph_generation_context(&run).unwrap();
+        conn.execute_batch(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+             VALUES ('root-1','key-1','{}','{}');
+             INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+             VALUES ('run-1','root-1','{}','running',0,'open-1');
+             INSERT INTO generation_attempts VALUES
+             ('attempt-1','reservation-1','run-1','root-1','{}','{}','nonce-1');"
+        ).unwrap();
+        let owner = GraphGeneration::new(&conn, GenerationRunRepository::default(), "project-1");
+        // 缺省效果与合法空数组仍可读取；非数组效果和损坏回执不得解除封存判定。
+        for receipt in [
+            Some("{}"),
+            Some(r#"{"graphEffects":[]}"#),
+            None,
+            Some(""),
+            Some("not-json"),
+            Some("null"),
+            Some(r#"{"graphEffects":null}"#),
+            Some(r#"{"graphEffects":{}}"#),
+            Some(r#"{"graphEffects":[{}]}"#),
+            Some(r#"{"graphEffects":[{},{},{},{},{},{},{},{},{}]}"#),
+        ] {
+            conn.execute(
+                "UPDATE generation_attempts SET usage_receipt_json=?1",
+                [receipt],
+            )
+            .unwrap();
+            let valid = matches!(receipt, Some("{}" | r#"{"graphEffects":[]}"#));
+            let changes = conn.total_changes();
+            let result = owner.effects(&run);
+            if valid {
+                assert!(result.unwrap().is_empty());
+                owner.assert_mutable(&run).unwrap();
+            } else {
+                assert_eq!(
+                    result.unwrap_err(),
+                    GENERATION_GRAPH_EFFECT_INVALID,
+                    "{receipt:?}"
+                );
+                assert_eq!(
+                    owner.assert_mutable(&run).unwrap_err(),
+                    GENERATION_GRAPH_EFFECT_INVALID
+                );
+            }
+            let tx = conn.unchecked_transaction().unwrap();
+            let result = owner.stored_effects_in(&tx, &run);
+            if valid {
+                assert!(result.unwrap().is_empty());
+            } else {
+                assert_eq!(
+                    result.unwrap_err(),
+                    GENERATION_GRAPH_EFFECT_INVALID,
+                    "{receipt:?}"
+                );
+            }
+            tx.rollback().unwrap();
+            assert_eq!(conn.total_changes(), changes, "证明读取不能回写回执");
+        }
     }
 
     /// In-memory DB with the full schema (mirrors repository tests).

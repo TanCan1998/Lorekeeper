@@ -517,6 +517,127 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_graph_and_legacy_handles_reject_before_receipt_proof_test() {
+        use crate::repositories::generation_run_repository::GenerationRunRepository;
+        use crate::services::{
+            character_proposal::CharacterProposalService, graph_generation::GraphGeneration,
+            legacy_roster_generation::LegacyRosterGeneration, portable_project_guard,
+            portable_project_history, portable_runtime_freeze,
+        };
+        use serde_json::json;
+
+        let (base, source, target) = temp_paths("specialized-proof");
+        seed(&source);
+        {
+            let conn = Connection::open(&source).unwrap();
+            conn.execute_batch(
+                "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+                 VALUES ('root-1','key-1','{}','{}');
+                 INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+                 VALUES ('run-1','root-1','{}','completed',0,'open-1');
+                 INSERT INTO generation_attempts VALUES
+                 ('attempt-1','reservation-1','run-1','root-1','{}','{}','nonce-1');",
+            ).unwrap();
+        }
+        let original_source = std::fs::read(&source).unwrap();
+        sanitize_portable_database(&SanitizePortableDatabaseInput {
+            source_database_path: &source,
+            target_database_path: &target,
+            limits: None,
+        })
+        .unwrap();
+        let conn = Connection::open(&target).unwrap();
+        assert_eq!(
+            read_column_value(&conn, "generation_attempts", "usage_receipt_json", 1).unwrap(),
+            Some(Value::Null)
+        );
+        let handle = json!({"projectId":"project-1", "epoch":"epoch-1",
+            "rootActionId":"root-1", "runId":"run-1"});
+        let proposals = CharacterProposalService::new(&conn, "project-1", |_, _, _| {
+            panic!("冻结历史不能调用角色来源证明");
+        });
+        let graphs = GraphGeneration::new(&conn, GenerationRunRepository::default(), "project-1");
+        let roster = LegacyRosterGeneration::new(
+            &conn,
+            GenerationRunRepository::default(),
+            "project-1",
+            &proposals,
+        );
+        // 中和值本身不提供冻结身份；没有守卫仍是普通损坏数据。
+        for error in [
+            graphs.require(&handle).unwrap_err(),
+            roster.require(&handle).unwrap_err(),
+        ] {
+            assert!(!error.contains("PORTABLE_RUNTIME_FROZEN"));
+        }
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "specialized-proof",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        let changes = conn.total_changes();
+        assert_eq!(
+            graphs.require(&handle).unwrap_err(),
+            "PORTABLE_RUNTIME_FROZEN"
+        );
+        assert_eq!(
+            roster.require(&handle).unwrap_err(),
+            "PORTABLE_RUNTIME_FROZEN"
+        );
+        assert_eq!(
+            graphs
+                .confirm(&handle, &json!({}), 0, |_| {
+                    panic!("冻结历史不能调用图来源确认");
+                })
+                .unwrap_err(),
+            "PORTABLE_RUNTIME_FROZEN"
+        );
+        assert_eq!(
+            roster
+                .stage(&handle, &json!({}), &|_| {
+                    panic!("冻结历史不能调用旧名册来源确认");
+                })
+                .unwrap_err(),
+            "PORTABLE_RUNTIME_FROZEN"
+        );
+        assert_eq!(conn.total_changes(), changes, "拒绝读取和重放不能回写历史");
+        assert!(conn.is_autocommit(), "拒绝后的事务必须退出");
+        assert!(conn
+            .execute("UPDATE generation_attempts SET usage_receipt_json='{}'", [])
+            .unwrap_err()
+            .to_string()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+
+        // 同一恢复连接的新身份不继承冻结错误；坏绑定仍严格拒绝。
+        conn.execute_batch(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+             VALUES ('root-2','key-2','{}','{}');
+             INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+             VALUES ('run-2','root-2','','running',0,'open-2');",
+        ).unwrap();
+        let current = json!({"runId":"run-2", "rootActionId":"root-2",
+            "projectId":"project-1", "epoch":"epoch-1"});
+        for error in [
+            graphs.require(&current).unwrap_err(),
+            roster.require(&current).unwrap_err(),
+        ] {
+            assert!(!error.contains("PORTABLE_RUNTIME_FROZEN"));
+        }
+        assert_eq!(std::fs::read(&source).unwrap(), original_source);
+        drop(roster);
+        drop(proposals);
+        drop(graphs);
+        drop(conn);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn sanitized_generation_candidates_skip_frozen_run_before_decoding_budget_test() {
         use crate::repositories::generation_run_repository::GenerationRunRepository;
         use crate::services::{
