@@ -1,6 +1,6 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **111** 次：进程归组深入调研，用户明确拒绝带缺陷发布。本轮只读研究，无产品修改或新代码测试。**不是进程归组修复或新版发布完成报告。**
+> [当前入口](./CURRENT.md) · 第 **112** 次：最简WebView2程序与真实任务管理器实测，三组DPI对照均未改善归组。用户拒绝带缺陷发布；产品无修改。**不是进程归组修复或新版发布完成报告。**
 
 ## 已验证状态（代码验证沿用第110次，不冒充本轮重测）
 
@@ -17,18 +17,29 @@
 | 格式与双栈卫生 | 定向rustfmt、diff检查通过；保护目录无变更 | 同上 `format-check.log`、`diff.log` |
 | Rust 云端全量 / all-targets | **1689通过、0失败，all-targets成功** | [44259fa3 / 39148045359](https://github.com/TanCan1998/Lorekeeper/actions/runs/39148045359)，2026-10-19 01:15 +08:00；本机 `.pi/tmp/installer-validation/cloud-full.log`，累计Rust语义切片清零 |
 | 提交与秘密扫描CI | Commit message CI39148045247、Gitleaks39148045288均success | 同一代码44259fa3，不替代原生验收 |
-| 原生安装/卸载/删除/注册表 | **未执行** | 无前台GUI、真实文件删除或系统配置修改 |
+| 最简原生WebView2探针 | 18次完整启动、108份采样；三次名称排序UIA精确PID核验均复现分列 | 本轮新增，运行库155.0.4283.62；[研究§6](../research/webview-process-attribution.md#6-第112次最简程序实测) |
+| 原生安装/卸载/删除/注册表 | **未执行** | 本轮仅授权测试宿主与管理员任务管理器观察，无真实文件删除或系统配置写入命令 |
 | 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
-## 本次更新：归组机制调研
+## 本次更新：最简程序实测
+
+- 系统C#编译器+既有WebView2Loader，无新依赖，不编译完整Tauri/Rust。每次独立UDF及内联合成HTML，不读真实项目或业务云。
+- 消息窗口与普通隐藏HWND各三组、各重复两次，12次/36份快照；再做CPU排序三次及名称排序三次真实Taskmgr观察，每次12份快照。有效完整矩阵合计18次/108份采样；失败准备尝试不计成功。
+- 默认运行时PerMonitorV2、DPI诊断开关、显式PerMonitorV2清单均为浏览器直接以宿主为父；名称排序精确PID及UIA祖先核验却均显示宿主在“应用”、其6个浏览器/helper进程单列“后台进程/WebView2管理器”。**父链正确不等于视觉归组，DPI两种改法在本机未奏效。**
+- 用户明确允许打开任务管理器，并以“同意”限定授权管理员UIA检查器；探针仍普通权限、窗口可见但不激活且位于屏幕外。焦点采样未发现探针占用，相关UIA操作前后前台句柄不变。
+- 所有有效探针正常退出；自有进程遗留0、管理员检查器停止/退出码0；恢复Taskmgr原CPU降序，正常关闭本次自行打开的窗口。没有包注册、证书/开发模式修改、真实安装卸载或项目删除。
+- 包身份尚无正反对照，不能宣称必然解决；临时注册或证书/系统配置须另行确认。macOS未真机测试。最简无激活宿主的结果不外推为所有前台应用或具体运行库版本的根因。
+- 完整方法、PID归属与证据索引见[研究§6](../research/webview-process-attribution.md#6-第112次最简程序实测)，本机原始证据在 `.pi/tmp/process-group-probe/`，不入库。
+
+## 前轮更新：第111次归组机制调研
 
 用户明确“不接受，继续搜索调研”，因此归组缺陷解决前保持发布暂停，不再询问是否带此限制先公开。新增[研究结论与验证矩阵](../research/webview-process-attribution.md)：
 
 - 微软官方记录DPI兼容shim可能经shell启动浏览器，发现可证伪的父链假设；相关flag被明确限定为开发诊断，不能直接用于生产。
-- 比对Tauri默认清单和Tao运行时DPI初始化，拟以隔离宿主做默认/诊断/显式manifest的A/B；尚未运行，也不承诺manifest会修复归组。
+- 比对Tauri默认清单和Tao运行时DPI初始化，提出默认/诊断/显式manifest的A/B；该前轮未运行假设已由本轮最简实验验证，未见改善。
 - 真包身份不等于AUMID；MSIX/外部位置包是待评估路线，不能未经确认改安装注册或假定能复刻Teams。
 - macOS已追到WebKit XPC宿主标识、LaunchServices内容进程命名源码，以及Apple层级视图文档；命名、宿主关联和视觉归组分别验收，不能混为一谈。
-- 本机仅只读观察Windows26300、WebView2 155.0.4283.45及现有浏览器父链，当时无LoreKeeper实例，不能当本应用归组测试。证据在忽略目录 `.pi/tmp/process-group-research-2/`，无新窗口或系统配置修改。
+- 前轮仅只读观察Windows26300、WebView2 155.0.4283.45及现有浏览器父链，当时无LoreKeeper实例，不能当本应用归组测试；前轮未启动新窗口。本轮新探针各组运行库均为155.0.4283.62，两版本不混作回归证据。前轮材料在 `.pi/tmp/process-group-research-2/`。
 - 部分搜索引擎为空/TLS失败/无关结果，不作为证据；Context7本轮可用，关键事实由官方文档与固定源码交叉确认。
 
 ## 前一代码切片：已实现，原生验收未完成
@@ -51,8 +62,8 @@
 
 ## 尚未完成与下一步
 
-1. **进程归组未修复**：本轮再次核查[Tauri #15567](https://github.com/tauri-apps/tauri/issues/15567)与[WebView2 #5628](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5628)，均open且无解决方案。AppUserModelID、名称和图标不能冒充归组修复。macOS WebKit源码会传宿主名/bundle-id，但活动监视器显示未真机验证。研究材料 `.pi/tmp/installer-research/`。
-2. **发布明确暂停**：用户最新明确拒绝归组未修复先公开，并要求继续研究。没有触发新版打包/发布；不得再把此前普通Release+Latest方案授权解释为接受缺陷交付。下一步优先后台隔离父链/DPI实验，而非再次请求豁免。
+1. **进程归组未修复**：第111次核查[Tauri #15567](https://github.com/tauri-apps/tauri/issues/15567)与[WebView2 #5628](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5628)，均open且无解决方案。AppUserModelID、名称和图标不能冒充归组修复。macOS WebKit源码会传宿主名/bundle-id，但活动监视器显示未真机验证。研究材料 `.pi/tmp/installer-research/`。
+2. **发布明确暂停**：用户最新明确拒绝归组未修复先公开，并要求继续研究。没有触发新版打包/发布；不得再把此前普通Release+Latest方案授权解释为接受缺陷交付。父链/DPI最简实验已完成且三组均未修复；后续转向受支持的宿主归属/包身份机制，不继续盲加DPI flag，也不再次请求缺陷豁免。
 3. **原生验收待授权**：中文EXE/MSI、升级身份、默认保留、目录选择/二次确认、真实项目清理与注册表清理、macOS生命周期及图标均需原生验收。无法后台完成的原生对话框不得切前台。
 4. 44259fa3对应云端全量已成功；完整活动run与最终HEAD由 `.pi/tmp/pipeline-state.md` 单写维护。
 

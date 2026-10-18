@@ -8,7 +8,7 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-2026-10-19第111次：[进程归组深入调研、发布暂停](handoffs/2026-10-19-tauri-migration-status.md)。代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理和显式Latest选项已实现；沿用第110次验证：本机Rust18、Node25（含NSIS编译）、前端14通过，typecheck/lint/build成功，同SHA云端Rust全量1689项及all-targets成功。进程归组仍未修复，原生安装卸载/删除待验收，未触发新版打包发布。
+2026-10-19第112次：[最简WebView2实测、归组仍未修复](handoffs/2026-10-19-tauri-migration-status.md)。代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理和显式Latest选项已实现；沿用第110次验证：本机Rust18、Node25（含NSIS编译）、前端14通过，typecheck/lint/build成功，同SHA云端Rust全量1689项及all-targets成功。本轮最简原生探针18次完整启动、108份采样，名称排序的三次真实任务管理器核验均仍分列；DPI诊断开关和显式DPI清单没有修复。原生安装卸载/删除待验收，继续暂停新版发布。
 
 当前已公开的仍是第106次 **[Lorekeeper 1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，旧版不设为最新版、不覆盖。
 
@@ -21,7 +21,7 @@ Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留�
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第111次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第112次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
