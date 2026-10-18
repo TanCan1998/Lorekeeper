@@ -1,6 +1,15 @@
-# Tauri 首版证明与本机验收审计（第92次）
+# Tauri 首版证明与本机验收审计（第93次）
 
-当前全量验证代码：`f7f5658e61a01b74c972f148215fc7fbc3f13678`。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+当前全量验证代码：`c1547e83335b78f4ed10eefc7ab9f6d1a3b28115`。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+
+## 第93次：恢复副本可新建审修周期且冻结历史保持只读
+
+- c1547e83 / [39086559979](https://github.com/TanCan1998/Lorekeeper/actions/runs/39086559979)：**1678/0**，库257.70秒，all-targets 37.69秒无告警；完整expected/tested SHA一致、两个退出码0、state=passed，artifact与两日志已核对。本轮Rust语义切片累计3。
+- 断点1（恢复副本混存）实测暴露第二处真实缺陷：便携脱敏按R策略中和`drafts.source_dependencies`，恢复副本里对历史草稿发起新审稿准备直接报`GENERATION_REVIEW_HISTORY_CHANGED`——即恢复副本无法继续写作。现仅对**认证冻结**的草稿行按「无已记录依赖」继续（不猜前驱、不伪造材料），非冻结行的坏依赖仍按损坏拒绝。
+- 新增混存回归：同一恢复副本连接上经真实 prepare→open→reserve→snapshot→settle→commit_review 建立**当前**周期；断言新周期可操作（`get_by_review_id`为Some）、冻结老周期仍不发布（None）、破坏新周期执行链收据后全局校验失败（豁免只覆盖冻结行）、非冻结坏依赖仍拒绝、冻结行仍拒写。
+- 本机定向：review_revision 67/0、review_cycle 9/0、portable 86/0、draft 77/0；`cargo fmt --check`与git diff通过。
+- **同类风险待扫**：R策略中和会破坏JSON列的读面解析（本轮已修`drafts.source_dependencies`与`import_run_receipts`两处）。其余读R列JSON的读面（生成绑定、图/行内槽位、恢复候选等）须逐个核对，不能假设已全部覆盖。
+- 仍待：恢复副本中新审修链的**合并与复核**段实际执行、旧handle泛化拒绝错误规范化、其他便携/导入读面收口。
 
 ## 第92次：冻结审修历史逐行豁免、导入收据读面与CI提速
 

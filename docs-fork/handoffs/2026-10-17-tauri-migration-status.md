@@ -1,21 +1,21 @@
 # Tauri迁移交接快照（2026-10-17）
 
-> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。本次为第 **92** 次交接；当前摘要替换同日旧摘要。
+> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。本次为第 **93** 次交接；当前摘要替换同日旧摘要。
 
 ## 代码与验证基线
 
-当前代码：**f7f5658e61a01b74c972f148215fc7fbc3f13678**，master，已推送origin。本轮无未提交改动。不把文档SHA冒充Rust测试SHA。
+当前代码：**c1547e83335b78f4ed10eefc7ab9f6d1a3b28115**，master，已推送origin。本轮无未提交改动。不把文档SHA冒充Rust测试SHA。
 
 | 验证 | 结果 | 绑定证据 |
 |---|---|---|
-| 当前Rust全量 | 1677通过/0失败，库253.00秒 | [39051391021](https://github.com/TanCan1998/Lorekeeper/actions/runs/39051391021)，f7f5658e |
-| 当前all-targets | 38.98秒，成功无告警 | 同上artifact：expectedSha/testedSha为完整f7f5658e，test/check退出0、state=passed，两日志已下载核对 |
-| 当前提交规范/秘密扫描 | success | 39051388200 / 39051390550，同SHA f7f5658e |
-| 本机当前切片定向 | review_revision 66/0、review_cycle 9/0、portable 86/0、冻结导入收据1/1、脱敏导入历史1/1 | 本轮 cargo test 输出；cargo fmt --check 与 git diff 通过 |
+| 当前Rust全量 | 1678通过/0失败，库257.70秒 | [39086559979](https://github.com/TanCan1998/Lorekeeper/actions/runs/39086559979)，c1547e83 |
+| 当前all-targets | 37.69秒，成功无告警 | 同上artifact：expectedSha/testedSha为完整c1547e83，test/check退出0、state=passed，两日志已下载核对 |
+| 当前提交规范/秘密扫描 | success | 同SHA c1547e83（push触发） |
+| 本机当前切片定向 | review_revision 67/0、review_cycle 9/0、portable 86/0、draft 77/0、混存新周期1/1、冻结审修2/2 | 本轮 cargo test 输出；cargo fmt --check 与 git diff 通过 |
 | 前端 | 无源码变化（本轮未改前端） | 上次全量：190文件2121通过/1跳过，typecheck/lint成功（8ecfc0fb） |
 | 上一完整云端 | 2f60163e：1675/0（161.67秒），check 34.60秒 | 39049883469；同SHA冷缓存39049045752为10分45秒 |
 
-本轮Rust语义切片累计 **2**（3607e6c2、f7f5658e）；CI/构建配置与文档切片不计入。全量基线上一次为93b3b27d。
+本轮Rust语义切片累计 **3**（3607e6c2、f7f5658e、c1547e83）；CI/构建配置与文档切片不计入。全量基线上一次为93b3b27d。
 
 ### 本轮构建与CI提速（2f60163e / 87da0fab）
 
@@ -25,7 +25,7 @@
 | 本机 rust-lld 对照 | 66.5s（仅快约4.4s，CI不启用） |
 | 云端优化前（39041910917） | 6分32秒 |
 | 云端冷缓存（39049045752） | 10分45秒 |
-| 云端热缓存（39049883469 / 39051391021） | **5分26秒 / 6分30秒** |
+| 云端热缓存（39049883469 / 39051391021 / 39086559979） | **5分26秒 / 6分30秒 / 6分29秒** |
 
 - `[profile.test] debug = 0` + `incremental = false` 已写入 `tauri-app/src-tauri/Cargo.toml`；断点调试用 `CARGO_PROFILE_TEST_DEBUG=1` 覆盖。
 - CI缓存键去掉提交SHA（命中后不再上传GB级target，避免挤占10GB配额）；restore-keys保留v1前缀。证据链仍是 `cargo test --locked` + `cargo check --locked --all-targets`。
@@ -57,7 +57,9 @@
 - 93b3b27d：认证冻结cycle的读面返回None，不发布当前执行投影。**f7f5658e补全**：`verify_m03_review_cycle` 原对整库要求执行链可重放证明，冻结历史被当成当前损坏并连带拒绝同库新周期；现按认证冻结键**逐行跳过**执行链校验，表结构/外键/merge-snapshot计数一致性检查全部保留，非冻结行仍严格。豁免不授予权威：读面不发布、守卫拒写、重放仍拒。
 - 回归含两个对照（无守卫连接仍拒绝、空冻结集仍拒绝），证明豁免来自认证冻结键而非放宽校验。
 - 导入侧（3607e6c2）：认证冻结`import_runs`的effect receipt读面返回None，不再退化为泛化「receipt损坏」；便携脱敏对参与`UNIQUE(...)`的R/X文本列改用`portable-neutral:<行身份>`确定性中和，修复多条`import_run_receipts`恢复撞唯一约束报`PORTABLE_UNSAFE_PROJECTION`。
-- **不能扩大结论**：仍待恢复副本中**新**审修完整链的实际执行验证；旧handle实测resume为GENERATION_REQUEST_FAILED、read-recovery为GENERATION_JSON_PARSE_ERROR，是拒绝但不是精确冻结合同，不得改写为已通过。
+- **c1547e83（本轮）**：断点1实测暴露第二处真实缺陷——`drafts.source_dependencies`按R策略中和后，恢复副本里对历史草稿发起新审稿准备即报`GENERATION_REVIEW_HISTORY_CHANGED`。现仅对**认证冻结**的草稿行按「无已记录依赖」继续，非冻结坏依赖仍拒绝。新增混存回归走真实 prepare→open→settle→commit_review：新周期可操作、冻结老周期仍None、破坏新周期执行链后全局校验失败、非冻结坏依赖仍拒绝、冻结行仍拒写。
+- **同类风险待扫**：R策略中和会破坏JSON列的读面解析，本轮已修两处（`drafts.source_dependencies`、`import_run_receipts`唯一列）；其余读R列JSON的读面须逐个核对，不假设已覆盖。
+- **不能扩大结论**：恢复副本中新审修链的**合并与复核**段尚未实际执行；旧handle实测resume为GENERATION_REQUEST_FAILED、read-recovery为GENERATION_JSON_PARSE_ERROR，是拒绝但不是精确冻结合同，不得改写为已通过。
 
 ## 本机证据与恢复入口
 
@@ -79,7 +81,7 @@
 ## 下轮明确断点
 
 1. TODO：#25–29完成；#30进行中（便携/导入读面收口）；#31待最终收口。
-2. 在恢复副本中实际跑通**新**审修完整链（冻结历史与新周期混存下的新建/合并/复核），验证f7f5658e的逐行豁免不影响新周期严格性。
+2. 恢复副本中新审修链的**合并与复核**段仍待实跑（新建与周期读面已由c1547e83覆盖）；继续扫描其余读R列JSON的读面，冻结过滤与当前损坏仍须拒绝。
 3. 旧handle泛化拒绝错误如需规范化，添加先失败回归，保留坏当前收据拒绝与非冻结校验，不能冒充历史执行权威。
 4. 补齐其余便携/导入读面（含真实合成import_run来源槽位与生成读面），冻结过滤与当前损坏仍须拒绝。
 5. 完成#30后再做#31最终交接/测试口径收口；交接快照与proof-audit同步为第92次。

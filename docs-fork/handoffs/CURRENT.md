@@ -1,10 +1,10 @@
 # 当前交接入口
 
-- 最新：[2026-10-17-tauri-migration-status.md](./2026-10-17-tauri-migration-status.md)，第 **92** 次。
-- 当前代码 **f7f5658e61a01b74c972f148215fc7fbc3f13678**，已推送 master。
-- 对应云端 [39051391021](https://github.com/TanCan1998/Lorekeeper/actions/runs/39051391021) 已完整核对：Rust **1677/0**（库253.00秒），all-targets 38.98秒无告警；完整 expected/tested SHA 一致、两个退出码0、state=passed。同SHA提交规范 39051388200 / Gitleaks 39051390550 成功。本轮Rust语义切片累计2。
-- 六项计划：图真实确认、行内应用保护、跨会话恢复、完整审修闭环已验；复杂资产/审修原生归档核心链已验；#30 进行中（便携/导入读面收口），#31 待最终收口。
-- 本轮新增：**f7f5658e** 冻结审修历史按认证冻结键逐行豁免全局执行链校验（表结构/外键/计数检查仍全保留，非冻结行仍严格；读面不发布、守卫拒写、重放仍拒）；**3607e6c2** 冻结导入收据读面返回 None + 便携脱敏对 UNIQUE 中的 R/X 文本列用确定性中和值。
-- 构建提速：`[profile.test] debug=0`（本机增量重编 70.9s→48.6s）、CI 缓存键去提交SHA；云端热缓存 5分26秒（旧基线 6分32秒）。cargo-nextest 实测更慢且改动证据契约，不采用。
-- 本机定向：review_revision 66/0、review_cycle 9/0、portable 86/0、冻结导入收据1/1、脱敏导入历史1/1；fmt/diff 通过。本轮未启动 GUI。
-- 下一步见快照：在恢复副本中跑通**新**审修完整链，核对逐行豁免不影响新周期严格性；旧 handle 泛化错误规范化须先失败回归；完成 #30 后再登记六项最终完成。
+- 最新：[2026-10-17-tauri-migration-status.md](./2026-10-17-tauri-migration-status.md)，第 **93** 次。
+- 当前代码 **c1547e83335b78f4ed10eefc7ab9f6d1a3b28115**，已推送 master。
+- 对应云端 [39086559979](https://github.com/TanCan1998/Lorekeeper/actions/runs/39086559979) 已完整核对：Rust **1678/0**（库257.70秒），all-targets 37.69秒无告警；完整 expected/tested SHA 一致、两个退出码0、state=passed。本轮Rust语义切片累计3。
+- 六项计划：图真实确认、行内应用保护、跨会话恢复、完整审修闭环已验；复杂资产/审修原生归档核心链已验；#30 进行中，#31 待最终收口。
+- 本轮新增 **c1547e83**：恢复副本可真实新建审修周期（`drafts.source_dependencies` 按 R 中和后仅对认证冻结的草稿行按「无已记录依赖」继续，非冻结坏依赖仍拒绝），配套混存回归证明新周期可操作、冻结老周期仍只读、破坏新周期执行链后全局校验失败。
+- 同类风险待扫：R 列中和会破坏 JSON 读面解析（已修 `drafts.source_dependencies` 与 `import_run_receipts` 两处），其余读 R 列 JSON 的读面逐个核对。
+- 本机定向：review_revision 67/0、review_cycle 9/0、portable 86/0、draft 77/0；fmt/diff 通过。本轮未启动 GUI。
+- 下一步见快照：恢复副本新审修链的合并/复核段实跑、旧 handle 泛化错误规范化（须先失败回归）、其余便携/导入读面收口。
