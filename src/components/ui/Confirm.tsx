@@ -15,6 +15,8 @@ import { createRoot } from 'react-dom/client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from './Button'
 import { useLocaleStore } from '../../stores/locale-store'
+import { isStageShell } from './ink-overlay'
+import { openInkPrompt } from './InkPrompt'
 
 // ===== 内部组件 =====
 
@@ -157,6 +159,16 @@ export function confirm(
   message: string,
   options?: Partial<Omit<ConfirmOptions, 'message'>>,
 ): Promise<boolean> {
+  if (isStageShell()) {
+    const text = useLocaleStore.getState().text
+    return openInkPrompt({
+      kind: options?.danger ? 'danger' : 'confirm',
+      title: options?.title ?? text('确认操作', 'Confirm action'),
+      message,
+      confirmText: options?.confirmText ?? text('确认', 'Confirm'),
+      cancelText: options?.cancelText ?? text('取消', 'Cancel'),
+    })
+  }
   return new Promise(resolve => {
     const container = document.createElement('div')
     document.body.appendChild(container)

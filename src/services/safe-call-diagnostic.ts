@@ -36,7 +36,7 @@ const FAILURE_CODE = new Set(['length', 'content_filter', 'cancelled', 'error', 
 const FINISH_REASON = new Set(['stop', 'length', 'content_filter', 'cancelled', 'error', 'unknown'])
 const PLATFORM = new Set(['windows', 'macos', 'linux'])
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._():+/-]{0,79}$/
-const SAFE_STEP_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._:：()（）/—–-]{0,79}$/u
+const SAFE_STEP_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._:：()（）/·—–-]{0,79}$/u
 const SENSITIVE_TEXT = /(?:authorization|bearer|api[ _-]?key|secret|\btoken\b|\bsk-)/i
 const PATH_SHAPED_TEXT = /(?:^[A-Za-z]:\/|^[A-Za-z][A-Za-z0-9+.-]*:\/\/|(?:^|\/)\.{1,2}(?:\/|$)|\/\/)/
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowDown, Trash2, Workflow } from 'lucide-react'
 import { useAgentStore } from '../../../stores/agent-store'
-import { useLayoutStore } from '../../../stores/layout-store'
+import { navigate } from '../../../stores/navigation/navigation-intents'
 import { APP_BRAND } from '../../../shared/brand'
 import AgentMessage from './AgentMessage'
 import AgentInputBox from './AgentInputBox'
@@ -203,14 +203,13 @@ function ActiveConversation() {
  */
 function AgentToolbar() {
   const text = useLocaleStore(s => s.text)
-  const openRightPanel = useLayoutStore(s => s.openRightPanel)
 
   return (
     <div className="flex items-center justify-end mb-1.5">
 
       {/* 右侧：打开 AI 输出面板 */}
       <button
-        onClick={() => openRightPanel('ai-output')}
+        onClick={() => navigate({ kind: 'run', facet: 'output' })}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all select-none"
         style={{
           color: 'var(--color-text-muted)',

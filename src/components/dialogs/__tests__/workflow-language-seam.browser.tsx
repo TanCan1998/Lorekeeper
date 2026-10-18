@@ -15,7 +15,8 @@ import { useWorkflowStore } from '../../../stores/workflow-store'
 import {
   isUsableSynopsisCheckpoint,
   synopsisFactsFingerprint,
-} from '../../../services/workflows/commands/architecture.command'
+} from '../../../shared/plot-outline-checkpoint'
+import { renderPlotOutlineSynopsis } from '../../../shared/plot-outline-contract'
 import WorldBuildingEditor from '../../editor/WorldBuildingEditor'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -156,6 +157,42 @@ describe('workflow launch language seams', () => {
 
     await expect.element(page.getByRole('spinbutton', { name: '本次生成范围的起始章' })).toHaveValue(21)
     await expect.element(page.getByRole('spinbutton', { name: '本次生成范围的结束章' })).toHaveValue(25)
+  })
+
+  it.each([
+    { read: '返回读取失败', checkpoint: async () => ({ success: false, error: 'not found' }) },
+    { read: '读取时抛出异常', checkpoint: async () => { throw new Error('磁盘忙') } },
+  ])('大纲停在第 16 章、分批检查点$read：都按数据库正文判为待续批，不判成检查点不可恢复', async ({ checkpoint }) => {
+    const currentProject = project('zh-CN')
+    const projectSession = { projectId: currentProject.id, leaseId: currentProject.sessionLease!, projectPath: currentProject.path }
+    const body = Array.from({ length: 16 }, (_, index) => `## 第${index + 1}章：第${index + 1}盏灯\n林舟在第${index + 1}站认出一位失踪者的座位。`).join('\n\n')
+    useLocaleStore.setState({ locale: 'zh-CN', initialized: true })
+    useProjectStore.setState({ currentProject })
+    useWorkflowStore.setState({ activeRuns: [], history: [], globalLogs: [], waitingRuns: {}, currentRun: null, waitingForConfirm: false, waitingAfterStepIndex: -1 })
+    setActiveProjectSessionContext(projectSession)
+    Object.defineProperty(window, 'aiNovelAPI', {
+      configurable: true,
+      value: {
+        invoke: vi.fn(async (channel: string) => {
+          if (channel === 'db:project-core-get') return {
+            premise: '旧前提。'.repeat(20), worldbuilding: '旧世界观。'.repeat(20),
+            synopsis: renderPlotOutlineSynopsis(body, 16, { totalChapters: 24, writingLanguage: 'zh-CN' }), totalChapters: 24, writingLanguage: 'zh-CN',
+          }
+          if (channel === 'db:character-roster-read') return { schemaVersion: 1, revision: 1, migrationState: 'ready', status: 'ready', entries: [], renderedMarkdown: '# 角色\n\n林舟', projectionHash: 'p', factHash: 'f' }
+          if (channel === 'fs:read-json') return checkpoint()
+          throw new Error(`Unexpected IPC channel: ${channel}`)
+        }),
+        on: vi.fn(() => () => {}),
+        once: vi.fn(), send: vi.fn(), setZoomLevel: vi.fn(), setZoomFactor: vi.fn(), getZoomLevel: vi.fn(),
+      },
+    })
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root?.render(<WorldBuildingEditor projectKey={currentProject.path} />))
+
+    await expect.element(page.getByText('已覆盖至第 16 章 · 待续批', { exact: true })).toBeVisible()
+    expect(container.textContent).not.toContain('检查点不可恢复')
   })
 
   it.each([

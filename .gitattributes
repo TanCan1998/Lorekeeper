@@ -14,9 +14,11 @@
 *.ico binary
 *.jpeg binary
 *.jpg binary
+*.mp4 binary
 *.pdf binary
 *.png binary
 *.ttf binary
+*.webm binary
 *.woff binary
 *.woff2 binary
 *.zip binary

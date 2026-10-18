@@ -26,7 +26,7 @@ describe('generated content deletion affordances', () => {
   })
 
   it('supports deleting one blueprint and clearing all blueprints through persisted IPC', () => {
-    const chapterCards = source('src/components/editor/ChapterCardEditor.tsx')
+    const chapterCards = source('src/components/editor/ChapterCardEditor.tsx') + source('src/components/editor/use-chapter-blueprints.ts')
     const dbController = source('electron/controllers/db-controller.ts')
     const ipcChannels = source('src/shared/ipc-channels.ts')
 
@@ -40,17 +40,21 @@ describe('generated content deletion affordances', () => {
   it('supports deleting generated drafts and finalized manuscript chapters through persisted IPC', () => {
     const draftBox = source('src/components/panels/sidebar/DraftBoxGroup.tsx')
     const manuscript = source('src/components/panels/sidebar/ManuscriptGroup.tsx')
+    const draftDeletion = source('src/components/panels/sidebar/draft-deletion.ts')
+    const incompleteDeletions = source('src/components/panels/sidebar/use-incomplete-deletions.ts')
     const finalizedDeletion = source('src/components/panels/sidebar/finalized-chapter-deletion.ts')
     const dbController = source('electron/controllers/db-controller.ts')
     const ipcChannels = source('src/shared/ipc-channels.ts')
 
     expect(draftBox).toContain('删除这一稿')
-    expect(draftBox).toContain('db:draft-delete')
+    expect(draftBox).toContain('deleteDraftVersion')
+    expect(draftDeletion).toContain('db:draft-delete')
     expect(draftBox).toContain('deleteFinalizedChapter')
     expect(manuscript).toContain('删除正文')
     expect(manuscript).toContain('deleteFinalizedChapter')
-    expect(manuscript).toContain('chapter:list-incomplete-deletions')
-    expect(manuscript).toContain('chapter:retry-deletion')
+    expect(manuscript).toContain('useIncompleteDeletions')
+    expect(incompleteDeletions).toContain('chapter:list-incomplete-deletions')
+    expect(incompleteDeletions).toContain('chapter:retry-deletion')
     expect(manuscript).toContain('重试清理')
     expect(finalizedDeletion).toContain('chapter:delete-finalized')
     expect(finalizedDeletion).toContain('REFRESH_RESOURCE')
@@ -61,6 +65,7 @@ describe('generated content deletion affordances', () => {
   it('offers explicit legacy recovery and refreshes deletion receipts from both finalized surfaces', () => {
     const draftBox = source('src/components/panels/sidebar/DraftBoxGroup.tsx')
     const manuscript = source('src/components/panels/sidebar/ManuscriptGroup.tsx')
+    const incompleteDeletions = source('src/components/panels/sidebar/use-incomplete-deletions.ts')
     const finalizedDeletion = source('src/components/panels/sidebar/finalized-chapter-deletion.ts')
     const eventBus = source('src/shared/event-bus.ts')
 
@@ -71,7 +76,7 @@ describe('generated content deletion affordances', () => {
     expect(finalizedDeletion).not.toContain(String.raw`\\n`)
     expect(finalizedDeletion).toContain("globalEventBus.emit('CHAPTER_DELETION_UPDATED'")
     expect(eventBus).toContain("| 'CHAPTER_DELETION_UPDATED'")
-    expect(manuscript).toContain("globalEventBus.on('CHAPTER_DELETION_UPDATED'")
+    expect(incompleteDeletions).toContain("globalEventBus.on('CHAPTER_DELETION_UPDATED'")
     expect(manuscript).toContain('确认人工核对并继续')
     expect(draftBox).not.toContain('reloadDrafts')
     expect(manuscript).not.toContain('reloadDrafts')
@@ -79,17 +84,17 @@ describe('generated content deletion affordances', () => {
   })
 
   it('supports clearing the entire knowledge base from the knowledge page', () => {
-    const knowledgePage = source('src/components/pages/KnowledgeOverview.tsx')
+    const knowledgePage = source('src/components/stage/knowledge/StageKnowledge.tsx')
+    const knowledgeData = source('src/components/stage/knowledge/use-knowledge-base.ts')
     const knowledgeService = source('src/services/knowledge-service.ts')
     const kbController = source('electron/controllers/kb-controller.ts')
     const ipcChannels = source('src/shared/ipc-channels.ts')
 
     expect(knowledgePage).toContain('清空知识库')
-    expect(knowledgePage).toContain('const handleClearKnowledgeBase = async () =>')
-    expect(knowledgePage).toContain('captureProjectSession(currentProject)')
-    expect(knowledgePage).toContain('isProjectSessionCurrent(projectSession)')
-    expect(knowledgePage).toContain("'kb:clear-all'")
-    expect(knowledgePage).toContain('ipc.invokeWithProjectSession(\n        projectSession,')
+    expect(knowledgePage).toContain('captureProjectSession(project)')
+    expect(knowledgeData).toContain('const clearAll = async (projectSession: ProjectSessionContext) =>')
+    expect(knowledgeData).toContain('isProjectSessionCurrent(projectSession)')
+    expect(knowledgeData).toContain("ipc.invokeWithProjectSession(projectSession, 'kb:clear-all'")
     expect(knowledgeService).toContain('kb:clear-all')
     expect(kbController).toContain("'kb:clear-all'")
     expect(ipcChannels).toContain("'kb:clear-all'")

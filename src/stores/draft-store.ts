@@ -13,7 +13,7 @@ import {
   type DraftMeta,
 } from '../services/draft-index'
 import type { DraftStatus } from '../shared/draft-status'
-import type { ProjectSessionContext } from '../shared/ipc-channels'
+import type { AllInvokeChannels, ProjectSessionContext } from '../shared/ipc-channels'
 import {
   projectSessionContextFromProject,
   sameProjectPathKey,
@@ -46,6 +46,21 @@ function isDraftProjectSessionCurrent(projectSession: ProjectSessionContext): bo
     projectSession,
     projectSessionContextFromProject(useProjectStore.getState().currentProject),
   )
+}
+
+function toDraftMetas(list: AllInvokeChannels['db:draft-list']['return']): DraftMeta[] {
+  return list.map((m) => ({
+    ...m,
+    status: m.status as DraftStatus,
+    source: m.source as DraftMeta['source'],
+    fileName: `draft_v${m.version}.md`,
+    filePath: formatResourceUri({ kind: 'draft', id: m.id })
+  })).sort((a, b) => b.version - a.version)
+}
+
+/** 直接读一章的草稿列表，不写入 store，不受 loadAllDrafts 请求序号影响。 */
+export async function fetchChapterDrafts(chapterNumber: number, projectSession: ProjectSessionContext): Promise<DraftMeta[]> {
+  return toDraftMetas(await ipc.invokeWithProjectSession(projectSession, 'db:draft-list', chapterNumber, projectSession.projectPath))
 }
 
 function staleProjectError(): { success: false; error: string } {
@@ -160,16 +175,7 @@ export const useDraftStore = create<DraftState>()((set, get) => ({
           projectSessionContextFromProject(useProjectStore.getState().currentProject),
         )
       ) return
-      const metas: DraftMeta[] = list.map((m) => ({
-        ...m,
-        status: m.status as DraftStatus,
-        source: m.source as DraftMeta['source'],
-        fileName: `draft_v${m.version}.md`,
-        filePath: formatResourceUri({ kind: 'draft', id: m.id })
-      }))
-
-      // 按版本号排序（新 → 旧）
-      metas.sort((a, b) => b.version - a.version)
+      const metas = toDraftMetas(list)
 
       set(s => ({
         draftsByChapter: {

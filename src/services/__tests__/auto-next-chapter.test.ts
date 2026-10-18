@@ -15,7 +15,6 @@ const blueprint = {
 describe('getAutoNextChapterPrefill', () => {
   it('opens the immediate next blueprint only when the user enabled the setting', () => {
     expect(getAutoNextChapterPrefill(true, 1, blueprint, false)).toEqual({
-      chapterNumber: 2,
       title: '雨夜来信',
       role: '发展',
       purpose: '推进调查',

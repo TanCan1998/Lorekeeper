@@ -1,16 +1,13 @@
-import { formatResourceUri } from '../../../shared/project-paths'
 /**
  * ManuscriptGroup — 正文章节折叠组（已定稿章节列表）
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertTriangle, ChevronRight, ChevronDown, FileText, FolderOpen, Copy, PenTool, RotateCcw, Trash2 } from 'lucide-react'
 import type { FileNode, ProjectSessionContext } from '../../../shared/ipc-channels'
-import type { ChapterDeletionOperation } from '../../../shared/chapter-deletion'
 import { ipc } from '../../../services/ipc-client'
 import { useProjectStore } from '../../../stores/project-store'
 import { toast } from '../../ui/Toast'
-import { globalEventBus } from '../../../shared/event-bus'
 import { useLocaleStore } from '../../../stores/locale-store'
 import {
   captureProjectSession,
@@ -21,10 +18,9 @@ import {
 import { openChapterFile } from './sidebar-file-openers'
 import { showSidebarMenu } from './sidebar-menu'
 import { chapterTitleCache, chapterTitleCacheKey } from './manuscript-title-cache'
-import {
-  confirmLegacyKnowledgeAbsentAndContinue,
-  deleteFinalizedChapter,
-} from './finalized-chapter-deletion'
+import { deleteFinalizedChapter } from './finalized-chapter-deletion'
+import { useIncompleteDeletions } from './use-incomplete-deletions'
+import { pluralEn } from '../../../shared/plural-en'
 
 type ManuscriptFileNode = FileNode & { chapterTitle?: string }
 
@@ -105,14 +101,7 @@ export default function ManuscriptGroup({ files, projectPath }: { files: Manuscr
   const [open, setOpen] = useState(true)
   const text = useLocaleStore(s => s.text)
   const currentProject = useProjectStore(s => s.currentProject)
-  const [deletionState, setDeletionState] = useState<{
-    projectPath: string
-    operations: ChapterDeletionOperation[]
-  }>({ projectPath: '', operations: [] })
-  const incompleteDeletions = deletionState.projectPath === projectPath
-    ? deletionState.operations
-    : []
-  const deletionLoadSequence = useRef(0)
+  const { operations: incompleteDeletions, retryDeletion, confirmLegacyDeletion } = useIncompleteDeletions(projectPath)
   // 文件路径 → 显示名称的映射（异步加载）
   const [titleMap, setTitleMap] = useState<Record<string, string>>({})
 
@@ -173,46 +162,6 @@ export default function ManuscriptGroup({ files, projectPath }: { files: Manuscr
   // 只显示正文章节（过滤掉旧的 _notes 文件）
   const chapterFiles = files.filter(f => !f.name.includes('_notes'))
 
-  const fetchIncompleteDeletions = useCallback(async (projectSession: ProjectSessionContext) => {
-    const requestId = ++deletionLoadSequence.current
-    const result = await ipc.invokeWithProjectSession(
-      projectSession,
-      'chapter:list-incomplete-deletions',
-      projectPath,
-    )
-    if (
-      requestId !== deletionLoadSequence.current
-      || !isProjectSessionCurrent(projectSession)
-    ) return null
-    return result.success ? result.operations ?? [] : []
-  }, [projectPath])
-
-  const loadIncompleteDeletions = useCallback(async (projectSession: ProjectSessionContext) => {
-    const operations = await fetchIncompleteDeletions(projectSession)
-    if (operations === null) return
-    setDeletionState({
-      projectPath,
-      operations,
-    })
-  }, [fetchIncompleteDeletions, projectPath])
-
-  useEffect(() => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectPath)) return
-    void fetchIncompleteDeletions(projectSession).then(operations => {
-      if (operations === null) return
-      setDeletionState({ projectPath, operations })
-    })
-  }, [currentProject, fetchIncompleteDeletions, projectPath])
-
-  useEffect(() => globalEventBus.on('CHAPTER_DELETION_UPDATED', payload => {
-    if (
-      !isProjectSessionPath(payload.projectSession, projectPath)
-      || !isProjectSessionCurrent(payload.projectSession)
-    ) return
-    void loadIncompleteDeletions(payload.projectSession)
-  }), [loadIncompleteDeletions, projectPath])
-
   const deleteManuscriptChapter = async (
     filePath: string,
     displayName: string,
@@ -234,47 +183,6 @@ export default function ManuscriptGroup({ files, projectPath }: { files: Manuscr
     })
   }
 
-  const retryDeletion = async (operation: ChapterDeletionOperation) => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectPath)) return
-    const result = await ipc.invokeWithProjectSession(
-      projectSession,
-      'chapter:retry-deletion',
-      operation.operationId,
-      projectPath,
-    )
-    if (!isProjectSessionCurrent(projectSession)) return
-    await loadIncompleteDeletions(projectSession)
-    if (result.success) {
-      globalEventBus.emit('REFRESH_RESOURCE', {
-        resources: ['drafts', 'fileTree'],
-        projectPath,
-        projectSession,
-      })
-      toast.success(text(`第${operation.chapterNumber}章派生投影清理完成`, `Chapter ${operation.chapterNumber} projection cleanup completed.`))
-    } else {
-      toast.error(text(
-        `重试清理失败\n\n${result.error ?? '未知错误'}`,
-        `Cleanup retry failed\n\n${result.error ?? 'Unknown error'}`,
-      ))
-    }
-  }
-
-  const confirmLegacyDeletion = async (operation: ChapterDeletionOperation) => {
-    const displayName = operation.chapterTitle
-      ? text(`第${operation.chapterNumber}章 ${operation.chapterTitle}`, `Chapter ${operation.chapterNumber} ${operation.chapterTitle}`)
-      : text(`第${operation.chapterNumber}章`, `Chapter ${operation.chapterNumber}`)
-    await confirmLegacyKnowledgeAbsentAndContinue({
-      project: currentProject,
-      projectPath,
-      draftId: operation.draftId,
-      chapterNumber: operation.chapterNumber,
-      displayName,
-      tabFilePath: formatResourceUri({ kind: 'manuscript', id: operation.draftId }),
-      surface: 'manuscript',
-    }, operation.operationId)
-  }
-
   return (
     <div>
       <div
@@ -290,7 +198,7 @@ export default function ManuscriptGroup({ files, projectPath }: { files: Manuscr
         <span className="text-sm font-medium" style={{ color: 'var(--color-text)' }}>{text('正文章节', 'Manuscript chapters')}</span>
         {chapterFiles.length > 0 && (
           <span className="ml-auto text-[0.7rem]" style={{ color: 'var(--color-text-muted)' }}>
-            {text(`${chapterFiles.length} 章`, `${chapterFiles.length} chapters`)}
+            {text(`${chapterFiles.length} 章`, `${chapterFiles.length} ${pluralEn(chapterFiles.length, 'chapter')}`)}
           </span>
         )}
       </div>

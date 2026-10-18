@@ -1,66 +1,26 @@
-import { useEffect, useState } from 'react'
 import { AlertCircle, AlertTriangle, BookOpen, Loader2, Play } from 'lucide-react'
 import { useProjectStore } from '../../stores/project-store'
-import { useLLMStore } from '../../stores/llm-store'
-import { useWorkflowStore, workflowResourceConflictMessage } from '../../stores/workflow-store'
-import { useLayoutStore } from '../../stores/layout-store'
 import {
-  createBatchChapterWorkflow,
   MAX_BATCH_CHAPTERS,
   MIN_BATCH_CHAPTERS,
   normalizeBatchChapterCount,
-  type BatchChapterCompletionMode,
 } from '../../services/workflows/batch-chapter-workflow'
-import { guardChapterWriting } from '../../services/workflow-guards'
-import { ipc } from '../../services/ipc-client'
-import { useLocaleStore } from '../../stores/locale-store'
 import { Button } from '../ui/Button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../ui/Dialog'
 import { Input } from '../ui/Input'
 import { Label } from '../ui/Label'
 import { NativeSelect } from '../ui/NativeSelect'
-import {
-  captureProjectSession,
-  isProjectSessionCurrent,
-} from '../project-session-gate'
-import type { ModelProfile } from '../../shared/ipc-channels'
-import { readAuthoritativeNextChapter } from '../../services/authoritative-chapter-sequence'
-import { readConsistencyPreflight, type ConsistencyPreflightResult } from '../../services/consistency-preflight'
-import { requireIpcSuccess } from '../../services/ipc-result'
+import { captureProjectSession } from '../project-session-gate'
 import ConsistencyPreflightPanel from './ConsistencyPreflightPanel'
 import {
   CHAPTER_WORDS_TARGET_MAX,
   CHAPTER_WORDS_TARGET_MIN,
   normalizeChapterWordsTarget,
 } from '../../services/workflows/chapter-creation-parameters'
-
-interface Props {
-  isOpen: boolean
-  startChapterNumber: number | null
-  onClose: () => void
-}
-
-function isGenerationModel(model: ModelProfile): boolean {
-  return model.purposes.includes('generation')
-}
-
-function availableGenerationModelId(
-  models: ModelProfile[],
-  modelId: string | null | undefined,
-): string | null {
-  return modelId && models.some(model => model.id === modelId && isGenerationModel(model))
-    ? modelId
-    : null
-}
-
-function preferredGenerationModelId(models: ModelProfile[], defaultModelId: string | null): string | null {
-  return availableGenerationModelId(models, defaultModelId)
-    ?? models.find(isGenerationModel)?.id
-    ?? null
-}
+import { useBatchChapterForm, type BatchChapterProps } from './use-batch-chapter-form'
 
 /** 配置并启动受控批量创作任务（最多十章）。 */
-export default function BatchChapterCreationDialog(props: Props) {
+export default function BatchChapterCreationDialog(props: BatchChapterProps) {
   const currentProject = useProjectStore(s => s.currentProject)
   const projectSession = captureProjectSession(currentProject)
   const sessionKey = projectSession
@@ -72,213 +32,14 @@ export default function BatchChapterCreationDialog(props: Props) {
   return <BatchChapterCreationDialogSession key={`${sessionKey}:${props.isOpen ? 'open' : 'closed'}`} {...props} />
 }
 
-function BatchChapterCreationDialogSession({ isOpen, startChapterNumber, onClose }: Props) {
-  const text = useLocaleStore(s => s.text)
-  const locale = useLocaleStore(s => s.locale)
-  const currentProject = useProjectStore(s => s.currentProject)
-  const models = useLLMStore(s => s.models)
-  const defaultModelId = useLLMStore(s => s.defaultModelId)
-  const startWorkflow = useWorkflowStore.getState().startWorkflow
-  const addLog = useWorkflowStore.getState().addLog
-  const [chapterCount, setChapterCount] = useState(1)
-  const [chapterWordsTarget, setChapterWordsTarget] = useState<number | ''>(() => (
-    normalizeChapterWordsTarget(currentProject?.novelConfig.wordsPerChapter)
-  ))
-  const [error, setError] = useState<string | null>(null)
-  const [starting, setStarting] = useState(false)
-  const [completionMode, setCompletionMode] = useState<BatchChapterCompletionMode>('draft_review')
-  const [confirmingAutoFinalize, setConfirmingAutoFinalize] = useState(false)
-  const [authoritativeStart, setAuthoritativeStart] = useState<number | null>(null)
-  const [authorityError, setAuthorityError] = useState<string | null>(null)
-  const [authorityLoading, setAuthorityLoading] = useState(false)
-  const [consistencyPreflight, setConsistencyPreflight] = useState<ConsistencyPreflightResult | null>(null)
-  const [generationModelId, setGenerationModelId] = useState<string | null>(() => (
-    preferredGenerationModelId(models, defaultModelId)
-  ))
-
-  const normalizedCount = normalizeBatchChapterCount(chapterCount)
-  const start = authoritativeStart ?? startChapterNumber ?? 1
-  const end = start + normalizedCount - 1
-  const generationModels = models.filter(isGenerationModel)
-  const fallbackGenerationModelId = preferredGenerationModelId(models, defaultModelId)
-  const selectedGenerationModelId = generationModelId ?? fallbackGenerationModelId
-  const selectedGenerationModel = generationModels.find(model => model.id === selectedGenerationModelId)
-  const modelSelectionError = generationModels.length === 0
-    ? text(
-      '没有已配置且可用于文本生成的模型。请在设置中添加或启用一项生成模型。',
-      'No configured model can generate text. Add or enable a generation model in Settings.',
-    )
-    : !selectedGenerationModel
-      ? text(
-        '所选创作模型已不可用。请选择一项可用于文本生成的模型后再试。',
-        'The selected writing model is no longer available. Select a compatible generation model and try again.',
-      )
-      : null
-
-  useEffect(() => {
-    if (!isOpen) return
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession) return
-    let disposed = false
-    const loadAuthority = async () => {
-      setAuthorityLoading(true)
-      try {
-        const nextChapter = await readAuthoritativeNextChapter(projectSession, locale)
-        if (disposed || !isProjectSessionCurrent(projectSession)) return
-        setAuthoritativeStart(nextChapter)
-        setAuthorityError(null)
-      } catch (cause) {
-        if (disposed || !isProjectSessionCurrent(projectSession)) return
-        setAuthoritativeStart(null)
-        setAuthorityError(cause instanceof Error ? cause.message : String(cause))
-      } finally {
-        if (!disposed && isProjectSessionCurrent(projectSession)) setAuthorityLoading(false)
-      }
-    }
-    void loadAuthority()
-    return () => { disposed = true }
-  }, [currentProject, isOpen, locale])
-
-  useEffect(() => {
-    if (!isOpen) return
-    const session = captureProjectSession(currentProject)
-    if (!session) return
-    void ipc.invokeWithProjectSession(session, 'db:consistency-exemption-list', session.projectPath)
-      .then(exemptions => {
-        if (isProjectSessionCurrent(session) && exemptions.some(item => !item.revoked)) {
-          setConsistencyPreflight({ findings: [], exemptions })
-        }
-      })
-  }, [currentProject, isOpen])
-
-  const handleStart = async (ignoreFindingsOnce = false) => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession) return
-    const projectPath = projectSession.projectPath
-    if (completionMode === 'auto_finalize' && !confirmingAutoFinalize) {
-      setConfirmingAutoFinalize(true)
-      setError(null)
-      return
-    }
-    if (modelSelectionError || !selectedGenerationModel) {
-      setError(modelSelectionError ?? text(
-        '请选择一项可用于文本生成的模型。',
-        'Select a compatible generation model before starting.',
-      ))
-      return
-    }
-    setStarting(true)
-    try {
-      const frozenStart = await readAuthoritativeNextChapter(projectSession, locale)
-      if (!isProjectSessionCurrent(projectSession)) return
-      setAuthoritativeStart(frozenStart)
-      setAuthorityError(null)
-      const frozenCompletionMode = completionMode
-      const frozenLocale = locale
-      const frozenChapterCount = normalizedCount
-      const frozenChapterWordsTarget = normalizeChapterWordsTarget(
-        chapterWordsTarget,
-        currentProject?.novelConfig.wordsPerChapter,
-      )
-      const frozenEnd = frozenStart + frozenChapterCount - 1
-      const frozenSelectedGenerationModelId = selectedGenerationModelId
-      const chapterNumbers = Array.from({ length: frozenChapterCount }, (_, index) => frozenStart + index)
-      const blueprints = await Promise.all(
-        chapterNumbers.map((chapterNumber) => ipc.invokeWithProjectSession(
-          projectSession,
-          'db:blueprint-get',
-          chapterNumber,
-          projectPath,
-        )),
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      const missingChapter = blueprints.findIndex((blueprint) => !blueprint)
-      if (missingChapter >= 0) {
-        const chapterNumber = chapterNumbers[missingChapter]
-        setError(text(
-          `未找到第${chapterNumber}章蓝图。请先补齐连续蓝图后再启动批量创作。`,
-          `No blueprint was found for chapter ${chapterNumber}. Complete the consecutive blueprints first.`,
-        ))
-        return
-      }
-
-      if (!ignoreFindingsOnce) {
-        try {
-          const preflight = await readConsistencyPreflight(
-            projectSession,
-            blueprints.filter((blueprint): blueprint is NonNullable<typeof blueprint> => !!blueprint),
-          )
-          if (!isProjectSessionCurrent(projectSession)) return
-          setConsistencyPreflight(preflight)
-          if (preflight.findings.length > 0) return
-        } catch {
-          if (!isProjectSessionCurrent(projectSession)) return
-          addLog('info', text(
-            '一致性证据暂时不可用；本次批量创作仍会继续。',
-            'Continuity evidence is temporarily unavailable; batch writing will continue.',
-          ))
-        }
-      }
-      setConsistencyPreflight(null)
-
-      if (!isProjectSessionCurrent(projectSession)) return
-      const guard = await guardChapterWriting(frozenStart, projectPath, projectSession)
-      if (!isProjectSessionCurrent(projectSession)) return
-      if (!guard.ok) {
-        setError(frozenLocale === 'en-US'
-          ? 'Writing prerequisites are not met. Complete the project setup and previous finalized chapter before starting.'
-          : guard.message || '前置条件未满足。')
-        return
-      }
-
-      const frozenGenerationModelId = availableGenerationModelId(
-        useLLMStore.getState().models,
-        frozenSelectedGenerationModelId,
-      )
-      if (!frozenGenerationModelId) {
-        setError(text(
-          '所选创作模型已不可用。请选择一项可用于文本生成的模型后再试。',
-          'The selected writing model is no longer available. Select a compatible generation model and try again.',
-        ))
-        return
-      }
-      const workflow = createBatchChapterWorkflow({
-        projectPath,
-        projectSession,
-        startChapterNumber: frozenStart,
-        chapterCount: frozenChapterCount,
-        locale: frozenLocale,
-        generationModelId: frozenGenerationModelId,
-        chapterWordsTarget: frozenChapterWordsTarget,
-        completionMode: frozenCompletionMode,
-      })
-      const conflict = useWorkflowStore.getState().getResourceConflict(workflow)
-      if (conflict) {
-        setError(workflowResourceConflictMessage(frozenLocale, conflict.title))
-        return
-      }
-      void startWorkflow(workflow)
-      useLayoutStore.getState().openBottomTab('tasks')
-      addLog('info', frozenCompletionMode === 'draft_review'
-        ? (frozenLocale === 'en-US'
-          ? `Batch review drafts started: chapters ${frozenStart}–${frozenEnd} (${frozenChapterCount} total).`
-          : `已启动批量草稿待审：第${frozenStart}–${frozenEnd}章（共${frozenChapterCount}章）`)
-        : (frozenLocale === 'en-US'
-          ? `Batch auto-finalize started: chapters ${frozenStart}–${frozenEnd} (${frozenChapterCount} total).`
-          : `已启动批量自动定稿：第${frozenStart}–${frozenEnd}章（共${frozenChapterCount}章）`))
-      onClose()
-    } catch (cause) {
-      if (!isProjectSessionCurrent(projectSession)) return
-      const message = cause instanceof Error ? cause.message : String(cause)
-      if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 'AUTHORITATIVE_CHAPTER_SEQUENCE_INVALID') {
-        setAuthorityError(message)
-      } else {
-        setError(message)
-      }
-    } finally {
-      if (isProjectSessionCurrent(projectSession)) setStarting(false)
-    }
-  }
+function BatchChapterCreationDialogSession(props: BatchChapterProps) {
+  const { isOpen, onClose } = props
+  const {
+    text, currentProject, chapterCount, setChapterCount, chapterWordsTarget, setChapterWordsTarget, error, setError, starting,
+    completionMode, setCompletionMode, confirmingAutoFinalize, setConfirmingAutoFinalize, authorityError, authorityLoading,
+    consistencyPreflight, generationModels, selectedGenerationModelId, setGenerationModelId, modelSelectionError,
+    normalizedCount, start, end, handleStart, saveArrangement, revokeArrangement,
+  } = useBatchChapterForm(props)
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => {
@@ -319,7 +80,7 @@ function BatchChapterCreationDialogSession({ isOpen, startChapterNumber, onClose
                 value={chapterCount}
                 disabled={starting}
                 onChange={(event) => {
-                  setChapterCount(Number(event.target.value) || MIN_BATCH_CHAPTERS)
+                  setChapterCount(event.target.value === '' ? '' : Number(event.target.value))
                   setConfirmingAutoFinalize(false)
                 }}
                 onBlur={() => setChapterCount(normalizeBatchChapterCount(chapterCount))}
@@ -463,21 +224,8 @@ function BatchChapterCreationDialogSession({ isOpen, startChapterNumber, onClose
             disabled={starting}
             onFixAndRerun={() => void handleStart(false)}
             onIgnoreOnce={() => void handleStart(true)}
-            onSave={async (stableFactKey, reason) => {
-              const session = captureProjectSession(useProjectStore.getState().currentProject)
-              if (!session) return
-              requireIpcSuccess(await ipc.invokeWithProjectSession(session, 'db:consistency-exemption-save', stableFactKey, reason, session.projectPath), text('保存一致性安排', 'Save consistency arrangement'))
-              await handleStart(false)
-            }}
-            onRevoke={async stableFactKey => {
-              const session = captureProjectSession(useProjectStore.getState().currentProject)
-              if (!session) return
-              requireIpcSuccess(await ipc.invokeWithProjectSession(session, 'db:consistency-exemption-revoke', stableFactKey, session.projectPath), text('撤销一致性安排', 'Revoke consistency arrangement'))
-              setConsistencyPreflight(current => current ? {
-                ...current,
-                exemptions: current.exemptions.map(item => item.stableFactKey === stableFactKey ? { ...item, revoked: true } : item),
-              } : null)
-            }}
+            onSave={saveArrangement}
+            onRevoke={revokeArrangement}
           />
         ) : null}
         <DialogFooter>

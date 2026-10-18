@@ -450,7 +450,7 @@ describe('chapter writing model selectors', () => {
     expect(startWorkflow.mock.calls[0]?.[0]).toMatchObject({
       completionMode: 'auto_finalize',
       generationModelId: 'grok',
-      steps: [expect.objectContaining({ name: '第1章：自动定稿与后处理' })],
+      steps: [expect.objectContaining({ name: '第 1 章 · 自动定稿与后处理' })],
     })
   })
 

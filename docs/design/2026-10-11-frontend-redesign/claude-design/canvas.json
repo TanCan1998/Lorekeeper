@@ -1,0 +1,19 @@
+{
+  "v": 3,
+  "createdOnFiles": { "v": 1, "at": "2026-10-11T15:40:00Z" },
+  "title": "AI 小说作家 · 界面美化方案",
+  "launch": { "view": "canvas" },
+  "pages": [],
+  "boards": {
+    "Main.dc.html": { "x": 0, "y": 0, "w": 1440, "h": 900, "title": "正文 · 审稿后", "expand": "fill" },
+    "Library.dc.html": { "x": 1520, "y": 0, "w": 1440, "h": 900, "title": "书房", "expand": "fill" },
+    "Setup.dc.html": { "x": 3040, "y": 0, "w": 1440, "h": 900, "title": "设定 · 新作品", "expand": "fill" },
+    "Blueprint.dc.html": { "x": 0, "y": 1020, "w": 1440, "h": 900, "title": "蓝图", "expand": "fill" },
+    "Run.dc.html": { "x": 1520, "y": 1020, "w": 1440, "h": 900, "title": "运行侧页", "expand": "fill" },
+    "Focus.dc.html": { "x": 3040, "y": 1020, "w": 1440, "h": 900, "title": "沉浸写作 · 深色", "expand": "fill" },
+    "Language.dc.html": { "x": 0, "y": 2040, "w": 1440, "h": 900, "title": "设计语言", "expand": "fill" }
+  },
+  "order": ["Main.dc.html", "Library.dc.html", "Setup.dc.html", "Blueprint.dc.html", "Run.dc.html", "Focus.dc.html", "Language.dc.html"],
+  "notes": {},
+  "designSystems": []
+}

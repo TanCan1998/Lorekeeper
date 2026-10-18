@@ -120,7 +120,7 @@ async function architecture(page) {
 }
 async function selectOnly(dialog, selected) {
   await dialog.getByRole('button', { name: '全选' }).click()
-  for (const label of ['故事前提', '角色图谱', '世界观', '情节大纲']) {
+  for (const label of ['故事前提', '角色名单', '世界观', '情节大纲']) {
     if (label !== selected) await dialog.locator('label').filter({ hasText: label }).click()
   }
 }

@@ -208,14 +208,14 @@ async function main() {
       currentStep = 'U07-liveness-candidate'
       await page.getByRole('button', { name: 'AI 输出', exact: true }).click()
       await startChapter(page)
-      await page.locator('aside[aria-label="写作助手"]').getByText('工作流未完成', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+      await page.locator('aside[aria-label="AI 输出"]').getByText('工作流未完成', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
       assert.equal(fixture.requests, 1, 'first request must end without [DONE]')
       await page.reload()
       await waitHome(page)
       await page.locator('.writer-shelf').getByRole('button', { name: '打开《U07-dirty-tabs》' }).click()
       await page.locator('.writer-project-tree').getByText('U07-dirty-tabs', { exact: true }).waitFor({ state: 'visible' })
       await page.getByRole('button', { name: 'AI 输出', exact: true }).click()
-      const assistant = page.locator('aside[aria-label="写作助手"]')
+      const assistant = page.locator('aside[aria-label="AI 输出"]')
       await assistant.locator('section[aria-label="持久正文候选"]').getByText(candidateBody.slice(0, 180), { exact: true }).waitFor({ state: 'visible' })
       await startChapter(page)
       await assistant.getByRole('button', { name: /中止生成|Stop generation/ }).waitFor({ state: 'visible' })
@@ -258,7 +258,6 @@ async function main() {
       await assertLiveness('before layout switching')
       pass('U07-liveness-precondition', null, 'One real running main-generation task and one prior main-owned durable visible-text artifact share the active project')
       livenessObservation.assert = assertLiveness
-      await page.locator('.writer-rail-host button[title="AI Agent 面板"]').click()
     }
 
     if (!immersionOnly && !columnsOnly && !livenessOnly) {
@@ -353,15 +352,11 @@ async function main() {
     await assertWriter(page, 'U07.A07')
     const shell = writer(page)
     const sidebar = page.locator('aside[aria-label="作品资料"]')
-    const assistant = page.locator('aside[aria-label="写作助手"]')
+    const assistant = page.locator('aside[aria-label="AI 输出"]')
     const bottom = page.locator('section[aria-label="任务与日志"]')
-    const assistantInput = page.getByPlaceholder('输入消息，@ 提及，/ 使用工作流...')
-    const inputMarker = `未发送助手输入 ${runId}`
     await sidebar.waitFor({ state: 'visible' })
     await assistant.waitFor({ state: 'visible' })
     await bottom.waitFor({ state: 'visible' })
-    await assistantInput.fill(inputMarker)
-    assert.equal(await assistantInput.inputValue(), inputMarker)
     if (livenessOnly) await livenessObservation.assert('before immersion')
     const enterImmersion = page.getByRole('button', { name: '进入沉浸写作', exact: true })
     await enterImmersion.click()
@@ -376,21 +371,19 @@ async function main() {
     await sidebar.waitFor({ state: 'visible' })
     await assistant.waitFor({ state: 'visible' })
     await bottom.waitFor({ state: 'visible' })
-    assert.equal(await assistantInput.inputValue(), inputMarker)
     if (livenessOnly) await livenessObservation.assert('after immersion')
     pass('U07.A07-enter-exit-immersion', 'U07.A07', 'V3 titlebar enters immersion, hides all three panels, and exits with their visible state restored')
 
-    currentStep = 'U07.A08-open-panel-preserves-input'
+    currentStep = 'U07.A08-open-panel-exits-immersion'
     await enterImmersion.click()
     assert.equal(await shell.getAttribute('data-writer-immersive'), 'true')
     await assistant.waitFor({ state: 'hidden' })
-    if (livenessOnly) await livenessObservation.assert('before Agent panel opens')
-    await page.locator('.writer-rail-host button[title="AI Agent 面板"]').click()
+    if (livenessOnly) await livenessObservation.assert('before AI Output opens')
+    await page.locator('.writer-rail-host button[title="AI 输出"]').click()
     assert.equal(await shell.getAttribute('data-writer-immersive'), 'false')
     await assistant.waitFor({ state: 'visible' })
-    assert.equal(await assistantInput.inputValue(), inputMarker, 'opening the agent panel must preserve the exact unsent input')
     if (livenessOnly) {
-      await livenessObservation.assert('after Agent panel opens')
+      await livenessObservation.assert('after AI Output opens')
       await page.locator('.writer-left-rail button[title="任务"]').click()
       await bottom.locator('.writer-task-table .animate-spin').first().waitFor({ state: 'visible' })
       await livenessObservation.assert('in Tasks panel')
@@ -398,12 +391,9 @@ async function main() {
       await assistant.locator('section[aria-label="持久正文候选"]').getByText(candidateBody.slice(0, 180), { exact: true }).waitFor({ state: 'visible' })
       await assistant.getByText(runningBody, { exact: false }).first().waitFor({ state: 'visible' })
       await livenessObservation.assert('in AI Output panel')
-      await page.locator('.writer-rail-host button[title="AI Agent 面板"]').click()
-      assert.equal(await assistantInput.inputValue(), inputMarker, 'switching back from AI Output must preserve unsent input')
-      await livenessObservation.assert('back in Agent panel')
-      pass('U07-liveness-panel-switch', 'U07.A08', 'Immersion, Agent, Tasks and AI Output kept the same running task, main-owned durable candidate, visible text and unsent input')
+      pass('U07-liveness-panel-switch', 'U07.A08', 'Immersion, Tasks and AI Output kept the same running task, main-owned durable candidate and visible text')
     }
-    pass('U07.A08-open-panel-preserves-input', 'U07.A08', 'V3 right-rail Agent button exits immersion, opens the assistant, and preserves the exact unsent input')
+    pass('U07.A08-open-panel-exits-immersion', 'U07.A08', 'V3 right-rail AI Output button exits immersion and opens AI Output')
     }
 
     if (columnsOnly) {
@@ -437,15 +427,14 @@ async function main() {
       await page.getByRole('button', { name: '关闭设置' }).click()
       for (const [id, title, visibleText] of [
         ['ai-output', 'AI 输出', 'AI 输出'],
-        ['agent', 'AI Agent 面板', 'AI 写作助手'],
       ]) {
         currentStep = `U07.A01-${id}`
         await page.locator(`.writer-rail-host button[title="${title}"]`).click()
-        const visible = page.locator('aside[aria-label="写作助手"]').getByText(visibleText, { exact: true }).first()
+        const visible = page.locator('aside[aria-label="AI 输出"]').getByText(visibleText, { exact: true }).first()
         await visible.waitFor({ state: 'visible' })
         pass(currentStep, 'U07.A01', `Clicked ${title}; visible result: ${(await visible.textContent()).trim()}`)
       }
-      pass('U07.A01-all-columns', 'U07.A01', 'All 13 current V3 left/right rail business entries were clicked and reached their visible owner; 世界观 opens the 故事架构 editor and active tab')
+      pass('U07.A01-all-columns', 'U07.A01', 'All 12 current V3 left/right rail business entries were clicked and reached their visible owner; 世界观 opens the 故事架构 editor and active tab')
     }
   } catch (error) { failure = error }
   finally {

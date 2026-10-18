@@ -1,27 +1,19 @@
 import { useCallback, useState } from 'react'
 import { Download, ExternalLink, RefreshCw } from 'lucide-react'
 
-import { countUnsavedEditorItems } from '../../stores/editor-unsaved'
-import { useEditorStore } from '../../stores/editor-store'
 import { useLocaleStore } from '../../stores/locale-store'
-import { useWorkflowStore } from '../../stores/workflow-store'
 import { ipc } from '../../services/ipc-client'
 import { getOfficialHomepageOpenError } from '../../shared/official-homepage'
 import { Button } from '../ui/Button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../ui/Dialog'
-import { discardChangesThenRequestInstall } from './update-install-discard'
 import { UpdateStatusCard } from './UpdateStatusCard'
+import { useUpdateInstallGuard } from './use-update-install-guard'
 import { useUpdateState } from './use-update-state'
 
 /** 欢迎页中的更新入口与非阻断状态卡。 */
 export function UpdateSection() {
   const text = useLocaleStore(s => s.text)
   const locale = useLocaleStore(s => s.locale)
-  const tabs = useEditorStore(s => s.tabs)
-  const draftLedgers = useEditorStore(s => s.draftLedgers)
-  const activeRuns = useWorkflowStore(s => s.activeRuns)
-  const [showWorkflowBlockingDialog, setShowWorkflowBlockingDialog] = useState(false)
-  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false)
   const [officialHomepageError, setOfficialHomepageError] = useState<string | null>(null)
   const {
     state,
@@ -35,31 +27,7 @@ export function UpdateSection() {
     openRelease,
     requestInstall,
   } = useUpdateState()
-  const unsavedItemCount = countUnsavedEditorItems(tabs, draftLedgers)
-
-  const handleInstallClick = useCallback(() => {
-    // 活跃任务集合中标记为已完成或失败的任务，也可能正处在最终落盘和移入历史之间，
-    // 因此不能只检查运行中、已暂停或等待中的状态。
-    if (useWorkflowStore.getState().activeRuns.length > 0) {
-      setShowWorkflowBlockingDialog(true)
-      return
-    }
-    if (unsavedItemCount > 0) {
-      setShowUnsavedDialog(true)
-      return
-    }
-    void requestInstall()
-  }, [requestInstall, unsavedItemCount])
-
-  const handleDiscardAndInstall = useCallback(() => {
-    setShowUnsavedDialog(false)
-    // 用户停留在未保存确认框期间也可能启动任务，最终安装动作前必须再次检查。
-    if (useWorkflowStore.getState().activeRuns.length > 0) {
-      setShowWorkflowBlockingDialog(true)
-      return
-    }
-    void discardChangesThenRequestInstall(requestInstall)
-  }, [requestInstall])
+  const { block, dismiss, install: handleInstallClick, discardAndInstall: handleDiscardAndInstall, unsavedItemCount, activeRunCount } = useUpdateInstallGuard(requestInstall)
 
   const handleOfficialHomepageClick = useCallback(async () => {
     setOfficialHomepageError(null)
@@ -91,22 +59,22 @@ export function UpdateSection() {
 
     {presentation.visible && <UpdateStatusCard presentation={presentation} state={state} text={text} manualActionError={manualActionError} isDeferring={isDeferring} lastReminderDays={lastReminderDays} onCheck={() => void checkForUpdates()} onDefer={days => void deferReminder(days)} onDownload={() => void downloadUpdate()} onOpenRelease={() => void openRelease()} onInstall={handleInstallClick} />}
 
-    <Dialog open={showWorkflowBlockingDialog} onOpenChange={setShowWorkflowBlockingDialog}>
+    <Dialog open={block === 'workflow'} onOpenChange={open => { if (!open) dismiss() }}>
       <DialogContent className="max-w-md">
         <DialogHeader><DialogTitle>{text('创作任务尚未结束，暂不能更新', 'Creative tasks are not finished yet')}</DialogTitle></DialogHeader>
-        <div className="px-6 py-4"><DialogDescription>{text(`当前有 ${activeRuns.length} 个创作任务仍在运行、暂停、等待继续或正在收尾，结果可能尚未完整写入项目。为避免内容丢失，请先完成或取消这些任务，再重启更新。`, `${activeRuns.length} creative task${activeRuns.length === 1 ? ' is' : 's are'} still running, paused, waiting, or being finalized, so results may not be fully saved yet. Finish or cancel the tasks before restarting to update.`)}</DialogDescription></div>
+        <div className="px-6 py-4"><DialogDescription>{text(`当前有 ${activeRunCount} 个创作任务仍在运行、暂停、等待继续或正在收尾，结果可能尚未完整写入项目。为避免内容丢失，请先完成或取消这些任务，再重启更新。`, `${activeRunCount} creative task${activeRunCount === 1 ? ' is' : 's are'} still running, paused, waiting, or being finalized, so results may not be fully saved yet. Finish or cancel the tasks before restarting to update.`)}</DialogDescription></div>
         <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => setShowWorkflowBlockingDialog(false)}>{text('知道了，返回处理任务', 'Got it, return to tasks')}</Button>
+          <Button type="button" variant="ghost" onClick={dismiss}>{text('知道了，返回处理任务', 'Got it, return to tasks')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
 
-    <Dialog open={showUnsavedDialog} onOpenChange={setShowUnsavedDialog}>
+    <Dialog open={block === 'unsaved'} onOpenChange={open => { if (!open) dismiss() }}>
       <DialogContent className="max-w-md">
         <DialogHeader><DialogTitle>{text('请先处理未保存的修改', 'Handle unsaved changes first')}</DialogTitle></DialogHeader>
         <div className="px-6 py-4"><DialogDescription>{text(`当前有 ${unsavedItemCount} 项未保存的编辑内容。请返回保存，或明确放弃这些修改后再重启更新。`, `You have ${unsavedItemCount} unsaved edit${unsavedItemCount === 1 ? '' : 's'}. Go back to save, or explicitly discard them before restarting to update.`)}</DialogDescription></div>
         <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => setShowUnsavedDialog(false)}>{text('返回保存', 'Go back and save')}</Button>
+          <Button type="button" variant="ghost" onClick={dismiss}>{text('返回保存', 'Go back and save')}</Button>
           <Button type="button" variant="destructive" onClick={handleDiscardAndInstall}><Download size={15} />{text('放弃修改并重启更新', 'Discard changes and restart update')}</Button>
         </DialogFooter>
       </DialogContent>

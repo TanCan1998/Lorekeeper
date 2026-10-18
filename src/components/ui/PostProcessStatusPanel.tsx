@@ -9,19 +9,12 @@
  * - 故事架构页（角色卡提取状态）
  */
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { RefreshCw, CheckCircle2, XCircle, AlertTriangle, Clock, ChevronDown, ChevronUp } from 'lucide-react'
 import { Button } from '../ui/Button'
-import { useProjectStore } from '../../stores/project-store'
 import { useLocaleStore } from '../../stores/locale-store'
-import { readPostProcessStatus, type PostProcessStatus } from '../../services/workflows/workflow-utils'
 import { cn } from '../../lib/utils'
-import { globalEventBus } from '../../shared/event-bus'
-import { sameProjectSessionContext } from '../../shared/project-session-context'
-import {
-  captureProjectSession,
-  isProjectSessionCurrent,
-} from '../project-session-gate'
+import { getStepPresentation, usePostProcessStatus } from './use-post-process-status'
 
 interface PostProcessStatusPanelProps {
   /** 状态文件 scope 标识，如 'chapter_1_finalize' */
@@ -36,24 +29,6 @@ interface PostProcessStatusPanelProps {
   className?: string
 }
 
-type StepPresentation = 'success' | 'pending' | 'failed'
-
-/**
- * A fresh post-process run persists every step before it attempts any of them.
- * The database default is `ok = false`, so distinguish that pending shape from
- * a failed attempt by requiring durable failure evidence.
- */
-function getStepPresentation(step: PostProcessStatus['steps'][string]): StepPresentation {
-  if (step.ok) return 'success'
-
-  const hasFailureEvidence = Number(step.attemptCount) > 0
-    || Boolean(step.error?.trim())
-    || Boolean(step.lastAttemptAt?.trim())
-    || Boolean(step.completedAt?.trim())
-
-  return hasFailureEvidence ? 'failed' : 'pending'
-}
-
 export function PostProcessStatusPanel({
   scope,
   onRetry,
@@ -61,53 +36,9 @@ export function PostProcessStatusPanel({
   onStatusLoad,
   className,
 }: PostProcessStatusPanelProps) {
-  const [status, setStatus] = useState<PostProcessStatus | null>(null)
   const [expanded, setExpanded] = useState(defaultExpanded)
-  const [loading, setLoading] = useState(true)
-  const project = useProjectStore(s => s.currentProject)
+  const { status, loading, steps } = usePostProcessStatus(scope)
   const text = useLocaleStore(s => s.text)
-
-  // 加载状态文件
-  const loadStatus = useCallback(async () => {
-    const projectSession = captureProjectSession(project)
-    if (!projectSession) return
-    const s = await readPostProcessStatus(projectSession.projectPath, scope, projectSession)
-    if (!isProjectSessionCurrent(projectSession)) return
-    setStatus(s)
-    setLoading(false)
-  }, [project, scope])
-
-  // Initial load
-  useEffect(() => {
-    let mounted = true
-    const init = async () => {
-      const projectSession = captureProjectSession(project)
-      if (!projectSession) return
-      setLoading(true)
-      const s = await readPostProcessStatus(projectSession.projectPath, scope, projectSession)
-      if (mounted && isProjectSessionCurrent(projectSession)) {
-        setStatus(s)
-        setLoading(false)
-      }
-    }
-    init()
-    return () => { mounted = false }
-  }, [project, scope])
-
-  // 监听 EventBus 事件，自动刷新后处理状态
-  useEffect(() => {
-    const matchesCurrentProject = (eventSession: Parameters<typeof sameProjectSessionContext>[0]) => {
-      const projectSession = captureProjectSession(project)
-      return !!projectSession && sameProjectSessionContext(projectSession, eventSession)
-    }
-    const unsub1 = globalEventBus.on('FINALIZE_COMPLETE', ({ projectSession }) => {
-      if (matchesCurrentProject(projectSession)) void loadStatus()
-    })
-    const unsub2 = globalEventBus.on('WORKFLOW_COMPLETE', ({ projectSession }) => {
-      if (matchesCurrentProject(projectSession)) void loadStatus()
-    })
-    return () => { unsub1(); unsub2() }
-  }, [loadStatus, project])
 
   // 状态变化时回调给父组件
   useEffect(() => {
@@ -123,11 +54,6 @@ export function PostProcessStatusPanel({
   // 无状态文件 → 不渲染
   if (loading || !status) return null
 
-  const steps = Object.entries(status.steps).map(([key, step]) => ({
-    key,
-    step,
-    presentation: getStepPresentation(step),
-  }))
   const failedSteps = steps.filter(({ presentation }) => presentation === 'failed')
   const pendingSteps = steps.filter(({ presentation }) => presentation === 'pending')
   const successCount = steps.filter(({ presentation }) => presentation === 'success').length

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正文 · 草稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 两行菜单项：主文 + 说明 */
+  .mi-text { display: flex; flex-direction: column; min-width: 0; }
+  .mi-text small { color: var(--ink-3); font-size: var(--fs-11); line-height: 1.5; }
+  .mi-check { color: var(--accent); }
+  .mi-blank { width: 16px; flex: none; }
+  .menu-item[aria-checked="true"] { background: var(--accent-soft); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-unfold-vertical" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-6m0-8V2M4 12H2m8 0H8m8 0h-2m8 0h-2m-5 7l-3 3l-3-3m6-14l-3-3l-3 3"/></symbol>
+</defs></svg>
+
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 4 章 · 发展</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">第三节车厢</h1>
+        <button class="version" aria-expanded="true">草稿 v1 · 3,142 字 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+      </div>
+      <ol class="life" aria-label="本章进度" style="margin-top:22px">
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>写作</li>
+        <li data-s="now"><span class="node"></span>审稿</li>
+        <li data-s="todo"><span class="node"></span>修稿</li>
+        <li data-s="todo"><span class="node"></span>定稿</li>
+      </ol>
+      <div class="chapter-actions">
+        <button class="btn btn-primary"><svg class="i"><use href="#i-list-checks"/></svg>AI 审稿</button>
+        <button class="btn btn-ghost btn-icon" aria-label="更多操作" aria-expanded="true"><svg class="i"><use href="#i-more"/></svg></button>
+        <span class="hint">可以直接改正文，<span class="kbd">⌘S</span> 保存</span>
+      </div>
+      <div class="prose">
+        <p>第三节车厢比站台还冷。林舟在门口站了一会儿，才确认那盏阅读灯真的只照着一个座位，其余的座位都沉在暗处，像一排合上的抽屉。</p>
+        <p>他没有坐下。座位上放着一张车票，日期是三十年前的今天，终点站一栏被雨水洇开，只剩一个“北”字。车票背面有人用铅笔写了一行小字：别让灯灭。</p>
+        <p>车厢连接处传来脚步声。列车员推门进来，是个头发花白的男人，胸牌上写着“周”。他看了看林舟，又看了看那张车票，什么也没问。</p>
+        <p>“这节车厢不卖票。”老周说，“上来的人，都是有人等的。”</p>
+        <p>窗外的雨更密了。林舟把车票翻过来，又翻回去。<mark class="sel">他想问是谁在等，话到嘴边，阅读灯闪了第一下。</mark></p>
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="overlay">
+  <!-- 版本切换器下拉 -->
+  <div class="menu" style="left:888px; top:230px; width:280px" role="menu" aria-label="本章版本">
+    <div class="menu-label">本章版本</div>
+    <button class="menu-item" role="menuitemradio" aria-checked="true">
+      <svg class="i mi-check"><use href="#i-check"/></svg>
+      <span class="mi-text">草稿 v1 · 当前<small>3,142 字 · 今天 21:30 生成</small></span>
+    </button>
+    <div class="menu-sep"></div>
+    <div class="menu-label">恢复候选</div>
+    <button class="menu-item" role="menuitem">
+      <svg class="i"><use href="#i-file-text"/></svg>
+      <span class="mi-text">中断时保留的正文<small>1,204 字 · 今天 20:58 · 继续编辑不会写入正式草稿</small></span>
+    </button>
+  </div>
+
+  <!-- 更多菜单 -->
+  <div class="menu" style="left:648px; top:332px; width:236px" role="menu" aria-label="更多操作">
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-wand-sparkles"/></svg>
+      <span class="mi-text">直接修稿…<small>不经审稿，可附加要求</small></span></button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-history"/></svg>版本历史</button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-copy"/></svg>复制本章正文</button>
+    <div class="menu-sep"></div>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>删除这一稿…</button>
+  </div>
+
+  <!-- 选区工具条 -->
+  <div class="selbar" style="left:930px; top:640px" role="toolbar" aria-label="选区 AI 操作">
+    <button><svg class="i i-sm"><use href="#i-wand-sparkles"/></svg>润色</button>
+    <button><svg class="i i-sm"><use href="#i-unfold-vertical"/></svg>扩写</button>
+    <button><svg class="i i-sm"><use href="#i-pen-line"/></svg>续写</button>
+    <button><svg class="i i-sm"><use href="#i-message-square"/></svg>对话</button>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '正文 · 草稿', stage: 'text', chapter: 4, chapterStatus: { 4: 'draft' }, crumbs: ['正文', '第 4 章'], saved: true,
+  run: { label: '第 4 章 · 草稿已生成', pct: 100 },
+  tabs: [{ title: '第 4 章 第三节车厢', active: true }, { title: '第 3 章 雨夜车站' }],
+});
+</script>
+</body>
+</html>

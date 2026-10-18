@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>蓝图</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Noto+Sans+SC:wght@400;500;600&amp;family=Noto+Serif+SC:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2C4A8C}a:hover{color:#1F3870}
+.nav-row{display:grid;grid-template-columns:24px 1fr auto;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;color:#17171A;text-decoration:none}
+.nav-row:hover{background:rgba(23,23,26,.05)}
+.plan{display:grid;grid-template-columns:30px 1fr auto;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;text-decoration:none;color:#17171A}
+.plan:hover{background:rgba(23,23,26,.04)}
+.fld{display:flex;flex-direction:column;gap:7px;min-width:0}
+.fld label{font-size:12px;font-weight:500;color:#55555E}
+.ctl{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid rgba(23,23,26,.1);border-radius:10px;background:#FFFFFF;font:15px/1.8 "Noto Serif SC",serif;color:#17171A;resize:none}
+</style>
+</helmet>
+<div style="height: 100vh; min-height: 720px; display: flex; flex-direction: column; background: #EEEDE8; color: #17171A; font-family: 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif; font-size: 13px; line-height: 1.55; -webkit-font-smoothing: antialiased">
+
+  <header style="height: 46px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 0 0 16px">
+    <div style="width: 22px; height: 22px; border-radius: 6px; background: #17171A; color: #EEEDE8; display: grid; place-items: center; font: 600 12px 'Noto Serif SC', serif">墨</div>
+    <button style="display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; font: 600 13.5px 'Noto Sans SC', sans-serif; color: #17171A; cursor: pointer">雨夜列车<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9l6 6l6-6"></path></svg></button>
+    <nav aria-label="位置" style="display: flex; align-items: center; gap: 8px; color: #8A8A93"><span>蓝图</span><span style="color: #C4C4CA">/</span><span style="color: #3A3A42">第 5 章</span></nav>
+    <div style="flex: 1; display: flex; justify-content: center">
+      <button style="width: 340px; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid rgba(23,23,26,.08); border-radius: 9px; background: rgba(255,255,255,.55); color: #8A8A93; font: 400 12.5px 'Noto Sans SC', sans-serif; cursor: pointer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 21l-4.34-4.34"></path><circle cx="11" cy="11" r="8"></circle></svg>
+        <span style="flex: 1; text-align: left">搜索章节、角色，或跳转到任意阶段</span>
+        <kbd style="font: 500 11px 'Noto Sans SC', sans-serif; color: #8A8A93; border: 1px solid rgba(23,23,26,.12); border-radius: 5px; padding: 0 5px">Ctrl K</kbd>
+      </button>
+    </div>
+    <span style="display: flex; align-items: center; gap: 5px; color: #B54708; font-size: 12px"><span style="width: 6px; height: 6px; border-radius: 50%; background: #B54708"></span>有未保存的修改</span>
+    <div style="display: flex; height: 46px">
+      <button aria-label="最小化" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"></path></svg></button>
+      <button aria-label="最大化" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"></rect></svg></button>
+      <button aria-label="关闭" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
+    </div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; display: flex">
+    <nav aria-label="创作流程" style="width: 252px; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 14px">
+      <div style="padding: 4px 10px 8px; font-size: 11px; letter-spacing: .16em; color: #8A8A93">创作流程</div>
+      <a href="Setup.dc.html" class="nav-row"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="#2F6B4F"></circle><path d="M7 11.2l2.6 2.6L15 8.6" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font: 500 14.5px 'Noto Serif SC', serif">设定</span><span style="font-size: 11.5px; color: #8A8A93">完成</span></a>
+      <a href="Blueprint.dc.html" class="nav-row"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="#2F6B4F"></circle><path d="M7 11.2l2.6 2.6L15 8.6" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font: 500 14.5px 'Noto Serif SC', serif">架构</span><span style="font-size: 11.5px; color: #8A8A93">4 / 4</span></a>
+      <a href="Blueprint.dc.html" class="nav-row" aria-current="page" style="background: #FFFFFF; box-shadow: 0 1px 2px rgba(23,23,26,.06), 0 0 0 1px rgba(23,23,26,.06)"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="#2F6B4F"></circle><path d="M7 11.2l2.6 2.6L15 8.6" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font: 600 14.5px 'Noto Serif SC', serif; color: #2C4A8C">蓝图</span><span style="font-size: 11.5px; color: #55555E">24 章</span></a>
+      <a href="Main.dc.html" class="nav-row"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="rgba(44,74,140,.18)" stroke-width="2.5"></circle><circle cx="11" cy="11" r="8.5" fill="none" stroke="#2C4A8C" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4.45 53.4" transform="rotate(-90 11 11)"></circle></svg><span style="font: 500 14.5px 'Noto Serif SC', serif">正文</span><span style="font-size: 11.5px; color: #8A8A93">2 / 24</span></a>
+      <div style="margin-top: 18px; padding: 4px 10px 6px; font-size: 11px; letter-spacing: .16em; color: #8A8A93">作品资料</div>
+      <a href="Blueprint.dc.html" class="nav-row" style="color: #3A3A42"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6a9 9 0 0 0-9 9V3"></path><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle></svg><span>剧情与伏笔</span><span style="font-size: 11px; color: #A1A1A8">7</span></a>
+      <a href="Blueprint.dc.html" class="nav-row" style="color: #3A3A42"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 6l4 14M12 6v14M8 8v12M4 4v16"></path></svg><span>知识库</span><span style="font-size: 11px; color: #A1A1A8">12</span></a>
+      <a href="Blueprint.dc.html" class="nav-row" style="color: #3A3A42"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9a9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5m4-1v5l4 2"></path></svg><span>版本历史</span><span></span></a>
+    </nav>
+
+    <main style="flex: 1; min-width: 0; margin: 0 10px 10px 0; display: flex; flex-direction: column; border-radius: 14px; background: #F7F6F2; box-shadow: 0 0 0 1px rgba(23,23,26,.07), 0 12px 32px -18px rgba(23,23,26,.22); overflow: hidden">
+      <div style="flex: none; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; padding: 26px 28px 20px; border-bottom: 1px solid rgba(23,23,26,.07)">
+        <div style="flex: 1; min-width: 260px">
+          <div style="display: flex; align-items: baseline; gap: 12px"><span style="font: italic 40px/0.8 'Instrument Serif', serif">iii</span><span style="font: 400 12px 'Noto Serif SC', serif; letter-spacing: .24em; color: #8A8A93">第三步 · 蓝图</span></div>
+          <h1 style="margin: 14px 0 0; font: 600 28px/1.25 'Noto Serif SC', serif">逐章规划</h1>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+          <button aria-label="更多操作" style="width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 9px; background: transparent; color: #55555E; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg></button>
+          <button style="display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; border: 1px solid rgba(23,23,26,.14); border-radius: 9px; background: #FFFFFF; font: 500 13px 'Noto Sans SC', sans-serif; color: #17171A; cursor: pointer"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2C4A8C" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"></path></svg>AI 生成蓝图</button>
+          <button style="display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; border: 1px solid rgba(23,23,26,.14); border-radius: 9px; background: #FFFFFF; font: 500 13px 'Noto Sans SC', sans-serif; color: #17171A; cursor: pointer">批量创作</button>
+          <div style="display: inline-flex; border-radius: 9px; box-shadow: 0 1px 2px rgba(23,23,26,.18)">
+            <a href="Main.dc.html" style="display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 16px; border-radius: 9px 0 0 9px; background: #2C4A8C; color: #FFFFFF; font: 500 13px 'Noto Sans SC', sans-serif; text-decoration: none"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 21h8m.174-14.188a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path></svg>写第 5 章</a>
+            <button aria-label="写作选项" style="height: 36px; padding: 0 9px; border: 0; border-left: 1px solid rgba(255,255,255,.22); border-radius: 0 9px 9px 0; background: #2C4A8C; color: #FFFFFF; cursor: pointer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9l6 6l6-6"></path></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex: 1; min-height: 0; display: flex">
+        <div style="width: 340px; flex: none; overflow: auto; padding: 16px 12px 24px; border-right: 1px solid rgba(23,23,26,.07)">
+          <div style="padding: 6px 12px 8px; font-size: 11px; letter-spacing: .16em; color: #8A8A93">第一幕 · 1 至 8 章</div>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">1</span><span>灰色的信</span><span style="font-size: 11px; color: #2F6B4F">定稿</span></a>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">2</span><span>母亲的旧照片</span><span style="font-size: 11px; color: #2F6B4F">定稿</span></a>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">3</span><span>雨夜车站</span><span style="font-size: 11px; color: #2C4A8C">待修稿</span></a>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">4</span><span>第三节车厢</span><span style="font-size: 11px; color: #2C4A8C">生成中</span></a>
+          <a href="Blueprint.dc.html" class="plan" aria-current="true" style="background: #FFFFFF; box-shadow: 0 0 0 1px rgba(44,74,140,.35), 0 1px 2px rgba(23,23,26,.06)"><span style="font: italic 18px 'Instrument Serif', serif; color: #2C4A8C">5</span><span style="display: flex; flex-direction: column"><b style="font-weight: 600">不要回头</b><span style="font-size: 11.5px; color: #8A8A93">转折 · 有作者指导</span></span><span style="font-size: 11px; color: #8A8A93">待写</span></a>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">6</span><span>阅读灯</span><span style="font-size: 11px; color: #A1A1A8">待写</span></a>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">7</span><span>终点站以北</span><span style="font-size: 11px; color: #A1A1A8">待写</span></a>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">8</span><span>失物招领处</span><span style="font-size: 11px; color: #A1A1A8">待写</span></a>
+          <div style="padding: 16px 12px 8px; font-size: 11px; letter-spacing: .16em; color: #8A8A93">第二幕 · 9 至 18 章</div>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">9</span><span>第二封信</span><span style="font-size: 11px; color: #A1A1A8">待写</span></a>
+          <a href="Blueprint.dc.html" class="plan"><span style="font: italic 18px 'Instrument Serif', serif; color: #8A8A93">10</span><span>守夜人</span><span style="font-size: 11px; color: #A1A1A8">待写</span></a>
+        </div>
+
+        <div style="flex: 1; min-width: 0; overflow: auto; padding: 28px 36px 48px">
+          <div style="max-width: 760px; display: flex; flex-direction: column; gap: 22px">
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span style="font: italic 30px/1 'Instrument Serif', serif; color: #2C4A8C">5</span>
+              <input aria-label="章节标题" value="不要回头" style="flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font: 600 24px 'Noto Serif SC', serif; color: #17171A">
+              <span style="height: 26px; display: inline-flex; align-items: center; padding: 0 10px; border-radius: 999px; background: rgba(44,74,140,.08); color: #2C4A8C; font-size: 12px">转折</span>
+            </div>
+            <div class="fld">
+              <label>出场人物</label>
+              <div style="display: flex; flex-wrap: wrap; gap: 6px">
+                <span style="height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 999px; background: #FFFFFF; box-shadow: 0 0 0 1px rgba(23,23,26,.1)">林舟</span>
+                <span style="height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 999px; background: #FFFFFF; box-shadow: 0 0 0 1px rgba(23,23,26,.1)">老周</span>
+                <span style="height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 999px; background: #FFFFFF; box-shadow: 0 0 0 1px rgba(23,23,26,.1)">阿满</span>
+                <button style="height: 28px; padding: 0 10px; border: 1px dashed rgba(23,23,26,.2); border-radius: 999px; background: transparent; font: 400 12.5px 'Noto Sans SC', sans-serif; color: #8A8A93; cursor: pointer">添加</button>
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px">
+              <div class="fld"><label for="conflict">冲突与转折</label><textarea id="conflict" class="ctl" rows="3">林舟在车厢里听见母亲的声音叫他的名字。老周按住他的肩：在这节车厢里，回头的人不会再下车。</textarea></div>
+              <div class="fld"><label for="hook">悬念钩子</label><textarea id="hook" class="ctl" rows="3">阅读灯下的座位上放着一张 1998 年的车票，乘客姓名一栏写着林舟。</textarea></div>
+            </div>
+            <div class="fld"><label for="guide">作者微操指导 <span style="font-weight: 400; color: #8A8A93">写作此章时一并交给 AI</span></label><textarea id="guide" class="ctl" rows="2" style="box-shadow: 0 0 0 3px rgba(44,74,140,.10); border-color: rgba(44,74,140,.55)">母亲的声音只出现一次，不要解释来源。老周的台词要短，像是背熟的规矩。</textarea></div>
+            <div class="fld"><label for="points">章节要点</label><textarea id="points" class="ctl" rows="3">列车驶出站台后，车窗外的景色停在 1998 年。
+老周第一次说出「不要回头」的规矩。
+阿满出现在座位旁，没有人看得见她，除了林舟。</textarea></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

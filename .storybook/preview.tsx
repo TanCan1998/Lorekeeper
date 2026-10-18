@@ -1,4 +1,5 @@
 import type { Preview } from '@storybook/react'
+import '../src/styles/paper-ink/index.css'
 import '../src/index.css'
 
 const themes = ['light', 'galaxy', 'paper', 'dark'] as const

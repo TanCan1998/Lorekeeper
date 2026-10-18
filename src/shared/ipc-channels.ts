@@ -216,6 +216,7 @@ export type AppErrorCode =
   | 'EMBEDDING_MODEL_NOT_CONFIGURED'
   | 'PROJECT_STORAGE_PATH_UNSUPPORTED'
   | 'PROJECT_ROOT_REQUIRED'
+  | 'PROJECT_LEGACY_IMPORT_REQUIRED'
 
 export interface AppFailure {
   success: false
@@ -373,6 +374,7 @@ export interface ProjectChannels {
       dbReady: boolean
       stale?: boolean
       error?: string
+      legacyImportSource?: ProjectDirectoryGrant
       errorCode?: AppErrorCode
     }
   }
@@ -1191,7 +1193,7 @@ export interface KnowledgeBaseChannels {
   'kb:search': { args: [query: string, topK: number | undefined, expectedProjectPath: string]; return: AppResult<Array<{ text: string; score: number; fileName: string }>> }
   'kb:search-writing-context': { args: [query: string, topK: number | undefined, expectedProjectPath: string]; return: AppResult<Array<{ text: string; score: number; fileName: string }>> }
   'kb:search-with-scope': { args: [query: string, fromChapter: number, toChapter: number, topK: number | undefined, expectedProjectPath: string]; return: AppResult<Array<{ text: string; score: number; fileName: string }>> }
-  'kb:list-documents': { args: [expectedProjectPath: string]; return: AppResult<Array<{ id: string; fileName: string; importedAt: string; chunkCount: number; filePath: string }>> }
+  'kb:list-documents': { args: [expectedProjectPath: string]; return: AppResult<Array<{ id: string; fileName: string; importedAt: string; chunkCount: number; filePath: string; finalizedChapter?: number }>> }
   'kb:read-document-copy': {
     args: [docId: string, expectedProjectPath: string]
     return: AppResult<{ available: boolean; content?: string; contentHash?: string; edited?: boolean; indexStatus: 'current' | 'stale' | 'unavailable' }>

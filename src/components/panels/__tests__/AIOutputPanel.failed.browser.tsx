@@ -202,7 +202,7 @@ describe('AIOutputPanel failed chapter draft', () => {
       ...activeEnglishBlueprintRun(),
       id: 'completed-english-draft',
       type: 'chapter_creation',
-      title: 'Draft — Chapter 1 First Day',
+      title: 'Chapter 1 · Draft',
       status: 'completed',
       createdAt: '2026-09-04T13:05:00.000Z',
       completedAt: '2026-09-04T13:06:00.000Z',
@@ -231,7 +231,7 @@ describe('AIOutputPanel failed chapter draft', () => {
     expect(container?.textContent).not.toContain('历史')
 
     const historyItem = Array.from(container?.querySelectorAll('button') ?? [])
-      .find(button => button.textContent?.includes('Chapter 1 First Day'))
+      .find(button => button.textContent?.includes('Chapter 1 · Draft'))
     await act(async () => historyItem?.click())
     expect(container?.textContent).toContain('Thinking process')
     expect(container?.textContent).not.toMatch(/思考中|思考过程/u)
@@ -261,7 +261,7 @@ describe('AIOutputPanel failed chapter draft', () => {
     run.id = 'failed-english-chapter-draft'
     run.writingLanguage = 'en-US'
     run.uiLocale = 'en-US'
-    run.title = 'Draft — Chapter 1 · First Day'
+    run.title = 'Chapter 1 · Draft'
     run.error = 'Generation stopped before the draft completed.'
     run.failureCode = undefined
     run.steps = [{
@@ -283,7 +283,7 @@ describe('AIOutputPanel failed chapter draft', () => {
     })
 
     const failedRun = Array.from(container?.querySelectorAll('button') ?? [])
-      .find(button => button.textContent?.includes('Chapter 1 · First Day'))
+      .find(button => button.textContent?.includes('Chapter 1 · Draft'))
     await act(async () => failedRun?.click())
 
     expect(container?.textContent).toContain('This attempt did not save a draft or manuscript chapter.')

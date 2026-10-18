@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>架构 · 角色名单</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .chars { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+  .chars-body { display: grid; grid-template-columns: 272px 1fr; min-height: 0; }
+
+  /* 待处理建议：整页顶部的一条提示，展开后逐项处理 */
+  .proposals { border-bottom: 1px solid var(--rule); background: var(--surface); padding: 10px var(--s-6); }
+  .prop-head { display: flex; align-items: center; gap: var(--s-3); }
+  .prop-head > .i { color: var(--accent); }
+  .prop-head b { font-weight: 600; }
+  .prop-head .muted { font-size: var(--fs-12); }
+  .prop-head .btn { margin-left: auto; }
+  .prop-list { list-style: none; margin: 8px 0 2px 28px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .prop { display: flex; align-items: center; gap: var(--s-3); padding: 6px 6px 6px 12px; border-radius: var(--radius); background: var(--paper); border: 1px solid var(--rule); }
+  .prop-kind { font-size: var(--fs-11); color: var(--ink-3); white-space: nowrap; }
+  .prop-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 左：角色列表 */
+  .roster { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--rule); background: var(--bg); }
+  .roster-top { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-4) var(--s-3) var(--s-2); }
+  .roster-search { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: var(--radius); background: var(--sunken); color: var(--ink-3); font-size: var(--fs-12); }
+  .roster-tools { display: flex; gap: var(--s-1); }
+  .roster-tools .btn { flex: 1; }
+  .people { list-style: none; margin: 0; padding: 0 var(--s-3); overflow: auto; flex: 1; min-height: 0; }
+  .person { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 10px; padding: 7px 8px; border-radius: var(--radius); cursor: pointer; }
+  .person:hover { background: var(--surface-2); }
+  .person[aria-current="true"] { background: var(--accent-soft); }
+  .person[aria-current="true"] .person-name { font-weight: 600; }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); color: var(--ink-2);
+    font: 500 var(--fs-13)/1 var(--font-display); border: 1px solid var(--rule); }
+  .person-role { font-size: var(--fs-11); color: var(--ink-3); }
+  .roster-foot { display: flex; align-items: center; justify-content: space-between; padding: var(--s-2) var(--s-4); border-top: 1px solid var(--rule); color: var(--ink-3); font-size: var(--fs-12); }
+
+  /* 右：档案 */
+  .profile { overflow: auto; min-height: 0; }
+  .profile-inner { max-width: 880px; padding: var(--s-6) var(--s-10) var(--s-16); }
+  .profile-head { display: grid; grid-template-columns: 72px 1fr auto; gap: var(--s-4); align-items: center; }
+  .avatar-lg { width: 72px; height: 72px; font-size: var(--fs-30); background: var(--paper); }
+  .avatar-ops { display: flex; gap: 2px; margin-top: 6px; }
+  .profile-name { font: 600 var(--fs-30)/1.2 var(--font-display); display: flex; align-items: center; gap: var(--s-3); }
+  .profile-meta { margin-top: 2px; color: var(--ink-3); font-size: var(--fs-12); }
+  .profile-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin: var(--s-5) 0 var(--s-5); padding-bottom: var(--s-4); border-bottom: 1px solid var(--rule); }
+  .profile .textarea { min-height: 72px; }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="chars">
+    <div class="proposals" role="status">
+      <div class="prop-head">
+        <svg class="i"><use href="#i-user-plus"/></svg>
+        <b>2 项待处理的角色建议</b><span class="muted">来自导入的角色卡《车站群像》 · 接受前不会改动角色名单</span>
+        <button class="btn btn-ghost btn-sm">收起 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+      </div>
+      <ul class="prop-list">
+        <li class="prop"><span class="prop-kind">新角色</span><span class="prop-text">守夜人老陈：车站拆迁前的最后一任守夜人，知道第三节车厢的来历</span>
+          <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-eye"/></svg>检查</button><button class="btn btn-ghost btn-sm">拒绝</button><button class="btn btn-secondary btn-sm">接受</button></li>
+        <li class="prop"><span class="prop-kind">补充档案</span><span class="prop-text">沈砚 · 背景：曾在铁路局档案室工作三年，经手过失踪者名单</span>
+          <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-eye"/></svg>检查</button><button class="btn btn-ghost btn-sm">拒绝</button><button class="btn btn-secondary btn-sm">接受</button></li>
+      </ul>
+    </div>
+
+    <div class="chars-body">
+      <aside class="roster" aria-label="角色列表">
+        <div class="roster-top">
+          <div class="roster-search"><svg class="i i-sm"><use href="#i-search"/></svg>搜索角色</div>
+          <div class="roster-tools">
+            <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-plus"/></svg>新建角色</button>
+            <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-file-input"/></svg>导入角色卡</button>
+          </div>
+        </div>
+        <ul class="people">
+          <li class="person" aria-current="true"><span class="avatar">林</span><span class="person-name">林舟</span><span class="person-role">主角</span></li>
+          <li class="person"><span class="avatar">沈</span><span class="person-name">沈砚</span><span class="person-role">重要配角</span></li>
+          <li class="person"><span class="avatar">周</span><span class="person-name">老周</span><span class="person-role">列车员</span></li>
+          <li class="person"><span class="avatar">苏</span><span class="person-name">苏晚</span><span class="person-role">重要配角</span></li>
+          <li class="person"><span class="avatar">林</span><span class="person-name">林母</span><span class="person-role">回忆</span></li>
+          <li class="person"><span class="avatar">许</span><span class="person-name">许站长</span><span class="person-role">反派</span></li>
+          <li class="person"><span class="avatar">阿</span><span class="person-name">阿满</span><span class="person-role">失踪者</span></li>
+          <li class="person"><span class="avatar">韩</span><span class="person-name">韩警官</span><span class="person-role">配角</span></li>
+          <li class="person"><span class="avatar">何</span><span class="person-name">何婆婆</span><span class="person-role">失物招领处</span></li>
+        </ul>
+        <div class="roster-foot"><span>9 位角色 · 第 1 / 1 页</span><button class="btn btn-ghost btn-sm btn-icon" aria-label="刷新角色列表"><svg class="i i-sm"><use href="#i-refresh-cw"/></svg></button></div>
+      </aside>
+
+      <section class="profile">
+        <div class="profile-inner">
+          <div class="profile-head">
+            <span class="avatar avatar-lg">林</span>
+            <div>
+              <div class="profile-name">林舟 <span class="badge accent">主角</span></div>
+              <div class="profile-meta">视角人物 · 在故事前提中确立</div>
+              <div class="avatar-ops">
+                <button class="btn btn-ghost btn-sm" style="padding:0 6px">更换头像</button>
+                <button class="btn btn-ghost btn-sm" style="padding:0 6px">移除头像</button>
+              </div>
+            </div>
+            <div class="page-actions">
+              <button class="btn btn-ghost btn-icon" aria-label="林舟更多操作" aria-expanded="true"><svg class="i"><use href="#i-more"/></svg></button>
+              <button class="btn btn-primary">保存角色</button>
+            </div>
+          </div>
+
+          <div class="profile-bar">
+            <div class="seg" role="group" aria-label="档案视图">
+              <button aria-pressed="true">基础设定</button><button aria-pressed="false">当前状态</button><button aria-pressed="false">关系图谱</button>
+            </div>
+            <span class="muted" style="font-size:var(--fs-12)">当前状态由定稿章节更新，可手动修正</span>
+          </div>
+
+          <div class="form-grid">
+            <div class="field"><span class="label">姓名</span><div class="input">林舟</div></div>
+            <div class="field w1"><span class="label">性别</span><div class="select">男 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+            <div class="field w1"><span class="label">年龄</span><div class="input">27</div></div>
+            <div class="field"><span class="label">定位</span><div class="select">主角 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+            <div class="field w3"><span class="label">外貌</span><div class="textarea">瘦高，常年穿一件洗旧的深灰大衣，右手虎口有一道烫伤的疤。</div></div>
+            <div class="field w3"><span class="label">性格</span><div class="textarea is-focus">克制，习惯把话留到最后一刻才说。对陌生人礼貌，对亲近的人反而沉默。</div></div>
+            <div class="field w3"><span class="label">背景</span><div class="textarea">在母亲失踪的车站附近长大，后来做了城市档案馆的修复员。</div></div>
+            <div class="field w3"><span class="label">动机</span><div class="textarea">弄清母亲当年为什么登上那班车，又为什么没有下来。</div></div>
+            <div class="field w3"><span class="label">能力</span><div class="textarea">能从纸张、墨迹和折痕判断旧文件的年代。</div></div>
+            <div class="field w3"><span class="label">关系网 <em>每行一位</em></span><div class="textarea">沈砚：大学同学，后来疏远<br>老周：小时候常给他留座的列车员</div></div>
+            <div class="field w3"><span class="label">成长轨迹</span><div class="textarea">从回避过去，到主动回头。</div></div>
+            <div class="field w3"><span class="label">备注 <em>只给你自己看</em></span><div class="textarea placeholder">写点什么……</div></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="menu" style="top:326px;left:1036px" role="menu" aria-label="林舟更多操作">
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-network"/></svg>在关系图谱中以林舟为中心</button>
+    <div class="menu-sep"></div>
+    <div class="menu-label">危险</div>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>删除角色“林舟”…</button>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>删除全部角色与关系…</button>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '架构 · 角色名单', stage: 'arch', preset: 'arch', crumbs: ['架构', '角色名单'], saved: false,
+  tabs: [{ title: '故事架构' }, { title: '角色 · 林舟', active: true, dirty: true }],
+});
+</script>
+</body>
+</html>

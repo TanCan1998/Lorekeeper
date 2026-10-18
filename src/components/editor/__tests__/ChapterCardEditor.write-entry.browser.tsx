@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { cdp, userEvent } from 'vitest/browser'
+import type {} from '@vitest/browser-playwright'
 
 import type { ProjectData } from '../../../shared/ipc-channels'
 import { setActiveProjectSessionContext } from '../../../shared/project-session-context'
@@ -70,8 +72,14 @@ function installIpc(options: {
   authoritySequence?: AuthoritativeChapterSequence | (() => AuthoritativeChapterSequence)
   saveError?: string
 } = {}) {
+  // 与数据库一样，保存过的蓝图之后再读就是保存后的样子。
+  let stored = options.blueprints ?? [blueprint(1)]
+  const upsert = (saved: { chapterNumber: number }[]) => {
+    stored = [...stored.filter(item => !saved.some(next => next.chapterNumber === item.chapterNumber)), ...saved]
+      .sort((left, right) => left.chapterNumber - right.chapterNumber) as typeof stored
+  }
   const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
-    if (channel === 'db:blueprint-get-all') return options.blueprints ?? [blueprint(1)]
+    if (channel === 'db:blueprint-get-all') return stored
     if (channel === 'db:draft-authority-sequence') return typeof options.authoritySequence === 'function'
       ? options.authoritySequence()
       : options.authoritySequence ?? {
@@ -90,11 +98,14 @@ function installIpc(options: {
       return { success: true, cleared: ['generatedText'] }
     }
     if (channel === 'db:blueprint-upsert-many') {
-      return options.saveError
-        ? { success: false, error: options.saveError }
-        : { success: true }
+      if (options.saveError) return { success: false, error: options.saveError }
+      upsert(args[0] as { chapterNumber: number }[])
+      return { success: true }
     }
-    if (channel === 'db:blueprint-upsert') return { success: true }
+    if (channel === 'db:blueprint-upsert') {
+      upsert([args[0] as { chapterNumber: number }])
+      return { success: true }
+    }
     if (channel === 'fs:list-dir') return []
     throw new Error(`unexpected IPC ${channel}`)
   })
@@ -147,6 +158,140 @@ afterEach(async () => {
 })
 
 describe('ChapterCardEditor writing entry', () => {
+  it.each([',', '，', '、'])('keeps typed character separators %s through saving', async separator => {
+    const invoke = installIpc({ blueprints: [{ ...blueprint(1), characters: [] }] })
+    await renderEditor()
+    await vi.waitFor(() => expect(container?.querySelector('h3')).not.toBeNull())
+    const input = container!.querySelector<HTMLInputElement>('input[placeholder="如：主角、反派A"]')!
+    await act(async () => userEvent.click(input))
+    for (const character of `林岚${separator}`) await act(async () => userEvent.keyboard(character))
+    expect.soft(input.value).toBe(`林岚${separator}`)
+    expect.soft(input.selectionStart).toBe(3)
+    for (const character of '沈砺') await act(async () => userEvent.keyboard(character))
+    await act(async () => Array.from(container!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === '保存')!.click())
+    expect(invoke.mock.calls.find(call => call[0] === 'db:blueprint-upsert')?.[1])
+      .toEqual(expect.objectContaining({ characters: ['林岚', '沈砺'] }))
+  })
+
+  it.each(['保存', '保存全部'])('点「%s」后编辑器不闪成「加载章节蓝图」，输入框还是原来那个、焦点还在', async save => {
+    const invoke = installIpc({ blueprints: [{ ...blueprint(1), characters: [] }] })
+    await renderEditor()
+    await vi.waitFor(() => expect(container?.querySelector('h3')).not.toBeNull())
+    const input = container!.querySelector<HTMLInputElement>('input[placeholder="如：主角、反派A"]')!
+    await act(async () => userEvent.click(input))
+    for (const character of '林岚') await act(async () => userEvent.keyboard(character))
+    // 真实 IPC 要走一个来回：重读慢一点，React 才有机会把加载态画出来。
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:blueprint-get-all') await new Promise(resolve => setTimeout(resolve, 30))
+      return base(channel, ...args)
+    })
+    const seen: string[] = []
+    const observer = new MutationObserver(() => {
+      if (container!.textContent?.includes('加载章节蓝图')) seen.push('加载章节蓝图')
+    })
+    observer.observe(container!, { childList: true, subtree: true, characterData: true })
+    await act(async () => Array.from(container!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === save)!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)) })
+    observer.disconnect()
+    expect({ seen: [...new Set(seen)], connected: input.isConnected, focused: document.activeElement === input })
+      .toEqual({ seen: [], connected: true, focused: true })
+  })
+
+  it('keeps Chromium composition preedit until committing a Chinese name', async () => {
+    const invoke = installIpc({ blueprints: [{ ...blueprint(1), characters: [] }] })
+    await renderEditor()
+    await vi.waitFor(() => expect(container?.querySelector('h3')).not.toBeNull())
+    const input = container!.querySelector<HTMLInputElement>('input[placeholder="如：主角、反派A"]')!
+    await act(async () => userEvent.click(input))
+    const session = cdp()
+    for (const text of ['a', 'ao', 'ao l', 'ao lu', 'ao lu o']) {
+      await act(async () => session.send('Input.imeSetComposition', {
+        text, selectionStart: text.length, selectionEnd: text.length,
+      }))
+      expect.soft(input.value).toBe(text)
+      expect.soft(input.selectionStart).toBe(text.length)
+    }
+    await act(async () => session.send('Input.insertText', { text: '敖洛' }))
+    expect.soft(input.value).toBe('敖洛')
+    await act(async () => Array.from(container!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === '保存')!.click())
+    expect(invoke.mock.calls.find(call => call[0] === 'db:blueprint-upsert')?.[1])
+      .toEqual(expect.objectContaining({ characters: ['敖洛'] }))
+  })
+
+  it('keeps each chapter draft through save all and exit save without blur', async () => {
+    const invoke = installIpc({ blueprints: [
+      { ...blueprint(1), title: '第一章', characters: [] },
+      { ...blueprint(2), title: '第二章', characters: ['Mira'] },
+    ] })
+    useEditorStore.setState({
+      tabs: [{ id: 'blueprint-exit', name: '章节蓝图', type: 'chapter-card', projectKey: PROJECT_PATH }],
+      activeTabId: 'blueprint-exit',
+    })
+    await renderEditor()
+    const input = () => container!.querySelector<HTMLInputElement>('input[placeholder="如：主角、反派A"]')!
+    await vi.waitFor(() => expect(input()).not.toBeNull())
+    await act(async () => userEvent.click(input()))
+    for (const character of 'Aster,Silas') await act(async () => userEvent.keyboard(character))
+    await act(async () => Array.from(container!.querySelectorAll('span'))
+      .find(span => span.textContent === '第二章')!.click())
+    expect(input().value).toBe('Mira')
+    await act(async () => userEvent.click(input()))
+    await act(async () => userEvent.keyboard('{End},Sol'))
+    await act(async () => Array.from(container!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === '保存全部')!.click())
+    expect(invoke.mock.calls.find(call => call[0] === 'db:blueprint-upsert-many')?.[1]).toEqual([
+      expect.objectContaining({ chapterNumber: 1, characters: ['Aster', 'Silas'] }),
+      expect.objectContaining({ chapterNumber: 2, characters: ['Mira', 'Sol'] }),
+    ])
+    await act(async () => Array.from(container!.querySelectorAll('span'))
+      .find(span => span.textContent === '第一章')!.click())
+    expect(input().value).toBe('Aster、Silas')
+    await act(async () => userEvent.click(input()))
+    await act(async () => userEvent.clear(input()))
+    expect(input().value).toBe('')
+    expect(document.activeElement).toBe(input())
+    await act(async () => saveDirtyEditorChangesForExit(PROJECT_PATH))
+    expect(invoke.mock.calls.filter(call => call[0] === 'db:blueprint-upsert-many').at(-1)?.[1]).toEqual([
+      expect.objectContaining({ chapterNumber: 1, characters: [] }),
+      expect.objectContaining({ chapterNumber: 2, characters: ['Mira', 'Sol'] }),
+    ])
+    expect(useEditorStore.getState().tabs[0].dirty).toBe(false)
+  })
+
+  it('loads remote characters and isolates a new project session', async () => {
+    const remote = [blueprint(1)]
+    const invoke = installIpc({ blueprints: remote })
+    await renderEditor()
+    const input = () => container!.querySelector<HTMLInputElement>('input[placeholder="如：主角、反派A"]')!
+    await vi.waitFor(() => expect(input()?.value).toBe('沈砺'))
+    remote[0] = { ...blueprint(1), characters: ['Lin'] }
+    await act(async () => container!.querySelector<HTMLButtonElement>('button[title="重新加载"]')!.click())
+    await vi.waitFor(() => expect(input()?.value).toBe('Lin'))
+    await act(async () => userEvent.click(input()))
+    await act(async () => userEvent.keyboard('{End},Luo'))
+    await act(async () => container!.querySelector<HTMLButtonElement>('button[title="重新加载"]')!.click())
+    await vi.waitFor(() => expect(input()?.value).toBe('Lin、Luo'))
+
+    remote[0] = { ...blueprint(1), characters: ['Mira'] }
+    const nextProject = { ...project(), id: 'other-project', sessionLease: 'other-lease', path: 'C:\\novels\\other' }
+    await act(async () => {
+      useProjectStore.setState({ currentProject: nextProject })
+      setActiveProjectSessionContext({
+        projectId: nextProject.id, leaseId: nextProject.sessionLease, projectPath: nextProject.path,
+      })
+      root?.render(<ChapterCardEditor projectKey={nextProject.path} />)
+    })
+    await vi.waitFor(() => expect(input()?.value).toBe('Mira'))
+    await act(async () => Array.from(container!.querySelectorAll('button'))
+      .find(button => button.textContent?.trim() === '保存')!.click())
+    expect(invoke.mock.calls.find(call => call[0] === 'db:blueprint-upsert')?.[1])
+      .toEqual(expect.objectContaining({ characters: ['Mira'] }))
+  })
+
   it.each(['发展', '开篇', '双线交汇', ' 双线交汇 ', ' 高潮 ', '', '   '])(
     'preserves role %j through selection, blueprint save and writing prefill', async stored => {
       const invoke = installIpc({ blueprints: [{ ...blueprint(1), role: stored }] })
@@ -178,6 +323,17 @@ describe('ChapterCardEditor writing entry', () => {
     await act(async () => Array.from(container!.querySelectorAll('button'))
       .find(button => button.textContent?.trim() === '写作此章')!.click())
     expect(useLayoutStore.getState().chapterCreationPrefill?.role).toBe('高潮')
+  })
+
+  it('re-selects the requested chapter on a repeated request even after the author picked another one', async () => {
+    installIpc({ blueprints: [1, 2, 3].map(chapterNumber => ({ ...blueprint(chapterNumber), title: `第${chapterNumber}章题` })) })
+    const heading = () => container?.querySelector('h3')?.textContent
+    await act(async () => root?.render(<ChapterCardEditor projectKey={PROJECT_PATH} initialChapterNumber={2} selectRequest={1} />))
+    await vi.waitFor(() => expect(heading()).toBe('第 2 章：第2章题'))
+    await act(async () => [...container!.querySelectorAll('span')].find(span => span.textContent === '第3章题')!.click())
+    expect(heading()).toBe('第 3 章：第3章题')
+    await act(async () => root?.render(<ChapterCardEditor projectKey={PROJECT_PATH} initialChapterNumber={2} selectRequest={2} />))
+    await vi.waitFor(() => expect(heading()).toBe('第 2 章：第2章题'))
   })
 
   it('propagates blueprint save failure to the exit gate', async () => {

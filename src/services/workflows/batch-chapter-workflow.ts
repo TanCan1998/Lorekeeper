@@ -376,6 +376,10 @@ export function createBatchChapterWorkflow(params: BatchChapterWorkflowParams): 
   const chapterResourceKeys = Array.from({ length: chapterCount }, (_, index) => (
     workflowResourceKey('chapter', startChapterNumber + index)
   ))
+  const [modeZh, modeEn] = completionMode === 'draft_review' ? ['批量草稿待审', 'Batch review drafts'] : ['批量自动定稿', 'Batch auto-finalize']
+  const [rangeZh, rangeEn] = chapterCount === 1
+    ? [`第 ${startChapterNumber} 章`, `Chapter ${startChapterNumber}`]
+    : [`第 ${startChapterNumber} 至 ${endChapterNumber} 章`, `Chapters ${startChapterNumber}–${endChapterNumber}`]
 
   return {
     type: 'batch_generate',
@@ -395,30 +399,20 @@ export function createBatchChapterWorkflow(params: BatchChapterWorkflowParams): 
       workflowResourceKey('blueprints'),
     ],
     completionMode,
-    title: completionMode === 'draft_review'
-      ? localeText(
-        uiLocale,
-        `批量草稿待审 — 第${startChapterNumber}–${endChapterNumber}章`,
-        `Batch review drafts — Chapters ${startChapterNumber}–${endChapterNumber}`,
-      )
-      : localeText(
-        uiLocale,
-        `批量自动定稿 — 第${startChapterNumber}–${endChapterNumber}章`,
-        `Batch auto-finalize — Chapters ${startChapterNumber}–${endChapterNumber}`,
-      ),
+    title: localeText(uiLocale, `${modeZh} · ${rangeZh}`, `${modeEn} · ${rangeEn}`),
     steps: Array.from({ length: chapterCount }, (_, index) => {
       const chapterNumber = startChapterNumber + index
       return {
         name: completionMode === 'draft_review'
           ? localeText(
             uiLocale,
-            `第${chapterNumber}章：生成草稿待审`,
-            `Chapter ${chapterNumber}: generate review draft`,
+            `第 ${chapterNumber} 章 · 生成草稿待审`,
+            `Chapter ${chapterNumber} · Generate review draft`,
           )
           : localeText(
             uiLocale,
-            `第${chapterNumber}章：自动定稿与后处理`,
-            `Chapter ${chapterNumber}: auto-finalize and post-process`,
+            `第 ${chapterNumber} 章 · 自动定稿与后处理`,
+            `Chapter ${chapterNumber} · Auto-finalize and post-process`,
           ),
         description: completionMode === 'draft_review'
           ? localeText(

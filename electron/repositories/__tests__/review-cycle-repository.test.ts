@@ -612,13 +612,25 @@ describe('ReviewCycleRepository generated revision state', () => {
     },
   )
 
-  it('allows an author to explicitly waive an unverified finding without fabricating an anchor', () => {
+  it.each(['unverified', 'unknown', 'unresolved'].flatMap(originalStatus =>
+    ['apply', 'ignore', 'waive', 'invalid'].map(decision => ({ originalStatus, decision }))))(
+    'reconfirms an $originalStatus author waiver as $decision without losing its original state', ({ originalStatus, decision }) => {
     const db = fixture()
     try {
-      const seeded = seed(db, { key: 'waiver-unverified', source: '门闩松动，门闩松动。',
-        preflight: [risk('fact:ambiguous', '门闩松动')] })
+      const seeded = originalStatus === 'unverified'
+        ? seed(db, { key: 'waiver-unverified', source: '门闩松动，门闩松动。',
+          preflight: [risk('fact:ambiguous', '门闩松动')] })
+        : seed(db, { key: 'waiver-anchored', source: '门闩松动，主角停步。',
+          frozenGoals: { chapterNumber: 1, coverage: 'complete', items: [{ id: 'goal-latch', text: '核实门闩' }] },
+          model: { ...defaultModel, goalReviews: [{ id: 'goal-latch',
+            status: originalStatus === 'unknown' ? 'unknown' : 'unmet',
+            description: '核实门闩', evidence: [{ quote: '门闩松动' }] }] } })
       const cycle = create(db, seeded.call)
       const findingId = db.prepare('SELECT finding_id FROM review_findings WHERE cycle_id=?').pluck().get(cycle.cycleId) as string
+      expect(db.prepare('SELECT status FROM review_findings WHERE finding_id=?').pluck().get(findingId)).toBe(originalStatus)
+      const anchor = originalStatus === 'unverified'
+        ? { target_id: null, span_start: null, span_end: null, excerpt_hash: null, occurrence: null }
+        : { target_id: 'goal-latch', span_start: 0, span_end: 4, excerpt_hash: hash('门闩松动'), occurrence: 1 }
       const snapshot = { kind: 'human-confirmed-review', schemaVersion: 2, cycleId: cycle.cycleId,
         sourceReviewId: seeded.reviewId,
         sourceDraft: { id: seeded.draftId, chapterNumber: 1, version: 1, status: 'draft', content: seeded.source },
@@ -630,9 +642,47 @@ describe('ReviewCycleRepository generated revision state', () => {
       }, db))()).toMatchObject({ waivedFindingCount: 1 })
       expect(db.prepare(`SELECT status,target_id,span_start,span_end,excerpt_hash,occurrence,evidence_hash,
         confirmation_item_index FROM review_findings WHERE cycle_id=?`).get(cycle.cycleId)).toEqual({
-        status: 'author-waived', target_id: null, span_start: null, span_end: null, excerpt_hash: null, occurrence: null,
+        status: 'author-waived', ...anchor,
         evidence_hash: hash(confirmation.body), confirmation_item_index: 0,
       })
+      expect(verifyM03ReviewCycle(db)).toBe(true)
+      const beforeFinding = db.prepare('SELECT * FROM review_findings WHERE cycle_id=?').get(cycle.cycleId)
+      const beforeCycle = db.prepare('SELECT * FROM review_cycles WHERE cycle_id=?').get(cycle.cycleId)
+      const beforeCounts = db.prepare('SELECT (SELECT COUNT(*) FROM reviews) AS reviews, (SELECT COUNT(*) FROM contents) AS contents').get()
+      const replacement = { ...snapshot, items: decision === 'invalid'
+        ? [...snapshot.items, ...snapshot.items]
+        : snapshot.items.map(item => ({ ...item, decision })) }
+      const reconfirm = () => db.transaction(() => {
+        const next = seedConfirmation(db, seeded, replacement)
+        const result = ReviewCycleRepository.commitAuthorConfirmation({
+          cycleId: cycle.cycleId, confirmationReviewId: next.id,
+        }, db)
+        return { ...next, result }
+      })()
+      if (decision === 'invalid') {
+        expect(reconfirm).toThrow('REVIEW_CYCLE_INPUT_INVALID')
+        expect(db.prepare('SELECT * FROM review_findings WHERE cycle_id=?').get(cycle.cycleId)).toEqual(beforeFinding)
+        expect(db.prepare('SELECT * FROM review_cycles WHERE cycle_id=?').get(cycle.cycleId)).toEqual(beforeCycle)
+        expect(db.prepare('SELECT (SELECT COUNT(*) FROM reviews) AS reviews, (SELECT COUNT(*) FROM contents) AS contents').get()).toEqual(beforeCounts)
+      } else {
+        const next = reconfirm()
+        expect(next.result).toMatchObject({ confirmationReviewId: next.id,
+          waivedFindingCount: decision === 'waive' ? 1 : 0, idempotent: false })
+        expect(db.prepare(`SELECT status,target_id,span_start,span_end,excerpt_hash,occurrence,evidence_hash,
+          confirmation_item_index FROM review_findings WHERE cycle_id=?`).get(cycle.cycleId)).toEqual({
+          status: decision === 'waive' ? 'author-waived' : originalStatus,
+          ...anchor,
+          evidence_hash: decision === 'waive' ? hash(next.body) : null,
+          confirmation_item_index: decision === 'waive' ? 0 : null,
+        })
+        const saved = db.prepare('SELECT c.body FROM reviews r JOIN contents c ON c.id=r.content_id WHERE r.id=?')
+          .pluck().get(next.id)
+        expect(saved).toBe(JSON.stringify(replacement, null, 2))
+        expect(db.prepare('SELECT confirmation_review_id,confirmation_content_hash FROM review_cycles WHERE cycle_id=?')
+          .get(cycle.cycleId)).toEqual({ confirmation_review_id: next.id, confirmation_content_hash: hash(next.body) })
+      }
+      expect(db.prepare('SELECT c.body FROM reviews r JOIN contents c ON c.id=r.content_id WHERE r.id=?')
+        .pluck().get(confirmation.id)).toBe(confirmation.body)
       expect(verifyM03ReviewCycle(db)).toBe(true)
     } finally { db.close() }
   })

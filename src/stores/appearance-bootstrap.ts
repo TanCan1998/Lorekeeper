@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { useLocaleStore } from './locale-store'
 import {
   APPEARANCE_STORAGE_KEY, LEGACY_THEME_STORAGE_KEY, LEGACY_UI_STORAGE_KEY, INITIAL_APPEARANCE,
-  AppearanceProfileError, migrateLegacyAppearance, parseAppearanceProfile, resolveShell, RELEASE_DEFAULT_SHELL,
+  AppearanceProfileError, migrateLegacyAppearance, parseAppearanceProfile, resolveShell, RELEASE_DEFAULT_SHELL, serializeAppearanceProfile,
   type AppearancePatch, type CanonicalAppearanceProfile, type Shell,
 } from '../shared/appearance-profile'
 import { mayHydrateAppearance, type MainReady } from '../shared/project-storage'
@@ -26,6 +26,7 @@ export interface AppearanceBootstrapState {
   failureCode: string | null
   bootstrap(dependencies: AppearanceBootstrapDependencies): Promise<boolean>
   update(patch: AppearancePatch): boolean
+  resetAppearance(): boolean
 }
 
 /** One writer per renderer. Importing the module performs no storage read or write. */
@@ -61,17 +62,17 @@ export function createAppearanceStore(releaseDefault: Shell = RELEASE_DEFAULT_SH
               ? migrateLegacyAppearance(storage.getItem(LEGACY_THEME_STORAGE_KEY), storage.getItem(LEGACY_UI_STORAGE_KEY),
                 (dependencies.systemTheme ?? (() => window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'))())
               : parseAppearanceProfile(existing)
-            const profile = existing !== null && releaseDefault === 'writer' && imported.shellPreference === 'classic'
-              ? parseAppearanceProfile(JSON.stringify({ ...imported, shellPreference: 'writer', revision: imported.revision + 1 }))
+            const profile: CanonicalAppearanceProfile = existing !== null && releaseDefault === 'writer' && imported.shellPreference === 'classic'
+              ? { ...imported, shellPreference: 'writer', revision: imported.revision + 1 }
               : imported
-            const serialized = profile === imported && existing !== null ? existing : JSON.stringify(profile)
+            const serialized = profile === imported && existing !== null ? existing : serializeAppearanceProfile(profile)
             if (serialized !== existing) storage.setItem(APPEARANCE_STORAGE_KEY, serialized)
             if (storage.getItem(APPEARANCE_STORAGE_KEY) !== serialized) throw new AppearanceProfileError('APPEARANCE_READBACK_FAILED')
             const accepted = await dependencies.acknowledgeReadback({ storageKey: APPEARANCE_STORAGE_KEY,
               profileRevision: profile.revision, globalGeneration: skin.globalGeneration, skinRevision: skin.skinRevision })
             if (accepted !== true) throw new AppearanceProfileError('MAIN_ACK_REJECTED')
-            if (storage.getItem(APPEARANCE_STORAGE_KEY) !== serialized) throw new AppearanceProfileError('APPEARANCE_CHANGED_DURING_ACK')
             acknowledgedRaw = serialized
+            if (storage.getItem(APPEARANCE_STORAGE_KEY) !== serialized) throw new AppearanceProfileError('APPEARANCE_CHANGED_DURING_ACK')
             set({ phase: 'migrated', profile: Object.freeze(profile), snapshot: Object.freeze({ ...skin }),
               resolvedShell: resolveShell(profile.shellPreference, releaseDefault), notice: null, failureCode: null })
             return true
@@ -85,15 +86,31 @@ export function createAppearanceStore(releaseDefault: Shell = RELEASE_DEFAULT_SH
         if (current.phase !== 'migrated' || !current.profile || !storage || !acknowledgedRaw) return false
         try {
           if (storage.getItem(APPEARANCE_STORAGE_KEY) !== acknowledgedRaw) throw new AppearanceProfileError('APPEARANCE_CHANGED_EXTERNALLY')
-          const next = parseAppearanceProfile(JSON.stringify({ ...current.profile, ...patch,
-            revision: current.profile.revision + 1, origin: 'author' }))
-          const serialized = JSON.stringify(next)
+          const serialized = serializeAppearanceProfile({ ...current.profile, ...patch, revision: current.profile.revision + 1, origin: 'author' })
+          const next = parseAppearanceProfile(serialized)
           storage.setItem(APPEARANCE_STORAGE_KEY, serialized)
           if (storage.getItem(APPEARANCE_STORAGE_KEY) !== serialized) throw new AppearanceProfileError('APPEARANCE_READBACK_FAILED')
           acknowledgedRaw = serialized
           set({ profile: Object.freeze(next), resolvedShell: resolveShell(next.shellPreference, releaseDefault), notice: null, failureCode: null })
           return true
         } catch (error) { return block(error) }
+      },
+      resetAppearance() {
+        try {
+          const target = storage ?? (typeof window === 'undefined' ? null : window.localStorage)
+          if (!target) return false
+          let revision = Math.max(get().profile?.revision ?? 0, acknowledgedRaw ? parseAppearanceProfile(acknowledgedRaw).revision : 0)
+          const existing = target.getItem(APPEARANCE_STORAGE_KEY)
+          if (existing !== null) {
+            try { revision = Math.max(revision, parseAppearanceProfile(existing).revision) }
+            catch (error) { if (!(error instanceof AppearanceProfileError)) throw error }
+          }
+          const serialized = serializeAppearanceProfile({ ...INITIAL_APPEARANCE, revision: revision + 1, origin: 'author' })
+          target.setItem(APPEARANCE_STORAGE_KEY, serialized)
+          if (target.getItem(APPEARANCE_STORAGE_KEY) !== serialized) throw new AppearanceProfileError('APPEARANCE_READBACK_FAILED')
+          set({ phase: 'pending', profile: null, snapshot: null, resolvedShell: 'classic', notice: null, failureCode: null })
+          return true
+        } catch { return false }
       },
     }
   })

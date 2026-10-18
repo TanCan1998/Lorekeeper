@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设计语言</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Noto+Sans+SC:wght@400;500;600&amp;family=Noto+Serif+SC:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2C4A8C}a:hover{color:#1F3870}
+.sw{display:flex;flex-direction:column;gap:8px;font-size:12px;color:#55555E}
+.sw b{display:block;height:64px;border-radius:10px;box-shadow:inset 0 0 0 1px rgba(23,23,26,.08)}
+.h{margin:0 0 16px;font:600 15px "Noto Serif SC",serif}
+.panel{padding:24px;border-radius:14px;background:#FFFFFF;box-shadow:0 0 0 1px rgba(23,23,26,.07)}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #EEEDE8; color: #17171A; font-family: 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif; font-size: 13px; line-height: 1.55; -webkit-font-smoothing: antialiased">
+  <div style="max-width: 1280px; margin: 0 auto; padding: 48px 40px; display: flex; flex-direction: column; gap: 20px">
+    <div style="display: flex; align-items: baseline; gap: 16px">
+      <h1 style="margin: 0; font: 600 34px 'Noto Serif SC', serif">纸墨 · 设计语言</h1>
+      <span style="color: #8A8A93">一种强调色，三层表面，衬线讲故事，无衬线做工具</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 20px">
+      <section class="panel">
+        <h2 class="h">浅色</h2>
+        <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px">
+          <div class="sw"><b style="background: #EEEDE8"></b>外框 #EEEDE8</div>
+          <div class="sw"><b style="background: #F7F6F2"></b>面板 #F7F6F2</div>
+          <div class="sw"><b style="background: #FFFEFB"></b>纸面 #FFFEFB</div>
+          <div class="sw"><b style="background: #17171A"></b>墨 #17171A</div>
+          <div class="sw"><b style="background: #2C4A8C"></b>黛蓝 #2C4A8C</div>
+          <div class="sw"><b style="background: #2F6B4F"></b>完成 #2F6B4F</div>
+          <div class="sw"><b style="background: #B54708"></b>提醒 #B54708</div>
+          <div class="sw"><b style="background: #B42318"></b>危险 #B42318</div>
+        </div>
+      </section>
+      <section class="panel" style="background: #151518; color: #E6E4DF; box-shadow: 0 0 0 1px rgba(255,255,255,.06)">
+        <h2 class="h">深色</h2>
+        <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px">
+          <div class="sw" style="color: #A3A2AB"><b style="background: #111113; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1)"></b>外框 #111113</div>
+          <div class="sw" style="color: #A3A2AB"><b style="background: #18181C; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1)"></b>面板 #18181C</div>
+          <div class="sw" style="color: #A3A2AB"><b style="background: #1D1D22; box-shadow: inset 0 0 0 1px rgba(255,255,255,.1)"></b>纸面 #1D1D22</div>
+          <div class="sw" style="color: #A3A2AB"><b style="background: #E6E4DF"></b>墨 #E6E4DF</div>
+          <div class="sw" style="color: #A3A2AB"><b style="background: #A9BEF0"></b>黛蓝 #A9BEF0</div>
+          <div class="sw" style="color: #A3A2AB"><b style="background: #8CC3A2"></b>完成 #8CC3A2</div>
+          <div class="sw" style="color: #A3A2AB"><b style="background: #E7A869"></b>提醒 #E7A869</div>
+          <div class="sw" style="color: #A3A2AB"><b style="background: #F08A7E"></b>危险 #F08A7E</div>
+        </div>
+      </section>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 20px">
+      <section class="panel">
+        <h2 class="h">字体</h2>
+        <div style="display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; align-items: baseline; gap: 14px"><span style="font: italic 56px/0.9 'Instrument Serif', serif">3</span><span style="font-size: 12px; color: #8A8A93">Instrument Serif 斜体 · 阶段与章节编号</span></div>
+          <div><div style="font: 600 30px/1.25 'Noto Serif SC', serif">雨夜车站</div><div style="font-size: 12px; color: #8A8A93">Noto Serif SC 600 · 标题</div></div>
+          <div><div style="font: 18px/2.05 'Noto Serif SC', serif; text-indent: 2em">他第三次展开信纸。字迹很淡，只有一行。</div><div style="font-size: 12px; color: #8A8A93">Noto Serif SC 18 / 2.05 · 正文，每行约 34 字</div></div>
+          <div><div style="font: 500 13px 'Noto Sans SC', sans-serif">按 2 项意见修稿 · 已保存 · 第 4 章生成中</div><div style="font-size: 12px; color: #8A8A93">Noto Sans SC 13 · 界面</div></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="h">按钮</h2>
+        <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+          <button style="height: 36px; padding: 0 16px; border: 0; border-radius: 9px; background: #2C4A8C; color: #FFFFFF; font: 500 13px 'Noto Sans SC', sans-serif; box-shadow: 0 1px 2px rgba(23,23,26,.18); cursor: pointer">主操作</button>
+          <button style="height: 36px; padding: 0 16px; border: 1px solid rgba(23,23,26,.14); border-radius: 9px; background: #FFFFFF; font: 500 13px 'Noto Sans SC', sans-serif; cursor: pointer">次操作</button>
+          <button style="height: 36px; padding: 0 12px; border: 0; border-radius: 9px; background: transparent; font: 500 13px 'Noto Sans SC', sans-serif; color: #55555E; cursor: pointer">文字</button>
+          <button style="height: 36px; padding: 0 16px; border: 1px solid rgba(180,35,24,.5); border-radius: 9px; background: transparent; font: 500 13px 'Noto Sans SC', sans-serif; color: #B42318; cursor: pointer">删除…</button>
+          <button disabled="" style="height: 36px; padding: 0 16px; border: 0; border-radius: 9px; background: #2C4A8C; opacity: .38; color: #FFFFFF; font: 500 13px 'Noto Sans SC', sans-serif; cursor: not-allowed">不可用</button>
+        </div>
+        <p style="margin: 14px 0 0; font-size: 12px; color: #8A8A93">每层只有一个主操作。危险操作只出现在「更多」菜单的危险分组与确认对话框里，外形与主操作不同。</p>
+      </section>
+
+      <section class="panel">
+        <h2 class="h">阶段与章节状态</h2>
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <div style="display: flex; align-items: center; gap: 12px"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="#2F6B4F"></circle><path d="M7 11.2l2.6 2.6L15 8.6" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg><span>完成</span></div>
+          <div style="display: flex; align-items: center; gap: 12px"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="rgba(44,74,140,.18)" stroke-width="2.5"></circle><circle cx="11" cy="11" r="8.5" fill="none" stroke="#2C4A8C" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="22 53.4" transform="rotate(-90 11 11)"></circle></svg><span>进行中，环表示完成比例</span></div>
+          <div style="display: flex; align-items: center; gap: 12px"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="rgba(23,23,26,.2)" stroke-width="1.5" stroke-dasharray="2.5 3"></circle></svg><span style="color: #8A8A93">未开始</span></div>
+          <ol aria-label="章节生命周期示例" style="list-style: none; margin: 6px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px">
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: #17171A"></span><span style="font-size: 12px; color: #55555E">写作</span></li>
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: #17171A"></span><span style="font-size: 12px; color: #55555E">审稿</span></li>
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: #2C4A8C"></span><span style="font-size: 12px; font-weight: 600; color: #2C4A8C">修稿</span></li>
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: rgba(23,23,26,.1)"></span><span style="font-size: 12px; color: #A1A1A8">定稿</span></li>
+          </ol>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

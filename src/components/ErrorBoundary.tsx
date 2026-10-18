@@ -6,6 +6,8 @@ import { useLocaleStore } from '../stores/locale-store'
 interface Props {
   children: ReactNode
   fallbackLabel?: string
+  /** 自定义的出错界面，替代默认的错误详情与重试按钮。 */
+  fallback?: ReactNode
 }
 
 interface State {
@@ -34,6 +36,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   render() {
+    if (this.state.hasError && this.props.fallback !== undefined) return this.props.fallback
     if (this.state.hasError) {
       const text = useLocaleStore.getState().text
       return (

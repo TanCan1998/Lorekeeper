@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正文 · 定稿确认</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .verified { display: inline-flex; align-items: center; gap: 6px; color: var(--ok); }
+  .commit-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-3); }
+  .commit-list li { display: grid; grid-template-columns: 20px 1fr; gap: 10px; color: var(--ink-2); line-height: 1.65; }
+  .commit-list .i { margin-top: 3px; color: var(--ink-3); }
+  .commit-list b { color: var(--ink); font-weight: 500; }
+  .commit-steps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 3 章 · 发展</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">雨夜车站</h1>
+        <button class="version">修稿已合并 · 1,268 字 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+      </div>
+      <ol class="life" aria-label="本章进度" style="margin-top:22px">
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>写作</li>
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>审稿</li>
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>修稿</li>
+        <li data-s="now"><span class="node"></span>定稿</li>
+      </ol>
+      <div class="chapter-actions">
+        <button class="btn btn-secondary" aria-haspopup="dialog" aria-expanded="true"><svg class="i"><use href="#i-check-check"/></svg>定稿</button>
+        <button class="btn btn-secondary">重新审稿</button>
+        <button class="btn btn-ghost btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+        <span class="hint verified"><svg class="i i-sm"><use href="#i-circle-check"/></svg>复验通过：2 项意见都已解决</span>
+      </div>
+      <div class="prose">
+        <p>雨从傍晚开始就没有停过。林舟站在空荡的站台上，手里攥着那封没有署名的信，信封的边角已经被雨水泡软。</p>
+        <p>最后一班列车晚点了十七分钟，广播里的道歉一遍遍落进空无一人的站台。</p>
+        <p>他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</p>
+        <p>站台尽头的灯闪了一下。林舟把信折好，塞回大衣内侧的口袋。他想起旧报纸上那则很短的消息：这座车站，三十年前就该拆了。</p>
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog" role="dialog" aria-labelledby="fin-title">
+      <div class="dialog-head">
+        <div class="dialog-title" id="fin-title">定稿第 3 章？</div>
+        <p class="dialog-desc">定稿是这部作品里的一次提交。提交后本章只读，后面的章节都以它为准。</p>
+      </div>
+      <div class="dialog-body">
+        <ul class="commit-list">
+          <li><svg class="i"><use href="#i-file-text"/></svg><div><b>写入正文。</b>合并后的 1,268 字成为第 3 章正文，同时保存为正文文件。</div></li>
+          <li><svg class="i"><use href="#i-list-checks"/></svg><div><b>自动做定稿后处理。</b>完成后会在本章页面显示结果，失败的步骤可以单独重试。
+            <div class="commit-steps"><span class="badge plain">章节摘要</span><span class="badge plain">连续性</span><span class="badge plain">角色状态</span><span class="badge plain">知识入库</span></div></div></li>
+          <li><svg class="i"><use href="#i-lock"/></svg><div><b>之后不能直接修改。</b>草稿 v2 和这次合并结果留在版本历史；要再改，从版本历史恢复为草稿。</div></li>
+        </ul>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn btn-ghost">再看看</button>
+        <button class="btn btn-primary"><svg class="i"><use href="#i-check-check"/></svg>确认定稿</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '正文 · 定稿确认', stage: 'text', chapter: 3, crumbs: ['正文', '第 3 章'], saved: true,
+  run: { label: '第 4 章 · 生成草稿', pct: 62 },
+});
+</script>
+</body>
+</html>

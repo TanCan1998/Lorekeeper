@@ -1,17 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Camera, ClipboardList, Network, Save, Trash2, Users, X } from 'lucide-react'
-import { useProjectStore } from '../../stores/project-store'
-import { registerEditorExitSaveHandler, useEditorStore } from '../../stores/editor-store'
-import { CHARACTER_DRAFT_TAB, getProjectEditorDraft, parseProjectEditorDraftLedger } from '../../stores/project-editor-draft-ledger'
-import { useWorkflowStore } from '../../stores/workflow-store'
 import { confirm } from '../ui/Confirm'
-import {
-  useCharacterStore,
-  characterSelectionKey,
-  EMPTY_STATE,
-  type CharacterCard,
-  type CharacterCurrentState,
-} from '../../stores/character-store'
+import { useCharacterStore, type CharacterCard } from '../../stores/character-store'
+import { authorStateEdit, CHARACTER_STATE_FIELDS, stateFieldView } from './character-state-fields'
 import RelationshipGraph from './RelationshipGraph'
 import { EmptyState as BaseEmptyState } from '../ui/EmptyState'
 import { Button } from '../ui/Button'
@@ -21,138 +12,50 @@ import { Label } from '../ui/Label'
 import { NativeSelect } from '../ui/NativeSelect'
 import { useLocaleStore } from '../../stores/locale-store'
 import { CHARACTER_ROLES, getCharacterRoleLabels } from '../../shared/character-role'
-import {
-  formatRelationshipsForEditor,
-  relationshipStorageFromEditor,
-} from '../../shared/relationship-presentation'
-import {
-  captureProjectSession,
-  isProjectSessionCurrent,
-  isProjectSessionPath,
-} from '../project-session-gate'
-import { SaveFeedback, type SaveOutcome } from './save-feedback'
+import { relationshipStorageFromEditor } from '../../shared/relationship-presentation'
+import { isProjectSessionCurrent } from '../project-session-gate'
+import { SaveFeedback } from './save-feedback'
 import { useCharacterAvatar } from './use-character-avatar'
+import { useCharacterProfile } from './use-character-profile'
+import { pluralEn } from '../../shared/plural-en'
 
 /**
  * 角色卡编辑器 — 纯编辑区域（角色列表已移至侧栏）
  * 从 character-store 读取选中角色，仅渲染编辑表单。
  */
 export default function CharacterEditor({ projectKey }: { projectKey: string }) {
-  const currentProject = useProjectStore(s => s.currentProject)
-  const addLog = useWorkflowStore(s => s.addLog)
-  const characters = useCharacterStore(s => s.characters)
+  const profile = useCharacterProfile(projectKey)
+  const {
+    currentProject, projectMatches, dataReady, characters, selectedId, selectedCard, relationshipEditorText, lastError,
+    saving, dirty, identityBusy, saveOutcome, saveError, handleSave, updateCurrentField, renameCurrentCharacter,
+  } = profile
   const currentDerivedFields = useCharacterStore(s => s.currentDerivedFields)
-  const dataProjectKey = useCharacterStore(s => s.dataProjectKey)
-  const loadingProjectKey = useCharacterStore(s => s.loadingProjectKey)
-  const lastError = useCharacterStore(s => s.lastError)
-  const selectedId = useCharacterStore(s => s.selectedId)
-  const saving = useCharacterStore(s => s.saving)
-  const dirty = useEditorStore(state => state.tabs.some(
-    tab => tab.type === 'character' && tab.projectKey === projectKey && tab.dirty,
-  ) || Boolean(getProjectEditorDraft(
-    parseProjectEditorDraftLedger(state.draftLedgers[CHARACTER_DRAFT_TAB.id]), projectKey,
-  )))
-  const [saveOutcome, setSaveOutcome] = useState<SaveOutcome>('idle')
-  const [saveError, setSaveError] = useState('')
-  const identityBusy = useCharacterStore(s => s.identityBusy)
-  const renameCharacter = useCharacterStore(s => s.renameCharacter)
-  const updateField = useCharacterStore(s => s.updateField)
-  const deleteCharacter = useCharacterStore(s => s.deleteCharacter)
-  const clearAllCharacters = useCharacterStore(s => s.clearAllCharacters)
-  const saveAll = useCharacterStore(s => s.saveAll)
   const [viewMode, setViewMode] = useState<'edit' | 'state' | 'graph'>('edit')
   const text = useLocaleStore(s => s.text)
-  const locale = useLocaleStore(s => s.locale)
   const roleLabel = (role: CharacterCard['role']) => {
     const { zhCN, enUS } = getCharacterRoleLabels(role)
     return text(zhCN, enUS)
   }
-  const projectMatches = currentProject?.path === projectKey
-  const dataReady = Boolean(
-    projectMatches
-    && dataProjectKey === projectKey
-    && loadingProjectKey === null
-    && lastError === null,
-  )
-
-  // 数据由 ProjectService 统一加载，组件只消费 store 数据
-
-  const selectedCard = dataReady
-    ? characters.find((c, index) => characterSelectionKey(c, index) === selectedId) || null
-    : null
   const avatar = useCharacterAvatar(selectedCard?.characterId ?? null, dataReady && viewMode === 'edit')
-  const relationshipEditorText = selectedCard
-    ? formatRelationshipsForEditor(selectedCard.relationships, { locale, identities: characters })
-    : ''
 
   const handleDelete = async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!selectedCard || !projectMatches || !projectSession || !isProjectSessionPath(projectSession, projectKey)) return
+    const projectSession = profile.beginDelete('selected')
+    if (!projectSession || !selectedCard) return
     const ok = await confirm(
       text(`确定要删除角色「${selectedCard.name || '未命名'}」吗？此操作不可撤销。`, `Delete character “${selectedCard.name || 'Untitled'}”? This cannot be undone.`),
       { title: text('删除角色', 'Delete character'), confirmText: text('删除', 'Delete'), danger: true }
     )
     if (!ok || !isProjectSessionCurrent(projectSession)) return
-    const deleted = await deleteCharacter(selectedId!, projectKey)
-    if (!isProjectSessionCurrent(projectSession)) return
-    if (!deleted) {
-      addLog(
-        'error',
-        text(
-          '角色删除失败：项目可能已切换，请刷新后重试',
-          'Could not delete the character. The project may have changed; refresh and try again.',
-        ),
-      )
-    }
+    await profile.deleteSelected(projectSession)
   }
-
-  const handleSave = async (propagateFailure = false) => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectMatches || !projectSession || !isProjectSessionPath(projectSession, projectKey)) return
-    setSaveOutcome('idle')
-    setSaveError('')
-    try {
-      await saveAll(projectKey)
-      if (!isProjectSessionCurrent(projectSession)) return
-      addLog('info', text(`已保存 ${characters.length} 个角色卡`, `Saved ${characters.length} character cards`))
-      const stillDirty = useEditorStore.getState().tabs.some(
-        tab => tab.type === 'character' && tab.projectKey === projectKey && tab.dirty,
-      )
-      setSaveOutcome(stillDirty ? 'idle' : 'saved')
-    } catch (error) {
-      if (isProjectSessionCurrent(projectSession)) {
-        setSaveOutcome('failed')
-        setSaveError(error instanceof Error ? error.message : String(error))
-        addLog('error', text(`角色卡保存失败：${error}`, 'Could not save character cards.'))
-      }
-      if (propagateFailure) throw error
-    }
-  }
-
-  const exitSaveRef = useRef(handleSave)
-  useEffect(() => {
-    exitSaveRef.current = handleSave
-  })
-  useEffect(() => {
-    registerEditorExitSaveHandler({
-      type: 'character',
-      projectKey,
-      save: () => exitSaveRef.current(true),
-    })
-  }, [projectKey])
 
   const handleDeleteAllCharacters = async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (
-      !dataReady
-      || characters.length === 0
-      || !projectSession
-      || !isProjectSessionPath(projectSession, projectKey)
-    ) return
+    const projectSession = profile.beginDelete('all')
+    if (!projectSession) return
     const ok = await confirm(
       text(
-        `确定删除全部 ${characters.length} 个角色及其关系吗？角色图谱是角色名单的投影，无法单独清空。此操作不可撤销。`,
-        `Delete all ${characters.length} characters and their relationships? The graph is a projection of the roster and cannot be cleared independently. This cannot be undone.`,
+        `确定删除全部 ${characters.length} 个角色及其关系吗？角色名单全文与关系图谱随之清空。此操作不可撤销。`,
+        `${characters.length === 1 ? 'Delete the only character and its relationships?' : `Delete all ${characters.length} ${pluralEn(characters.length, 'character')} and their relationships?`} The graph is a projection of the roster and cannot be cleared independently. This cannot be undone.`,
       ),
       {
         title: text('删除全部角色与关系', 'Delete all characters and relationships'),
@@ -161,32 +64,7 @@ export default function CharacterEditor({ projectKey }: { projectKey: string }) 
       },
     )
     if (!ok || !isProjectSessionCurrent(projectSession)) return
-    const cleared = await clearAllCharacters(projectKey, projectSession)
-    if (!isProjectSessionCurrent(projectSession)) return
-    addLog(
-      cleared ? 'info' : 'error',
-      cleared
-        ? text('已删除全部角色及关系', 'Deleted all characters and relationships')
-        : text('删除全部角色失败，请刷新后重试', 'Could not delete all characters. Refresh and try again.'),
-    )
-  }
-
-  const updateCurrentField = <K extends Exclude<keyof CharacterCard, 'name' | 'characterId'>>(
-    name: string,
-    key: K,
-    value: CharacterCard[K],
-  ) => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectKey)) return
-    setSaveOutcome('idle')
-    updateField(name, key, value)
-  }
-
-  const renameCurrentCharacter = (name: string, nextName: string) => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectKey)) return
-    setSaveOutcome('idle')
-    renameCharacter(name, nextName)
+    await profile.deleteAll(projectSession)
   }
 
   // ===== 渲染 =====
@@ -214,7 +92,7 @@ export default function CharacterEditor({ projectKey }: { projectKey: string }) 
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-xs font-medium truncate text-[var(--color-text-secondary)]">
             {viewMode === 'graph'
-              ? text('角色图谱', 'Character graph')
+              ? text('关系图谱', 'Relationship graph')
               : selectedCard
                 ? `${selectedCard.name || text('新角色', 'New character')} ${viewMode === 'state' ? text('— 当前状态', '— Current state') : text('— 编辑档案', '— Edit profile')}`
                 : text('角色档案', 'Character profile')}
@@ -300,52 +178,31 @@ export default function CharacterEditor({ projectKey }: { projectKey: string }) 
               </span>
             </div>
             <div className="space-y-3">
-              {([
-                ['location', text('当前位置/阵营', 'Location / faction')],
-                ['powerLevel', text('修为境界/能力等级', 'Power or ability level')],
-                ['physicalState', text('身体状态（伤势/BUFF/外貌）', 'Physical state (injuries, effects, appearance)')],
-                ['mentalState', text('心理状态（愿望/恐惧/心态）', 'Mental state (goals, fears, mindset)')],
-                ['keyItems', text('关键道具/资源', 'Key items / resources')],
-                ['recentEvents', text('最近重要事件', 'Recent important events')],
-              ] as const).map(([field, label]) => {
-                const provenance = selectedCard.currentState?.provenance?.[field]
-                const historicalDerived = provenance?.kind === 'derived'
-                  && !currentDerivedFields[selectedCard.characterId ?? '']?.includes(field)
+              {CHARACTER_STATE_FIELDS.map(([field, zh, en]) => {
+                const label = text(zh, en)
+                const view = stateFieldView(selectedCard, field, currentDerivedFields)
                 return <div key={field}>
                   <Label>
                     {label}
                     <span className="ml-2 text-[0.65rem] font-normal text-[var(--color-text-secondary)]">
-                      {historicalDerived
+                      {view.source === 'historical'
                         ? text('历史派生（非当前）', 'Historical derived value (not current)')
-                        : provenance?.kind === 'author'
+                        : view.source === 'author'
                         ? text('作者输入', 'Author input')
-                        : provenance?.kind === 'derived'
+                        : view.source === 'derived'
                           ? text('定稿派生', 'Derived from finalized prose')
                           : text('来源未知', 'Unknown source')}
                     </span>
                   </Label>
                   <Textarea
-                    value={historicalDerived ? '' : selectedCard.currentState?.[field]?.toString() ?? ''}
-                    onChange={(e) => {
-                      const cs: CharacterCurrentState = {
-                        ...(selectedCard.currentState ?? EMPTY_STATE),
-                        [field]: e.target.value,
-                        provenance: {
-                          ...selectedCard.currentState?.provenance,
-                          [field]: {
-                            kind: 'author',
-                            chapterNumber: selectedCard.currentState?.updatedAtChapter ?? 0,
-                          },
-                        },
-                      }
-                      updateCurrentField(selectedId!, 'currentState', cs)
-                    }}
+                    value={view.value}
+                    onChange={(e) => updateCurrentField(selectedId!, 'currentState', authorStateEdit(selectedCard, field, e.target.value))}
                     rows={2}
                     placeholder={`${label}...`}
                   />
-                  {historicalDerived && selectedCard.currentState?.[field] && (
+                  {view.history && (
                     <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
-                      {text('历史记录（来源已失效或未核验）：', 'History (source invalid or unverified): ')}{selectedCard.currentState[field]}
+                      {text('历史记录（来源已失效或未核验）：', 'History (source invalid or unverified): ')}{view.history}
                     </p>
                   )}
                 </div>

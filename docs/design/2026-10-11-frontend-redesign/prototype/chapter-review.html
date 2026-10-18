@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正文 · 审稿后</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .issue { position: relative; padding: 12px 12px 12px 40px; border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--paper); }
+  .issue[data-on="false"] { background: transparent; }
+  .issue > .check { position: absolute; left: 12px; top: 13px; }
+  .issue-tag { display: flex; align-items: center; gap: 8px; font-size: var(--fs-11); font-weight: 600; letter-spacing: .04em; }
+  .issue-tag.sev { color: var(--danger); } .issue-tag.sug { color: var(--warn); } .issue-tag.chk { color: var(--ink-3); }
+  .issue p { margin-top: 6px; color: var(--ink-2); line-height: 1.65; }
+  .issue q { display: block; margin-top: 8px; padding-left: 10px; border-left: 2px solid var(--rule-strong); color: var(--ink-3); font-family: var(--font-prose); quotes: none; }
+  .issue-actions { display: flex; gap: 4px; margin-top: 8px; }
+  .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .summary div { padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); }
+  .summary b { display: block; font: 500 20px/1.2 var(--font-num); }
+  .summary span { font-size: var(--fs-11); color: var(--ink-3); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 3 章 · 发展</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">雨夜车站</h1>
+        <button class="version">草稿 v2 · 1,286 字 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+      </div>
+      <ol class="life" aria-label="本章进度" style="margin-top:22px">
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>写作</li>
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>审稿</li>
+        <li data-s="now"><span class="node"></span>修稿</li>
+        <li data-s="todo"><span class="node"></span>定稿</li>
+      </ol>
+      <div class="chapter-actions">
+        <button class="btn btn-primary"><svg class="i"><use href="#i-sparkles"/></svg>按 2 项意见修稿</button>
+        <button class="btn btn-secondary">重新审稿</button>
+        <button class="btn btn-ghost btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+        <span class="hint">修稿结果会以差异形式给你确认，不会直接覆盖</span>
+      </div>
+      <div class="prose">
+        <p>雨从傍晚开始就没有停过。林舟站在空荡的站台上，手里攥着那封没有署名的信，信封的边角已经被雨水泡软。</p>
+        <p><mark class="warn">最后一班列车晚点了十七分钟。广播里的女声重复着同一句道歉，像是在对一个并不存在的人群说话。</mark></p>
+        <p>他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</p>
+        <p>站台尽头的灯闪了一下。有人从雨里走过来，脚步很轻，伞压得很低，看不见脸。林舟把信折好，塞回大衣内侧的口袋。<mark>他想起母亲说过，这座车站在三十年前就该拆了。</mark></p>
+        <p>列车进站的声音先于灯光抵达。铁轨开始震动，雨水在枕木间溅起细碎的白。第三节车厢的门开了，里面没有乘客，只有一盏亮着的阅读灯，和一个空着的座位。</p>
+        <p>他抬脚的时候，身后有人叫了他的名字。</p>
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="sheet">
+  <div class="sheet-head">
+    <div><div class="sheet-title">审稿报告</div><div class="sheet-sub">基于草稿 v2 · 今天 21:14</div></div>
+    <button class="btn btn-ghost btn-sm btn-icon" aria-label="关闭审稿报告"><svg class="i"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="sheet-body">
+    <div class="summary">
+      <div><b>1</b><span>严重</span></div><div><b>1</b><span>建议</span></div><div><b>1</b><span>待核实</span></div>
+    </div>
+    <div class="issue" data-on="true">
+      <span class="check" data-on="true"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span></span>
+      <div class="issue-tag sev">严重 · 前后矛盾</div>
+      <p>第 2 章写明林舟的母亲在他出生前离开，这里的“母亲说过”与之冲突。</p>
+      <q>他想起母亲说过，这座车站在三十年前就该拆了。</q>
+    </div>
+    <div class="issue" data-on="true">
+      <span class="check" data-on="true"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span></span>
+      <div class="issue-tag sug">建议 · 节奏</div>
+      <p>列车晚点与广播道歉两句信息重叠，可以压缩成一句。</p>
+    </div>
+    <div class="issue" data-on="false">
+      <span class="check" data-on="false"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span></span>
+      <div class="issue-tag chk">待核实 · 本章必现</div>
+      <p>阅读灯与空座位已经出现。“不要回头”的伏笔在本章是否回收，由你决定。</p>
+      <div class="issue-actions"><button class="btn btn-ghost btn-sm">纳入修稿</button><button class="btn btn-ghost btn-sm">不处理</button></div>
+    </div>
+    <button class="btn btn-ghost btn-sm" style="align-self:flex-start"><svg class="i i-sm"><use href="#i-plus"/></svg>添加我的意见</button>
+    <div class="disclosure" style="padding-top:12px"><svg class="i i-sm"><use href="#i-chevron-right"/></svg>总体修稿指导 <small>可选</small></div>
+  </div>
+  <div class="sheet-foot"><span>勾选的意见会用于修稿</span><span>2 / 3</span></div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '正文 · 审稿后', stage: 'text', chapter: 3, crumbs: ['正文', '第 3 章'], saved: true,
+  run: { label: '第 4 章 · 生成草稿', pct: 62 },
+  tabs: [{ title: '第 3 章 雨夜车站', active: true }, { title: '角色 · 林舟' }, { title: '章节蓝图', dirty: true }],
+});
+</script>
+</body>
+</html>

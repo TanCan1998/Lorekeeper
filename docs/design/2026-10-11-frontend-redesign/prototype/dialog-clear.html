@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>清除项目生成内容</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 对话框内的选项卡片与小节 */
+  .dlg-sec + .dlg-sec { margin-top: var(--s-4); }
+  .dlg-sec > .label { margin-bottom: 8px; }
+  .opts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
+  .opts.one { grid-template-columns: 1fr; }
+  .opt { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); cursor: pointer; }
+  .opt[data-on="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .opt .radio-dot, .opt .check-box { margin-top: 2px; }
+  .opt b { display: block; font-weight: 500; }
+  .opt small { display: block; margin-top: 2px; font-size: var(--fs-12); color: var(--ink-3); line-height: 1.55; }
+  .with-btn { display: flex; gap: var(--s-2); }
+  .with-btn > :first-child { flex: 1; }
+  .mono { font-family: var(--font-mono); font-size: var(--fs-12); }
+  .note-box { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); font-size: var(--fs-12); color: var(--ink-2); line-height: 1.6; }
+  .note-box .i { margin-top: 1px; color: var(--ink-3); }
+  .note-box.warn { background: var(--warn-soft); }
+  .note-box.warn .i { color: var(--warn); }
+  .note-box.danger { background: var(--danger-soft); color: var(--ink); }
+  .note-box.danger .i { color: var(--danger); }
+  .note-box b { font-weight: 600; }
+  .note-box ul { margin: 4px 0 0; padding-left: 16px; }
+  .file-row { display: flex; align-items: center; gap: var(--s-3); padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); }
+  .file-row .i { color: var(--ink-3); }
+  .file-row small { display: block; font-size: var(--fs-12); color: var(--ink-3); }
+  .est { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+  .est div { padding: 8px 12px; border-radius: var(--radius); background: var(--sunken); }
+  .est b { display: block; font: 500 18px/1.3 var(--font-num); }
+  .est span { font-size: var(--fs-11); color: var(--ink-3); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 3 章 · 发展</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">雨夜车站</h1>
+        <button class="version">草稿 v2 · 1,286 字 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+      </div>
+      <div class="prose" style="margin-top:var(--s-8)">
+        <p>雨从傍晚开始就没有停过。林舟站在空荡的站台上，手里攥着那封没有署名的信，信封的边角已经被雨水泡软。</p>
+        <p>最后一班列车晚点了十七分钟。广播里的女声重复着同一句道歉，像是在对一个并不存在的人群说话。</p>
+        <p>他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</p>
+        <p>站台尽头的灯闪了一下。有人从雨里走过来，脚步很轻，伞压得很低，看不见脸。</p>
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog danger" role="dialog" aria-labelledby="dt">
+      <div class="dialog-head">
+        <div class="dialog-title" id="dt">清除项目生成内容</div>
+        <p class="dialog-desc">勾选要清除的内容。没有勾选的内容和小说设定都会保留。</p>
+      </div>
+      <div class="dialog-body">
+        <div class="opts one">
+          <div class="opt check" data-on="false"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span><div><b>故事架构与大纲</b><small>前提、角色名单、世界观、情节大纲</small></div></div>
+          <div class="opt check" data-on="true"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span><div><b>章节蓝图</b><small>24 章的章节规划</small></div></div>
+          <div class="opt check" data-on="true"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span><div><b>草稿、定稿与审稿结果</b><small>第 1～3 章的全部草稿与定稿、审稿报告和版本历史</small></div></div>
+        </div>
+        <div class="note-box danger" style="margin-top:var(--s-4)"><svg class="i"><use href="#i-triangle-alert"/></svg>
+          <div><b>清除后无法恢复。</b>将永久删除 24 章蓝图、2 章定稿和 1 章草稿（共 9,640 字），以及它们的全部版本。
+            如果以后可能用到，请先在设置的“项目备份”里导出存档。</div></div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn btn-ghost btn-sm" style="margin-right:auto"><svg class="i i-sm"><use href="#i-archive"/></svg>先去备份</button>
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-danger-solid"><svg class="i"><use href="#i-trash-2"/></svg>清除所选内容</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '清除项目生成内容', stage: 'text', chapter: 3, crumbs: ['正文', '第 3 章'], saved: true });
+</script>
+</body>
+</html>

@@ -210,7 +210,7 @@ describe('character card normalizer', () => {
     ].join('\n')
 
     expect(() => extractCompleteCharacterCards('', source)).toThrow(
-      '无法从角色图谱中安全识别完整角色清单',
+      '无法从角色名单中安全识别完整角色清单',
     )
   })
 
@@ -224,7 +224,7 @@ describe('character card normalizer', () => {
     ].join('\n')
 
     expect(() => extractCompleteCharacterCards('', source)).toThrow(
-      '无法从角色图谱中安全识别完整角色清单',
+      '无法从角色名单中安全识别完整角色清单',
     )
   })
 
@@ -306,7 +306,7 @@ describe('character card normalizer', () => {
     ].join('\n')
 
     expect(() => extractCompleteCharacterCards('', source)).toThrow(
-      '无法从角色图谱中安全识别完整角色清单',
+      '无法从角色名单中安全识别完整角色清单',
     )
   })
 
@@ -344,7 +344,7 @@ describe('character card normalizer', () => {
     ].join('\n')
 
     expect(() => extractCompleteCharacterCards('', source)).toThrow(
-      '无法从角色图谱中安全识别完整角色清单',
+      '无法从角色名单中安全识别完整角色清单',
     )
   })
 
@@ -370,7 +370,7 @@ describe('character card normalizer', () => {
     ].join('\n')
 
     expect(() => extractCompleteCharacterCards('', source)).toThrow(
-      '无法从角色图谱中安全识别完整角色清单',
+      '无法从角色名单中安全识别完整角色清单',
     )
   })
 
@@ -383,7 +383,7 @@ describe('character card normalizer', () => {
     ].join('\n')
 
     expect(() => extractCompleteCharacterCards('', source)).toThrow(
-      '无法从角色图谱中安全识别完整角色清单',
+      '无法从角色名单中安全识别完整角色清单',
     )
   })
 
@@ -395,7 +395,7 @@ describe('character card normalizer', () => {
     ].join('\n')
 
     expect(() => extractCompleteCharacterCards('', source)).toThrow(
-      '无法从角色图谱中安全识别完整角色清单',
+      '无法从角色名单中安全识别完整角色清单',
     )
   })
 })

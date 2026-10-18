@@ -80,11 +80,11 @@ describe('chapter workflow locale', () => {
       description: workflow.steps[0].description,
       completion: workflow.onComplete?.message,
     }))).toEqual([
-      expect.objectContaining({ locale: 'en-US', title: 'Draft — Chapter 2 · A New Term', step: 'Draft chapter' }),
-      expect.objectContaining({ locale: 'en-US', title: 'Review — Chapter 2 A New Term', step: 'Review chapter' }),
-      expect.objectContaining({ locale: 'en-US', title: 'Revise — Chapter 2 A New Term', step: 'Revise draft' }),
-      expect.objectContaining({ locale: 'en-US', title: 'Apply review — Chapter 2 A New Term', step: 'Revise from review' }),
-      expect.objectContaining({ locale: 'en-US', title: 'Finalize — Chapter 2 A New Term', step: 'Finalize chapter' }),
+      expect.objectContaining({ locale: 'en-US', title: 'Chapter 2 · Draft', step: 'Draft chapter' }),
+      expect.objectContaining({ locale: 'en-US', title: 'Chapter 2 · Review', step: 'Review chapter' }),
+      expect.objectContaining({ locale: 'en-US', title: 'Chapter 2 · Revise', step: 'Revise draft' }),
+      expect.objectContaining({ locale: 'en-US', title: 'Chapter 2 · Apply review', step: 'Revise from review' }),
+      expect.objectContaining({ locale: 'en-US', title: 'Chapter 2 · Finalize', step: 'Finalize chapter' }),
     ])
     expect(workflows.flatMap(workflow => [
       workflow.title,

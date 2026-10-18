@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>新建作品</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 对话框内的选项卡片与小节 */
+  .dlg-sec + .dlg-sec { margin-top: var(--s-4); }
+  .dlg-sec > .label { margin-bottom: 8px; }
+  .opts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
+  .opts.one { grid-template-columns: 1fr; }
+  .opt { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); cursor: pointer; }
+  .opt[data-on="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .opt .radio-dot, .opt .check-box { margin-top: 2px; }
+  .opt b { display: block; font-weight: 500; }
+  .opt small { display: block; margin-top: 2px; font-size: var(--fs-12); color: var(--ink-3); line-height: 1.55; }
+  .with-btn { display: flex; gap: var(--s-2); }
+  .with-btn > :first-child { flex: 1; }
+  .mono { font-family: var(--font-mono); font-size: var(--fs-12); }
+  .note-box { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); font-size: var(--fs-12); color: var(--ink-2); line-height: 1.6; }
+  .note-box .i { margin-top: 1px; color: var(--ink-3); }
+  .note-box.warn { background: var(--warn-soft); }
+  .note-box.warn .i { color: var(--warn); }
+  .note-box.danger { background: var(--danger-soft); color: var(--ink); }
+  .note-box.danger .i { color: var(--danger); }
+  .note-box b { font-weight: 600; }
+  .note-box ul { margin: 4px 0 0; padding-left: 16px; }
+  .file-row { display: flex; align-items: center; gap: var(--s-3); padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); }
+  .file-row .i { color: var(--ink-3); }
+  .file-row small { display: block; font-size: var(--fs-12); color: var(--ink-3); }
+  .est { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+  .est div { padding: 8px 12px; border-radius: var(--radius); background: var(--sunken); }
+  .est b { display: block; font: 500 18px/1.3 var(--font-num); }
+  .est span { font-size: var(--fs-11); color: var(--ink-3); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 3 章 · 发展</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">雨夜车站</h1>
+        <button class="version">草稿 v2 · 1,286 字 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+      </div>
+      <div class="prose" style="margin-top:var(--s-8)">
+        <p>雨从傍晚开始就没有停过。林舟站在空荡的站台上，手里攥着那封没有署名的信，信封的边角已经被雨水泡软。</p>
+        <p>最后一班列车晚点了十七分钟。广播里的女声重复着同一句道歉，像是在对一个并不存在的人群说话。</p>
+        <p>他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</p>
+        <p>站台尽头的灯闪了一下。有人从雨里走过来，脚步很轻，伞压得很低，看不见脸。</p>
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog" role="dialog" aria-labelledby="dt">
+      <div class="dialog-head">
+        <div class="dialog-title" id="dt">新建作品</div>
+        <p class="dialog-desc">先起个名字，选好存放位置。其余设定在下一步填写。</p>
+      </div>
+      <div class="dialog-body">
+        <div class="stack" style="gap:var(--s-4)">
+          <div class="field"><span class="label">作品名</span><div class="input is-focus">北站来信</div></div>
+          <div class="field"><span class="label">保存位置</span>
+            <div class="with-btn"><div class="input mono">D:\写作\小说</div><button class="btn btn-secondary"><svg class="i"><use href="#i-folder-open"/></svg>选择…</button></div>
+            <span class="help">会在这里新建文件夹“北站来信”，作品的全部内容都存在里面。</span></div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-primary">创建作品</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '新建作品', stage: 'text', chapter: 3, crumbs: ['正文', '第 3 章'], saved: true });
+</script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>版本历史</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 三栏：章节 / 版本时间线 / 只读差异 */
+  .hist { display: grid; grid-template-columns: 232px 316px minmax(0, 1fr); height: 100%; }
+  .hist-col { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+  .hist-ch { border-right: 1px solid var(--rule); background: var(--bg); padding: var(--s-5) var(--s-2) var(--s-4); }
+  .hist-pad { padding: 0 var(--s-2) var(--s-3); }
+  .hist-title { font: 600 var(--fs-20)/1.3 var(--font-display); }
+  .ch-row { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 6px; padding: 7px 8px; border-radius: var(--radius); font-size: 12.5px; cursor: pointer; }
+  .ch-row:hover { background: var(--surface-2); }
+  .ch-row[aria-current="true"] { background: var(--accent-soft); font-weight: 600; }
+  .ch-row .no { font: 13px var(--font-num); color: var(--ink-3); }
+  .ch-row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ch-row small { font-size: var(--fs-11); color: var(--ink-3); font-weight: 400; }
+  .ch-row[data-empty="true"] { color: var(--ink-3); }
+
+  .hist-tl { border-right: 1px solid var(--rule); background: var(--surface); padding: var(--s-5) var(--s-4); }
+  .vl { list-style: none; margin: var(--s-3) 0 0; padding: 0; position: relative; }
+  .vl::before { content: ""; position: absolute; left: 7px; top: 10px; bottom: 10px; width: 1px; background: var(--rule-strong); }
+  .v { position: relative; display: grid; grid-template-columns: 16px 1fr; gap: 12px; padding: 8px 0; }
+  .v-node { position: relative; z-index: 1; width: 15px; height: 15px; margin-top: 3px; border-radius: 50%; border: 1.5px solid var(--rule-strong); background: var(--surface); }
+  .v[data-kind="draft"] .v-node { background: var(--ink); border-color: var(--ink); }
+  .v[data-kind="review"] .v-node { width: 9px; height: 9px; margin: 6px 3px 0; }
+  .v[data-kind="final"] .v-node { border-style: dashed; }
+  .v-card { padding: 8px 10px; border-radius: var(--radius); border: 1px solid transparent; cursor: pointer; }
+  .v-card:hover { background: var(--surface-2); }
+  .v[aria-selected="true"] .v-card { border-color: var(--accent); background: var(--paper); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .v[aria-selected="true"] .v-node { background: var(--accent); border-color: var(--accent); }
+  .v-name { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+  .v-meta { margin-top: 2px; font-size: var(--fs-12); color: var(--ink-3); line-height: 1.55; }
+  .v[data-kind="review"] .v-name, .v[data-kind="final"] .v-name { font-weight: 500; color: var(--ink-2); }
+  .v[data-kind="final"] .v-name { color: var(--ink-3); }
+
+  .hist-diff { padding: var(--s-5) var(--s-8) var(--s-12); background: var(--bg); }
+  .diff-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); }
+  .diff-pair { display: flex; align-items: center; gap: 8px; font-size: var(--fs-13); }
+  .diff-pair .v-tag { padding: 3px 8px; border-radius: var(--radius-sm); background: var(--surface-2); font-weight: 500; }
+  .diff-stats { display: flex; gap: var(--s-3); margin-top: var(--s-2); font-size: var(--fs-12); }
+  .diff-stats .add { color: var(--ok); } .diff-stats .del { color: var(--danger); }
+  .diff-page { margin-top: var(--s-4); padding: var(--s-8) var(--s-10); background: var(--paper); box-shadow: var(--shadow-page); border-radius: 2px; }
+  .diff-page .prose { font-size: 16.5px; line-height: 2; max-width: none; }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="hist">
+    <div class="hist-col hist-ch">
+      <div class="hist-pad">
+        <h1 class="hist-title">版本历史</h1>
+        <p class="help" style="margin-top:4px">每章的草稿、审稿、修稿和定稿都会留下记录。</p>
+      </div>
+      <div class="ch-row"><span class="no">01</span><span class="t">灰色的信</span><small>3 稿</small></div>
+      <div class="ch-row"><span class="no">02</span><span class="t">母亲的旧照片</span><small>4 稿</small></div>
+      <div class="ch-row" aria-current="true"><span class="no">03</span><span class="t">雨夜车站</span><small>2 稿</small></div>
+      <div class="ch-row"><span class="no">04</span><span class="t">第三节车厢</span><small>生成中</small></div>
+      <div class="ch-row" data-empty="true"><span class="no">05</span><span class="t">不要回头</span><small>未开始</small></div>
+      <div class="ch-row" data-empty="true"><span class="no">06</span><span class="t">阅读灯</span><small>未开始</small></div>
+      <div class="ch-row" data-empty="true"><span class="no">07</span><span class="t">终点站以北</span><small>未开始</small></div>
+      <div class="ch-row" data-empty="true"><span class="no">08</span><span class="t">失物招领处</span><small>未开始</small></div>
+    </div>
+
+    <div class="hist-col hist-tl">
+      <div class="eyebrow">第 3 章</div>
+      <h2 class="h2" style="margin-top:4px">雨夜车站</h2>
+      <ol class="vl" aria-label="版本时间线">
+        <li class="v" data-kind="final"><span class="v-node"></span>
+          <div class="v-card"><div class="v-name">定稿</div><div class="v-meta">尚未定稿</div></div></li>
+        <li class="v" data-kind="review"><span class="v-node"></span>
+          <div class="v-card"><div class="v-name">审稿 · 3 条意见</div><div class="v-meta">基于草稿 v2 · AI 审稿 · 今天 21:14</div></div></li>
+        <li class="v" data-kind="draft"><span class="v-node"></span>
+          <div class="v-card"><div class="v-name">草稿 v2 <span class="badge accent plain">当前</span></div><div class="v-meta">AI 修稿，采纳 2 条意见 · 昨天 22:15<br>之后你改过 · 今天 20:58 · 1,286 字</div></div></li>
+        <li class="v" data-kind="review"><span class="v-node"></span>
+          <div class="v-card"><div class="v-name">审稿 · 4 条意见</div><div class="v-meta">基于草稿 v1 · AI 审稿 · 昨天 21:40</div></div></li>
+        <li class="v" data-kind="draft" aria-selected="true"><span class="v-node"></span>
+          <div class="v-card"><div class="v-name">草稿 v1</div><div class="v-meta">AI 写作 · DeepSeek V4 Flash · 昨天 21:02<br>1,198 字</div></div></li>
+      </ol>
+    </div>
+
+    <div class="hist-col hist-diff">
+      <div class="diff-head">
+        <div>
+          <div class="diff-pair"><span class="v-tag">草稿 v1 · 昨天 21:02</span><svg class="i i-sm muted"><use href="#i-arrow-right"/></svg><span class="v-tag">当前 · 草稿 v2</span></div>
+          <div class="diff-stats"><span class="add">新增 3 处</span><span class="del">删去 2 处</span><span class="readonly-note"><svg class="i i-sm"><use href="#i-lock"/></svg>只读对比，不能在这里编辑</span></div>
+        </div>
+        <button class="btn btn-secondary"><svg class="i"><use href="#i-rotate-ccw"/></svg>回退到此版本…</button>
+      </div>
+      <div class="diff-page">
+        <div class="prose">
+          <p>雨从傍晚开始就没有停过。林舟站在空荡的站台上，手里攥着那封<del>灰色的</del><ins>没有署名的</ins>信，信封的边角已经被雨水泡软。</p>
+          <p>最后一班列车晚点了十七分钟。<del>广播里一遍遍地道歉，声音在雨里显得很远。</del><ins>广播里的女声重复着同一句道歉，像是在对一个并不存在的人群说话。</ins></p>
+          <p>他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</p>
+          <p>站台尽头的灯闪了一下。有人从雨里走过来，脚步很轻，伞压得很低，看不见脸。林舟把信折好，塞回大衣内侧的口袋。<ins>他想起母亲说过，这座车站在三十年前就该拆了。</ins></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog" role="dialog" aria-labelledby="rb-title">
+      <div class="dialog-head">
+        <div class="dialog-title" id="rb-title">回退到草稿 v1？</div>
+        <p class="dialog-desc">会用草稿 v1 的内容新建一份<b>草稿 v3</b>，作为第 3 章的当前稿。</p>
+      </div>
+      <div class="dialog-body">
+        <ul class="stack" style="margin:0;padding-left:18px;color:var(--ink-2);gap:6px">
+          <li>现在的草稿 v2 和所有历史版本都会保留，随时可以再切回去。</li>
+          <li>今天 21:14 的审稿基于 v2，回退后建议重新审稿。</li>
+        </ul>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-primary"><svg class="i"><use href="#i-rotate-ccw"/></svg>新建回滚草稿</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '版本历史', ref: 'history', chapters: false, crumbs: ['作品资料', '版本历史', '第 3 章'], saved: true });
+</script>
+</body>
+</html>

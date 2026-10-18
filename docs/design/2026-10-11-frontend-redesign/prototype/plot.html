@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>剧情与伏笔 · 剧情树</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .ref-pad { padding: var(--s-8) var(--s-12) var(--s-12); }
+  .ref-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-6); }
+  .ref-tools { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-5); padding-bottom: var(--s-4); border-bottom: 1px solid var(--rule); }
+  .ref-tools .gap { flex: 1; }
+  .snapshot-note { display: flex; align-items: center; gap: 8px; margin-top: var(--s-4); padding: 10px 14px; border-radius: var(--radius); background: var(--sunken); color: var(--ink-2); font-size: var(--fs-12); }
+  .snapshot-note .i { color: var(--ink-3); }
+  .snapshot-note b { font-weight: 600; color: var(--ink); }
+  .model-pick { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); color: var(--ink-2); font-size: var(--fs-12); }
+
+  /* 横向时间轴：首列为轨道名，其余每列一章 */
+  .tl-wrap { margin-top: var(--s-5); overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--surface); }
+  .tl { display: grid; grid-template-columns: 112px repeat(6, minmax(150px, 1fr)); min-width: 1000px; }
+  .tl-corner, .tl-ch { padding: 10px 12px; border-bottom: 1px solid var(--rule); font-size: var(--fs-12); color: var(--ink-3); }
+  .tl-ch { border-left: 1px solid var(--rule); }
+  .tl-ch b { display: block; color: var(--ink); font: 500 var(--fs-13)/1.4 var(--font-display); }
+  .tl-ch[data-written="true"] b::after { content: " · 已定稿"; font: 400 var(--fs-11) var(--font-ui); color: var(--ok); }
+  .tl-lane { display: flex; flex-direction: column; justify-content: center; padding: 0 12px; border-bottom: 1px solid var(--rule); }
+  .tl-lane b { font-weight: 600; }
+  .tl-lane span { font-size: var(--fs-11); color: var(--ink-3); }
+  .tl-cell { position: relative; display: flex; align-items: center; min-height: 104px; padding: 12px 10px; border-left: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .tl-cell::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; background: var(--rule-strong); }
+  .tl-cell[data-lane="side"]::before { background: repeating-linear-gradient(90deg, var(--rule-strong) 0 6px, transparent 6px 10px); }
+  .tl-last { border-bottom: 0; }
+  .ev { position: relative; z-index: 1; display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 8px 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); font-size: var(--fs-12); line-height: 1.5; color: var(--ink-2); cursor: pointer; text-align: left; }
+  .ev:hover { border-color: var(--rule-strong); }
+  .ev-node { width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; flex: none; }
+  .ev[data-state="done"] .ev-node { background: var(--ink); }
+  .ev[data-state="plan"] .ev-node { border: 1.5px dashed var(--ink-3); }
+  .ev[data-state="plan"] { color: var(--ink-3); background: var(--surface); border-style: dashed; }
+  .ev[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); color: var(--ink); }
+  .ev[aria-pressed="true"] .ev-node { background: var(--accent); }
+  .legend { display: flex; align-items: center; gap: var(--s-4); font-size: var(--fs-12); color: var(--ink-3); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 50%; }
+  .legend i.done { background: var(--ink); }
+  .legend i.plan { border: 1.5px dashed var(--ink-3); }
+
+  .ev-detail { display: grid; grid-template-columns: 1fr auto; gap: var(--s-2) var(--s-6); margin-top: var(--s-4); padding: var(--s-4) var(--s-5); border: 1px solid var(--accent-line); border-radius: var(--radius-lg); background: var(--surface); }
+  .ev-detail h3 { font: 600 var(--fs-16)/1.5 var(--font-display); }
+  .ev-detail .meta { font-size: var(--fs-12); color: var(--ink-3); }
+  .ev-detail q { display: block; margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--rule-strong); font: 14px/1.85 var(--font-prose); color: var(--ink-2); quotes: none; }
+  .ev-detail .src { align-self: start; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="ref-pad">
+    <div class="ref-head">
+      <div>
+        <div class="eyebrow">作品资料</div>
+        <h1 class="h1" style="font-size:var(--fs-30)">剧情与伏笔</h1>
+      </div>
+      <div class="seg" role="group" aria-label="视图">
+        <button aria-pressed="true">剧情树</button><button aria-pressed="false">伏笔线索</button>
+      </div>
+    </div>
+
+    <div class="snapshot-note">
+      <svg class="i i-sm"><use href="#i-eye"/></svg>
+      <span>剧情树是从蓝图和定稿整理出的<b>只读快照</b>，用来回看故事走向，<b>不参与写作</b>。要改剧情，请到蓝图或正文里改。</span>
+    </div>
+
+    <div class="ref-tools">
+      <div class="seg" role="group" aria-label="章节分组">
+        <button aria-label="上一组"><svg class="i i-sm"><use href="#i-chevron-left"/></svg></button>
+        <button aria-pressed="true">第 1–6 章</button>
+        <button aria-label="下一组"><svg class="i i-sm"><use href="#i-chevron-right"/></svg></button>
+      </div>
+      <div class="legend" style="margin-left:var(--s-4)"><span><i class="done"></i>已定稿发生</span><span><i class="plan"></i>蓝图计划</span></div>
+      <span class="gap"></span>
+      <span class="muted" style="font-size:var(--fs-12)">今天 19:40 整理 · 之后第 3 章有新稿</span>
+      <span class="model-pick"><svg class="i i-sm"><use href="#i-cpu"/></svg>DeepSeek V4 Flash<svg class="i i-sm"><use href="#i-chevron-down"/></svg></span>
+      <button class="btn btn-secondary btn-ai"><svg class="i"><use href="#i-refresh-cw"/></svg>刷新剧情树</button>
+      <button class="btn btn-ghost btn-icon" aria-label="更多操作" aria-expanded="true" style="background:var(--surface-2)"><svg class="i"><use href="#i-more"/></svg></button>
+    </div>
+
+    <div class="tl-wrap">
+      <div class="tl">
+        <div class="tl-corner">轨道</div>
+        <div class="tl-ch" data-written="true">第 1 章<b>灰色的信</b></div>
+        <div class="tl-ch" data-written="true">第 2 章<b>母亲的旧照片</b></div>
+        <div class="tl-ch">第 3 章<b>雨夜车站</b></div>
+        <div class="tl-ch">第 4 章<b>第三节车厢</b></div>
+        <div class="tl-ch">第 5 章<b>不要回头</b></div>
+        <div class="tl-ch">第 6 章<b>阅读灯</b></div>
+
+        <div class="tl-lane"><b>主线</b><span>末班车之谜</span></div>
+        <div class="tl-cell"><button class="ev" data-state="done"><span class="ev-node"></span>林舟收到一封没有署名的灰色信</button></div>
+        <div class="tl-cell"><button class="ev" data-state="done" aria-pressed="true"><span class="ev-node"></span>旧照片背面写着三号站台</button></div>
+        <div class="tl-cell"><button class="ev" data-state="plan"><span class="ev-node"></span>雨夜登上本该停运的末班车</button></div>
+        <div class="tl-cell"><button class="ev" data-state="plan"><span class="ev-node"></span>第三节车厢只有一个空座位</button></div>
+        <div class="tl-cell"><button class="ev" data-state="plan"><span class="ev-node"></span>身后有人叫出他的名字</button></div>
+        <div class="tl-cell"><button class="ev" data-state="plan"><span class="ev-node"></span>阅读灯下压着一份失踪名单</button></div>
+
+        <div class="tl-lane tl-last"><b>支线</b><span>母亲的过去</span></div>
+        <div class="tl-cell tl-last" data-lane="side"></div>
+        <div class="tl-cell tl-last" data-lane="side"><button class="ev" data-state="done"><span class="ev-node"></span>母亲出走前拍下的最后一张照片</button></div>
+        <div class="tl-cell tl-last" data-lane="side"><button class="ev" data-state="plan"><span class="ev-node"></span>站长提起三十年前的事故</button></div>
+        <div class="tl-cell tl-last" data-lane="side"></div>
+        <div class="tl-cell tl-last" data-lane="side"></div>
+        <div class="tl-cell tl-last" data-lane="side"><button class="ev" data-state="plan"><span class="ev-node"></span>守夜人认出了林舟的长相</button></div>
+      </div>
+    </div>
+
+    <div class="ev-detail">
+      <div>
+        <div class="meta">主线 · 第 2 章 · 已定稿发生</div>
+        <h3>照片背面写着“1994 · 三号站台”</h3>
+        <q>他把照片翻过来，背面是母亲的字，铅笔写的，已经淡得快要看不见：一九九四，三号站台。</q>
+      </div>
+      <div class="src">
+        <span class="meta">来源：第 2 章定稿，第 14 段</span>
+        <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-external-link"/></svg>打开来源</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="menu" style="right:48px;top:268px" role="menu">
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-copy"/></svg>复制剧情树文本</button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-clock"/></svg>查看整理记录</button>
+    <div class="menu-sep"></div>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>清除剧情树…</button>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '剧情与伏笔 · 剧情树', ref: 'plot', chapters: false, crumbs: ['作品资料', '剧情与伏笔'], saved: true });
+</script>
+</body>
+</html>

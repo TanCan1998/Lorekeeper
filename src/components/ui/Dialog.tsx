@@ -3,11 +3,23 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useLocaleStore } from '../../stores/locale-store'
+import { useAppearanceStore } from '../../stores/appearance-bootstrap'
+import { Button } from './Button'
+import { useInkOverlayHost } from './ink-overlay'
+import { useDialogFocusReturn } from './focus-return'
+import { keepToastStackClickable } from './ToastStack'
 
 const Dialog = DialogPrimitive.Root
 const DialogTrigger = DialogPrimitive.Trigger
 const DialogPortal = DialogPrimitive.Portal
 const DialogClose = DialogPrimitive.Close
+
+/**
+ * 新外壳下，旧对话框的调用方（导入、导出等）不改一行：内容 Portal 进 body 下的纸墨宿主，外壳换成 pi-dialog，
+ * 头、标题、说明、底栏换成纸墨原语；内容区的旧 --color-* 由 stage-legacy-bridge.css 映射到纸墨令牌。
+ */
+const InkDialogContext = React.createContext(false)
+const useInkDialog = () => React.useContext(InkDialogContext)
 
 /** 遮罩层 - 增强的模糊效果 */
 const DialogOverlay = React.forwardRef<
@@ -34,8 +46,43 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const DialogContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => {
+>(({ className, children, onPointerDownOutside, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
   const text = useLocaleStore(s => s.text)
+  const ink = useAppearanceStore(s => s.resolvedShell === 'stage')
+  const focusReturn = useDialogFocusReturn()
+  const host = useInkOverlayHost(ink)
+  if (ink) {
+    if (!host) return null
+    return (
+      <DialogPortal container={host}>
+        <DialogPrimitive.Overlay className="pi-scrim" />
+        <DialogPrimitive.Content
+          ref={ref}
+          className={cn('pi-dialog pi-dialog--legacy max-w-lg', className)}
+          onPointerDownOutside={event => {
+            keepToastStackClickable(event)
+            onPointerDownOutside?.(event)
+          }}
+          onOpenAutoFocus={event => {
+            focusReturn.remember()
+            onOpenAutoFocus?.(event)
+          }}
+          onCloseAutoFocus={event => {
+            onCloseAutoFocus?.(event)
+            if (!event.defaultPrevented) focusReturn.onCloseAutoFocus(event)
+          }}
+          {...props}
+        >
+          <InkDialogContext.Provider value>{children}</InkDialogContext.Provider>
+          <DialogPrimitive.Close asChild>
+            <Button variant="icon" size="sm" className="pi-dialog-close" aria-label={text('关闭', 'Close')}>
+              <X aria-hidden />
+            </Button>
+          </DialogPrimitive.Close>
+        </DialogPrimitive.Content>
+      </DialogPortal>
+    )
+  }
   return (
   <DialogPortal>
     <DialogOverlay />
@@ -56,6 +103,9 @@ const DialogContent = React.forwardRef<
       style={{
         boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.05)',
       }}
+      onPointerDownOutside={onPointerDownOutside}
+      onOpenAutoFocus={onOpenAutoFocus}
+      onCloseAutoFocus={onCloseAutoFocus}
       {...props}
     >
       {children}
@@ -80,7 +130,7 @@ DialogContent.displayName = DialogPrimitive.Content.displayName
 /** 对话框头部 */
 const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={cn(
+    className={useInkDialog() ? cn('pi-dialog-head', className) : cn(
       'px-6 py-4 border-b border-[var(--color-border)]',
       className
     )}
@@ -92,7 +142,7 @@ DialogHeader.displayName = 'DialogHeader'
 /** 对话框底部 */
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={cn(
+    className={useInkDialog() ? cn('pi-dialog-foot justify-between', className) : cn(
       'flex items-center justify-between px-6 py-4 border-t border-[var(--color-border)]',
       className
     )}
@@ -108,7 +158,7 @@ const DialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn('text-base font-semibold text-[var(--color-text)]', className)}
+    className={useInkDialog() ? cn('pi-dialog-title', className) : cn('text-base font-semibold text-[var(--color-text)]', className)}
     {...props}
   />
 ))
@@ -121,7 +171,7 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn('text-sm text-[var(--color-text-muted)]', className)}
+    className={useInkDialog() ? cn('pi-dialog-sub', className) : cn('text-sm text-[var(--color-text-muted)]', className)}
     {...props}
   />
 ))

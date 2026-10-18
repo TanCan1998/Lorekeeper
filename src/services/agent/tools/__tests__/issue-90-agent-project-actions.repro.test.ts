@@ -306,7 +306,7 @@ describe('Issue #90 AI assistant project actions', () => {
     expect(useWorkflowStore.getState().activeRuns).toContainEqual(expect.objectContaining({
       id: receipt.runId,
       uiLocale: 'en-US',
-      title: 'Draft — Chapter 1 · 最后的灯',
+      title: 'Chapter 1 · Draft',
       steps: [expect.objectContaining({ name: 'Draft chapter' })],
     }))
   })

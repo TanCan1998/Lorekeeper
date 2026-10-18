@@ -17,34 +17,32 @@ import type {
 import { LOW_VRAM_EMBEDDING_OPTIONS, normalizeEmbeddingOptions } from '../../shared/embedding-options'
 import type { ModelCapabilities, ProviderPreset } from '../../shared/provider-presets'
 import { BUILTIN_PRESETS, resolveModelProfileBudgetCapabilities } from '../../shared/provider-presets'
-import { applyModelProfileSelection, createModelProfileDraft, DEFAULT_GENERATION_OUTPUT_TOKENS, modelCapabilitySource } from '../../shared/model-profile-draft'
-import type { ModelProviderResourceId } from '../../shared/model-provider-resources'
-import { randomUUID } from '../../utils/id'
+import { applyModelProfileSelection, DEFAULT_GENERATION_OUTPUT_TOKENS, modelCapabilitySource } from '../../shared/model-profile-draft'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { Label } from '../ui/Label'
 import { NativeSelect } from '../ui/NativeSelect'
 import { cn } from '../../lib/utils'
-import { ipc } from '../../services/ipc-client'
 import { Switch } from '../ui/Switch'
 import { APP_BRAND } from '../../shared/brand'
 import { useLayoutStore, type SettingsSection } from '../../stores/layout-store'
 import { useLocaleStore } from '../../stores/locale-store'
 import type { Locale } from '../../i18n/types'
-import { alertError } from '../ui/AlertDialog'
 import {
   ModelReasoningOverrideSettings,
   ModelCapabilitySources,
   ProjectCreativeStrategySettings,
 } from './ReasoningPolicySettings'
 import ProjectBackupPanel from '../backups/ProjectBackupPanel'
+import { openModelProviderResource } from './model-provider-resource'
+import { useModelSection } from './use-model-section'
+import { useProxySettings } from './use-proxy-settings'
+import { useAutoOpenNextChapter } from './use-auto-open-next-chapter'
 
 // ==================== 分类定义 ====================
 
-type SettingsModalSection = SettingsSection | 'appearance'
-
 interface SectionItem {
-  id: SettingsModalSection
+  id: SettingsSection
   label: string
   labelEn: string
   icon: React.ReactNode
@@ -75,15 +73,8 @@ interface SettingsModalProps {
 /** 全屏设置弹窗 */
 export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const text = useLocaleStore(s => s.text)
-  const requestedSection = useLayoutStore(s => s.settingsSection)
-  const [section, setSection] = useState<SettingsModalSection>(requestedSection)
-
-  useEffect(() => {
-    if (!open) return
-    // 在提交后同步外部请求，避免 effect 阶段同步 setState 的级联渲染。
-    const syncTimer = window.setTimeout(() => setSection(requestedSection), 0)
-    return () => window.clearTimeout(syncTimer)
-  }, [open, requestedSection])
+  const section = useLayoutStore(s => s.settingsSection)
+  const setSection = (next: SettingsSection) => useLayoutStore.setState({ settingsSection: next })
 
   if (!open) return null
 
@@ -93,6 +84,9 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
       style={{ backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={text('设置', 'Settings')}
         className="relative flex w-[880px] h-[600px] rounded-2xl overflow-hidden shadow-2xl"
         style={{
           backgroundColor: 'var(--color-editor-bg)',
@@ -177,18 +171,6 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
 
 // ==================== LLM & Embedding 通用区 ====================
 
-type LocalizedText = (zhCNText: string, enUSText: string) => string
-
-/** Open only an allowlisted provider resource through the trusted main-process IPC boundary. */
-async function openModelProviderResource(resource: ModelProviderResourceId, text: LocalizedText) {
-  try {
-    const result = await ipc.invoke('model-provider-resource:open', resource)
-    if (!result.success) throw new Error(result.error || text('无法打开服务商页面', 'Unable to open provider page'))
-  } catch (error) {
-    alertError(String(error), { title: text('打开链接失败', 'Unable to open link') })
-  }
-}
-
 function LLMSection({
   purposes,
   purposeLabel,
@@ -197,68 +179,22 @@ function LLMSection({
   purposeLabel: string
 }) {
   const text = useLocaleStore(s => s.text)
-  const models = useLLMStore(s => s.models)
-  const defaultModelId = useLLMStore(s => s.defaultModelId)
-  const defaultEmbeddingModelId = useLLMStore(s => s.defaultEmbeddingModelId)
-  const loaded = useLLMStore(s => s.loaded)
-  const loadModels = useLLMStore(s => s.loadModels)
-  const saveModel = useLLMStore(s => s.saveModel)
-  const deleteModel = useLLMStore(s => s.deleteModel)
-  const setDefaultModel = useLLMStore(s => s.setDefaultModel)
-  const setDefaultEmbeddingModel = useLLMStore(s => s.setDefaultEmbeddingModel)
-  const [editingModel, setEditingModel] = useState<ModelProfile | null>(null)
-  const [saving, setSaving] = useState(false)
-  useEffect(() => {
-    if (!loaded) loadModels()
-  }, [loaded, loadModels])
-
-  // 预设直接使用内置常量，无需 IPC 加载
+  const {
+    models: filtered,
+    defaultId,
+    isEmbeddingSection,
+    editingModel,
+    setEditingModel,
+    saving,
+    add: handleAdd,
+    edit,
+    cancelEdit,
+    save: handleSave,
+    remove,
+    setDefault,
+  } = useModelSection(purposes)
   const presets = BUILTIN_PRESETS
-
-  // 按用途过滤
-  const filtered = models.filter((m) =>
-    m.purposes?.some((p) => purposes.includes(p as ModelProfile['purposes'][number]))
-  )
-
-  /** 创建新模型草稿；向量模型由工厂选择完整的 SiliconFlow 默认值。 */
-  const handleAdd = () => {
-    setEditingModel(createModelProfileDraft({
-      id: randomUUID(),
-      purposes: [...purposes],
-    }))
-  }
-
-  const isEmbeddingSection = purposes.includes('embedding')
   const openSiliconFlowInvite = () => void openModelProviderResource('siliconflow-invite', text)
-
-  /** 保存模型；若是该分类第一个则自动设为默认 */
-  const handleSave = async () => {
-    if (!editingModel) return
-    setSaving(true)
-    const saved = await saveModel(editingModel)
-    if (!saved) {
-      setSaving(false)
-      return
-    }
-    // 新增模型后，如果该分类还没有默认则自动设为默认
-    const countBefore = filtered.length
-    if (countBefore === 0) {
-      if (isEmbeddingSection) {
-        if (!await setDefaultEmbeddingModel(editingModel.id)) {
-          setSaving(false)
-          return
-        }
-      } else {
-        if (!await setDefaultModel(editingModel.id)) {
-          setSaving(false)
-          return
-        }
-      }
-    }
-    setEditingModel(null)
-    setSaving(false)
-  }
-
 
   return (
     <div className="space-y-4">
@@ -269,7 +205,7 @@ function LLMSection({
           model={editingModel}
           onChange={setEditingModel}
           onSave={handleSave}
-          onCancel={() => setEditingModel(null)}
+          onCancel={cancelEdit}
           saving={saving}
           purposeOptions={purposes}
           presets={presets}
@@ -329,14 +265,10 @@ function LLMSection({
                 <ModelCard
                   key={model.id}
                   model={model}
-                  isDefault={isEmbeddingSection
-                    ? defaultEmbeddingModelId === model.id
-                    : defaultModelId === model.id}
-                  onSetDefault={() => isEmbeddingSection
-                    ? setDefaultEmbeddingModel(model.id)
-                    : setDefaultModel(model.id)}
-                  onEdit={() => setEditingModel({ ...model })}
-                  onDelete={() => deleteModel(model.id)}
+                  isDefault={defaultId === model.id}
+                  onSetDefault={() => setDefault(model.id)}
+                  onEdit={() => edit(model)}
+                  onDelete={() => remove(model.id)}
                 />
               ))}
             </div>
@@ -427,7 +359,7 @@ function ModelCard({
 
 
 /** 模型编辑表单 */
-function ModelForm({
+export function ModelForm({
   model, onChange, onSave, onCancel, saving, presets,
 }: {
   model: ModelProfile
@@ -1036,44 +968,7 @@ function ModelForm({
 
 function ProxySection() {
   const text = useLocaleStore(s => s.text)
-  const [proxy, setProxy] = useState<{
-    enabled: boolean; type: 'http' | 'socks5'; host: string; port: number
-  }>({ enabled: false, type: 'http', host: '', port: 7890 })
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
-
-  useEffect(() => {
-    ipc.invoke('config:get').then((cfg) => {
-      if (cfg?.proxy) {
-        setProxy({
-          enabled: cfg.proxy.enabled ?? false, // 明确默认关闭
-          type: cfg.proxy.type ?? 'http',
-          host: cfg.proxy.host ?? '',
-          port: cfg.proxy.port ?? 7890,
-        })
-      }
-    }).catch(() => { })
-  }, [])
-
-  const handleSave = async () => {
-    setSaving(true)
-    setSaveError(null)
-    try {
-      const result = await ipc.invoke('config:set', { proxy })
-      if (!result.success) throw new Error(result.error || text('未知错误', 'Unknown error'))
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } catch (error) {
-      setSaved(false)
-      setSaveError(text(
-        `代理配置保存失败：${error instanceof Error ? error.message : String(error)}`,
-        `Could not save proxy settings: ${error instanceof Error ? error.message : String(error)}`,
-      ))
-    } finally {
-      setSaving(false)
-    }
-  }
+  const { proxy, update, restorePortOnBlur, saving, saved, saveError, save: handleSave } = useProxySettings()
 
   return (
     <div className="max-w-[480px] space-y-5">
@@ -1090,7 +985,7 @@ function ProxySection() {
         </div>
         <Switch
           checked={proxy.enabled}
-          onCheckedChange={(checked) => setProxy({ ...proxy, enabled: checked })}
+          onCheckedChange={(checked) => update({ enabled: checked })}
           aria-label={text('启用代理', 'Enable proxy')}
         />
       </div>
@@ -1105,7 +1000,7 @@ function ProxySection() {
             <Label>{text('代理类型', 'Proxy type')}</Label>
             <NativeSelect
               value={proxy.type}
-              onChange={(e) => setProxy({ ...proxy, type: e.target.value as 'http' | 'socks5' })}
+              onChange={(e) => update({ type: e.target.value as 'http' | 'socks5' })}
             >
               <option value="http">HTTP</option>
               <option value="socks5">SOCKS5</option>
@@ -1116,7 +1011,7 @@ function ProxySection() {
               <Label>{text('主机地址', 'Host')}</Label>
               <Input
                 value={proxy.host}
-                onChange={(e) => setProxy({ ...proxy, host: e.target.value })}
+                onChange={(e) => update({ host: e.target.value })}
                 placeholder="127.0.0.1"
               />
             </div>
@@ -1125,11 +1020,8 @@ function ProxySection() {
               <Input
                 type="number"
                 value={proxy.port}
-                onChange={(e) => setProxy({ ...proxy, port: (e.target.value === '' ? '' : parseInt(e.target.value)) as number })}
-                onBlur={() => {
-                  const v = Number(proxy.port);
-                  if (!v) setProxy({ ...proxy, port: 7890 })
-                }}
+                onChange={(e) => update({ port: e.target.value === '' ? '' : parseInt(e.target.value) })}
+                onBlur={restorePortOnBlur}
               />
             </div>
           </div>
@@ -1273,34 +1165,7 @@ function FontSelect({
 function EditorSection() {
   const { writingFont, setWritingFont, uiFont, setUiFont } = useThemeStore()
   const { locale, setLocale, t, text } = useLocaleStore()
-  const [autoOpenNextChapterAfterFinalize, setAutoOpenNextChapterAfterFinalize] = useState(false)
-  const [autoOpenNextSaving, setAutoOpenNextSaving] = useState(false)
-  const [autoOpenNextError, setAutoOpenNextError] = useState<string | null>(null)
-
-  useEffect(() => {
-    ipc.invoke('config:get').then((config) => {
-      setAutoOpenNextChapterAfterFinalize(config.autoOpenNextChapterAfterFinalize === true)
-    }).catch(() => {})
-  }, [])
-
-  const setAutoOpenNext = async (checked: boolean) => {
-    const previous = autoOpenNextChapterAfterFinalize
-    setAutoOpenNextChapterAfterFinalize(checked)
-    setAutoOpenNextSaving(true)
-    setAutoOpenNextError(null)
-    try {
-      const result = await ipc.invoke('config:set', { autoOpenNextChapterAfterFinalize: checked })
-      if (!result.success) throw new Error(result.error || text('未知错误', 'Unknown error'))
-    } catch (error) {
-      setAutoOpenNextChapterAfterFinalize(previous)
-      setAutoOpenNextError(text(
-        `自动打开下一章设置保存失败：${error instanceof Error ? error.message : String(error)}`,
-        `Could not save the open-next-chapter setting: ${error instanceof Error ? error.message : String(error)}`,
-      ))
-    } finally {
-      setAutoOpenNextSaving(false)
-    }
-  }
+  const autoOpenNext = useAutoOpenNextChapter()
 
   return (
     <div className="max-w-md space-y-5">
@@ -1353,9 +1218,9 @@ function EditorSection() {
             {text('当前章的定稿和后处理全部完成后，自动打开已有蓝图的下一章创作窗口；不会自动生成正文或覆盖已有草稿。', 'After finalization and post-processing finish, opens the next planned chapter. It never starts generation or overwrites an existing draft.')}
           </p>
         </div>
-        <Switch checked={autoOpenNextChapterAfterFinalize} onCheckedChange={(checked) => void setAutoOpenNext(checked)} disabled={autoOpenNextSaving} aria-label={text('定稿后打开下一章', 'Open next chapter after finalizing')} />
+        <Switch checked={autoOpenNext.enabled} onCheckedChange={(checked) => void autoOpenNext.set(checked)} disabled={autoOpenNext.saving} aria-label={text('定稿后打开下一章', 'Open next chapter after finalizing')} />
       </div>
-      {autoOpenNextError && <p role="alert" className="text-xs" style={{ color: 'var(--color-error-text)' }}>{autoOpenNextError}</p>}
+      {autoOpenNext.error && <p role="alert" className="text-xs" style={{ color: 'var(--color-error-text)' }}>{autoOpenNext.error}</p>}
 
       {/* 说明 */}
       <div

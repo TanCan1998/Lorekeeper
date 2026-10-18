@@ -36,7 +36,7 @@ describe('model settings contract', () => {
     const settingsModal = source('src/components/settings/SettingsModal.tsx')
     const resourceController = source('electron/controllers/model-provider-resource-controller.ts')
 
-    expect(settingsModal).toContain('createModelProfileDraft')
+    expect(source('src/components/settings/use-model-section.ts')).toContain('createModelProfileDraft')
     expect(settingsModal).toContain("openModelProviderResource('siliconflow-invite'")
     expect(settingsModal).toContain("openModelProviderResource('siliconflow-console'")
     expect(settingsModal).toContain("openModelProviderResource('siliconflow-docs'")

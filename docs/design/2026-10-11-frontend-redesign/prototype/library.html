@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>书房</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .study { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--s-10); max-width: 1280px; margin: 0 auto; padding: var(--s-10) var(--s-12) var(--s-16); }
+  .study-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-4); }
+
+  /* 开始：三张入口卡 */
+  .starts { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-3); }
+  .start { display: flex; flex-direction: column; gap: 6px; padding: var(--s-4); text-align: left; }
+  .start-top { display: flex; align-items: center; gap: var(--s-2); font-weight: 600; font-size: var(--fs-14); }
+  .start-top .kbd { margin-left: auto; }
+  .start p { color: var(--ink-3); font-size: var(--fs-12); }
+  .start-links { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+  .start-link { display: flex; align-items: center; gap: 8px; padding: 5px 6px; margin: 0 -6px; border-radius: var(--radius); color: var(--ink-2); font-size: var(--fs-12); text-align: left; }
+  .start-link:hover { background: var(--surface-2); color: var(--ink); }
+  .start-link .i { color: var(--ink-3); }
+
+  /* 书架 */
+  .shelf { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-3); }
+  .book { position: relative; display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-4) var(--s-4) var(--s-3); text-align: left; }
+  .book[aria-current="true"] { border-color: var(--accent-line); background: var(--paper); box-shadow: inset 0 0 0 1px var(--accent-line); }
+  .book-genre { font: 400 var(--fs-11)/1.4 var(--font-display); letter-spacing: .14em; color: var(--ink-3); }
+  .book-title { font: 600 var(--fs-20)/1.3 var(--font-display); }
+  .book-stage { display: flex; align-items: center; gap: 8px; font-size: var(--fs-12); color: var(--ink-2); }
+  .book-stage b { font-weight: 600; color: var(--ink); }
+  .book-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; color: var(--ink-3); font-size: var(--fs-11); }
+  .book-more { position: absolute; top: 10px; right: 8px; }
+
+  /* 选中作品概览 */
+  .aside { display: flex; flex-direction: column; gap: var(--s-4); }
+  .overview { padding: var(--s-5); display: flex; flex-direction: column; gap: var(--s-4); }
+  .ov-title { margin-top: 4px; font: 600 var(--fs-24)/1.3 var(--font-display); }
+  .ov-meta { margin-top: 2px; color: var(--ink-3); font-size: var(--fs-12); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+  .stats div { padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); }
+  .stats b { display: block; font: 500 var(--fs-20)/1.2 var(--font-num); }
+  .stats span { font-size: var(--fs-11); color: var(--ink-3); }
+  .stage-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .stage-rows li { display: grid; grid-template-columns: 18px 44px 1fr; align-items: center; gap: 8px; font-size: var(--fs-12); color: var(--ink-2); }
+  .stage-rows .no { font: italic 14px/1 var(--font-num); color: var(--ink-3); text-align: center; }
+  .stage-rows [data-state="done"] .no { color: var(--ok); }
+  .stage-rows [data-state="now"] .no { color: var(--accent); }
+  .stage-rows .nm { font-family: var(--font-display); color: var(--ink); }
+  .excerpt { padding-left: 12px; border-left: 2px solid var(--rule-strong); font: 14px/1.9 var(--font-prose); color: var(--ink-2); }
+  .excerpt-src { margin-top: 6px; font-size: var(--fs-11); color: var(--ink-3); }
+  .overview .btn-primary { width: 100%; }
+
+  /* 更新提示卡 */
+  .update { display: flex; gap: var(--s-3); padding: var(--s-4); }
+  .update > .i { color: var(--accent); margin-top: 2px; }
+  .update-body { flex: 1; min-width: 0; }
+  .update-title { font-weight: 600; }
+  .update p { margin-top: 2px; color: var(--ink-3); font-size: var(--fs-12); }
+  .update .row { margin-top: var(--s-3); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="study">
+    <div>
+      <div class="study-head">
+        <div>
+          <div class="eyebrow">书房</div>
+          <h1 class="h1">今晚写哪一部？</h1>
+        </div>
+      </div>
+
+      <section class="section" style="margin-top:var(--s-8)">
+        <div class="section-head"><h2 class="h3">开始</h2></div>
+        <div class="starts">
+          <button class="card card-link start">
+            <span class="start-top"><svg class="i"><use href="#i-plus"/></svg>新建作品<span class="kbd">⌘N</span></span>
+            <p>起个名字，选好保存位置，从设定开始。</p>
+          </button>
+          <button class="card card-link start">
+            <span class="start-top"><svg class="i"><use href="#i-folder-open"/></svg>打开作品<span class="kbd">⌘O</span></span>
+            <p>选择电脑上已有的作品文件夹。</p>
+          </button>
+          <div class="card start">
+            <span class="start-top"><svg class="i"><use href="#i-file-input"/></svg>导入</span>
+            <div class="start-links">
+              <button class="start-link"><svg class="i i-sm"><use href="#i-scan-text"/></svg>小说拆解与仿写</button>
+              <button class="start-link"><svg class="i i-sm"><use href="#i-archive"/></svg>旧项目副本</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" style="margin-top:var(--s-8)">
+        <div class="section-head"><h2 class="h3">最近的作品</h2><span class="muted" style="font-size:var(--fs-12)">点书名查看概览，不会打开作品</span></div>
+        <div class="shelf">
+          <div class="card card-link book" aria-current="true">
+            <span class="book-genre">悬疑 · 都市怪谈</span>
+            <span class="book-title">雨夜列车</span>
+            <span class="book-stage"><span class="dot accent"></span>正文<b>2 / 24 定稿</b></span>
+            <div class="meter"><span style="width:8%"></span></div>
+            <span class="book-foot"><span>今天 21:14 编辑</span><span>6,214 字</span></span>
+            <button class="btn btn-ghost btn-sm btn-icon book-more" aria-label="《雨夜列车》更多操作" aria-expanded="true"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+          <div class="card card-link book">
+            <span class="book-genre">现实 · 家族</span>
+            <span class="book-title">盐湖往事</span>
+            <span class="book-stage"><span class="dot accent"></span>架构<b>2 / 4 已确认</b></span>
+            <div class="meter"><span style="width:0%"></span></div>
+            <span class="book-foot"><span>昨天 23:02 编辑</span><span>尚未开写</span></span>
+            <button class="btn btn-ghost btn-sm btn-icon book-more" aria-label="《盐湖往事》更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+          <div class="card card-link book">
+            <span class="book-genre">科幻 · 太空</span>
+            <span class="book-title">北方以北</span>
+            <span class="book-stage"><span class="dot accent"></span>正文<b>11 / 30 定稿</b></span>
+            <div class="meter"><span style="width:37%"></span></div>
+            <span class="book-foot"><span>3 天前编辑</span><span>38,920 字</span></span>
+            <button class="btn btn-ghost btn-sm btn-icon book-more" aria-label="《北方以北》更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+          <div class="card card-link book">
+            <span class="book-genre">奇幻</span>
+            <span class="book-title">第七个房客</span>
+            <span class="book-stage"><span class="dot warn"></span>设定<b>还差 3 项必填</b></span>
+            <div class="meter"><span style="width:0%"></span></div>
+            <span class="book-foot"><span>10 月 2 日编辑</span><span>尚未开写</span></span>
+            <button class="btn btn-ghost btn-sm btn-icon book-more" aria-label="《第七个房客》更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+          <div class="card card-link book">
+            <span class="book-genre">武侠</span>
+            <span class="book-title">雾港</span>
+            <span class="book-stage"><span class="dot ok"></span>全书定稿<b>40 / 40</b></span>
+            <div class="meter"><span style="width:100%"></span></div>
+            <span class="book-foot"><span>9 月 18 日编辑</span><span>126,400 字</span></span>
+            <button class="btn btn-ghost btn-sm btn-icon book-more" aria-label="《雾港》更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="aside">
+      <div class="card update" role="status">
+        <svg class="i"><use href="#i-download"/></svg>
+        <div class="update-body">
+          <div class="update-title">发现新版本 1.2.3</div>
+          <p>长章节保存更快，修复审稿报告偶尔为空等 6 项。</p>
+          <div class="row">
+            <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-download"/></svg>下载</button>
+            <button class="btn btn-ghost btn-sm">稍后提醒</button>
+            <button class="btn btn-ghost btn-sm" style="margin-left:auto">更新说明</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card overview">
+        <div>
+          <div class="eyebrow">已选中</div>
+          <div class="ov-title">雨夜列车</div>
+          <div class="ov-meta">悬疑 · 24 章 · 每章约 3,000 字 · 第三人称有限</div>
+        </div>
+        <div class="stats">
+          <div><b>6,214</b><span>已写字数</span></div>
+          <div><b>2</b><span>章定稿</span></div>
+          <div><b>7</b><span>条伏笔待回收</span></div>
+        </div>
+        <ol class="stage-rows" aria-label="阶段进度">
+          <li data-state="done"><span class="no">i</span><span class="nm">设定</span>已完成</li>
+          <li data-state="done"><span class="no">ii</span><span class="nm">架构</span>4 / 4 已确认</li>
+          <li data-state="done"><span class="no">iii</span><span class="nm">蓝图</span>24 章已规划</li>
+          <li data-state="now"><span class="no">iv</span><span class="nm">正文</span>第 3 章已审稿，等待修稿</li>
+        </ol>
+        <div>
+          <p class="excerpt">他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</p>
+          <div class="excerpt-src">第 3 章《雨夜车站》 · 最近编辑</div>
+        </div>
+        <button class="btn btn-primary btn-lg">继续写作：第 3 章修稿 <svg class="i"><use href="#i-arrow-right"/></svg></button>
+      </div>
+
+      <button class="btn btn-ghost btn-sm" style="align-self:flex-start"><svg class="i i-sm"><use href="#i-settings"/></svg>设置、语言、主题与关于</button>
+    </aside>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="menu" style="top:448px;left:364px" role="menu" aria-label="《雨夜列车》更多操作">
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-book-open"/></svg>打开作品</button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-x"/></svg>从最近项目移除</button>
+    <div class="menu-sep"></div>
+    <div class="menu-label">危险</div>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>删除作品…</button>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '书房', spine: false, work: null });
+</script>
+</body>
+</html>

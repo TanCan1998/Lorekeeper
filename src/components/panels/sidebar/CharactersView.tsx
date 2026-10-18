@@ -2,9 +2,7 @@
  * CharactersView — 角色管理列表视图
  */
 
-import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Users, RefreshCw, Plus, Search } from 'lucide-react'
-import { useProjectStore } from '../../../stores/project-store'
 import { characterSelectionKey, useCharacterStore } from '../../../stores/character-store'
 import { Button } from '../../ui/Button'
 import { Input } from '../../ui/Input'
@@ -15,49 +13,24 @@ import { getCharacterRoleLabels } from '../../../shared/character-role'
 import { CharacterCardImportButton } from '../../characters/CharacterCardImportButton'
 import { FinalizedCharacterProposalPanel } from '../../characters/FinalizedCharacterProposalPanel'
 import { FinalizedCharacterStateCandidatePanel } from '../../characters/FinalizedCharacterStateCandidatePanel'
-import { useCharacterAvatars } from '../../editor/use-character-avatars'
-
-const CHARACTER_PAGE_SIZE = 50
+import { useCharacterList } from '../../characters/use-character-list'
 
 export default function CharactersView() {
-  const [searchQuery, setSearchQuery] = useState('')
-  const [page, setPage] = useState(0)
-  const currentProject = useProjectStore(s => s.currentProject)
-  const characters = useCharacterStore(s => s.characters)
-  const dataProjectKey = useCharacterStore(s => s.dataProjectKey)
-  const loadingProjectKey = useCharacterStore(s => s.loadingProjectKey)
+  const list = useCharacterList()
+  const {
+    currentProject, characters, dataReady, loadingProjectKey, lastError, searchQuery, visibleCharacters,
+    filteredCharacters, pageCharacters, page: safePage, pageCount, avatarUrls,
+  } = list
   const selectedId = useCharacterStore(s => s.selectedId)
   const load = useCharacterStore(s => s.load)
   const setSelectedId = useCharacterStore(s => s.setSelectedId)
   const addCharacter = useCharacterStore(s => s.addCharacter)
   const identityBusy = useCharacterStore(s => s.identityBusy)
-  const lastError = useCharacterStore(s => s.lastError)
   const text = useLocaleStore(s => s.text)
   const roleLabel = (role: unknown) => {
     const { zhCN, enUS } = getCharacterRoleLabels(role)
     return text(zhCN, enUS)
   }
-  const dataReady = Boolean(
-    currentProject
-    && dataProjectKey === currentProject.path
-    && loadingProjectKey === null
-    && lastError === null,
-  )
-  const visibleCharacters = dataReady ? characters : []
-  const normalizedQuery = searchQuery.trim().toLocaleLowerCase()
-  const filteredCharacters = normalizedQuery
-    ? visibleCharacters.filter(character => character.name.toLocaleLowerCase().includes(normalizedQuery))
-    : visibleCharacters
-  const pageCount = Math.max(1, Math.ceil(filteredCharacters.length / CHARACTER_PAGE_SIZE))
-  const safePage = Math.min(page, pageCount - 1)
-  const pageCharacters = filteredCharacters.slice(
-    safePage * CHARACTER_PAGE_SIZE,
-    (safePage + 1) * CHARACTER_PAGE_SIZE,
-  )
-  const pageIds = useMemo(() => pageCharacters.flatMap(character => (
-    character.characterId ? [character.characterId] : []
-  )), [pageCharacters])
-  const { avatarUrls } = useCharacterAvatars(pageIds, dataReady)
 
   // 角色数据由 ProjectService 统一加载，组件只消费 store 数据
 
@@ -96,7 +69,7 @@ export default function CharactersView() {
         <Search size={12} className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]" />
         <Input
           value={searchQuery}
-          onChange={event => { setSearchQuery(event.target.value); setPage(0) }}
+          onChange={event => list.search(event.target.value)}
           aria-label={text('搜索角色', 'Search characters')}
           placeholder={text('搜索角色名称', 'Search character names')}
           className="h-7 pl-7 text-xs"
@@ -147,9 +120,9 @@ export default function CharactersView() {
       </div>
       {filteredCharacters.length > 0 && (
         <div className="flex items-center justify-between border-t border-[var(--color-border)] px-2 py-1 text-[0.7rem] text-[var(--color-text-secondary)]">
-          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={text('上一页角色', 'Previous character page')} disabled={safePage === 0} onClick={() => setPage(value => Math.max(0, value - 1))}><ChevronLeft size={13} /></Button>
+          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={text('上一页角色', 'Previous character page')} disabled={safePage === 0} onClick={list.previousPage}><ChevronLeft size={13} /></Button>
           <span>{safePage + 1} / {pageCount}</span>
-          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={text('下一页角色', 'Next character page')} disabled={safePage + 1 >= pageCount} onClick={() => setPage(value => Math.min(pageCount - 1, value + 1))}><ChevronRight size={13} /></Button>
+          <Button variant="ghost" size="icon" className="h-6 w-6" aria-label={text('下一页角色', 'Next character page')} disabled={safePage + 1 >= pageCount} onClick={list.nextPage}><ChevronRight size={13} /></Button>
         </div>
       )}
     </div>

@@ -8,6 +8,7 @@ import { ipc } from './ipc-client'
 import type { ProjectSessionContext } from '../shared/ipc-channels'
 import type { LLMFinishReason } from '../shared/ipc-channels'
 import { sameProjectPathKey } from '../shared/project-session-context'
+import { SQLITE_TIMESTAMP } from '../shared/sqlite-time'
 import type { WorkflowRun } from '../stores/workflow-store'
 import type { SafeDiagnosticWorkflow } from './safe-call-diagnostic'
 
@@ -36,8 +37,6 @@ export interface LLMCallRecord {
   finishReason?: LLMFinishReason | null
   createdAt: string
 }
-
-const SQLITE_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/u
 
 function callCompletionRange(createdAt: string): [number, number] | null {
   const sqlite = SQLITE_TIMESTAMP.exec(createdAt)

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设定 · 新作品</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Noto+Sans+SC:wght@400;500;600&amp;family=Noto+Serif+SC:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2C4A8C}a:hover{color:#1F3870}
+.nav-row{display:grid;grid-template-columns:24px 1fr;align-items:center;column-gap:10px;padding:8px 10px;border-radius:9px;color:#17171A;text-decoration:none}
+.nav-row:hover{background:rgba(23,23,26,.05)}
+.fld{display:flex;flex-direction:column;gap:7px;min-width:0}
+.fld label{font-size:12px;font-weight:500;color:#55555E}
+.ctl{height:40px;box-sizing:border-box;padding:0 12px;border:1px solid rgba(23,23,26,.1);border-radius:10px;background:#FFFFFF;font:400 13.5px "Noto Sans SC",sans-serif;color:#17171A;width:100%}
+.chip{height:32px;padding:0 14px;border-radius:999px;border:1px solid rgba(23,23,26,.12);background:#FFFFFF;font:400 13px "Noto Sans SC",sans-serif;color:#3A3A42;cursor:pointer}
+</style>
+</helmet>
+<div style="height: 100vh; min-height: 720px; display: flex; flex-direction: column; background: #EEEDE8; color: #17171A; font-family: 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif; font-size: 13px; line-height: 1.55; -webkit-font-smoothing: antialiased">
+
+  <header style="height: 46px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 0 0 16px">
+    <div style="width: 22px; height: 22px; border-radius: 6px; background: #17171A; color: #EEEDE8; display: grid; place-items: center; font: 600 12px 'Noto Serif SC', serif">墨</div>
+    <button style="display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; font: 600 13.5px 'Noto Sans SC', sans-serif; color: #17171A; cursor: pointer">雨夜列车<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9l6 6l6-6"></path></svg></button>
+    <nav aria-label="位置" style="display: flex; align-items: center; gap: 8px; color: #3A3A42"><span>设定</span></nav>
+    <div style="flex: 1"></div>
+    <span style="display: flex; align-items: center; gap: 5px; color: #8A8A93; font-size: 12px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"></path></svg>已自动保存</span>
+    <div style="display: flex; height: 46px">
+      <button aria-label="最小化" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"></path></svg></button>
+      <button aria-label="最大化" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"></rect></svg></button>
+      <button aria-label="关闭" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
+    </div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; display: flex">
+    <nav aria-label="创作流程" style="width: 252px; flex: none; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 14px">
+      <div style="padding: 4px 10px 8px; font-size: 11px; letter-spacing: .16em; color: #8A8A93">创作流程</div>
+      <a href="Setup.dc.html" class="nav-row" aria-current="page" style="background: #FFFFFF; box-shadow: 0 1px 2px rgba(23,23,26,.06), 0 0 0 1px rgba(23,23,26,.06)">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="rgba(44,74,140,.18)" stroke-width="2.5"></circle><circle cx="11" cy="11" r="8.5" fill="none" stroke="#2C4A8C" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="44.5 53.4" transform="rotate(-90 11 11)"></circle></svg>
+        <span style="font: 600 14.5px 'Noto Serif SC', serif; color: #2C4A8C">设定</span>
+        <span style="grid-column: 2; font-size: 11.5px; color: #55555E">还差 1 项</span>
+      </a>
+      <a href="Setup.dc.html" class="nav-row" style="color: #8A8A93">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="rgba(23,23,26,.16)" stroke-width="1.5" stroke-dasharray="2.5 3"></circle></svg>
+        <span style="font: 500 14.5px 'Noto Serif SC', serif">架构</span>
+        <span style="grid-column: 2; font-size: 11.5px">前提、角色、世界观、大纲</span>
+      </a>
+      <a href="Setup.dc.html" class="nav-row" style="color: #8A8A93">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="rgba(23,23,26,.16)" stroke-width="1.5" stroke-dasharray="2.5 3"></circle></svg>
+        <span style="font: 500 14.5px 'Noto Serif SC', serif">蓝图</span>
+        <span style="grid-column: 2; font-size: 11.5px">逐章规划</span>
+      </a>
+      <a href="Setup.dc.html" class="nav-row" style="color: #8A8A93">
+        <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="rgba(23,23,26,.16)" stroke-width="1.5" stroke-dasharray="2.5 3"></circle></svg>
+        <span style="font: 500 14.5px 'Noto Serif SC', serif">正文</span>
+        <span style="grid-column: 2; font-size: 11.5px">写作、审稿、修稿、定稿</span>
+      </a>
+    </nav>
+
+    <main style="flex: 1; min-width: 0; margin: 0 10px 10px 0; display: flex; flex-direction: column; border-radius: 14px; background: #F7F6F2; box-shadow: 0 0 0 1px rgba(23,23,26,.07), 0 12px 32px -18px rgba(23,23,26,.22); overflow: hidden">
+      <div style="flex: 1; min-height: 0; overflow: auto">
+        <div style="max-width: 760px; margin: 0 auto; padding: 56px 40px 40px; display: flex; flex-direction: column; gap: 28px">
+          <div>
+            <div style="display: flex; align-items: baseline; gap: 12px">
+              <span style="font: italic 44px/0.8 'Instrument Serif', serif">i</span>
+              <span style="font: 400 12px 'Noto Serif SC', serif; letter-spacing: .24em; color: #8A8A93">第一步 · 设定</span>
+            </div>
+            <h1 style="margin: 16px 0 10px; font: 600 36px/1.25 'Noto Serif SC', serif; letter-spacing: .02em">用一两句话，说说这个故事。</h1>
+            <p style="margin: 0; max-width: 34em; color: #55555E; font-size: 14px">只要这一段和下面三项，就能往下走。其余设定可以交给 AI 补全，之后随时能改。</p>
+          </div>
+
+          <div style="border-radius: 16px; background: #FFFFFF; box-shadow: 0 0 0 1px rgba(44,74,140,.55), 0 0 0 4px rgba(44,74,140,.10), 0 18px 40px -28px rgba(23,23,26,.35); padding: 22px 24px 16px">
+            <label for="outline" style="display: block; font-size: 12px; font-weight: 500; color: #55555E">核心大纲</label>
+            <textarea id="outline" style="display: block; width: 100%; box-sizing: border-box; min-height: 120px; margin-top: 8px; padding: 0; border: 0; outline: none; resize: none; background: transparent; font: 19px/1.9 'Noto Serif SC', serif; color: #17171A">一个收到匿名信的年轻人，在一座本该拆除的车站登上末班车。车厢里的每一盏灯，都对应着一个从未被找到的失踪者。</textarea>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding-top: 12px; border-top: 1px solid rgba(23,23,26,.06); font-size: 12px; color: #8A8A93"><span>写作语言 简体中文</span><span>58 字</span></div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 16px">
+            <div class="fld"><label for="genre">类型</label><select id="genre" class="ctl"><option>悬疑 · 都市怪谈</option></select></div>
+            <div class="fld"><label for="len">篇幅</label><select id="len" class="ctl"><option>24 章 · 每章约 3,000 字</option></select></div>
+            <div class="fld"><label for="reader" style="color: #B42318">目标读者 · 必填</label><select id="reader" class="ctl" style="border-color: rgba(180,35,24,.45); color: #8A8A93"><option>请选择</option></select></div>
+          </div>
+
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+            <span style="font-size: 12px; color: #8A8A93; margin-right: 4px">更多设定</span>
+            <button class="chip">叙事视角 · 第三人称有限</button>
+            <button class="chip">文风</button>
+            <button class="chip">主角人设</button>
+            <button class="chip">世界观</button>
+            <button class="chip">全局写作要求</button>
+            <button class="chip" style="color: #8A8A93; border-style: dashed">高级</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex: none; display: flex; align-items: center; gap: 10px; padding: 14px 24px; border-top: 1px solid rgba(23,23,26,.07); background: rgba(251,251,249,.9)">
+        <button style="display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 16px; border: 1px solid rgba(23,23,26,.14); border-radius: 10px; background: #FFFFFF; font: 500 13px 'Noto Sans SC', sans-serif; color: #17171A; cursor: pointer"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2C4A8C" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"></path></svg>AI 补全其余设定</button>
+        <span style="margin-left: auto; font-size: 12px; color: #8A8A93">选好目标读者就能继续</span>
+        <button disabled="" style="display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 18px; border: 0; border-radius: 10px; background: #2C4A8C; opacity: .38; font: 500 13.5px 'Noto Sans SC', sans-serif; color: #FFFFFF; cursor: not-allowed">下一步：故事架构<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-7-7l7 7l-7 7"></path></svg></button>
+      </div>
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

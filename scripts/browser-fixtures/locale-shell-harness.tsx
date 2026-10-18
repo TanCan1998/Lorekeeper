@@ -8,6 +8,7 @@ import AIPanel from '../../src/components/panels/AIPanel'
 import BottomPanel from '../../src/components/panels/BottomPanel'
 import StatusBar from '../../src/components/layout/StatusBar'
 import TitleBar from '../../src/components/layout/TitleBar'
+import { useWindowCloseGuard } from '../../src/components/layout/use-window-close-guard'
 import { useAgentStore } from '../../src/stores/agent-store'
 import { useLayoutStore } from '../../src/stores/layout-store'
 import { useLLMStore } from '../../src/stores/llm-store'
@@ -48,6 +49,7 @@ useLayoutStore.setState({ bottomPanelOpen: true, bottomTab: 'models' })
 
 function LocaleShellHarness() {
   const setLocale = useLocaleStore(s => s.setLocale)
+  const exitGuard = useWindowCloseGuard()
 
   return (
     <main className="h-screen w-screen overflow-hidden bg-[var(--color-editor-bg)]">
@@ -59,7 +61,7 @@ function LocaleShellHarness() {
       >
         Switch to English
       </button>
-      <TitleBar />
+      <TitleBar exitGuard={exitGuard} />
       <div className="grid h-[660px] grid-cols-[1fr_320px] pt-10">
         <WelcomePage onNewProject={() => {}} onOpenProject={() => {}} />
         <AIPanel />

@@ -3,6 +3,7 @@ import { ipc } from '../services/ipc-client'
 import type {
   CreateProjectConfig,
   ProjectOpenTarget,
+  ProjectDirectoryGrant,
   ProjectChannels,
   ProjectData,
   ProjectSessionContext,
@@ -402,8 +403,12 @@ interface ProjectState {
   fileTree: FileNode[]
   /** 最近项目列表 */
   recentProjects: ProjectChannels['project:recent-list']['return']
+  /** 这次启动已经读到过一次最近项目；读到之前空列表不代表书架是空的。 */
+  recentProjectsLoaded: boolean
   /** 是否正在加载 */
   loading: boolean
+  legacyImportNotice: string
+  legacyImportBusy: boolean
   /** 每次成功打开项目都递增；同一路径重开也属于新的渲染进程项目会话。 */
   projectSessionEpoch: number
 
@@ -412,6 +417,7 @@ interface ProjectState {
   createProject: (config: CreateProjectConfig) => Promise<boolean>
   /** 打开项目 */
   openProject: (target: ProjectOpenTarget) => Promise<boolean>
+  importLegacyProject: (source?: ProjectDirectoryGrant) => Promise<boolean>
   /** 保存项目 */
   saveProject: (expectedProjectSession?: ProjectSessionContext) => Promise<boolean>
   /** 更新小说配置 */
@@ -448,7 +454,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   currentProject: null,
   fileTree: [],
   recentProjects: [],
+  recentProjectsLoaded: false,
   loading: false,
+  legacyImportNotice: '',
+  legacyImportBusy: false,
   projectSessionEpoch: 0,
 
   createProject: async (config) => {
@@ -711,9 +720,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           return false
         }
         if (!sameRendererProject(rendererProject, get().currentProject)) return false
-        const { useLayoutStore } = await import('./layout-store')
+        const { navigate } = await import('./navigation/navigation-intents')
         if (!isLatestRequest() || !sameRendererProject(rendererProject, get().currentProject)) return false
-        const layoutBeforeCommit = useLayoutStore.getState()
         if (rendererProjectPath) {
           if (preparedTransition?.decision === 'discard') {
             discardProjectTransitionDrafts(rendererProjectPath)
@@ -726,6 +734,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
             ? result.project!.novelConfig : restored.value },
           projectSessionEpoch: state.projectSessionEpoch + 1,
         }))
+        // 默认落点与提交同步落下：之后读文件树、最近项目期间作者的导航（回书房、开运行侧页、换侧栏）都在它之后，不会被改回。
+        navigate({ kind: 'stage' })
         const partialLoadWarnings: string[] = []
         // Opening a project revokes old shelf preview capabilities in main.
         // Refresh the visible shelf handles without turning a successful open into a failure.
@@ -754,16 +764,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         }
         // 此后渲染进程已经提交返回项目；过期状态只影响派生视图，可以安全退出。
         if (!isLatestRequest()) return false
-        // 文件树加载期间的显式导航优先于项目打开时的默认侧栏。
-        useLayoutStore.setState((layout) => ({
-          ...(layout.sidebarView === layoutBeforeCommit.sidebarView
-            && layout.activeRailItem === layoutBeforeCommit.activeRailItem
-            && layout.sidebarOpen === layoutBeforeCommit.sidebarOpen
-            ? { sidebarOpen: true, sidebarView: 'project', activeRailItem: 'project' as const }
-            : {}),
-          immersive: false,
-          preImmersivePanels: null,
-        }))
         // 统一初始化第二层状态仓库（角色卡、草稿等）
         let layer2Warnings: string[] = []
         try {
@@ -784,6 +784,20 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         return true
       }
       if (!isLatestRequest()) return false
+      if (result.errorCode === 'PROJECT_LEGACY_IMPORT_REQUIRED' && result.legacyImportSource) {
+        const approved = await confirm(
+          projectText(
+            '这是旧版项目。继续操作将创建独立的新版副本，旧项目会保留。两份项目的后续修改不会自动同步。',
+            'This is a legacy project. Continue by creating an independent copy for this version. The original is kept, and future changes do not sync between the two projects.',
+          ),
+          {
+            title: projectText('导入旧项目', 'Import legacy project'),
+            confirmText: projectText('创建新版副本', 'Create new copy'),
+          },
+        )
+        if (!approved || !isLatestRequest()) return false
+        return await get().importLegacyProject(result.legacyImportSource)
+      }
       console.error('[Project] 打开失败:', result.error)
       alertError(
         projectError(result.errorCode ? result : result.error),
@@ -809,6 +823,45 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       return false
     } finally {
       if (isLatestRequest()) set({ loading: false })
+    }
+  },
+
+  importLegacyProject: async (source) => {
+    if (get().legacyImportBusy) return false
+    const requestSequence = openProjectRequestSequence
+    const isCurrent = () => requestSequence === openProjectRequestSequence
+    set({ legacyImportNotice: '', legacyImportBusy: true })
+    try {
+      const sourceRoot = source ?? await ipc.invoke('dialog:select-legacy-project')
+      if (!sourceRoot || !isCurrent()) return false
+      const sourceName = sourceRoot.displayName || projectText('旧项目', 'Legacy project')
+      const target = await ipc.invoke('dialog:select-project-restore-target', `${sourceName}-${projectText('新版副本', 'new copy')}`)
+      if (!target || !isCurrent()) return false
+      const result = await ipc.invoke('project:import-legacy-copy', sourceRoot.grantId, target.grantId)
+      if (result.state === 'cancelled') return false
+      if (result.state === 'blocked') {
+        set({ legacyImportNotice: projectText(
+          `导入未完成，旧项目保持原样。原因：${result.code}`,
+          `Import did not complete; the original project is unchanged. Reason: ${result.code}`,
+        ) })
+        return false
+      }
+      const { confirmLeaveSettings } = await import('../components/settings/unsaved-settings')
+      const leave = isCurrent() ? await confirmLeaveSettings() : 'left'
+      const opened = leave === 'left' && isCurrent() && await get().openProject(result.targetRoot).catch(() => false)
+      set({ legacyImportNotice: opened
+        ? projectText('旧项目已导入为独立副本。两份项目的后续修改不会自动同步。', 'Legacy project imported as an independent copy. Future changes do not sync between the two projects.')
+        : leave === 'stayed'
+          ? projectText(`副本已建立。你选了继续编辑设置，所以没有自动打开；之后可用“打开作品”选择：${result.targetRoot}`, `The copy was created. You chose to keep editing settings, so it was not opened. Use Open project to select it later: ${result.targetRoot}`)
+          : leave === 'busy'
+            ? projectText(`副本已建立。另一个「放弃未保存的修改？」确认还开着，所以没有自动打开；之后可用“打开作品”选择：${result.targetRoot}`, `The copy was created. Another “Discard unsaved changes?” confirmation was still open, so it was not opened. Use Open project to select it later: ${result.targetRoot}`)
+            : projectText(`副本已建立，但未能自动打开。请用“打开作品”选择：${result.targetRoot}`, `The copy was created but could not be opened. Use Open project to select: ${result.targetRoot}`) })
+      return opened
+    } catch (error) {
+      set({ legacyImportNotice: projectText(`导入未完成：${String(error)}`, `Import did not complete: ${String(error)}`) })
+      return false
+    } finally {
+      set({ legacyImportBusy: false })
     }
   },
 
@@ -987,7 +1040,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
 
   loadRecentProjects: async () => {
     const requestId = ++recentProjectsRequestSequence
-    const list = await ipc.invoke('project:recent-list')
+    let list: ProjectChannels['project:recent-list']['return']
+    try {
+      list = await ipc.invoke('project:recent-list')
+    } catch (error) {
+      // 读不到也算读过：书房据此显示空书房，而不是一直停在等待里。
+      if (requestId === recentProjectsRequestSequence) set({ recentProjectsLoaded: true })
+      throw error
+    }
     if (requestId !== recentProjectsRequestSequence) return
     const seenProjectPaths = new Set<string>()
     const recentProjects = list.filter((project) => {
@@ -996,7 +1056,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       seenProjectPaths.add(key)
       return true
     })
-    set({ recentProjects })
+    set({ recentProjects, recentProjectsLoaded: true })
   },
 
   removeRecentProject: async (projectPath) => {

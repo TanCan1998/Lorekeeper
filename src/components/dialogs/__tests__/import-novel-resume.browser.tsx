@@ -12,6 +12,9 @@ import { useProjectStore } from '../../../stores/project-store'
 import { useWorkflowStore, type WorkflowDefinition, type WorkflowRun } from '../../../stores/workflow-store'
 import { useLayoutStore } from '../../../stores/layout-store'
 import { useDraftStore } from '../../../stores/draft-store'
+import { useAppearanceStore } from '../../../stores/appearance-bootstrap'
+import { useThemeStore } from '../../../stores/theme-store'
+import { composite, contrast } from '../../ui/__tests__/color-contrast'
 import type { ImportRunPreparationResult, ImportRunSnapshot } from '../../../shared/import-run'
 import type { AuthorManuscriptImportPreview } from '../../../shared/author-manuscript-import'
 
@@ -442,8 +445,8 @@ describe('current-project reference import', () => {
     await act(async () => page.getByTestId('import-target-current').click())
     await act(async () => page.getByRole('button', { name: 'Choose' }).first().click())
 
-    await expect.element(page.getByText('1 files selected', { exact: true })).toBeVisible()
-    await expect.element(page.getByText('1 chapters', { exact: true })).toBeVisible()
+    await expect.element(page.getByText('1 file selected', { exact: true })).toBeVisible()
+    await expect.element(page.getByText('1 chapter', { exact: true })).toBeVisible()
     expect(invoke.mock.calls.some(([channel]) => channel === 'import:inspect-source')).toBe(false)
   })
 
@@ -708,7 +711,7 @@ describe('current-project reference import', () => {
 
     await expect.element(page.getByText('Chapter 1 Start', { exact: true })).toBeVisible()
     await expect.element(page.getByTestId('author-preview-target-1')).toHaveTextContent('Target: authoritative manuscript / finalized')
-    await expect.element(page.getByRole('button', { name: 'Confirm import (1 chapters)' })).toBeVisible()
+    await expect.element(page.getByRole('button', { name: 'Confirm import (1 chapter)' })).toBeVisible()
   })
 
   it('blocks a non-contiguous author manifest with an actionable first missing chapter', async () => {
@@ -744,7 +747,7 @@ describe('current-project reference import', () => {
     await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
     await act(async () => page.getByTestId('import-purpose-author').click())
     await act(async () => page.getByTestId('import-source-choose').click())
-    await act(async () => page.getByRole('button', { name: 'Confirm import (1 chapters)' }).click())
+    await act(async () => page.getByRole('button', { name: 'Confirm import (1 chapter)' }).click())
 
     await expect.element(page.getByText(
       'The project or author manuscript changed. Select the files again and confirm the preview.',
@@ -1169,5 +1172,77 @@ describe('current-project reference import', () => {
 
     expect(startWorkflow).toHaveBeenCalledOnce()
     expect(startWorkflow.mock.calls[0][0]).toMatchObject({ runId: 'restarted-second', uiLocale: 'en-US' })
+  })
+})
+
+describe('新外壳里的导入对话框', () => {
+  it('同屏只有一个上墨的主按钮：用途、目标与可续导入的选中项是带对勾的次按钮', async () => {
+    const restore = useAppearanceStore.getState()
+    useAppearanceStore.setState({ resolvedShell: 'stage' })
+    try {
+      await act(async () => root.render(<div className="paper-ink"><ImportNovelDialog open onClose={vi.fn()} /></div>))
+      expect([...document.querySelectorAll('[role="dialog"] .pi-btn--primary')].map(button => button.textContent)).toEqual(['开始拆解仿写（0 章）'])
+      await act(async () => root.render(<div />))
+      invoke.mockImplementation(async (channel: string) => {
+        if (channel === 'db:import-run-list-resumable') return [importRun({ id: 'first-run', status: 'failed' }), importRun({ id: 'second-run', status: 'failed' })]
+        if (channel === 'db:project-core-get') return null
+        if (channel === 'db:blueprint-get-all') return []
+        return { success: true }
+      })
+      await act(async () => root.render(<div className="paper-ink"><ImportNovelDialog open onClose={vi.fn()} /></div>))
+      await act(async () => page.getByTestId('import-target-current').click())
+      await expect.element(page.getByTestId('import-resumable-runs')).toBeVisible()
+      const dialog = document.querySelector('[role="dialog"]')!
+      expect([...dialog.querySelectorAll('.pi-btn--primary:not(:disabled)')].map(button => button.textContent)).toEqual(['继续导入'])
+      const toggles = [...dialog.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')]
+      expect(toggles.map(button => [button.dataset.testid, button.getAttribute('aria-pressed'), button.classList.contains('pi-btn--secondary')])).toEqual([
+        ['import-purpose-reference', 'true', true], ['import-purpose-author', 'false', true],
+        ['import-target-new', 'false', true], ['import-target-current', 'true', true],
+        ['import-resumable-choice-first-run', 'true', true], ['import-resumable-choice-second-run', 'false', true],
+      ])
+      const pressed = getComputedStyle(page.getByTestId('import-target-current').element())
+      const raised = getComputedStyle(page.getByTestId('import-target-new').element())
+      expect(pressed.backgroundColor).not.toBe(raised.backgroundColor)
+      expect(pressed.borderTopColor).not.toBe(raised.borderTopColor)
+      await page.screenshot({ path: '../../../../.runtime/rdx3-shots/import-dialog-stage.png' })
+    } finally {
+      useAppearanceStore.setState(restore, true)
+    }
+  })
+
+  const INK = {
+    paper: { layer: 'rgb(255, 254, 251)', accent: 'rgb(44, 74, 140)' },
+    dark: { layer: 'rgb(29, 29, 34)', accent: 'rgb(169, 190, 240)' },
+  }
+
+  it.each(['paper', 'dark'] as const)('选中项有对勾和强调色边线，边线对底色不低于 3:1，文字不低于 4.5:1（%s）', async (theme) => {
+    const restore = [useAppearanceStore.getState(), useThemeStore.getState()] as const
+    useAppearanceStore.setState({ resolvedShell: 'stage' })
+    useThemeStore.setState({ resolvedTheme: theme })
+    try {
+      await act(async () => root.render(<div className="paper-ink"><ImportNovelDialog open onClose={vi.fn()} /></div>))
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+      const layer = getComputedStyle(dialog).backgroundColor
+      const on = page.getByTestId('import-purpose-reference').element()
+      const off = page.getByTestId('import-purpose-author').element()
+      const style = getComputedStyle(on)
+      const fill = composite(style.backgroundColor, layer)
+      expect({
+        layer,
+        border: style.borderTopColor,
+        check: on.querySelector('svg.lucide-check') !== null,
+        offCheck: off.querySelector('svg.lucide-check') !== null,
+        edge: contrast(style.borderTopColor, layer) >= 3,
+        text: contrast(style.color, fill) >= 4.5,
+      }).toEqual({ layer: INK[theme].layer, border: INK[theme].accent, check: true, offCheck: false, edge: true, text: true })
+      // 选中项只露对勾，不与「参考小说」的书本图标挤在一起；没选中的露自己的图标
+      const shownIcons = (button: Element) => [...button.querySelectorAll('svg')].filter(icon => getComputedStyle(icon).display !== 'none')
+        .map(icon => [...icon.classList].find(name => name.startsWith('lucide-') && name !== 'lucide-icon'))
+      expect([shownIcons(on), shownIcons(off)]).toEqual([['lucide-check'], ['lucide-file-text']])
+      await page.screenshot({ path: `../../../../.runtime/rdx3-shots/import-dialog-selected-${theme}.png` })
+    } finally {
+      useAppearanceStore.setState(restore[0], true)
+      useThemeStore.setState(restore[1], true)
+    }
   })
 })

@@ -1,0 +1,93 @@
+/* 纸墨设计令牌。产品实现时一一对应到渲染进程唯一的颜色令牌层；组件只引用这里的变量，不写色值。 */
+:root {
+  color-scheme: light;
+
+  /* 表面：从底到顶 */
+  --bg: #F4F1E9;          /* 应用底色，宣纸 */
+  --sunken: #ECE7DB;      /* 凹陷：搜索框、代码块 */
+  --surface: #FAF8F2;     /* 面板、侧页 */
+  --surface-2: #EFEADF;   /* 悬停、选中底 */
+  --paper: #FFFDF8;       /* 正文纸面 */
+
+  /* 墨色 */
+  --ink: #1D1B18;
+  --ink-2: #57524B;
+  --ink-3: #8E877C;
+  --ink-4: #B7AFA2;       /* 禁用、占位 */
+  --rule: #E2DBCD;
+  --rule-strong: #CBC1AE;
+
+  /* 唯一强调色：黛蓝。只用于主操作、当前位置、焦点 */
+  --accent: #2E4A78;
+  --accent-hover: #26406A;
+  --accent-ink: #F7F5EF;
+  --accent-soft: #E3E8F1;
+  --accent-line: #9FB0CD;
+
+  /* 语义色，与强调色不同色相 */
+  --danger: #A3352B;
+  --danger-soft: #F4E1DD;
+  --ok: #3E6A4C;
+  --ok-soft: #E1EBE2;
+  --warn: #946414;
+  --warn-soft: #F3E8D2;
+
+  --focus-ring: 0 0 0 3px var(--accent-soft), 0 0 0 1px var(--accent);
+  --shadow-page: 0 1px 0 rgba(29, 27, 24, .04), 0 18px 40px -24px rgba(29, 27, 24, .30);
+  --shadow-pop: 0 1px 2px rgba(29, 27, 24, .06), 0 16px 40px -12px rgba(29, 27, 24, .28);
+  --scrim: rgba(29, 27, 24, .32);
+
+  /* 字体 */
+  --font-ui: "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --font-prose: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --font-num: "EB Garamond", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+
+  /* 字号阶梯 */
+  --fs-11: 11px; --fs-12: 12px; --fs-13: 13px; --fs-14: 14px; --fs-16: 16px;
+  --fs-20: 20px; --fs-24: 24px; --fs-30: 30px; --fs-36: 36px;
+  --prose-size: 18px; --prose-lh: 2.05; --prose-measure: 34em;
+
+  /* 间距：4 的倍数 */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px;
+  --s-8: 32px; --s-10: 40px; --s-12: 48px; --s-16: 64px;
+
+  --radius-sm: 4px; --radius: 6px; --radius-lg: 10px; --radius-pill: 999px;
+
+  /* 布局 */
+  --title-h: 48px; --spine-w: 264px; --sheet-w: 380px; --sheet-w-wide: 620px; --tabs-h: 36px;
+
+  /* 动效：只在状态变化时出现 */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --dur-fast: 140ms; --dur: 220ms;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161519;
+  --sunken: #111013;
+  --surface: #1C1B20;
+  --surface-2: #26252B;
+  --paper: #1F1E23;
+  --ink: #ECE7DD;
+  --ink-2: #B4AEA3;
+  --ink-3: #7F796F;
+  --ink-4: #57524B;
+  --rule: #2D2B31;
+  --rule-strong: #3E3B42;
+  --accent: #9DB3DC;
+  --accent-hover: #B2C4E6;
+  --accent-ink: #121620;
+  --accent-soft: rgba(157, 179, 220, .14);
+  --accent-line: #4F6286;
+  --danger: #E3877C;
+  --danger-soft: rgba(227, 135, 124, .14);
+  --ok: #8DBB9B;
+  --ok-soft: rgba(141, 187, 155, .14);
+  --warn: #D9AE62;
+  --warn-soft: rgba(217, 174, 98, .14);
+  --shadow-page: 0 0 0 1px rgba(255, 255, 255, .03), 0 24px 48px -28px rgba(0, 0, 0, .7);
+  --shadow-pop: 0 0 0 1px rgba(255, 255, 255, .05), 0 20px 48px -12px rgba(0, 0, 0, .65);
+  --scrim: rgba(0, 0, 0, .5);
+}

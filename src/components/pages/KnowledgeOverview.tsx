@@ -1,4 +1,3 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Database, BookOpen, FileText,
   Search, RefreshCw, Layers, Zap, Server, Activity, Trash2, AlertTriangle, Upload,
@@ -8,206 +7,47 @@ import { Input } from '../ui/Input'
 import { EmptyState } from '../ui/EmptyState'
 import { useProjectStore } from '../../stores/project-store'
 import { cn } from '../../lib/utils'
-import { toast } from '../ui/Toast'
 import { confirm } from '../ui/Confirm'
-import { globalEventBus } from '../../shared/event-bus'
-import {
-  selectPlanningMaterials,
-  unwrapKnowledgeValue,
-  type KBDocument, type SearchResult, type KBStatsData, type VectorRebuildStatus,
-} from '../../services/knowledge-service'
-import { useLLMStore } from '../../stores/llm-store'
-import { useWorkflowStore, workflowResourceConflictMessage } from '../../stores/workflow-store'
-import {
-  createPlanningMaterialCharacterExtractionWorkflow,
-  createPlanningMaterialWorkflow,
-} from '../../services/workflows/planning-material-workflow'
 import { useLocaleStore } from '../../stores/locale-store'
-import { useLayoutStore } from '../../stores/layout-store'
-import { appErrorMessage } from '../../i18n/app-errors'
-import { ipc } from '../../services/ipc-client'
-import {
-  captureProjectSession,
-  isProjectSessionCurrent,
-} from '../project-session-gate'
-import { sameProjectSessionContext } from '../../shared/project-session-context'
+import { captureProjectSession, isProjectSessionCurrent } from '../project-session-gate'
+import { useKnowledgeBase } from '../stage/knowledge/use-knowledge-base'
 import { getVectorRebuildPresentation } from './knowledge-rebuild-presentation'
+import { pluralEn } from '../../shared/plural-en'
 
 /**
  * 知识库概览页面 — LanceDB 向量数据库的管理中心
  * 当侧栏视图为"知识库"时，作为中间编辑区的固定内容展示。
  */
 export default function KnowledgeOverview() {
-  const [documents, setDocuments] = useState<KBDocument[]>([])
-  const [stats, setStats] = useState<KBStatsData>({ documentCount: 0, totalChunks: 0, vectorDimension: 0 })
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
-  const [searching, setSearching] = useState(false)
-  const [topK, setTopK] = useState(10)
-  const [vectorRebuildStatus, setVectorRebuildStatus] = useState<VectorRebuildStatus | null>(null)
-  const [backfilling, setBackfilling] = useState(false)
-  const [clearing, setClearing] = useState(false)
-  const [importing, setImporting] = useState(false)
-  const [loadError, setLoadError] = useState('')
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null)
-  const [documentCopy, setDocumentCopy] = useState<{ available: boolean; content?: string; contentHash?: string; edited?: boolean; indexStatus: 'current' | 'stale' | 'unavailable' } | null>(null)
-  const [draftContent, setDraftContent] = useState('')
-  const [documentBusy, setDocumentBusy] = useState(false)
-  const documentRequest = useRef(0)
-
   const currentProject = useProjectStore(s => s.currentProject)
-  const { locale, text } = useLocaleStore()
-
-  const loadData = useCallback(async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession) return
-    const expectedProjectPath = projectSession.projectPath
-    try {
-      const [documentsResult, statsResult] = await Promise.all([
-        ipc.invokeWithProjectSession(projectSession, 'kb:list-documents', expectedProjectPath),
-        ipc.invokeWithProjectSession(projectSession, 'kb:stats', expectedProjectPath),
-      ])
-      if (!isProjectSessionCurrent(projectSession)) return
-      const docs = unwrapKnowledgeValue(documentsResult)
-      const s = unwrapKnowledgeValue(statsResult)
-      setDocuments(docs)
-      setStats(s)
-      setLoadError('')
-    } catch (error) {
-      if (!isProjectSessionCurrent(projectSession)) return
-      setLoadError(appErrorMessage(locale, error))
-    }
-  }, [currentProject, locale])
-
-  const loadVectorRebuildStatus = useCallback(async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession) return
-    const expectedProjectPath = projectSession.projectPath
-    try {
-      const result = await ipc.invokeWithProjectSession(
-        projectSession,
-        'kb:get-vector-rebuild-status',
-        expectedProjectPath,
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      setVectorRebuildStatus(unwrapKnowledgeValue(result))
-    } catch (error) {
-      if (!isProjectSessionCurrent(projectSession)) return
-      setLoadError(appErrorMessage(locale, error))
-    }
-  }, [currentProject, locale])
-
-  useEffect(() => {
-    let mounted = true
-    Promise.resolve().then(() => {
-      const projectSession = captureProjectSession(currentProject)
-      if (!mounted || !projectSession) return
-      setDocuments([])
-      setStats({ documentCount: 0, totalChunks: 0, vectorDimension: 0 })
-      setSearchResults([])
-      setSelectedDocId(null)
-      documentRequest.current++
-      setDocumentCopy(null)
-      setDraftContent('')
-      setVectorRebuildStatus(null)
-      setLoadError('')
-      setSearching(false)
-      setBackfilling(false)
-      setClearing(false)
-      setDocumentBusy(false)
-      loadData()
-      loadVectorRebuildStatus()
-    })
-    return () => { mounted = false }
-  }, [currentProject, loadData, loadVectorRebuildStatus])
-
-  useEffect(() => {
-    Promise.resolve().then(() => loadVectorRebuildStatus())
-  }, [loadVectorRebuildStatus, documents])
-
-  // 通过 EventBus 监听资源刷新和定稿完成事件
-  useEffect(() => {
-    const unsub1 = globalEventBus.on('REFRESH_RESOURCE', (payload) => {
-      const projectSession = captureProjectSession(currentProject)
-      if (
-        projectSession
-        && sameProjectSessionContext(projectSession, payload.projectSession)
-        && (payload.resources.includes('all') || payload.resources.includes('fileTree'))
-      ) {
-        loadData()
-        loadVectorRebuildStatus()
-      }
-    })
-    const unsub2 = globalEventBus.on('FINALIZE_COMPLETE', ({ projectSession: eventSession }) => {
-      const projectSession = captureProjectSession(currentProject)
-      if (!projectSession || !sameProjectSessionContext(projectSession, eventSession)) return
-      loadData()
-      loadVectorRebuildStatus()
-    })
-    return () => { unsub1(); unsub2() }
-  }, [currentProject, loadData, loadVectorRebuildStatus])
+  const { text } = useLocaleStore()
+  const kb = useKnowledgeBase()
+  const {
+    documents, stats, selectedDocId, documentCopy, draftContent, setDraftContent, documentBusy,
+    searchQuery, setSearchQuery, topK, setTopK, searchResults, setSearchResults, searching, clearing, importing,
+  } = kb
+  const vectorRebuildStatus = kb.index.status
+  const backfilling = kb.index.backfilling
+  const loadError = kb.loadError || kb.index.statusError
 
   // 判断检索模式
   const hasVectors = stats.vectorDimension > 0
   const searchMode = hasVectors ? text('混合检索', 'Hybrid search') : text('BM25 全文检索', 'BM25 full-text search')
   const rebuildPresentation = getVectorRebuildPresentation(vectorRebuildStatus)
 
-  const openDocument = async (docId: string, reload = false) => {
+  const openDocument = async (docId: string) => {
     const session = captureProjectSession(currentProject)
-    if (!session) return
-    if (!reload && docId === selectedDocId) return
-    if (!reload && documentCopy?.available && draftContent !== documentCopy.content) {
+    if (!session || docId === selectedDocId) return
+    if (kb.dirty) {
       const discard = await confirm(text('当前项目副本有未保存的修改。放弃修改并切换文档？', 'This project copy has unsaved changes. Discard them and switch documents?'), {
         confirmText: text('放弃修改', 'Discard changes'), danger: true,
       })
       if (!discard || !isProjectSessionCurrent(session)) return
     }
-    const request = ++documentRequest.current
-    setSelectedDocId(docId)
-    setDocumentCopy(null)
-    try {
-      const result = unwrapKnowledgeValue(await ipc.invokeWithProjectSession(session, 'kb:read-document-copy', docId, session.projectPath))
-      if (!isProjectSessionCurrent(session) || request !== documentRequest.current) return
-      setDocumentCopy(result)
-      setDraftContent(result.content ?? '')
-    } catch (error) {
-      if (isProjectSessionCurrent(session) && request === documentRequest.current) toast.error(appErrorMessage(locale, error))
-    }
+    await kb.openDocument(docId)
   }
-
-  const saveDocument = async () => {
-    const session = captureProjectSession(currentProject)
-    if (!session || !selectedDocId || !documentCopy?.available || !documentCopy.contentHash) return
-    setDocumentBusy(true)
-    try {
-      const result = unwrapKnowledgeValue(await ipc.invokeWithProjectSession(session, 'kb:save-document-copy', selectedDocId, draftContent, documentCopy.contentHash, session.projectPath))
-      if (!isProjectSessionCurrent(session)) return
-      if (!result.success) { toast.error(result.error || text('保存失败', 'Save failed')); return }
-      await openDocument(selectedDocId, true)
-      setSearchResults([])
-      toast.success(text('项目副本已保存，索引待更新', 'Project copy saved; index update needed'))
-    } catch (error) {
-      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(locale, error))
-    } finally { if (isProjectSessionCurrent(session)) setDocumentBusy(false) }
-  }
-
-  const reindexDocument = async () => {
-    const session = captureProjectSession(currentProject)
-    if (!session || !selectedDocId) return
-    setDocumentBusy(true)
-    try {
-      const result = unwrapKnowledgeValue(await ipc.invokeWithProjectSession(session, 'kb:reindex-document-copy', selectedDocId, session.projectPath))
-      if (!isProjectSessionCurrent(session)) return
-      if (!result.success || !result.docId) { toast.error(result.error || text('重建失败', 'Rebuild failed')); return }
-      await loadData()
-      await loadVectorRebuildStatus()
-      await openDocument(result.docId, true)
-      setSearchResults([])
-      toast.success(text('本地全文索引已更新', 'Local text index updated'))
-    } catch (error) {
-      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(locale, error))
-    } finally { if (isProjectSessionCurrent(session)) setDocumentBusy(false) }
-  }
+  const saveDocument = () => kb.saveDocument()
+  const reindexDocument = () => kb.reindexDocument()
 
   if (!currentProject) {
     return (
@@ -233,71 +73,15 @@ export default function KnowledgeOverview() {
   }
 
   /** 语义检索 */
-  const handleSearch = async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession) return
-    const expectedProjectPath = projectSession.projectPath
-    setSearching(true)
-    try {
-      const result = await ipc.invokeWithProjectSession(
-        projectSession,
-        'kb:search',
-        searchQuery,
-        topK,
-        expectedProjectPath,
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      setSearchResults(unwrapKnowledgeValue(result))
-    } catch (error) {
-      if (!isProjectSessionCurrent(projectSession)) return
-      toast.error(appErrorMessage(locale, error))
-    } finally {
-      if (isProjectSessionCurrent(projectSession)) {
-        setSearching(false)
-      }
-    }
-  }
+  const handleSearch = () => kb.search()
 
   /** 向量回填 */
-  const handleBackfill = async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession) return
-    const expectedProjectPath = projectSession.projectPath
-    setBackfilling(true)
-    try {
-      const result = await ipc.invokeWithProjectSession(
-        projectSession,
-        'kb:backfill-vectors',
-        expectedProjectPath,
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      if (result.success) {
-        toast.success(result.processed === 0
-          ? text('向量索引检查完成，当前模型无需重建', 'Vector index check complete; the current model does not need a rebuild')
-          : text(`向量索引重建完成：已处理 ${result.processed} 块${result.failed > 0 ? `，${result.failed} 块失败` : ''}`, `Vector index rebuilt: ${result.processed} chunks processed${result.failed > 0 ? `, ${result.failed} failed` : ''}`))
-      } else {
-        toast.error(result.error || text('向量回填失败', 'Vector backfill failed'))
-      }
-    } catch (e) {
-      if (!isProjectSessionCurrent(projectSession)) return
-      toast.error(appErrorMessage(locale, e))
-    } finally {
-      if (isProjectSessionCurrent(projectSession)) {
-        setBackfilling(false)
-        globalEventBus.emit('REFRESH_RESOURCE', {
-          resources: ['all'],
-          projectPath: expectedProjectPath,
-          projectSession,
-        })
-      }
-    }
-  }
+  const handleBackfill = () => kb.index.backfill()
 
   /** 清空当前项目知识库 */
   const handleClearKnowledgeBase = async () => {
     const projectSession = captureProjectSession(currentProject)
     if (!projectSession) return
-    const expectedProjectPath = projectSession.projectPath
     const ok = await confirm(
       text('确认清空当前项目的全部知识库内容？\n此操作会删除已导入的知识文档与切片，不会删除项目正文、蓝图或故事架构。', 'Clear the entire knowledge base for this project?\nImported documents and chunks will be deleted. Manuscripts, blueprints, and story architecture are preserved.'),
       {
@@ -307,99 +91,19 @@ export default function KnowledgeOverview() {
       },
     )
     if (!ok) return
-    if (!isProjectSessionCurrent(projectSession)) {
-      toast.error(text('项目已切换，本次清空操作已取消', 'The project changed, so the clear operation was cancelled'))
-      return
-    }
-
-    setClearing(true)
-    try {
-      const result = await ipc.invokeWithProjectSession(
-        projectSession,
-        'kb:clear-all',
-        expectedProjectPath,
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      if (result.success) {
-        documentRequest.current++
-        setSelectedDocId(null)
-        setDocumentCopy(null)
-        setDraftContent('')
-        setDocuments([])
-        setStats({ documentCount: 0, totalChunks: 0, vectorDimension: 0 })
-        setSearchResults([])
-        setVectorRebuildStatus(null)
-        globalEventBus.emit('REFRESH_RESOURCE', {
-          resources: ['all'],
-          projectPath: expectedProjectPath,
-          projectSession,
-        })
-        toast.success(text('知识库已清空', 'Knowledge base cleared'))
-      } else {
-        toast.error(result.error || text('清空知识库失败', 'Could not clear the knowledge base'))
-      }
-    } catch (e) {
-      if (!isProjectSessionCurrent(projectSession)) return
-      toast.error(appErrorMessage(locale, e))
-    } finally {
-      if (isProjectSessionCurrent(projectSession)) {
-        setClearing(false)
-      }
-    }
+    await kb.clearAll(projectSession)
   }
 
-  const handleImportPlanningMaterials = async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || importing) return
-    setImporting(true)
-    try {
-      const materials = await selectPlanningMaterials()
-      if (materials.length === 0 || !isProjectSessionCurrent(projectSession)) return
-      const workflowStore = useWorkflowStore.getState()
-      const localWorkflow = createPlanningMaterialWorkflow({ projectSession, materials })
-      const localRunId = await workflowStore.startWorkflow(localWorkflow)
-      const localRun = useWorkflowStore.getState().history.find(run => run.id === localRunId)
-      if (localRun?.status !== 'completed' || !isProjectSessionCurrent(projectSession)) return
-
-      const llmState = useLLMStore.getState()
-      const model = llmState.models.find(candidate => candidate.id === llmState.defaultModelId)
-      if (!model) {
-        toast.success(text(
-          '创作资料已仅导入本地知识库；配置生成模型后可提取角色卡',
-          'Planning material was imported only into the local knowledge base. Configure a generation model to extract character cards.',
-        ))
-        return
-      }
-      const shouldExtract = await confirm(
-        text(
-          `创作资料已仅保存在当前项目的本地知识库。\n\n若继续，本次选中的全部文本将发送到当前配置的模型端点，用于提取可编辑角色卡：\n模型：${model.name} (${model.modelName})\n端点：${model.baseUrl}\n\n是否发送并提取？`,
-          `The planning material is now stored only in this project's local knowledge base.\n\nIf you continue, all selected text will be sent to the currently configured model endpoint to extract editable character cards:\nModel: ${model.name} (${model.modelName})\nEndpoint: ${model.baseUrl}\n\nSend the text and extract character cards?`,
-        ),
-        {
-          title: text('AI 提取角色卡', 'AI character-card extraction'),
-          confirmText: text('发送并提取', 'Send and extract'),
-        },
-      )
-      if (!shouldExtract || !isProjectSessionCurrent(projectSession)) return
-
-      const extractionWorkflow = createPlanningMaterialCharacterExtractionWorkflow({
-        projectSession,
-        materials,
-        generationModelId: model.id,
-      })
-      const conflict = useWorkflowStore.getState().getResourceConflict(extractionWorkflow)
-      if (conflict) {
-        toast.warning(workflowResourceConflictMessage(locale, conflict.title))
-        return
-      }
-      useLayoutStore.getState().openBottomTab('tasks')
-      await useWorkflowStore.getState().startWorkflow(extractionWorkflow, true)
-    } catch (error) {
-      if (isProjectSessionCurrent(projectSession)) toast.error(appErrorMessage(locale, error))
-    } finally {
-      setImporting(false)
-    }
-  }
+  const handleImportPlanningMaterials = () => kb.importPlanningMaterials(model => confirm(
+    text(
+      `创作资料已仅保存在当前项目的本地知识库。\n\n若继续，本次选中的全部文本将发送到当前配置的模型端点，用于提取可编辑角色卡：\n模型：${model.name} (${model.modelName})\n端点：${model.baseUrl}\n\n是否发送并提取？`,
+      `The planning material is now stored only in this project's local knowledge base.\n\nIf you continue, all selected text will be sent to the currently configured model endpoint to extract editable character cards:\nModel: ${model.name} (${model.modelName})\nEndpoint: ${model.baseUrl}\n\nSend the text and extract character cards?`,
+    ),
+    {
+      title: text('AI 提取角色卡', 'AI character-card extraction'),
+      confirmText: text('发送并提取', 'Send and extract'),
+    },
+  ))
 
   return (
     <div className="skin-workspace-page h-full overflow-y-auto" style={{ backgroundColor: 'var(--color-editor-bg)' }}>
@@ -529,7 +233,7 @@ export default function KnowledgeOverview() {
                     {rebuildPresentation.kind === 'missing-vectors'
                       ? text(
                           `${vectorRebuildStatus!.vectorlessCount} 个文本块尚未生成向量嵌入；检查后会安全补全或重建索引。`,
-                          `${vectorRebuildStatus!.vectorlessCount} text chunks have no embeddings. The check safely completes or rebuilds the index.`,
+                          `${vectorRebuildStatus!.vectorlessCount} text ${pluralEn(vectorRebuildStatus!.vectorlessCount, 'chunk')} ${pluralEn(vectorRebuildStatus!.vectorlessCount, 'has', 'have')} no embeddings. The check safely completes or rebuilds the index.`,
                         )
                       : text(
                           `将用一条本地文本块检查当前模型的实际向量维度；如维度变化，会先完整建立新索引，再切换检索。当前索引为 ${vectorRebuildStatus!.activeVectorDimension || 'FTS'}。`,

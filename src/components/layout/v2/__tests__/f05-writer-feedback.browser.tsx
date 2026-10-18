@@ -83,9 +83,9 @@ afterEach(async () => {
 it('U13.A01 Writer 输出区随工作流增量呈现正文', async () => {
   await render()
   await result('雨落在窗沿。')
-  expect(host.querySelector('[aria-label="写作助手"]')?.textContent).toContain('雨落在窗沿。')
+  expect(host.querySelector('[aria-label="AI 输出"]')?.textContent).toContain('雨落在窗沿。')
   await result('雨落在窗沿。门外有人敲门。')
-  expect(host.querySelector('[aria-label="写作助手"]')?.textContent).toContain('雨落在窗沿。门外有人敲门。')
+  expect(host.querySelector('[aria-label="AI 输出"]')?.textContent).toContain('雨落在窗沿。门外有人敲门。')
 })
 
 it('U13.A02 仅收到提供商推理时显示可折叠推理区，正文开始后仍可展开', async () => {
@@ -126,5 +126,5 @@ it.each([
     .find(button => button.textContent?.includes('雨夜中的第一封来信'))
   expect(historyItem).toBeTruthy()
   await act(async () => historyItem!.click())
-  expect(host.querySelector('[aria-label="写作助手"]')?.textContent).toContain(expected)
+  expect(host.querySelector('[aria-label="AI 输出"]')?.textContent).toContain(expected)
 })

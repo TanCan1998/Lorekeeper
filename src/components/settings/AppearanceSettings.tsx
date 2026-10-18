@@ -2,7 +2,9 @@ import { useState, type ComponentType, type ReactNode } from 'react'
 import {
   Check,
   Image,
+  ListOrdered,
   Moon,
+  PanelsTopLeft,
   Palette,
   ScrollText,
   Sparkles,
@@ -12,6 +14,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '../../lib/utils'
+import { useAppearanceStore } from '../../stores/appearance-bootstrap'
 import { useLocaleStore } from '../../stores/locale-store'
 import { useSkinStore } from '../../stores/skin-store'
 import { useThemeStore, type Theme } from '../../stores/theme-store'
@@ -45,6 +48,12 @@ const THEME_OPTIONS: ThemeOption[] = [
   { id: 'dark', labelKey: 'theme.dark', Icon: Moon },
 ]
 
+/** 「工作台」写回 unset，跟随发布默认外壳；只有选新外壳时才固定为 stage。 */
+const SHELL_OPTIONS = [
+  { id: 'workbench', zh: '工作台', en: 'Workbench', Icon: PanelsTopLeft },
+  { id: 'stage', zh: '创作流程（预览）', en: 'Creative flow (preview)', Icon: ListOrdered },
+] as const
+
 type WorkingAction = 'classic' | 'anime' | 'choose' | 'change' | 'remove' | null
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -64,6 +73,9 @@ export default function AppearanceSettings() {
   const removeCustomSkin = useSkinStore((state) => state.removeCustomSkin)
   const dismissNotice = useSkinStore((state) => state.dismissNotice)
   const [working, setWorking] = useState<WorkingAction>(null)
+  const resolvedShell = useAppearanceStore((state) => state.resolvedShell)
+  const updateAppearance = useAppearanceStore((state) => state.update)
+  const shellChoice = resolvedShell === 'stage' ? 'stage' : 'workbench'
 
   const run = async (action: Exclude<WorkingAction, null>, operation: () => Promise<boolean>) => {
     setWorking(action)
@@ -96,6 +108,34 @@ export default function AppearanceSettings() {
 
   return (
     <section className="appearance-settings max-w-3xl space-y-7" aria-label={t('appearance.section')}>
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <PanelsTopLeft size={16} aria-hidden="true" style={{ color: 'var(--color-accent)' }} />
+          <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>{text('界面布局', 'Layout')}</h3>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+          {text(
+            '创作流程按设定、架构、蓝图、正文四步组织一部作品，仍在完善中，随时可以切回工作台。',
+            'Creative flow organizes a book into setup, architecture, blueprint and manuscript. It is still in preview; you can switch back to the workbench at any time.',
+          )}
+        </p>
+        <div className="appearance-theme-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }} role="group" aria-label={text('界面布局', 'Layout')}>
+          {SHELL_OPTIONS.map(({ id, zh, en, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={shellChoice === id}
+              onClick={() => updateAppearance({ shellPreference: id === 'stage' ? 'stage' : 'unset' })}
+              className={cn('appearance-theme-option', shellChoice === id && 'appearance-theme-option--active')}
+            >
+              <Icon size={15} aria-hidden="true" />
+              <span>{text(zh, en)}</span>
+              {shellChoice === id && <Check size={14} aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <Palette size={16} aria-hidden="true" style={{ color: 'var(--color-accent)' }} />

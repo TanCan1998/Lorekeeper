@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>架构 · 生成确认</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .pick { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--paper); }
+  .pick-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: var(--s-3); padding: 11px 14px; border-top: 1px solid var(--rule); }
+  .pick-all { border-top: 0; background: var(--surface); border-radius: var(--radius-lg) var(--radius-lg) 0 0; color: var(--ink-2); font-size: var(--fs-12); }
+  .pick-name { font-weight: 500; }
+  .pick-name small { margin-left: 8px; font-weight: 400; color: var(--ink-3); font-size: var(--fs-12); }
+  .pick-extra { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2) var(--s-4); padding: 4px 0 2px 24px; color: var(--ink-2); font-size: var(--fs-12); }
+  .pick-extra .input { height: 30px; width: 64px; padding: 0 10px; font-variant-numeric: tabular-nums; }
+  .pick-extra .unit { display: inline-flex; align-items: center; gap: 6px; }
+  .guide { margin-top: var(--s-4); }
+  .guide .textarea { min-height: 84px; margin-top: var(--s-2); }
+</style>
+</head>
+<body>
+<!-- 架构页本体从 architecture.html 读取，这里叠加架构确认对话框。 -->
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog dialog-wide" role="dialog" aria-labelledby="ac-title">
+      <div class="dialog-head">
+        <div class="dialog-title" id="ac-title">生成架构</div>
+        <p class="dialog-desc">勾选要交给 AI 的部分。已确认的内容默认保留；勾选已生成的项会覆盖它，并在右侧标出。</p>
+      </div>
+      <div class="dialog-body">
+        <ul class="pick">
+          <li class="pick-row pick-all"><span class="check" data-on="false"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span>全选</span><span>已选 3 / 4</span></li>
+          <li class="pick-row"><span class="check" data-on="false"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span><span class="pick-name">故事前提<small>已确认</small></span></span><span class="badge plain">保留</span></li>
+          <li class="pick-row"><span class="check" data-on="true"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span><span class="pick-name">角色名单<small>已确认</small></span></span><span class="badge danger">将覆盖</span></li>
+          <li class="pick-row"><span class="check" data-on="true"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span><span class="pick-name">世界观<small>待生成</small></span></span><span class="badge accent">新生成</span></li>
+          <li class="pick-row">
+            <span class="check" data-on="true"><span class="check-box"><svg class="i"><use href="#i-check"/></svg></span><span class="pick-name">情节大纲<small>已有第 1～16 章</small></span></span><span class="badge accent">续写</span>
+            <div class="pick-extra">
+              <span class="unit">章节范围 第 <span class="input">17</span> 章至第 <span class="input">24</span> 章</span>
+              <span class="unit">每章大纲约 <span class="input">300</span> 字</span>
+              <span class="muted">第 1～16 章保留不动</span>
+            </div>
+          </li>
+        </ul>
+        <div class="guide">
+          <div class="disclosure" style="border-top:0;padding-top:0"><svg class="i i-sm"><use href="#i-chevron-down"/></svg>作者指导 <small>可选，会和设定一起交给 AI</small></div>
+          <div class="textarea">车站的年代放在 1990 年代末，铁路局职工宿舍就在站台背后。第三幕之前不要揭示母亲的去向。</div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <span class="note">角色名单会被重写，现有 9 位角色的档案改动将丢失</span>
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-primary"><svg class="i"><use href="#i-sparkles"/></svg>开始生成 3 项</button>
+      </div>
+    </div>
+  </div>
+</template>
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+fetch('architecture.html').then(r => r.text()).then(html => {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.head.querySelectorAll('style').forEach(s => document.head.append(s));
+  document.body.prepend(doc.getElementById('screen'));
+  Shell.mount({ title: '架构 · 生成确认', stage: 'arch', preset: 'arch', crumbs: ['架构'], saved: true });
+});
+</script>
+</body>
+</html>

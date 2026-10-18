@@ -3,6 +3,7 @@ import type { PhysicalAttempt } from './generation-contract'
 import type { VisibleCompositionReceipt } from './generation-owner-contract'
 import type { MainGenerationRunHandle } from '../services/generation/generation-runtime'
 import type { WritingLanguage } from './writing-language'
+import type { Locale } from '../i18n/types'
 
 export const DEFAULT_PLANNING_ACTION_CHAPTERS = 5
 export const PLANNING_ACTION_CHAPTER_LIMIT = 10
@@ -55,7 +56,7 @@ export interface PlotOutlineRecovery {
   leaseEpoch: string
   draft: string
   completeChapters: number[]
-  writeState: { kind: 'ready' } | { kind: 'blocked'; reason: 'in-flight' | 'source-changed' | 'author-saved' }
+  writeState: { kind: 'ready' } | { kind: 'blocked'; reason: 'in-flight' | 'source-changed' | 'author-saved' | 'source-invalid' }
   saved: PlotOutlineAuthorEditReceipt | null
 }
 export interface PlotOutlineSource {
@@ -66,7 +67,8 @@ export type PlotOutlineCursor =
   | { kind: 'request'; chapterNumber: number; attempt: PlotOutlineAttemptKind }
   | { kind: 'accept'; chapterNumber: number; artifactIds: string[]; text: string }
   | { kind: 'complete' }
-  | { kind: 'stopped'; chapterNumber: number; reason: 'in-flight' | 'unknown-completion' | 'attempts-exhausted' }
+  /** source-invalid：开跑时冻结的大纲按现行规则无效（升级前开跑、章节乱序或重复），只能读出与复制，不能续写或写回。 */
+  | { kind: 'stopped'; chapterNumber: number; reason: 'in-flight' | 'unknown-completion' | 'attempts-exhausted' | 'source-invalid' }
 export interface PlotOutlineProgress {
   protocol: typeof PLOT_OUTLINE_PROTOCOL
   range: PlotOutlineRange
@@ -74,7 +76,8 @@ export interface PlotOutlineProgress {
   targetUnits: number
   cursor: PlotOutlineCursor
   sourceExpected: ProjectCoreSynopsisExpected
-  confirmedPrefix: string
+  /** 冻结大纲按现行规则无效（cursor 为 stopped/source-invalid）时为 null：没有可续写的前缀。 */
+  confirmedPrefix: string | null
   composition: VisibleCompositionReceipt | null
 }
 export interface PlotOutlineAttempt {
@@ -178,7 +181,7 @@ export function joinPlotOutlineEntries(prefix: string, next: string): string {
   return [prefix.trim(), next.trim()].filter(Boolean).join('\n\n')
 }
 
-export function renderPlotOutlineSynopsis(body: string, coveredTo: number, expected: ProjectCoreSynopsisExpected): string {
+export function renderPlotOutlineSynopsis(body: string, coveredTo: number, expected: Pick<ProjectCoreSynopsisExpected, 'totalChapters' | 'writingLanguage'>): string {
   const english = expected.writingLanguage === 'en-US'
   const tail = coveredTo < expected.totalChapters ? english
     ? `> This outline covers chapters 1-${coveredTo} of ${expected.totalChapters}; the remaining chapters will be generated in later batches.`
@@ -186,13 +189,46 @@ export function renderPlotOutlineSynopsis(body: string, coveredTo: number, expec
   return `# ${english ? 'Plot Outline' : '情节大纲'}\n\n${joinPlotOutlineEntries(body, tail)}`.trim()
 }
 
-export function plotOutlineConfirmedPrefix(expected: ProjectCoreSynopsisExpected, range: PlotOutlineRange): string {
+/** 正式大纲里决定一批范围能否开跑、会替换哪几章的三项事实；主进程 begin 时取自 project_core。 */
+export type PlotOutlineRangeSource = Pick<ProjectCoreSynopsisExpected, 'synopsis' | 'totalChapters' | 'writingLanguage'>
+
+/** 章节条目要按章号严格递增：同一章出现两次，或作者调乱了顺序，按位置截取的前缀与尾部会丢章或重复。 */
+export type PlotOutlineOrderIssue = { kind: 'duplicate'; chapter: number } | { kind: 'unordered' }
+
+function chapterOrderIssue(entries: ReturnType<typeof headings>): PlotOutlineOrderIssue | null {
+  let reach = -1 // 第 0 章（序章）也是合法章号
+  for (const entry of [...entries].sort((left, right) => left.from - right.from)) {
+    if (entry.from <= reach) return { kind: 'duplicate', chapter: entry.from }
+    reach = Math.max(reach, entry.to)
+  }
+  return entries.every((entry, index) => index === 0 || entry.from > entries[index - 1].to) ? null : { kind: 'unordered' }
+}
+
+export function plotOutlineOrderIssue(synopsis: string): PlotOutlineOrderIssue | null {
+  return chapterOrderIssue(headings(synopsis))
+}
+
+/** 开跑时冻结的大纲来源无效、任务不能续写时给作者的说明；恢复稿入口与「断点续写」共用同一份措辞。 */
+export function plotOutlineSourceInvalidText(synopsis: string, locale: Locale): string {
+  const t = (zh: string, en: string) => locale === 'en-US' ? en : zh
+  const issue = plotOutlineOrderIssue(synopsis)
+  if (!issue) return t('这次生成开跑时，大纲的章节编号与所选范围对不上或缺少章节，不能接着生成，恢复稿也不能保存。可以复制已生成的章节，改好大纲后重新生成。',
+    'When this run started, the outline chapter numbers did not line up with the selected range or a chapter was missing, so it cannot continue and the recovery draft cannot be saved. Copy the generated chapters, fix the outline, then generate again.')
+  if (issue.kind === 'duplicate') return t(`这次生成开跑时，大纲里第 ${issue.chapter} 章出现了不止一次，不能接着生成，恢复稿也不能保存。可以复制已生成的章节，改好大纲后重新生成。`,
+    `When this run started, chapter ${issue.chapter} appeared more than once in the outline, so it cannot continue and the recovery draft cannot be saved. Copy the generated chapters, fix the outline, then generate again.`)
+  return t('这次生成开跑时，大纲的章节没有按章号顺序排列，不能接着生成，恢复稿也不能保存。可以复制已生成的章节，把大纲排好后重新生成。',
+    'When this run started, the outline chapters were not in chapter order, so it cannot continue and the recovery draft cannot be saved. Copy the generated chapters, put the outline in order, then generate again.')
+}
+
+export function plotOutlineConfirmedPrefix(expected: PlotOutlineRangeSource, range: PlotOutlineRange): string {
   const entries = headings(expected.synopsis)
+  if (chapterOrderIssue(entries)) throw new Error('GENERATION_PLOT_OUTLINE_PREFIX_INVALID')
   if (entries.some(entry => entry.from < range.from && entry.to >= range.from || entry.from <= range.to && entry.to > range.to))
     throw new Error('GENERATION_PLOT_OUTLINE_PREFIX_INVALID')
   if (range.from === 1) return ''
   const before = entries.filter(entry => entry.to < range.from)
-  let next = 1
+  // 开头的第 0 章（序章）是合法前缀；chapterOrderIssue 已保证它只出现一次且在最前。
+  let next = before[0]?.from === 0 ? 0 : 1
   for (const entry of before) {
     if (entry.from !== next || entry.to < entry.from) throw new Error('GENERATION_PLOT_OUTLINE_PREFIX_INVALID')
     next = entry.to + 1
@@ -208,19 +244,55 @@ export function plotOutlineConfirmedPrefix(expected: ProjectCoreSynopsisExpected
   return prefix
 }
 
+/**
+ * 这一批交给主进程会怎样：invalid 为 begin 时 plotOutlineConfirmedPrefix 会拒绝；overwrite 为替换已有的第 from–to 章
+ * （没有按章标题时 whole 为整份替换），其余章节由 renderPlotOutlineRange 原样保留；continue 为紧接已有章节往后写。
+ */
+export type PlotOutlineRangeEffect =
+  | { kind: 'invalid'; lastChapter: number; hasEntries: boolean; orderIssue: PlotOutlineOrderIssue | null }
+  | { kind: 'new' }
+  | { kind: 'continue'; after: number }
+  | { kind: 'overwrite'; whole: boolean; from: number; to: number; lastChapter: number }
+
+export function plotOutlineRangeEffect(source: PlotOutlineRangeSource, range: PlotOutlineRange): PlotOutlineRangeEffect {
+  const entries = headings(source.synopsis)
+  const lastChapter = entries.reduce((last, entry) => Math.max(last, entry.to), 0)
+  try { plotOutlineConfirmedPrefix(source, range) } catch { return { kind: 'invalid', lastChapter, hasEntries: entries.length > 0, orderIssue: chapterOrderIssue(entries) } }
+  if (!source.synopsis.trim()) return { kind: 'new' }
+  if (!entries.length) return { kind: 'overwrite', whole: true, from: range.from, to: range.to, lastChapter }
+  const replaced = entries.filter(entry => entry.from >= range.from && entry.from <= range.to)
+  if (!replaced.length) return range.from > 1 ? { kind: 'continue', after: range.from - 1 } : { kind: 'new' }
+  return { kind: 'overwrite', whole: false, from: replaced[0].from, to: replaced[replaced.length - 1].to, lastChapter }
+}
+
+/** 下一批的默认起始章：已有大纲能紧接着往后写时取最后一章的下一章，否则从第 1 章起。 */
+export function plotOutlineNextChapter(source: PlotOutlineRangeSource): number {
+  const next = headings(source.synopsis).reduce((last, entry) => Math.max(last, entry.to), 0) + 1
+  return next > 1 && next <= source.totalChapters && plotOutlineRangeEffect(source, { from: next, to: next }).kind === 'continue' ? next : 1
+}
+
+/** renderPlotOutlineSynopsis 写在末尾的覆盖说明，章数与全书章数不限：大纲改过章数或删过章节后留下的旧说明。 */
+const STALE_COVERAGE_TAIL = /(?:\s*\n> (?:本大纲已覆盖至第 \d+ 章（全书 \d+ 章），其余章节将在后续批次继续生成。|This outline covers chapters 1-\d+ of \d+; the remaining chapters will be generated in later batches\.))+$/u
+
 /** Replace only the explicitly committed chapter range; keep the surrounding source text. */
-export function renderPlotOutlineRange(body: string, range: PlotOutlineRange, expected: ProjectCoreSynopsisExpected): string {
+export function renderPlotOutlineRange(body: string, range: PlotOutlineRange, expected: PlotOutlineRangeSource): string {
   plotOutlineConfirmedPrefix(expected, range)
   const entries = headings(expected.synopsis)
   if (!entries.length) return renderPlotOutlineSynopsis(body, range.to, expected)
   const start = entries.find(entry => entry.from >= range.from)
   const after = entries.find(entry => entry.from > range.to)
+  const title = `# ${expected.writingLanguage === 'en-US' ? 'Plot Outline' : '情节大纲'}\n\n`
+  const suffix = renderPlotOutlineSynopsis('', range.to, expected).slice(title.length)
   if (start) {
     const before = expected.synopsis.slice(0, start.index)
     if (after) return `${before}${body.trim()}\n\n${expected.synopsis.slice(after.index)}`
-    const title = `# ${expected.writingLanguage === 'en-US' ? 'Plot Outline' : '情节大纲'}\n\n`
-    const suffix = renderPlotOutlineSynopsis('', range.to, expected).slice(title.length)
     return `${before}${body.trim()}${suffix ? `\n\n${suffix}` : ''}`
+  }
+  // 已有章节都在第 1 章之前，只能是第 0 章序章：作者原文逐字留在前面、新章接在后面，按续批要求的形式重建标准标题与覆盖说明。
+  // 自定义顶层标题与其他前置文字一样算作者原文保留；原有的标准标题行和应用写的旧覆盖说明不再带入。
+  if (range.from === 1) {
+    const authored = expected.synopsis.trim().replace(new RegExp(`^${title.trim()}[\\t ]*(?=\\n|$)`, 'u'), '').replace(STALE_COVERAGE_TAIL, '')
+    return renderPlotOutlineSynopsis(joinPlotOutlineEntries(authored, body), range.to, expected)
   }
   return renderPlotOutlineSynopsis(joinPlotOutlineEntries(plotOutlineConfirmedPrefix(expected, range), body), range.to, expected)
 }
@@ -240,7 +312,13 @@ export function validPlotOutlineAuthorPrefix(synopsis: string, progress: Pick<Pl
     && renderPlotOutlineRange(authored, range, expected) === synopsis
 }
 
+export function plotOutlineSourceInvalid(progress: Pick<PlotOutlineProgress, 'cursor'>): boolean {
+  return progress.cursor.kind === 'stopped' && progress.cursor.reason === 'source-invalid'
+}
+
 export function plotOutlineRecoveryDraft(progress: PlotOutlineProgress, failedCandidate?: string): string {
+  // 来源无效时拼不回正式大纲，只留已生成的章节与失败的候选供复制。
+  if (plotOutlineSourceInvalid(progress)) return joinPlotOutlineEntries(progress.composition?.text ?? '', failedCandidate ?? '')
   const completed = progress.composition?.chapters?.length ?? 0
   const chapter = progress.range.from + completed
   let body = progress.composition?.text ?? ''
@@ -253,6 +331,7 @@ export function plotOutlineRecoveryDraft(progress: PlotOutlineProgress, failedCa
 }
 
 export function plotOutlineRequestContract(progress: PlotOutlineProgress, chapter: number, attempt: PlotOutlineAttemptKind): string {
+  if (progress.confirmedPrefix === null) throw new Error('GENERATION_PLOT_OUTLINE_PREFIX_INVALID')
   const prefix = joinPlotOutlineEntries(progress.confirmedPrefix, progress.composition?.text ?? '')
   const english = progress.sourceExpected.writingLanguage === 'en-US'
   return english

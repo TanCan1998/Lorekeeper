@@ -1,0 +1,36 @@
+import type { SettingsSection } from '../../../stores/layout-store'
+
+type Pair = readonly [string, string]
+
+/** 设置页的一页。旧外壳的「编辑器」分区并进外观，所以这里没有 editor。 */
+export type SettingsPage = Exclude<SettingsSection, 'editor'>
+
+export interface SettingsPageSpec {
+  id: SettingsPage
+  name: Pair
+  lede: Pair
+}
+
+/** ia.md 的三组：常用、高级、其他。 */
+export const SETTINGS_GROUPS: readonly { id: string; name: Pair; pages: readonly SettingsPageSpec[] }[] = [
+  { id: 'common', name: ['常用', 'Common'], pages: [
+    { id: 'llm', name: ['AI 模型', 'AI models'], lede: ['写作、审稿、修稿都用这里的模型。标为默认的会预先选好，每次运行前仍可临时换。', 'Writing, reviews and revisions use these models. The default is preselected and can be changed before each run.'] },
+    { id: 'appearance', name: ['外观', 'Appearance'], lede: ['改动立即生效，不需要保存。', 'Changes apply right away. No need to save.'] },
+  ] },
+  { id: 'advanced', name: ['高级', 'Advanced'], pages: [
+    { id: 'embedding', name: ['检索模型', 'Retrieval model'], lede: ['知识库用它理解资料的意思，按意思找到相关段落。', 'The knowledge base uses it to understand your material and find passages by meaning.'] },
+    { id: 'proxy', name: ['网络代理', 'Network proxy'], lede: ['连接模型服务需要经过代理时在这里设置，所有 AI 请求都会走它。', 'Set this when model services must be reached through a proxy. Every AI request goes through it.'] },
+    { id: 'prompts', name: ['提示词模板', 'Prompt templates'], lede: ['调整 AI 在每个创作环节收到的指导。可以只改这部作品，也可以改成全局默认。', 'Adjust the guidance AI receives at each writing step, for this book or as the global default.'] },
+    { id: 'skills', name: ['写作 Skills', 'Writing skills'], lede: ['安装提示词型的写作 Skill，并绑定到创作阶段。安装前会先让你检查内容。', 'Install prompt-only writing skills and bind them to writing stages. You review each one before installing.'] },
+  ] },
+  { id: 'other', name: ['其他', 'Other'], pages: [
+    { id: 'backup', name: ['项目备份', 'Project backup'], lede: ['把作品打包存到本机，或备份到你绑定的云端。恢复时总是另存为一份新的作品副本。', 'Archive the book locally or to a cloud you connect. Restoring always creates a new copy.'] },
+    { id: 'about', name: ['关于与更新', 'About & updates'], lede: ['版本信息与应用更新。', 'Version information and app updates.'] },
+  ] },
+]
+
+export const SETTINGS_PAGES: readonly SettingsPageSpec[] = SETTINGS_GROUPS.flatMap(group => group.pages)
+
+export function settingsPageOf(section: SettingsSection): SettingsPage {
+  return section === 'editor' ? 'appearance' : section
+}

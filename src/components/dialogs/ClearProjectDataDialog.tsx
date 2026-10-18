@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, FileText, FolderTree, Loader2, Map, Trash2 } from 'lucide-react'
+import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { AlertTriangle, FileText, FolderTree, Loader2, Map, OctagonAlert, Trash2 } from 'lucide-react'
 
 import { clearProjectData, type ClearProjectDataOptions } from '../../services/project-clear-service'
 import { alertError } from '../ui/AlertDialog'
 import { Button } from '../ui/Button'
+import { Check } from '../ui/Check'
+import { useDialogFocusReturn } from '../ui/focus-return'
+import { keepToastStackClickable } from '../ui/ToastStack'
+import { usePaperInkRoot } from '../ui/use-paper-ink-root'
 import { useLocaleStore } from '../../stores/locale-store'
 import { useProjectStore } from '../../stores/project-store'
 import {
@@ -11,6 +16,7 @@ import {
   isProjectSessionCurrent,
 } from '../project-session-gate'
 import type { ProjectSessionContext } from '../../shared/ipc-channels'
+import { pluralEn } from '../../shared/plural-en'
 
 interface ClearProjectDataDialogProps {
   open: boolean
@@ -76,6 +82,10 @@ function ClearProjectDataDialogContents({
   const currentProject = useProjectStore(s => s.currentProject)
   const [clearingSession, setClearingSession] = useState<ProjectSessionContext | null>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const sentinelRef = useRef<HTMLSpanElement>(null)
+  // 新外壳里挂在 .paper-ink 下，走标准危险确认；旧外壳的项目树里找不到纸墨根，保留旧样式
+  const inkRoot = usePaperInkRoot(sentinelRef)
+  const focusReturn = useDialogFocusReturn()
   const text = useLocaleStore(s => s.text)
 
   const selectedCount = useMemo(
@@ -90,12 +100,13 @@ function ClearProjectDataDialogContents({
   }, [])
 
   useEffect(() => {
+    if (inkRoot) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !clearing) onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [clearing, onClose])
+  }, [clearing, inkRoot, onClose])
 
   const handleClear = async () => {
     if (selectedCount === 0) return
@@ -116,6 +127,78 @@ function ClearProjectDataDialogContents({
       if (!isProjectSessionCurrent(projectSession)) return
       setClearingSession(null)
     }
+  }
+
+  if (inkRoot === undefined) return <span ref={sentinelRef} hidden />
+
+  if (inkRoot) {
+    const chosen = OPTIONS.filter(option => selected[option.key]).map(option => text(option.labelZh, option.labelEn))
+    return (
+      <DialogPrimitive.Root open onOpenChange={next => { if (!next && !clearing) onClose() }}>
+        <DialogPrimitive.Portal container={inkRoot}>
+          <DialogPrimitive.Overlay className="pi-scrim" />
+          <DialogPrimitive.Content
+            className="pi-dialog pi-dialog--marked"
+            onPointerDownOutside={keepToastStackClickable}
+            onOpenAutoFocus={event => {
+              focusReturn.remember()
+              event.preventDefault()
+              cancelRef.current?.focus()
+            }}
+            onCloseAutoFocus={focusReturn.onCloseAutoFocus}
+          >
+            <div className="pi-dialog-head">
+              <span className="pi-dialog-mark" aria-hidden><OctagonAlert /></span>
+              <div className="pi-dialog-heading">
+                <DialogPrimitive.Title className="pi-dialog-title">{text('清除项目生成内容', 'Clear generated project data')}</DialogPrimitive.Title>
+                <DialogPrimitive.Description className="pi-dialog-sub">
+                  {text('此操作只清除所选数据，不删除项目目录或模型配置。', 'Only the selected data will be removed. The project folder and model settings are preserved.')}
+                </DialogPrimitive.Description>
+              </div>
+            </div>
+            <div className="pi-dialog-body">
+              <div className="pi-check-list" role="group" aria-label={text('要清除的内容', 'Data to clear')}>
+                {OPTIONS.map(({ key, labelZh, labelEn, descZh, descEn }) => (
+                  <div key={key} className="pi-check-row">
+                    <Check
+                      checked={selected[key]}
+                      disabled={clearing}
+                      onChange={checked => setSelected(current => ({ ...current, [key]: checked }))}
+                      label={(
+                        <>
+                          <span className="pi-check-title">{text(labelZh, labelEn)}</span>
+                          <span className="pi-check-desc">{text(descZh, descEn)}</span>
+                        </>
+                      )}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="pi-dialog-consequence">
+                <p>
+                  {selectedCount === 0
+                    ? text('请至少选择一类内容。', 'Select at least one kind of data.')
+                    : text(`将清除 ${selectedCount} 类内容：${chosen.join('、')}。`, `Clears ${selectedCount} ${pluralEn(selectedCount, 'kind')} of data: ${chosen.join(', ')}.`)}
+                </p>
+                <p className="pi-dialog-recover">{text('清除后不会自动恢复。', 'Cleared data is not restored automatically.')}</p>
+                <p>{text('若需要保留当前内容，请先复制到外部文件或导出项目备份。', 'To keep the current content, copy it elsewhere or export a project backup first.')}</p>
+              </div>
+            </div>
+            <div className="pi-dialog-foot">
+              <Button ref={cancelRef} variant="secondary" disabled={clearing} onClick={onClose}>{text('取消', 'Cancel')}</Button>
+              <Button
+                variant="danger-solid"
+                disabled={clearing || selectedCount === 0}
+                aria-busy={clearing || undefined}
+                onClick={handleClear}
+              >
+                {clearing ? text('清除中…', 'Clearing…') : text('清除所选', 'Clear selected')}
+              </Button>
+            </div>
+          </DialogPrimitive.Content>
+        </DialogPrimitive.Portal>
+      </DialogPrimitive.Root>
+    )
   }
 
   return (

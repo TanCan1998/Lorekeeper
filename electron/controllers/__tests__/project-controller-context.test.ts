@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   resolveExactPath: vi.fn(),
   resolveDirectoryPath: vi.fn(),
   issueDirectory: vi.fn(),
+  probeProjectSqlite: vi.fn(),
   revokeWebContents: vi.fn(),
   showOpenDialog: vi.fn(),
   projectAccess: {
@@ -153,6 +154,9 @@ vi.mock('../../repositories/project-core-repository', () => ({
   },
 }))
 
+vi.mock('../../services/sqlite-project-migration', () => ({
+  probeProjectSqlite: mocks.probeProjectSqlite,
+}))
 vi.mock('../../services/project-access', () => ({
   projectAccess: mocks.projectAccess,
 }))
@@ -225,6 +229,8 @@ beforeEach(() => {
     leaseId: 'lease-project-A',
   }
   mocks.recentProjects = []
+  mocks.probeProjectSqlite.mockReset().mockReturnValue({ schemaVersion: 0 })
+  mocks.issueDirectory.mockReturnValue({ grantId: 'legacy-source-grant' })
   mocks.resolveDirectoryPath.mockImplementation(({ grantId }: { grantId: string }) => {
     if (!grantId?.startsWith('selected:')) throw new Error('外部文件授权不存在')
     return grantId.slice(9)
@@ -612,6 +618,62 @@ describe('project controller project identity', () => {
     expect(mocks.initCalls).not.toContain(ordinaryDirectory)
   })
 
+  it('offers the selected recognized legacy project as a window-bound import source without opening it', async () => {
+    mocks.recentProjects = [{ name: 'B', path: projectB, updatedAt: '' }]
+    mocks.projectAccess.probeExistingProject.mockReturnValueOnce({
+      kind: 'manifest', projectId: 'old-B', rootPath: projectB, storageFormat: 'legacy',
+    })
+    mocks.projectAccess.adoptLegacyProject.mockImplementation(() => { throw new Error('PROJECT_MIGRATION_NOT_QUALIFIED') })
+    const sender = { id: 17, once: vi.fn() }
+    const result = await handler('project:open')({ sender }, projectB, 'request-legacy-B')
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: 'PROJECT_LEGACY_IMPORT_REQUIRED',
+      legacyImportSource: { grantId: 'legacy-source-grant', displayName: 'B' },
+      databaseRestored: true,
+      dbReady: true,
+    })
+    expect(mocks.issueDirectory).toHaveBeenCalledWith({
+      webContentsId: 17, directoryPath: projectB, operations: ['legacy-import'], ttlMs: 600_000,
+    })
+    expect(mocks.initCalls).not.toContain(projectB)
+    expect(mocks.importLegacyProjectCopy).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['PROJECT_MIGRATION_RECOVERY_REQUIRED', '项目格式转换尚未具备安全迁移条件，已保留原项目且未写入。请通过“导入旧项目”创建完整副本。'],
+    ['UNRECOGNIZED_SCHEMA', '无法识别项目格式，已拒绝打开。请核查创建该项目的软件和版本。'],
+    ['CORRUPT_SCHEMA', '项目数据结构已损坏，已拒绝打开。请保留原件并从备份恢复。'],
+    ['NEWER_SCHEMA_READ_ONLY', '该项目由更新版本创建，已拒绝打开。请升级软件后再打开。'],
+    ['LEGACY_IMPORT_UNSUPPORTED_SOURCE', '此项目版本不支持旧项目导入。请用原版本软件打开或导出。'],
+  ])(
+    'explains %s without offering an import grant for a legacy project', async (reason, error) => {
+      mocks.projectAccess.probeExistingProject.mockReturnValueOnce({
+        kind: 'manifest', projectId: 'old-B', rootPath: projectB, storageFormat: 'legacy',
+      })
+      mocks.projectAccess.adoptLegacyProject.mockImplementation(() => { throw new Error('PROJECT_MIGRATION_NOT_QUALIFIED') })
+      if (reason === 'PROJECT_MIGRATION_RECOVERY_REQUIRED') {
+        mocks.existingPaths.add(path.join(projectB, '.ai-novel-migration'))
+      } else if (reason === 'LEGACY_IMPORT_UNSUPPORTED_SOURCE') {
+        mocks.probeProjectSqlite.mockReturnValueOnce({ schemaVersion: 7 })
+      } else {
+        mocks.probeProjectSqlite.mockImplementationOnce(() => { throw new Error(reason) })
+      }
+      const result = await handler('project:open')({ sender: { id: 17, once: vi.fn() } }, selectedProject(projectB), 'request-legacy-blocked')
+      expect(result).toMatchObject({
+        success: false,
+        error,
+        databaseRestored: true,
+        dbReady: true,
+        activeProjectPath: projectA,
+      })
+      expect(result).not.toHaveProperty('legacyImportSource')
+      expect(mocks.issueDirectory).not.toHaveBeenCalled()
+      expect(mocks.initCalls).not.toContain(projectB)
+      expect(mocks.initCalls).toEqual([projectA])
+      expect(mocks.currentProjectPath).toBe(projectA)
+    },
+  )
   it('preserves the actionable migration refusal instead of overwriting it with an internal code', async () => {
     mocks.projectAccess.probeExistingProject.mockImplementationOnce(() => {
       throw new Error('PROJECT_MIGRATION_NOT_QUALIFIED')

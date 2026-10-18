@@ -1,6 +1,6 @@
 {
   "name": "ai-novel-writer",
-  "version": "1.2.1-Preview",
+  "version": "1.2.3-Preview",
   "description": "AI Novel Writer - a local-first production workspace for long-form fiction",
   "author": "AI Novel Writer Maintainers",
   "private": true,
@@ -20,6 +20,7 @@
     "test": "vitest run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:renderer-surface:e2e": "node scripts/renderer-surface-e2e.mjs",
+    "verify:drive": "node scripts/redesign/drive.mjs",
     "build": "tsc && vite build",
     "build:win": "pnpm run release:win:verify",
     "build:win:artifacts": "node scripts/require-release-gate.mjs && pnpm run rebuild:electron && tsc && vite build && electron-builder --win --x64 --publish never",
@@ -37,7 +38,7 @@
     "smoke:mac-dmg": "bash scripts/smoke-macos-dmg.sh",
     "rebuild": "pnpm run rebuild:electron",
     "rebuild:electron": "node scripts/prepare-native-for-electron.mjs",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0 && node scripts/check-color-literals.mjs",
     "preview": "vite preview",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"

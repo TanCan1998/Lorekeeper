@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>纸墨原型目录</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;1,400&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  body { overflow: auto; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: var(--s-12) var(--s-8) var(--s-16); }
+  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); }
+  .group { margin-top: var(--s-10); }
+  .group h2 { font: 600 var(--fs-16)/1.4 var(--font-display); margin-bottom: var(--s-4); display: flex; gap: 10px; align-items: baseline; }
+  .group h2 .num { color: var(--ink-3); font-style: italic; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--s-5); }
+  .shot { display: block; text-decoration: none; color: inherit; }
+  .shot img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; border-radius: var(--radius); border: 1px solid var(--rule); background: var(--surface); display: block; }
+  .shot:hover img { border-color: var(--accent-line); }
+  .shot b { display: block; margin-top: 8px; font-weight: 500; }
+  .shot span { color: var(--ink-3); font-size: var(--fs-12); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="toolbar">
+    <div>
+      <div class="eyebrow">AI 小说作家 · 前端重新设计</div>
+      <h1 class="h1">纸墨 · 高保真原型</h1>
+      <p class="lede">同一信息架构下的主要屏幕。点开任一屏可在页面底部切换浅色与深色。设计依据见 ia.md、design-system.md 与 feature-matrix.md。</p>
+    </div>
+    <div class="seg" id="theme"><button data-t="light" aria-pressed="true">浅色缩略图</button><button data-t="dark">深色缩略图</button></div>
+  </div>
+  <div id="groups"></div>
+</div>
+<script src="icons.js"></script>
+<script>
+const GROUPS = [
+  ['i', '书房与设定', [['library', '书房', '书架、开始、作品概览、更新提示'], ['library-empty', '空书房', '第一次打开'], ['library-delete', '删除作品', '输入作品名确认'], ['setup', '设定', '新作品首次进入']]],
+  ['ii', '架构', [['architecture', '故事架构', '四个分节与续写'], ['architecture-confirm', '生成架构', '逐项确认覆盖范围'], ['characters', '角色名单', '列表与档案']]],
+  ['iii', '蓝图', [['blueprint', '章节蓝图', '规划列表与单章编辑'], ['blueprint-generate', 'AI 生成蓝图', '范围与覆盖'], ['blueprint-batch', '批量创作', '最多 10 章']]],
+  ['iv', '正文', [['chapter-todo', '待写', '写作此章与一致性预检'], ['chapter-draft', '草稿', '审稿、选区工具条、版本'],
+    ['chapter-review', '审稿后', '审稿报告侧页'], ['chapter-merge', '修稿合并', '逐段确认差异'],
+    ['chapter-finalize-confirm', '定稿确认', '项目内提交'], ['chapter-final', '已定稿', '后处理与下一章']]],
+  ['', '运行', [['run', '运行侧页', '进行中、批量、确认、恢复'], ['run-diagnostics', '诊断', '日志与 AI 调用记录']]],
+  ['', '作品资料', [['plot', '剧情树', '只读派生快照'], ['plot-threads', '伏笔线索', '计划与定稿事件'],
+    ['knowledge', '知识库', '资料与检索'], ['history', '版本历史', '只读差异与回退']]],
+  ['', '设置', [['settings', 'AI 模型', '模型列表与编辑'], ['settings-appearance', '外观与编辑器', '浅色、深色、字体'], ['settings-backup', '项目备份', '本地存档与云备份']]],
+  ['', '对话框', [['dialog-new', '新建作品', ''], ['dialog-import', '小说拆解与仿写', ''], ['dialog-export', '导出', ''], ['dialog-clear', '清除生成内容', '危险确认']]],
+];
+function render(theme) {
+  document.getElementById('groups').innerHTML = GROUPS.map(([no, name, items]) => `
+    <section class="group"><h2>${no ? `<span class="num">${no}</span>` : ''}${name}</h2><div class="grid">
+    ${items.map(([id, title, note]) => `<a class="shot" href="${id}.html?theme=${theme}">
+      <img src="shots/${id}-${theme}.png" alt="${title}" loading="lazy" onerror="this.style.visibility='hidden'">
+      <b>${title}</b><span>${note}</span></a>`).join('')}
+    </div></section>`).join('');
+}
+document.getElementById('theme').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  for (const x of e.currentTarget.children) x.setAttribute('aria-pressed', x === b);
+  render(b.dataset.t);
+});
+render('light');
+</script>
+</body>
+</html>

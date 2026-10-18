@@ -159,4 +159,20 @@ describe('ProjectTree architecture status refresh', () => {
     })
     expect(container.textContent).toContain('Chapter blueprints4/4 chapters')
   })
+
+  it('counts an outline batched only to chapter 16 of 24 as generated and keeps its clear button', async () => {
+    synopsis = `# Plot Outline\n\n${'Chapter outline line. '.repeat(10)}\n\n> This outline covers chapters 1-16 of 24; the remaining chapters will be generated in later batches.`
+    await act(async () => root.render(<ProjectTree />))
+    const coreReadCount = () => invoke.mock.calls.filter(([channel]) => channel === 'db:project-core-get').length
+    await act(async () => {
+      await vi.waitFor(() => expect(coreReadCount()).toBeGreaterThanOrEqual(2))
+    })
+    await act(async () => {
+      await vi.waitFor(() => expect(container.textContent).toContain('Story architecture4/4'))
+    })
+    const outlineRow = [...container.querySelectorAll('.tree-item')]
+      .find(row => /^Outline/.test(row.textContent ?? '') && !/Story architecture/.test(row.textContent ?? ''))
+    expect(outlineRow?.textContent).not.toContain('Pending')
+    expect(outlineRow?.querySelectorAll('button')).toHaveLength(1)
+  })
 })

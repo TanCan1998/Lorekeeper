@@ -17,6 +17,8 @@
 import { createRoot } from 'react-dom/client'
 import { useEffect, useState } from 'react'
 import { X, CheckCircle2, AlertTriangle, Info } from 'lucide-react'
+import { isStageShell } from './ink-overlay'
+import { pushToast, type ToastTone } from './ToastStack'
 
 // ===== 类型定义 =====
 
@@ -156,7 +158,13 @@ function ToastItemView({ item, onRemove }: { item: ToastItem; onRemove: (id: num
 
 // ===== 公共 API =====
 
+const INK_TONE: Record<ToastType, ToastTone> = { success: 'ok', error: 'danger', warning: 'warn', info: 'info' }
+
 function show(message: string, type: ToastType = 'info', duration = 4000) {
+  if (isStageShell()) {
+    pushToast({ tone: INK_TONE[type], message, duration })
+    return
+  }
   ensureContainer()
   const item: ToastItem = { id: ++_toastCounter, type, message, duration }
   // 等待下一帧确保容器已挂载

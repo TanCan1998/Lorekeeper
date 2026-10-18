@@ -10,7 +10,7 @@ import { useLayoutStore } from '../../../../stores/layout-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import LeftToolWindowBar from '../../LeftToolWindowBar'
-import TitleBar from '../../TitleBar'
+import { GuardedTitleBar } from '../../__tests__/guarded-title-bar'
 import SettingsModal from '../../../settings/SettingsModal'
 import ShellV2 from '../ShellV2'
 
@@ -67,7 +67,7 @@ it('V3 rail and masthead open the sibling settings sheet with the same paper and
   const root = createRoot(host)
   try {
     await act(async () => root.render(<>
-      <ShellV2 theme="light" titleBar={<TitleBar />}
+      <ShellV2 theme="light" titleBar={<GuardedTitleBar />}
         rail={<LeftToolWindowBar />} sidebar={<span>目录</span>} editor={<span>正文</span>}
         aiPanel={<span>助手</span>} bottom={<span>任务</span>} statusBar={<span>本地写作</span>} />
       <Settings />
@@ -94,7 +94,7 @@ it('V3 rail and masthead open the sibling settings sheet with the same paper and
 
     host.dataset.theme = 'dark'
     await act(async () => root.render(<>
-      <ShellV2 theme="dark" titleBar={<TitleBar />}
+      <ShellV2 theme="dark" titleBar={<GuardedTitleBar />}
         rail={<LeftToolWindowBar />} sidebar={<span>目录</span>} editor={<span>正文</span>}
         aiPanel={<span>助手</span>} bottom={<span>任务</span>} statusBar={<span>本地写作</span>} />
       <Settings />

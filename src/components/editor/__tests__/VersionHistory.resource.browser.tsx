@@ -44,3 +44,14 @@ it('中文历史比较通过新桥接打开规范URI并保留两份原文', asyn
   await vi.waitFor(() => expect(useEditorStore.getState().tabs).toHaveLength(1))
   expect(useEditorStore.getState().tabs[0]).toMatchObject({ type: 'diff', filePath: 'ai-novel://draft/ch1', originalContent: '旧版中文正文。', content: '新版中文正文。', projectKey: projectPath })
 })
+it('当前稿正文为空时对比右侧写明当前稿是空的，不说内容被错误截断', async () => {
+  const base = invoke.getMockImplementation() as (channel: string, id?: number) => Promise<unknown>
+  invoke.mockImplementation(async (channel: string, id?: number) => channel === 'db:draft-get-full' && id === 2 ? { content: '' } : base(channel, id))
+  await act(async () => root.render(<VersionHistory projectKey={projectPath} />))
+  await vi.waitFor(() => expect(host.textContent).toContain('雨夜来信'))
+  await act(async () => host.querySelector<HTMLElement>('.cursor-pointer')?.click())
+  await vi.waitFor(() => expect(host.querySelector('[title="与当前版本对比"]')).not.toBeNull())
+  await act(async () => host.querySelector<HTMLElement>('[title="与当前版本对比"]')?.click())
+  await vi.waitFor(() => expect(useEditorStore.getState().tabs).toHaveLength(1))
+  expect(useEditorStore.getState().tabs[0]).toMatchObject({ type: 'diff', originalContent: '旧版中文正文。', content: '（当前稿正文为空）' })
+})

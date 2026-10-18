@@ -17,6 +17,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { Button } from './Button'
 import { useLocaleStore } from '../../stores/locale-store'
+import { isStageShell } from './ink-overlay'
+import { openInkPrompt } from './InkPrompt'
 
 // ===== 类型定义 =====
 
@@ -186,6 +188,15 @@ export function alertError(
   message: string,
   options?: AlertOptions,
 ): Promise<void> {
+  if (isStageShell()) {
+    const text = useLocaleStore.getState().text
+    return openInkPrompt({
+      kind: 'alert',
+      title: options?.title ?? text('发生错误', 'Error'),
+      message,
+      confirmText: options?.confirmText ?? text('确定', 'OK'),
+    }).then(() => undefined)
+  }
   return new Promise(resolve => {
     const container = document.createElement('div')
     document.body.appendChild(container)

@@ -1,29 +1,19 @@
-import { CharacterProposalSelectionPanel } from '../characters/CharacterProposalSelectionPanel'
-import { ipc } from '../../services/ipc-client'
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Trash2, ChevronsDown, Loader2, CheckCircle2, XCircle, Clock,
   Play, Pause, X, ChevronDown, ChevronRight, Zap, Copy,
 } from 'lucide-react'
 import { useLayoutStore } from '../../stores/layout-store'
+import { navigate } from '../../stores/navigation/navigation-intents'
 import { useWorkflowStore, type WorkflowStep, type WorkflowRun } from '../../stores/workflow-store'
 import { useLocaleStore } from '../../stores/locale-store'
 import { useProjectStore } from '../../stores/project-store'
-import type { ProjectSessionContext } from '../../shared/ipc-channels'
-import {
-  projectSessionContextFromProject,
-  sameProjectPathKey,
-  sameProjectSessionContext,
-} from '../../shared/project-session-context'
 import { Button } from '../ui/Button'
-import { toast } from '../ui/Toast'
-import { LLMDataRequestGate } from './llm-data-request-gate'
-import { diagnosticWorkflowForCall, type LLMCallRecord } from '../../services/stats-service'
-import {
-  coarseRuntimePlatform,
-  formatSafeCallDiagnostic,
-  type SafeDiagnosticWorkflow,
-} from '../../services/safe-call-diagnostic'
+import type { LLMCallRecord } from '../../services/stats-service'
+import { sqliteTime } from '../../shared/sqlite-time'
+import type { SafeDiagnosticWorkflow } from '../../services/safe-call-diagnostic'
+import { projectRuns } from '../run/run-output'
+import { copySafeDiagnostic, useModelCalls } from '../run/use-model-calls'
 
 /** 底部面板 Tab 名称映射 */
 const TAB_LABELS: Record<string, readonly [string, string]> = {
@@ -42,8 +32,8 @@ export default function BottomPanel() {
   const allActiveRuns = useWorkflowStore(s => s.activeRuns)
   const allHistory = useWorkflowStore(s => s.history)
   const currentProject = useProjectStore(s => s.currentProject)
-  const activeRuns = currentProject?.path ? allActiveRuns.filter(run => sameProjectPathKey(run.projectPath, currentProject.path)) : []
-  const history = currentProject?.path ? allHistory.filter(run => sameProjectPathKey(run.projectPath, currentProject.path)) : []
+  const activeRuns = projectRuns(allActiveRuns, currentProject?.path)
+  const history = projectRuns(allHistory, currentProject?.path)
 
   // A) 懒卸载：面板关闭时保持挂载，仅视觉隐藏，避免切换时的短暂状态错乱
   const [visible, setVisible] = useState(bottomPanelOpen)
@@ -142,9 +132,6 @@ function TaskRunView({ activeRuns, history }: { activeRuns: WorkflowRun[]; histo
   const cancelWorkflow = useWorkflowStore(s => s.cancelWorkflow)
   const pauseWorkflow = useWorkflowStore(s => s.pauseWorkflow)
   const resumeWorkflow = useWorkflowStore(s => s.resumeWorkflow)
-  const confirmContinue = useWorkflowStore(s => s.confirmContinue)
-
-  console.log('[BottomPanel] TaskRunView render: activeRuns=', activeRuns.map(r => r.id.slice(0,8) + ':' + r.status + ':' + r.steps.map(s=>s.status).join('/')))
 
   if (activeRuns.length === 0 && history.length === 0) {
     return (
@@ -168,7 +155,6 @@ function TaskRunView({ activeRuns, history }: { activeRuns: WorkflowRun[]; histo
                   run={run}
                   waitingForConfirm={runWaiting?.waitingForConfirm ?? false}
                   waitingAfterStepIndex={runWaiting?.waitingAfterStepIndex ?? -1}
-                  onConfirm={() => confirmContinue(run.id)}
                   onCancel={() => cancelWorkflow(run.id)}
                   onPause={() => pauseWorkflow(run.id)}
                   onResume={() => resumeWorkflow(run.id)}
@@ -223,7 +209,6 @@ function ActiveRunPanel({
   run,
   waitingForConfirm,
   waitingAfterStepIndex,
-  onConfirm,
   onCancel,
   onPause,
   onResume,
@@ -231,27 +216,12 @@ function ActiveRunPanel({
   run: WorkflowRun
   waitingForConfirm: boolean
   waitingAfterStepIndex: number
-  onConfirm: () => void
   onCancel: () => void
   onPause: () => void
   onResume: () => void
 }) {
   const text = (zhCNText: string, enUSText: string) => run.uiLocale === 'en-US' ? enUSText : zhCNText
   const [expanded, setExpanded] = useState(true)
-  const currentProject = useProjectStore(state => state.currentProject)
-  const proposalSessionCurrent = sameProjectSessionContext(run.projectSession, projectSessionContextFromProject(currentProject))
-  const [identityView, setIdentityView] = useState<{ runId: string; values: Array<{characterId: string; name: string; role?: string}> }>()
-  useEffect(() => {
-    if (!waitingForConfirm || !run.characterProposalBatch || !run.projectSession || !proposalSessionCurrent) return
-    let disposed = false
-    const session = run.projectSession
-    void ipc.invokeWithProjectSession(session, 'character-identity:read').then(snapshot => {
-      if (!disposed && sameProjectSessionContext(session, projectSessionContextFromProject(useProjectStore.getState().currentProject))) setIdentityView({ runId: run.id, values: snapshot.characters.filter(c => !c.retired).map(c => ({ characterId: c.characterId, name: c.fields.name, role: c.fields.role })) })
-    }).catch(() => { if (!disposed) setIdentityView(undefined) })
-    return () => { disposed = true }
-  }, [waitingForConfirm, run.id, run.characterProposalBatch, run.projectSession, proposalSessionCurrent])
-
-
   // 需要确认时自动展开
   useEffect(() => {
     let mounted = true
@@ -268,11 +238,8 @@ function ActiveRunPanel({
   const totalCount = run.steps.length
   const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
   const nextStepName = run.steps[waitingAfterStepIndex + 1]?.name
-  const confirmationPreview = run.steps[waitingAfterStepIndex]?.result
   const isActive = run.status === 'running' || run.status === 'waiting' || run.status === 'paused' || run.status === 'cancelling'
   const isBatchTask = run.type === 'batch_generate'
-
-  console.log('[BottomPanel] ActiveRunPanel render: run.status=', run.status, 'steps=', run.steps.map(s => s.status).join(','))
 
   return (
     <div>
@@ -375,80 +342,16 @@ function ActiveRunPanel({
               <WorkflowStepItem key={step.id} step={step} index={i} isLast={i === run.steps.length - 1} uiLocale={run.uiLocale} />
             ))}
           </div>
-
-          {/* ── 等待确认操作区 ── */}
-          {waitingForConfirm && nextStepName && (
-            <div
-              data-testid="workflow-confirmation-panel"
-              className="mx-4 mt-2 px-3 py-2 rounded flex flex-col gap-2"
-              style={{
-                backgroundColor: 'rgba(var(--color-accent-rgb), 0.07)',
-                border: '1px solid rgba(var(--color-accent-rgb), 0.25)',
-              }}
-            >
-              {confirmationPreview && (
-                <pre
-                  data-testid="workflow-confirmation-preview"
-                  className="max-h-48 w-full overflow-auto whitespace-pre-wrap text-xs font-sans"
-                  style={{ color: 'var(--color-text-secondary)' }}
-                >
-                  {confirmationPreview}
-                </pre>
-              )}
-              {run.characterProposalBatch && run.characterProposalChoices && proposalSessionCurrent && <CharacterProposalSelectionPanel
-                batch={run.characterProposalBatch} choices={run.characterProposalChoices} disabled={identityView?.runId !== run.id}
-                identities={identityView?.runId === run.id ? identityView.values : []}
-                onChange={choices => { useWorkflowStore.getState().setCharacterProposalChoices(run.id, choices) }} />}
-              <div className="flex w-full items-center gap-2">
-                <Clock size={11} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
-                <span className="text-xs flex-1 truncate" style={{ color: 'var(--color-text-secondary)' }}>
-                  {text('下一步：', 'Next: ')}{nextStepName}
-                </span>
-                <button
-                  data-testid="workflow-confirmation-cancel"
-                  onClick={onCancel}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium flex-shrink-0"
-                  style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
-                >
-                  <X size={10} /> {text('取消工作流', 'Cancel workflow')}
-                </button>
-                <button
-                  data-testid="workflow-confirmation-confirm"
-                  disabled={!!run.characterProposalBatch && (!proposalSessionCurrent || identityView?.runId !== run.id)}
-                  onClick={onConfirm}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium flex-shrink-0"
-                  style={{ backgroundColor: 'var(--color-accent)', color: '#fff' }}
-                >
-                  <Play size={10} /> {nextStepName}
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
-      {/* ── 折叠时若等待确认：状态条下方显示简洁提示 ── */}
-      {waitingForConfirm && !expanded && nextStepName && (
-        <div
-          className="mx-3 mb-2 px-2.5 py-1.5 rounded flex items-center gap-2"
-          style={{
-            backgroundColor: 'rgba(var(--color-accent-rgb), 0.07)',
-            border: '1px solid rgba(var(--color-accent-rgb), 0.25)',
-          }}
-        >
-          <Clock size={11} style={{ color: 'var(--color-accent)', flexShrink: 0 }} />
-          <span className="text-xs flex-1 truncate" style={{ color: 'var(--color-text-secondary)' }}>
-            {text('下一步：', 'Next: ')}{nextStepName}
-          </span>
-          <button
-            disabled={!!run.characterProposalBatch && (!proposalSessionCurrent || identityView?.runId !== run.id)}
-            onClick={(e) => { e.stopPropagation(); onConfirm() }}
-            className="flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium flex-shrink-0"
-            style={{ backgroundColor: 'var(--color-accent)', color: '#fff' }}
-          >
-            <Play size={10} /> {text('继续', 'Continue')}
-          </button>
-        </div>
+      {waitingForConfirm && nextStepName && (
+        <button type="button" data-testid="workflow-confirmation-open"
+          onClick={() => navigate({ kind: 'run', facet: 'output', runId: run.id })}
+          className="mx-3 mb-2 flex items-center gap-1 rounded px-2.5 py-1.5 text-xs"
+          style={{ color: 'var(--color-accent)', border: '1px solid var(--color-border)' }}>
+          <ChevronRight size={11} /> {text('在 AI 输出中确认', 'Confirm in AI output')}
+        </button>
       )}
     </div>
   )
@@ -669,31 +572,11 @@ export function SafeDiagnosticCopyButton({
   const locale = useLocaleStore(s => s.locale)
   const text = useLocaleStore(s => s.text)
 
-  const copyDiagnostic = async () => {
-    if (!navigator.clipboard?.writeText) {
-      toast.error(text('当前环境不支持复制安全诊断', 'Safe diagnostic copying is unavailable in this environment.'))
-      return
-    }
-    const diagnostic = formatSafeCallDiagnostic({
-      locale,
-      appVersion: __APP_VERSION__,
-      platform: coarseRuntimePlatform(navigator.platform),
-      call,
-      workflow,
-    })
-    try {
-      await navigator.clipboard.writeText(diagnostic)
-      toast.success(text('已复制安全诊断', 'Safe diagnostics copied.'))
-    } catch {
-      toast.error(text('复制安全诊断失败', 'Could not copy safe diagnostics.'))
-    }
-  }
-
   return (
     <Button
       variant="ghost"
       size="icon"
-      onClick={() => void copyDiagnostic()}
+      onClick={() => void copySafeDiagnostic(call, workflow, locale)}
       title={text('复制安全诊断', 'Copy safe diagnostics')}
       aria-label={text('复制安全诊断', 'Copy safe diagnostics')}
     >
@@ -705,65 +588,7 @@ export function SafeDiagnosticCopyButton({
 function ModelsView() {
   const text = useLocaleStore(s => s.text)
   const locale = useLocaleStore(s => s.locale)
-  const currentProject = useProjectStore(s => s.currentProject)
-  const projectSession = useMemo(
-    () => projectSessionContextFromProject(currentProject),
-    [currentProject],
-  )
-  const [requestGate] = useState(() => new LLMDataRequestGate())
-  const activeWorkflowRuns = useWorkflowStore(s => s.activeRuns)
-  const workflowHistory = useWorkflowStore(s => s.history)
-  const diagnosticWorkflowRuns = useMemo(
-    () => [...activeWorkflowRuns, ...workflowHistory],
-    [activeWorkflowRuns, workflowHistory],
-  )
-  const [data, setData] = useState<{
-    projectSession: ProjectSessionContext
-    stats: {
-      totalCalls: number; successfulCalls: number; failedCalls: number; knownUsageCalls: number
-      totalTokens: number | null
-      totalPromptTokens: number | null; totalCompletionTokens: number | null
-    }
-    history: LLMCallRecord[]
-  } | null>(null)
-
-  // 即使旧请求尚未返回，也绝不向新会话展示其统计；数据与 lease 一起渲染。
-  const visibleData = data && sameProjectSessionContext(data.projectSession, projectSession)
-    ? data
-    : null
-  const stats = visibleData?.stats ?? null
-  const history = visibleData?.history ?? []
-
-  useEffect(() => {
-    if (!projectSession) {
-      requestGate.invalidate()
-      return
-    }
-    let disposed = false
-    const load = () => {
-      const ticket = requestGate.begin(projectSession)
-      void import('../../services/stats-service')
-        .then(({ loadLLMData }) => loadLLMData(projectSession, 30))
-        .then(({ stats: loadedStats, history: loadedHistory }) => {
-          if (disposed) return
-          const currentSession = projectSessionContextFromProject(
-            useProjectStore.getState().currentProject,
-          )
-          if (!requestGate.isCurrent(ticket, currentSession)) return
-          setData({ projectSession: ticket.projectSession, stats: loadedStats, history: loadedHistory })
-        })
-        .catch(() => {
-          // IPC 失败时保持清空状态；旧请求也不能反向写入 UI。
-        })
-    }
-    load()
-    const refreshTimer = window.setInterval(load, 2000)
-    return () => {
-      disposed = true
-      window.clearInterval(refreshTimer)
-      requestGate.invalidate()
-    }
-  }, [projectSession, requestGate])
+  const { stats, history, workflowFor } = useModelCalls()
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -816,7 +641,7 @@ function ModelsView() {
                   style={{ borderBottom: '1px solid var(--color-border)' }}
                 >
                   <td className="px-4 py-1 text-[var(--color-text-muted)]">
-                    {new Date(row.createdAt).toLocaleString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    {sqliteTime(row.createdAt).toLocaleString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                   </td>
                   <td className="px-2 py-1 text-[var(--color-text-secondary)]">{row.modelName || '-'}</td>
                   <td className="px-2 py-1 text-[var(--color-text-secondary)]">{row.purpose || '-'}</td>
@@ -824,12 +649,7 @@ function ModelsView() {
                   <td className="px-2 py-1 text-right text-[var(--color-text-muted)]">{(row.durationMs / 1000).toFixed(1)}s</td>
                   <td className="px-2 py-1 text-center">{row.success ? <CheckCircle2 size={12} style={{ color: 'var(--color-success)', display: 'inline' }} /> : <XCircle size={12} style={{ color: 'var(--color-error)', display: 'inline' }} />}</td>
                   <td className="px-2 py-0.5 text-center">
-                    <SafeDiagnosticCopyButton
-                      call={row}
-                      workflow={projectSession
-                        ? diagnosticWorkflowForCall(row, diagnosticWorkflowRuns, projectSession.projectPath)
-                        : undefined}
-                    />
+                    <SafeDiagnosticCopyButton call={row} workflow={workflowFor(row)} />
                   </td>
                 </tr>
               ))}

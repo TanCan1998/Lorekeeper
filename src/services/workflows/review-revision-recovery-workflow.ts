@@ -28,8 +28,8 @@ export async function createReviewRevisionRecoveryWorkflow(projectSession: Proje
         characters: blueprint?.characters ?? [], keyEvents: blueprint?.keyEvents ?? '' } })
   const requestsReview = frozen.operation === 'review-chapter' && !recovery.saved && !canCommitRecoveredReview(recovery)
   const name = requestsReview
-    ? (frozen.uiLocale === 'en-US' ? `Review chapter ${source.chapterNumber} again` : `重新审稿：第${source.chapterNumber}章`)
-    : frozen.uiLocale === 'en-US' ? `Recover chapter ${source.chapterNumber} review or revision` : `恢复第${source.chapterNumber}章审稿或修稿`
+    ? (frozen.uiLocale === 'en-US' ? `Chapter ${source.chapterNumber} · Review again` : `第 ${source.chapterNumber} 章 · 重新审稿`)
+    : frozen.uiLocale === 'en-US' ? `Chapter ${source.chapterNumber} · Recover review or revision` : `第 ${source.chapterNumber} 章 · 恢复审稿或修稿`
   return { type: 'chapter_creation', title: name, projectPath: session.projectPath, projectSession: session,
     generationModelId: recovery.modelId, uiLocale: frozen.uiLocale,
     resourceKeys: [workflowResourceKey('chapter', source.chapterNumber)],

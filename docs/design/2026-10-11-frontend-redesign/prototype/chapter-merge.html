@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正文 · 修稿合并</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 合并视图用更宽的纸面，左右并排原稿与修稿 */
+  .merge-page { max-width: 1040px; padding-left: var(--s-12); padding-right: var(--s-12); }
+  .merge-legend { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-6); padding: 0 var(--s-4) var(--s-2); color: var(--ink-3); font-size: var(--fs-12); }
+  .merge-legend span { display: flex; align-items: center; gap: 8px; }
+  .swatch-del, .swatch-ins { width: 10px; height: 10px; border-radius: 2px; }
+  .swatch-del { background: var(--danger-soft); box-shadow: inset 0 0 0 1px var(--danger); }
+  .swatch-ins { background: var(--ok-soft); box-shadow: inset 0 0 0 1px var(--ok); }
+  .hunks { display: flex; flex-direction: column; gap: var(--s-3); }
+  .hunk { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--paper); }
+  .hunk[data-pick="edit"] { border-color: var(--accent-line); }
+  .hunk-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: 8px 8px 8px var(--s-4);
+    border-bottom: 1px solid var(--rule); background: var(--surface); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .hunk-meta { display: flex; align-items: center; gap: 10px; color: var(--ink-3); font-size: var(--fs-12); }
+  .hunk-meta b { color: var(--ink-2); font-weight: 500; }
+  .hunk-cols { display: grid; grid-template-columns: 1fr 1fr; }
+  .hunk-col { padding: var(--s-3) var(--s-4); font: var(--fs-16)/1.95 var(--font-prose); color: var(--ink); }
+  .hunk-col + .hunk-col { border-left: 1px solid var(--rule); }
+  .hunk-col[data-chosen="false"] { color: var(--ink-3); }
+  .hunk-col del { color: var(--ink-3); text-decoration-color: var(--danger); background: var(--danger-soft); }
+  .hunk-col ins { text-decoration: none; background: var(--ok-soft); box-shadow: inset 0 -1.5px 0 var(--ok); }
+  .hunk-edit { padding: var(--s-3) var(--s-4); }
+  .hunk-edit .textarea { min-height: 0; font-size: var(--fs-16); line-height: 1.95; }
+  .same { display: flex; align-items: center; gap: 10px; padding: 6px var(--s-4); color: var(--ink-3); font-size: var(--fs-12); }
+  .same::before, .same::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+  .merge-note { display: flex; align-items: flex-start; gap: 10px; margin-top: var(--s-6); padding: var(--s-3) var(--s-4);
+    border-radius: var(--radius); background: var(--sunken); color: var(--ink-2); line-height: 1.65; }
+  .merge-note .i { margin-top: 3px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page merge-page">
+      <div class="eyebrow">第 3 章 · 发展 · 修稿合并</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">雨夜车站</h1>
+        <span class="badge accent">草稿 v2 + 修稿 · 3 处改动</span>
+      </div>
+      <ol class="life" aria-label="本章进度" style="margin-top:22px">
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>写作</li>
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>审稿</li>
+        <li data-s="now"><span class="node"></span>修稿</li>
+        <li data-s="todo"><span class="node"></span>定稿</li>
+      </ol>
+      <div class="chapter-actions">
+        <button class="btn btn-primary"><svg class="i"><use href="#i-git-merge"/></svg>完成合并</button>
+        <button class="btn btn-secondary">全部用原稿</button>
+        <button class="btn btn-secondary">全部用修稿</button>
+        <button class="btn btn-ghost">稍后再合并</button>
+        <span class="hint">已选 2 处用修稿，1 处手动编辑</span>
+      </div>
+
+      <div class="merge-legend"><span><i class="swatch-del"></i>原稿 · 草稿 v2</span><span><i class="swatch-ins"></i>修稿 · 按 2 项意见</span></div>
+      <div class="hunks">
+        <div class="same">第 1 段未改动</div>
+
+        <section class="hunk" data-pick="revised">
+          <div class="hunk-head">
+            <div class="hunk-meta"><b>第 2 段</b>针对意见：节奏</div>
+            <div class="seg" role="radiogroup" aria-label="第 2 段用哪一版">
+              <button aria-pressed="false">用原稿</button><button aria-pressed="true">用修稿</button><button aria-pressed="false">手动编辑</button>
+            </div>
+          </div>
+          <div class="hunk-cols">
+            <div class="hunk-col" data-chosen="false">最后一班列车晚点了十七分钟。<del>广播里的女声重复着同一句道歉，像是在对一个并不存在的人群说话。</del></div>
+            <div class="hunk-col" data-chosen="true">最后一班列车晚点了十七分钟<ins>，广播里的道歉一遍遍落进空无一人的站台</ins>。</div>
+          </div>
+        </section>
+
+        <div class="same">第 3 段未改动</div>
+
+        <section class="hunk" data-pick="edit">
+          <div class="hunk-head">
+            <div class="hunk-meta"><b>第 4 段</b>针对意见：前后矛盾</div>
+            <div class="seg" role="radiogroup" aria-label="第 4 段用哪一版">
+              <button aria-pressed="false">用原稿</button><button aria-pressed="false">用修稿</button><button aria-pressed="true">手动编辑</button>
+            </div>
+          </div>
+          <div class="hunk-cols">
+            <div class="hunk-col" data-chosen="false">林舟把信折好，塞回大衣内侧的口袋。<del>他想起母亲说过，这座车站在三十年前就该拆了。</del></div>
+            <div class="hunk-col" data-chosen="false">林舟把信折好，塞回大衣内侧的口袋。<ins>他想起报纸上说过，这座车站在三十年前就该拆了。</ins></div>
+          </div>
+          <div class="hunk-edit">
+            <div class="textarea is-focus">林舟把信折好，塞回大衣内侧的口袋。他想起旧报纸上那则很短的消息：这座车站，三十年前就该拆了。</div>
+          </div>
+        </section>
+
+        <section class="hunk" data-pick="revised">
+          <div class="hunk-head">
+            <div class="hunk-meta"><b>第 6 段</b>修稿顺带调整</div>
+            <div class="seg" role="radiogroup" aria-label="第 6 段用哪一版">
+              <button aria-pressed="false">用原稿</button><button aria-pressed="true">用修稿</button><button aria-pressed="false">手动编辑</button>
+            </div>
+          </div>
+          <div class="hunk-cols">
+            <div class="hunk-col" data-chosen="false">他抬脚的时候，身后有人叫了他的名字。</div>
+            <div class="hunk-col" data-chosen="true">他抬脚的时候，身后有人叫了他的名字<ins>，声音很轻，像是怕吵醒谁</ins>。</div>
+          </div>
+        </section>
+      </div>
+
+      <div class="merge-note">
+        <svg class="i"><use href="#i-info"/></svg>
+        <div>完成合并后，会自动复验这 2 项意见是否已经解决，结果写回审稿报告。复验没完成时，审稿报告里会出现“重试复验”。合并前的草稿 v2 保留在版本历史里。</div>
+      </div>
+    </article>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '正文 · 修稿合并', stage: 'text', chapter: 3, crumbs: ['正文', '第 3 章', '修稿合并'], saved: false,
+  run: { label: '第 3 章 · 修稿完成', pct: 100 },
+});
+</script>
+</body>
+</html>

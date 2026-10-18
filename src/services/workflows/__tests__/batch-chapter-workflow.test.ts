@@ -209,8 +209,8 @@ describe('batch chapter workflow limits', () => {
       'chapter-summary',
     ]))
     expect(workflow.steps).toHaveLength(MAX_BATCH_CHAPTERS)
-    expect(workflow.steps[0]).toMatchObject({ name: '第4章：自动定稿与后处理' })
-    expect(workflow.steps[MAX_BATCH_CHAPTERS - 1]).toMatchObject({ name: '第13章：自动定稿与后处理' })
+    expect(workflow.steps[0]).toMatchObject({ name: '第 4 章 · 自动定稿与后处理' })
+    expect(workflow.steps[MAX_BATCH_CHAPTERS - 1]).toMatchObject({ name: '第 13 章 · 自动定稿与后处理' })
     expect(workflow.steps.every((step) => step.description.includes('后处理失败立即停止'))).toBe(true)
   })
 })
@@ -347,12 +347,12 @@ describe('batch chapter workflow completion mode', () => {
       status: 'completed',
       steps: [
         {
-          name: 'Chapter 1: generate review draft',
+          name: 'Chapter 1 · Generate review draft',
           result: 'Chapter 1 draft was generated and saved for review.',
           logs: [expect.stringContaining('Starting Chapter 1: generate a review draft.')],
         },
         {
-          name: 'Chapter 2: generate review draft',
+          name: 'Chapter 2 · Generate review draft',
           result: 'Chapter 2 draft was generated and saved for review.',
           logs: [expect.stringContaining('Starting Chapter 2: generate a review draft.')],
         },

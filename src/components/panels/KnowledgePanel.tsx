@@ -15,6 +15,7 @@ import {
   isProjectSessionCurrent,
 } from '../project-session-gate'
 import { sameProjectSessionContext } from '../../shared/project-session-context'
+import { pluralEn } from '../../shared/plural-en'
 
 
 
@@ -143,7 +144,7 @@ export default function KnowledgePanel() {
           <Database size={13} />
           {text('知识库', 'Knowledge base')}
           <span className="text-[0.7rem] text-[var(--color-text-muted)]">
-            {text(`（${stats.documentCount} 文档 / ${stats.totalChunks} 块）`, `(${stats.documentCount} documents / ${stats.totalChunks} chunks)`)}
+            {text(`（${stats.documentCount} 文档 / ${stats.totalChunks} 块）`, `(${stats.documentCount} ${pluralEn(stats.documentCount, 'document')} / ${stats.totalChunks} ${pluralEn(stats.totalChunks, 'chunk')})`)}
           </span>
         </span>
         <Button
@@ -190,7 +191,7 @@ export default function KnowledgePanel() {
                       {titleMap[doc.id] || doc.fileName}
                     </div>
                     <div className="flex items-center gap-2 text-[0.7rem] text-[var(--color-text-muted)] mt-0.5">
-                      <span>{text(`${doc.chunkCount} 块`, `${doc.chunkCount} chunks`)}</span>
+                      <span>{text(`${doc.chunkCount} 块`, `${doc.chunkCount} ${pluralEn(doc.chunkCount, 'chunk')}`)}</span>
                       <span>{new Date(doc.importedAt).toLocaleDateString(locale)}</span>
                     </div>
                   </div>

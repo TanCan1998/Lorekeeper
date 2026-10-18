@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>蓝图 · 第 5 章</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .bp { display: grid; grid-template-rows: auto auto 1fr; height: 100%; }
+  .bp-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-6); padding: var(--s-6) var(--s-8) var(--s-4); }
+  .bp-title { margin-top: 4px; font: 600 var(--fs-24)/1.3 var(--font-display); }
+
+  /* 恢复稿提示条 */
+  .recover { display: flex; align-items: center; gap: var(--s-3); margin: 0 var(--s-8) var(--s-4); padding: 10px 12px; border-radius: var(--radius); background: var(--warn-soft); }
+  .recover > .i { color: var(--warn); }
+  .recover-text { flex: 1; min-width: 0; }
+  .recover-text small { display: block; color: var(--ink-2); font-size: var(--fs-12); }
+
+  .bp-body { display: grid; grid-template-columns: 312px 1fr; min-height: 0; border-top: 1px solid var(--rule); }
+
+  /* 左：章节规划列表 */
+  .plan { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--rule); }
+  .plan-top { display: flex; align-items: center; justify-content: space-between; padding: var(--s-3) var(--s-4) var(--s-2); color: var(--ink-3); font-size: var(--fs-12); }
+  .plan-legend { display: inline-flex; align-items: center; gap: 4px; }
+  .plan-list { list-style: none; margin: 0; padding: 0 var(--s-2) var(--s-4); overflow: auto; flex: 1; min-height: 0; }
+  .plan-item { display: grid; grid-template-columns: 24px 1fr auto auto; align-items: center; gap: 8px; padding: 7px 10px; border-radius: var(--radius); font-size: 12.5px; cursor: pointer; }
+  .plan-item:hover { background: var(--surface-2); }
+  .plan-item[aria-current="true"] { background: var(--accent-soft); }
+  .plan-item[aria-current="true"] .plan-name { font-weight: 600; }
+  .plan-no { font: 13px var(--font-num); color: var(--ink-3); font-variant-numeric: oldstyle-nums; }
+  .plan-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .plan-marks { display: inline-flex; gap: 2px; color: var(--ink-3); }
+  .plan-marks .i { width: 13px; height: 13px; }
+
+  /* 右：单章蓝图 */
+  .card-edit { overflow: auto; min-height: 0; }
+  .card-inner { max-width: 860px; padding: var(--s-5) var(--s-8) var(--s-16); }
+  .card-bar { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-5); }
+  .card-bar .eyebrow { margin-right: var(--s-2); }
+  .card-bar .gap { flex: 1; }
+  .people-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 38px; padding: 4px 6px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); }
+  .chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px 0 10px; border-radius: var(--radius-pill); background: var(--surface-2); font-size: var(--fs-12); }
+  .chip .i { width: 12px; height: 12px; color: var(--ink-3); }
+  .chip-add { color: var(--ink-3); font-size: var(--fs-12); padding: 0 6px; }
+  .points { margin: 0; padding: 10px 12px 10px 32px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); font: 14px/1.9 var(--font-prose); }
+  .card-edit .textarea { min-height: 76px; }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="bp">
+    <div class="bp-head">
+      <div>
+        <div class="eyebrow">第三步 · 蓝图</div>
+        <div class="bp-title">逐章规划</div>
+      </div>
+      <div class="page-actions">
+        <button class="btn btn-ghost btn-icon" aria-label="更多蓝图操作" aria-expanded="true"><svg class="i"><use href="#i-more"/></svg></button>
+        <button class="btn btn-secondary btn-ai"><svg class="i"><use href="#i-sparkles"/></svg>AI 生成蓝图</button>
+        <button class="btn btn-secondary"><svg class="i"><use href="#i-list-checks"/></svg>批量创作</button>
+        <div class="btn-group">
+          <button class="btn btn-primary"><svg class="i"><use href="#i-feather"/></svg>写第 5 章</button>
+          <button class="btn btn-primary" aria-label="本次模型与作者微操指导"><svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="recover" role="status">
+      <svg class="i"><use href="#i-circle-alert"/></svg>
+      <div class="recover-text">有一份蓝图恢复稿：上次重新生成第 17～24 章时中断，恢复出了第 17～20 章。
+        <small>现在列表里仍是原来的蓝图。保存恢复稿才会替换，也可以接着生成缺少的第 21～24 章。</small></div>
+      <button class="btn btn-ghost btn-sm">查看原始候选</button>
+      <button class="btn btn-secondary btn-sm">编辑恢复稿</button>
+    </div>
+
+    <div class="bp-body">
+      <aside class="plan" aria-label="章节规划">
+        <div class="plan-top"><span>24 章</span>
+          <span class="plan-legend"><svg class="i i-sm"><use href="#i-feather"/></svg>作者指导　<svg class="i i-sm"><use href="#i-list-checks"/></svg>要点</span></div>
+        <ol class="plan-list">
+          <li class="plan-item"><span class="plan-no">01</span><span class="plan-name">灰色的信</span><span class="plan-marks"><svg class="i"><use href="#i-list-checks"/></svg></span><span class="status"><span class="dot ok"></span>定稿</span></li>
+          <li class="plan-item"><span class="plan-no">02</span><span class="plan-name">母亲的旧照片</span><span class="plan-marks"><svg class="i"><use href="#i-feather"/></svg><svg class="i"><use href="#i-list-checks"/></svg></span><span class="status"><span class="dot ok"></span>定稿</span></li>
+          <li class="plan-item"><span class="plan-no">03</span><span class="plan-name">雨夜车站</span><span class="plan-marks"><svg class="i"><use href="#i-list-checks"/></svg></span><span class="status"><span class="dot accent"></span>已审稿</span></li>
+          <li class="plan-item"><span class="plan-no">04</span><span class="plan-name">第三节车厢</span><span class="plan-marks"><svg class="i"><use href="#i-feather"/></svg><svg class="i"><use href="#i-list-checks"/></svg></span><span class="status"><span class="dot run"></span>生成中</span></li>
+          <li class="plan-item" aria-current="true"><span class="plan-no">05</span><span class="plan-name">不要回头</span><span class="plan-marks"><svg class="i"><use href="#i-feather"/></svg><svg class="i"><use href="#i-list-checks"/></svg></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">06</span><span class="plan-name">阅读灯</span><span class="plan-marks"><svg class="i"><use href="#i-list-checks"/></svg></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">07</span><span class="plan-name">终点站以北</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">08</span><span class="plan-name">失物招领处</span><span class="plan-marks"><svg class="i"><use href="#i-list-checks"/></svg></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">09</span><span class="plan-name">第二封信</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">10</span><span class="plan-name">守夜人</span><span class="plan-marks"><svg class="i"><use href="#i-feather"/></svg></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">11</span><span class="plan-name">空座位</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">12</span><span class="plan-name">返程票</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">13</span><span class="plan-name">铁轨下的名字</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">14</span><span class="plan-name">旧报纸</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">15</span><span class="plan-name">第十七分钟</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">16</span><span class="plan-name">无人认领</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">17</span><span class="plan-name">阅读灯熄灭之后</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">18</span><span class="plan-name">母亲的车票</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">19</span><span class="plan-name">拆迁公告</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">20</span><span class="plan-name">第三节车厢的乘客</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">21</span><span class="plan-name">回头</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">22</span><span class="plan-name">天亮之前</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">23</span><span class="plan-name">末班车</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+          <li class="plan-item"><span class="plan-no">24</span><span class="plan-name">雨停了</span><span class="plan-marks"></span><span class="status"><span class="dot"></span>待写</span></li>
+        </ol>
+      </aside>
+
+      <section class="card-edit" aria-label="第 5 章蓝图">
+        <div class="card-inner">
+          <div class="card-bar">
+            <span class="eyebrow">第 5 章</span>
+            <span class="status"><span class="dot"></span>正文待写</span>
+            <span class="gap"></span>
+            <button class="btn btn-secondary btn-sm" disabled>保存此章</button>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="第 5 章更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+          <div class="form-grid">
+            <div class="field w4"><span class="label">标题</span><div class="input" style="font-family:var(--font-display);font-size:var(--fs-16)">不要回头</div></div>
+            <div class="field"><span class="label">定位</span><div class="select">转折 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+            <div class="field w6"><span class="label">出场人物</span>
+              <div class="people-chips">
+                <span class="chip">林舟 <svg class="i"><use href="#i-x"/></svg></span>
+                <span class="chip">老周 <svg class="i"><use href="#i-x"/></svg></span>
+                <span class="chip">阿满 <svg class="i"><use href="#i-x"/></svg></span>
+                <button class="chip-add"><svg class="i i-sm"><use href="#i-plus"/></svg> 添加</button>
+              </div>
+            </div>
+            <div class="field w3"><span class="label">冲突与转折</span><div class="textarea">林舟在车厢里听见母亲的声音叫他的名字。老周按住他的肩：在这节车厢里，回头的人不会再下车。</div></div>
+            <div class="field w3"><span class="label">悬念钩子</span><div class="textarea">阅读灯下的座位上放着一张 1998 年的车票，乘客姓名一栏写着“林舟”。</div></div>
+            <div class="field w6"><span class="label">作者微操指导 <em>写作此章时一并交给 AI</em></span><div class="textarea is-focus">母亲的声音只出现一次，不要解释来源。老周的台词要短，像是背熟的规矩。</div></div>
+            <div class="field w6"><span class="label">章节要点 <em>每行一条</em></span>
+              <ol class="points">
+                <li>列车驶出站台后，车窗外的景色停在 1998 年。</li>
+                <li>老周第一次说出“不要回头”的规矩。</li>
+                <li>阿满出现在座位旁，没有人看得见她，除了林舟。</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="menu" style="top:112px;left:812px" role="menu" aria-label="更多蓝图操作">
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-plus"/></svg>新建章节</button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-refresh-cw"/></svg>重新加载蓝图</button>
+    <div class="menu-sep"></div>
+    <div class="menu-label">危险</div>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>清空全部蓝图…</button>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '蓝图 · 第 5 章', stage: 'plan', crumbs: ['蓝图', '第 5 章'], saved: true,
+  run: { label: '第 4 章 · 生成草稿', pct: 62 },
+});
+</script>
+</body>
+</html>

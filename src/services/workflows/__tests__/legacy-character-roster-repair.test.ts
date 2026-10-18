@@ -360,7 +360,7 @@ describe('legacy character roster repair public workflow seam', () => {
     })
     finishGeneration?.()
 
-    await expect(execution).rejects.toThrow('当前项目已切换，旧角色图谱修复已停止以避免写入错误项目')
+    await expect(execution).rejects.toThrow('当前项目已切换，旧版角色名单修复已停止以避免写入错误项目')
     expect(invoke.mock.calls.map(([channel]) => channel).filter(channel => channel.startsWith('db:character-roster'))).toEqual(['db:character-roster-read'])
   })
 

@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视觉方向原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700;900&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* 原型：一次性产物，不进入产品源码。三个方向共用同一份标记，只换令牌与少量构图规则。 */
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%}
+body{background:#777;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+.i{width:16px;height:16px;flex:none;display:inline-block;vertical-align:middle}
+.i-sm{width:14px;height:14px}
+
+/* ---------- 方向令牌 ---------- */
+.app[data-dir="a"]{
+  --bg:#F4F1E9;--surface:#FBF9F4;--surface-2:#EDE8DC;--sunken:#E9E3D6;
+  --ink:#1D1B18;--ink-2:#57524B;--ink-3:#8E877C;--rule:#E0D9CB;--rule-strong:#CFC6B5;
+  --accent:#2E4A78;--accent-ink:#F7F5EF;--accent-soft:#E2E7F0;
+  --danger:#A3352B;--ok:#3E6A4C;--warn:#9A6A1F;--run:#2E4A78;
+  --font-ui:"Noto Sans SC",system-ui,sans-serif;
+  --font-display:"Noto Serif SC","Songti SC",serif;
+  --font-prose:"Noto Serif SC","Songti SC",serif;
+  --font-num:"EB Garamond",Georgia,serif;
+  --radius:6px;--radius-lg:10px;--spine-w:264px;--title-h:48px;
+  --prose-size:18px;--prose-lh:2.05;--shadow:0 1px 0 rgba(29,27,24,.04),0 12px 32px -18px rgba(29,27,24,.28);
+}
+.app[data-dir="b"]{
+  --bg:#0C0D0F;--surface:#131417;--surface-2:#1A1C20;--sunken:#0F1012;
+  --ink:#EDEBE6;--ink-2:#A8A59F;--ink-3:#6D6A65;--rule:#23252A;--rule-strong:#30333A;
+  --accent:#E6AE4A;--accent-ink:#1B1406;--accent-soft:rgba(230,174,74,.12);
+  --danger:#F06A5F;--ok:#74C195;--warn:#8FB4F0;--run:#E6AE4A;
+  --font-ui:"Inter","Noto Sans SC",system-ui,sans-serif;
+  --font-display:"Inter","Noto Sans SC",sans-serif;
+  --font-prose:"Noto Serif SC",serif;
+  --font-num:"JetBrains Mono",ui-monospace,monospace;
+  --radius:7px;--radius-lg:12px;--spine-w:260px;--title-h:46px;
+  --prose-size:17px;--prose-lh:2;--shadow:0 0 0 1px rgba(255,255,255,.04),0 24px 48px -24px rgba(0,0,0,.8);
+}
+.app[data-dir="c"]{
+  --bg:#FFFFFF;--surface:#FFFFFF;--surface-2:#F2F2EF;--sunken:#F2F2EF;
+  --ink:#0B0B0C;--ink-2:#47474C;--ink-3:#8B8B91;--rule:#E4E4E0;--rule-strong:#0B0B0C;
+  --accent:#2340FF;--accent-ink:#FFFFFF;--accent-soft:#E8EBFF;
+  --danger:#E0313A;--ok:#0B0B0C;--warn:#B76E00;--run:#2340FF;
+  --font-ui:"Inter","Noto Sans SC",system-ui,sans-serif;
+  --font-display:"Inter","Noto Sans SC",sans-serif;
+  --font-prose:"Noto Serif SC",serif;
+  --font-num:"Inter",sans-serif;
+  --radius:0px;--radius-lg:0px;--spine-w:288px;--title-h:52px;
+  --prose-size:17px;--prose-lh:2;--shadow:none;
+}
+
+/* ---------- 外壳 ---------- */
+.app{position:fixed;inset:0;display:grid;grid-template-rows:var(--title-h) 1fr;background:var(--bg);color:var(--ink);
+  font-family:var(--font-ui);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased;transition:background .3s,color .3s}
+.titlebar{display:flex;align-items:center;gap:14px;padding:0 0 0 16px;border-bottom:1px solid var(--rule);background:var(--bg)}
+.brand{width:22px;height:22px;border-radius:5px;background:var(--ink);color:var(--bg);display:grid;place-items:center;font:600 12px var(--font-display)}
+.work{display:flex;align-items:center;gap:6px;font-weight:600;font-size:13.5px;padding:5px 8px;border-radius:var(--radius)}
+.work:hover{background:var(--surface-2)}
+.crumb{color:var(--ink-3);display:flex;align-items:center;gap:8px}
+.crumb b{color:var(--ink-2);font-weight:500}
+.tb-spacer{flex:1}
+.capsule{display:flex;align-items:center;gap:8px;height:28px;padding:0 12px 0 8px;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--ink-2);font-size:12px}
+.capsule .ring{width:16px;height:16px;border-radius:50%;background:conic-gradient(var(--run) calc(var(--p)*1%),var(--rule) 0);display:grid;place-items:center}
+.capsule .ring::after{content:"";width:10px;height:10px;border-radius:50%;background:var(--surface)}
+.capsule b{color:var(--ink);font-weight:600}
+.saved{display:flex;align-items:center;gap:5px;color:var(--ink-3);font-size:12px}
+.tb-btn{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:var(--radius);color:var(--ink-2);font-size:12px}
+.tb-btn:hover{background:var(--surface-2);color:var(--ink)}
+.winctl{display:flex;height:100%;margin-left:6px}
+.winctl button{width:46px;display:grid;place-items:center;color:var(--ink-3)}
+.winctl button:hover{background:var(--surface-2);color:var(--ink)}
+.winctl .i{width:14px;height:14px}
+
+.body{display:grid;grid-template-columns:var(--spine-w) 1fr;min-height:0}
+
+/* ---------- 流程脊 ---------- */
+.spine{display:flex;flex-direction:column;border-right:1px solid var(--rule);padding:22px 14px 14px;min-height:0;background:var(--bg)}
+.spine-label{font-size:11px;letter-spacing:.14em;color:var(--ink-3);padding:0 10px 10px}
+.stages{list-style:none;margin:0;padding:0;position:relative}
+.stage{position:relative;display:grid;grid-template-columns:28px 1fr;column-gap:10px;align-items:center;padding:9px 10px;border-radius:var(--radius);cursor:pointer}
+.stage:hover{background:var(--surface-2)}
+.stage .num{font-family:var(--font-num);color:var(--ink-3);text-align:center}
+.stage .name{font-size:14px;font-weight:500}
+.stage .meta{grid-column:2;font-size:11.5px;color:var(--ink-3)}
+.stage[data-state="todo"] .name{color:var(--ink-3)}
+.stage[data-state="done"] .num{color:var(--ok)}
+.refs-label{margin:18px 0 6px;padding:0 10px;font-size:11px;letter-spacing:.14em;color:var(--ink-3)}
+.refs{list-style:none;margin:0;padding:0}
+.refs li{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--radius);color:var(--ink-2);cursor:pointer}
+.refs li:hover{background:var(--surface-2);color:var(--ink)}
+.spine-foot{margin-top:auto;display:flex;align-items:center;gap:10px;padding:8px 10px;color:var(--ink-3);border-radius:var(--radius);cursor:pointer}
+.spine-foot:hover{background:var(--surface-2);color:var(--ink)}
+
+/* ---------- 按钮 ---------- */
+.btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border-radius:var(--radius);font-size:13px;font-weight:500;white-space:nowrap;transition:background .15s,border-color .15s,color .15s}
+.btn-primary{background:var(--accent);color:var(--accent-ink)}
+.btn-primary:hover{filter:brightness(1.08)}
+.btn-primary[disabled]{opacity:.38;cursor:not-allowed;filter:none;box-shadow:none}
+.btn-secondary{border:1px solid var(--rule-strong);color:var(--ink)}
+.btn-secondary:hover{background:var(--surface-2)}
+.btn-ghost{color:var(--ink-2);padding:0 10px}
+.btn-ghost:hover{background:var(--surface-2);color:var(--ink)}
+.btn-icon{width:34px;padding:0;justify-content:center}
+.btn-ai .i{color:var(--accent)}
+
+/* ---------- 屏幕切换 ---------- */
+.screen{display:none;min-height:0}
+.app[data-screen="write"] .screen-write{display:grid}
+.app[data-screen="setup"] .screen-setup{display:grid}
+
+/* ---------- 写作屏 ---------- */
+.screen-write{grid-template-columns:1fr 372px;min-height:0}
+.spine-ch{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;margin:4px 0 0 28px;padding-left:10px;border-left:1px solid var(--rule)}
+.spine-ch .ch-list{flex:1;min-height:0;padding:0}
+.app[data-screen="setup"] [data-only-write]{display:none}
+.ch-head{display:flex;align-items:center;justify-content:space-between;padding:18px 16px 10px}
+.ch-head h2{margin:0;font:600 13px var(--font-ui)}
+.ch-head span{color:var(--ink-3);font-size:12px}
+.ch-search{margin:2px 0 6px;display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;border-radius:var(--radius);background:var(--sunken);color:var(--ink-3);font-size:12px}
+.ch-list{list-style:none;margin:0;padding:4px 8px;overflow:auto}
+.ch{display:grid;grid-template-columns:24px 1fr auto;align-items:center;gap:6px;padding:6px 8px;font-size:12.5px;border-radius:var(--radius);cursor:pointer}
+.ch:hover{background:var(--surface-2)}
+.ch .n{font-family:var(--font-num);color:var(--ink-3);font-size:13px}
+.ch .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ch .s{font-size:11px;color:var(--ink-3);display:flex;align-items:center;gap:5px}
+.ch .s::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--rule-strong)}
+.ch[data-s="final"] .s::before{background:var(--ok)}
+.ch[data-s="reviewed"] .s::before{background:var(--accent)}
+.ch[data-s="running"] .s::before{background:var(--run);animation:pulse 1.4s ease-in-out infinite}
+.ch[data-s="todo"] .t{color:var(--ink-2)}
+.ch[aria-current="true"]{background:var(--accent-soft)}
+.ch[aria-current="true"] .t{font-weight:600}
+
+.manuscript{min-height:0;overflow:auto;position:relative}
+.ms-inner{max-width:720px;margin:0 auto;padding:40px 56px 120px}
+.eyebrow{font-size:11.5px;letter-spacing:.16em;color:var(--ink-3)}
+.ch-title{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-top:6px}
+.ch-title h1{margin:0;font:600 34px/1.2 var(--font-display);letter-spacing:.02em}
+.version{display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--rule);border-radius:var(--radius);color:var(--ink-2);font-size:12px;white-space:nowrap}
+.life{list-style:none;display:flex;align-items:center;margin:22px 0 0;padding:0;gap:0}
+.life li{display:flex;align-items:center;gap:8px;color:var(--ink-3);font-size:12.5px}
+.life li+li::before{content:"";width:36px;height:1px;background:var(--rule-strong);margin:0 12px}
+.life .dot{width:18px;height:18px;border-radius:50%;border:1px solid var(--rule-strong);display:grid;place-items:center}
+.life [data-s="done"]{color:var(--ink-2)}
+.life [data-s="done"] .dot{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.life [data-s="done"] .dot .i{width:11px;height:11px}
+.life [data-s="now"]{color:var(--ink);font-weight:600}
+.life [data-s="now"] .dot{border:5px solid var(--accent)}
+.actions{display:flex;align-items:center;gap:8px;margin:22px 0 30px;padding-bottom:22px;border-bottom:1px solid var(--rule)}
+.actions .hint{margin-left:auto;color:var(--ink-3);font-size:12px}
+.prose{font-family:var(--font-prose);font-size:var(--prose-size);line-height:var(--prose-lh);color:var(--ink)}
+.prose p{margin:0;text-indent:2em}
+.prose mark{background:color-mix(in srgb,var(--danger) 14%,transparent);color:inherit;border-bottom:1.5px solid var(--danger);padding:1px 0}
+.prose mark.soft{background:color-mix(in srgb,var(--warn) 12%,transparent);border-bottom-color:var(--warn)}
+
+.sheet{border-left:1px solid var(--rule);background:var(--surface);display:flex;flex-direction:column;min-height:0}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;padding:16px 16px 12px;border-bottom:1px solid var(--rule)}
+.sheet-head h3{margin:0;font:600 14px var(--font-ui)}
+.sheet-sub{color:var(--ink-3);font-size:12px;margin-top:2px}
+.sheet-body{padding:14px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+.issue{border:1px solid var(--rule);border-radius:var(--radius-lg);padding:12px 12px 12px 40px;position:relative;background:var(--bg)}
+.issue .cb{position:absolute;left:12px;top:13px;width:16px;height:16px;border-radius:4px;border:1.5px solid var(--rule-strong);display:grid;place-items:center}
+.issue[data-on="true"] .cb{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.issue[data-on="true"] .cb .i{width:11px;height:11px}
+.issue .tag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;letter-spacing:.04em}
+.issue .tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.tag.sev{color:var(--danger)}.tag.sug{color:var(--warn)}.tag.chk{color:var(--ink-3)}
+.issue p{margin:6px 0 0;color:var(--ink-2);line-height:1.6}
+.issue q{display:block;margin-top:8px;padding-left:10px;border-left:2px solid var(--rule-strong);color:var(--ink-3);font-family:var(--font-prose);quotes:none}
+.sheet-foot{margin-top:auto;padding:12px 16px;border-top:1px solid var(--rule);color:var(--ink-3);font-size:12px;display:flex;justify-content:space-between}
+
+/* ---------- 设定屏 ---------- */
+.screen-setup{grid-template-columns:1fr;overflow:auto}
+.setup{padding:56px 64px 140px;max-width:880px;margin:0 auto;width:100%}
+.setup h1{margin:10px 0 10px;font:600 36px/1.25 var(--font-display);letter-spacing:.01em}
+.lede{color:var(--ink-2);font-size:14px;max-width:34em;margin:0}
+.form{margin-top:36px;display:grid;grid-template-columns:repeat(6,1fr);gap:18px 16px}
+.field{grid-column:span 2;display:flex;flex-direction:column;gap:7px}
+.field.w3{grid-column:span 3}.field.w6{grid-column:span 6}
+.field label{font-size:12px;color:var(--ink-2);font-weight:500;display:flex;justify-content:space-between}
+.field label em{font-style:normal;color:var(--ink-3);font-weight:400}
+.input{height:38px;padding:0 12px;border:1px solid var(--rule);border-radius:var(--radius);background:var(--surface);display:flex;align-items:center;justify-content:space-between;color:var(--ink)}
+.input.ph{color:var(--ink-3)}
+.input.area{height:auto;min-height:118px;align-items:flex-start;padding:11px 12px;line-height:1.75;font-family:var(--font-prose);font-size:14px}
+.input.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.adv{grid-column:span 6;margin-top:6px;border-top:1px solid var(--rule);padding-top:16px;display:flex;align-items:center;gap:10px;color:var(--ink-2)}
+.adv small{color:var(--ink-3)}
+.setup-foot{position:sticky;bottom:0;margin-top:40px;padding:16px 0;display:flex;align-items:center;gap:10px;background:linear-gradient(transparent,var(--bg) 30%)}
+.setup-foot .req{margin-left:auto;color:var(--ink-3);font-size:12px}
+
+/* ---------- 方向 A：纸墨（书卷排版） ---------- */
+.app[data-dir="a"] .stages::before{content:"";position:absolute;left:24px;top:22px;bottom:22px;width:1px;background:var(--rule-strong)}
+.app[data-dir="a"] .stage .num{position:relative;z-index:1;font-style:italic;font-size:15px;background:var(--bg);line-height:1}
+.app[data-dir="a"] .stage:hover .num{background:var(--surface-2)}
+.app[data-dir="a"] .stage .name{font-family:var(--font-display);font-size:15px}
+.app[data-dir="a"] .stage[aria-current="true"]{background:var(--surface)}
+.app[data-dir="a"] .stage[aria-current="true"] .num{color:var(--accent);background:var(--surface)}
+.app[data-dir="a"] .stage[aria-current="true"] .name{color:var(--accent)}
+.app[data-dir="a"] .ch-title h1{font-size:36px}
+.app[data-dir="a"] .eyebrow{font-family:var(--font-display)}
+.app[data-dir="a"] .manuscript{background:var(--bg)}
+.app[data-dir="a"] .ms-inner{background:var(--surface);margin:28px auto;box-shadow:var(--shadow);border-radius:2px;padding:48px 64px 120px}
+.app[data-dir="a"] .brand{font-family:var(--font-display);background:var(--accent);color:var(--accent-ink)}
+
+/* ---------- 方向 B：暗房（夜间工作室） ---------- */
+.app[data-dir="b"] .titlebar,.app[data-dir="b"] .spine{background:var(--sunken)}
+.app[data-dir="b"] .stage .num{font-size:11px}
+.app[data-dir="b"] .stage[aria-current="true"]{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--accent)}
+.app[data-dir="b"] .stage[aria-current="true"] .num{color:var(--accent)}
+.app[data-dir="b"] .manuscript{background:radial-gradient(900px 520px at 50% -120px,rgba(230,174,74,.07),transparent 70%),var(--bg)}
+.app[data-dir="b"] .prose{color:#D9D6D0}
+.app[data-dir="b"] .ch-title h1{font-weight:600;font-size:30px;letter-spacing:-.01em}
+.app[data-dir="b"] .life [data-s="done"] .dot{background:var(--ok);border-color:var(--ok);color:#0C0D0F}
+.app[data-dir="b"] .capsule{border-color:rgba(230,174,74,.35);background:var(--accent-soft);color:var(--ink-2)}
+.app[data-dir="b"] .capsule .ring::after{background:#1D1910}
+.app[data-dir="b"] .brand{background:var(--accent);color:var(--accent-ink);font-family:var(--font-ui);font-weight:800}
+.app[data-dir="b"] .issue{background:var(--sunken)}
+.app[data-dir="b"] .input{background:var(--sunken)}
+.app[data-dir="b"] .sheet{background:var(--surface)}
+.app[data-dir="b"] .btn-primary{box-shadow:0 0 0 1px rgba(230,174,74,.4),0 8px 24px -10px rgba(230,174,74,.6)}
+
+/* ---------- 方向 C：格（瑞士网格） ---------- */
+.app[data-dir="c"] .titlebar{border-bottom:2px solid var(--ink)}
+.app[data-dir="c"] .brand{border-radius:0;font-family:var(--font-ui);font-weight:900}
+.app[data-dir="c"] .spine{border-right:2px solid var(--ink);padding:0}
+.app[data-dir="c"] .spine-label{padding:18px 20px 12px;border-bottom:1px solid var(--rule);font-weight:600;color:var(--ink)}
+.app[data-dir="c"] .stage{grid-template-columns:58px 1fr;padding:14px 20px 14px 20px;border-bottom:1px solid var(--rule);border-radius:0;align-items:start}
+.app[data-dir="c"] .stage .num{grid-row:span 2;font-size:44px;font-weight:800;line-height:.9;letter-spacing:-.04em;color:var(--ink);text-align:left}
+.app[data-dir="c"] .stage .name{font-size:15px;font-weight:700}
+.app[data-dir="c"] .stage[data-state="todo"] .num{color:var(--rule-strong);-webkit-text-stroke:0;color:transparent;-webkit-text-stroke:1px var(--ink-3)}
+.app[data-dir="c"] .stage[data-state="done"] .num{color:var(--ink)}
+.app[data-dir="c"] .stage[aria-current="true"]{background:var(--accent);color:var(--accent-ink)}
+.app[data-dir="c"] .stage[aria-current="true"] .num,.app[data-dir="c"] .stage[aria-current="true"] .meta{color:var(--accent-ink);-webkit-text-stroke:0}
+.app[data-dir="c"] .stage:hover:not([aria-current="true"]){background:var(--surface-2)}
+.app[data-dir="c"] .refs-label{padding:18px 20px 8px;margin:0;font-weight:600;color:var(--ink)}
+.app[data-dir="c"] .refs li{padding:9px 20px;border-radius:0}
+.app[data-dir="c"] .spine-foot{border-top:1px solid var(--rule);border-radius:0;padding:14px 20px}
+.app[data-dir="c"] .eyebrow,.app[data-dir="c"] .spine-label,.app[data-dir="c"] .refs-label,.app[data-dir="c"] .app[data-dir="c"] .spine-ch{margin:0;padding:6px 12px 0 20px;border-left:0;border-bottom:1px solid var(--rule)}
+.app[data-dir="c"] .stage{padding:10px 20px}
+.app[data-dir="c"] .stage .num{font-size:34px}
+.app[data-dir="c"] .ch{border-radius:0;border-bottom:1px solid var(--rule)}
+.app[data-dir="c"] .ch[aria-current="true"]{background:var(--ink);color:#fff}
+.app[data-dir="c"] .ch[aria-current="true"] .n,.app[data-dir="c"] .ch[aria-current="true"] .s{color:#bbb}
+.app[data-dir="c"] .ch .n{font-weight:700;color:var(--ink)}
+.app[data-dir="c"] .ch-title{display:grid;grid-template-columns:auto 1fr auto;align-items:end;gap:18px}
+.app[data-dir="c"] .ch-title::before{content:"03";font:800 88px/.8 var(--font-num);letter-spacing:-.05em}
+.app[data-dir="c"] .ch-title h1{font-weight:800;font-size:34px;letter-spacing:-.01em}
+.app[data-dir="c"] .actions{border-bottom:2px solid var(--ink)}
+.app[data-dir="c"] .sheet{border-left:2px solid var(--ink)}
+.app[data-dir="c"] .issue{border-color:var(--ink)}
+.app[data-dir="c"] .issue .cb{border-radius:0;border-color:var(--ink)}
+.app[data-dir="c"] .btn-secondary{border:1.5px solid var(--ink)}
+.app[data-dir="c"] .input{border:0;border-bottom:1.5px solid var(--ink);padding-left:0;background:transparent}
+.app[data-dir="c"] .input.area{border:1.5px solid var(--ink);padding-left:12px}
+.app[data-dir="c"] .input.focus{box-shadow:0 2px 0 var(--accent);border-color:var(--accent)}
+.app[data-dir="c"] .setup h1{font-weight:800;font-size:46px;letter-spacing:-.02em;line-height:1.1}
+.app[data-dir="c"] .app[data-dir="c"] .app[data-dir="c"] .life [data-s="now"] .dot{border-radius:0}
+.app[data-dir="c"] .life .dot{border-radius:0}
+.app[data-dir="c"] .capsule{border-radius:0;border:1.5px solid var(--ink)}
+
+@keyframes pulse{50%{opacity:.35}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---------- 切换器（原型工具，不属于设计） ---------- */
+.switcher{position:fixed;right:16px;bottom:16px;z-index:9;display:flex;gap:4px;padding:5px;border-radius:12px;background:rgba(20,20,22,.88);backdrop-filter:blur(10px);font:500 12px Inter,"Noto Sans SC",sans-serif;color:#ddd;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.switcher button{padding:7px 11px;border-radius:8px;color:#bbb}
+.switcher button[aria-pressed="true"]{background:#fff;color:#111}
+.switcher span{width:1px;background:#444;margin:4px 3px}
+.switcher.hidden{display:none}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9l6 6l6-6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594zM20 2v4m2-2h-4"/><circle cx="4" cy="20" r="2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21l-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9a9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5m4-1v5l4 2"/></symbol>
+    <symbol id="i-library" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6l4 14M12 6v14M8 8v12M4 4v16"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v16m8.001-2A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2a5 5 0 0 1 4-2z"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6m0-6l-7 7M3 21l7-7m-1 7H3v-6"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0a2.34 2.34 0 0 0 3.319 1.915a2.34 2.34 0 0 1 2.33 4.033a2.34 2.34 0 0 0 0 3.831a2.34 2.34 0 0 1-2.33 4.033a2.34 2.34 0 0 0-3.319 1.915a2.34 2.34 0 0 1-4.659 0a2.34 2.34 0 0 0-3.32-1.915a2.34 2.34 0 0 1-2.33-4.033a2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="16" x="4" y="4" rx="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-7-7l7 7l-7 7"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3.128a4 4 0 0 1 0 7.744M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10 9H8m8 4H8m8 4H8"/></symbol>
+  </defs>
+</svg>
+
+<div class="app" id="app" data-dir="a" data-screen="write">
+  <header class="titlebar">
+    <div class="brand">墨</div>
+    <button class="work">雨夜列车 <svg class="i i-sm"><use href="#i-chev"/></svg></button>
+    <div class="crumb" data-crumb-write><svg class="i i-sm"><use href="#i-arrow"/></svg>正文 <span>/</span> <b>第 3 章</b></div>
+    <div class="crumb" data-crumb-setup hidden><svg class="i i-sm"><use href="#i-arrow"/></svg><b>设定</b></div>
+    <div class="tb-spacer"></div>
+    <button class="capsule" style="--p:62" data-run><span class="ring"></span>第 4 章 · 生成草稿 <b>62%</b></button>
+    <span class="saved"><svg class="i i-sm"><use href="#i-check"/></svg>已保存</span>
+    <button class="tb-btn"><svg class="i i-sm"><use href="#i-max"/></svg>沉浸</button>
+    <div class="winctl"><button aria-label="最小化"><svg class="i"><use href="#i-minus"/></svg></button><button aria-label="最大化"><svg class="i"><use href="#i-square"/></svg></button><button aria-label="关闭"><svg class="i"><use href="#i-x"/></svg></button></div>
+  </header>
+
+  <div class="body">
+    <nav class="spine" aria-label="创作流程">
+      <div class="spine-label">创作流程</div>
+      <ol class="stages" id="stages"></ol>
+      <div class="spine-ch" data-only-write>
+        <div class="ch-search"><svg class="i i-sm"><use href="#i-search"/></svg>查找章节</div>
+        <ol class="ch-list">
+          <li class="ch" data-s="final"><span class="n">01</span><span class="t">灰色的信</span><span class="s">定稿</span></li>
+          <li class="ch" data-s="final"><span class="n">02</span><span class="t">母亲的旧照片</span><span class="s">定稿</span></li>
+          <li class="ch" data-s="reviewed" aria-current="true"><span class="n">03</span><span class="t">雨夜车站</span><span class="s">已审稿</span></li>
+          <li class="ch" data-s="running"><span class="n">04</span><span class="t">第三节车厢</span><span class="s">生成中</span></li>
+          <li class="ch" data-s="todo"><span class="n">05</span><span class="t">不要回头</span><span class="s">待写</span></li>
+          <li class="ch" data-s="todo"><span class="n">06</span><span class="t">阅读灯</span><span class="s">待写</span></li>
+          <li class="ch" data-s="todo"><span class="n">07</span><span class="t">终点站以北</span><span class="s">待写</span></li>
+          <li class="ch" data-s="todo"><span class="n">08</span><span class="t">失物招领处</span><span class="s">待写</span></li>
+          <li class="ch" data-s="todo"><span class="n">09</span><span class="t">第二封信</span><span class="s">待写</span></li>
+          <li class="ch" data-s="todo"><span class="n">10</span><span class="t">守夜人</span><span class="s">待写</span></li>
+        </ol>
+      </div>
+      <div class="refs-label">作品资料</div>
+      <ul class="refs">
+        <li><svg class="i"><use href="#i-branch"/></svg>剧情与伏笔</li>
+        <li><svg class="i"><use href="#i-library"/></svg>知识库</li>
+        <li><svg class="i"><use href="#i-history"/></svg>版本历史</li>
+      </ul>
+      <div class="spine-foot"><svg class="i"><use href="#i-settings"/></svg>设置</div>
+    </nav>
+
+    <!-- 写作屏：正文阶段的单章视图，审稿报告以侧页展开 -->
+    <section class="screen screen-write">
+
+      <main class="manuscript">
+        <div class="ms-inner">
+          <div class="eyebrow">第 3 章 · 发展</div>
+          <div class="ch-title">
+            <h1>雨夜车站</h1>
+            <button class="version">草稿 v2 · 1,286 字 <svg class="i i-sm"><use href="#i-chev"/></svg></button>
+          </div>
+          <ol class="life" aria-label="本章进度">
+            <li data-s="done"><span class="dot"><svg class="i"><use href="#i-check"/></svg></span>写作</li>
+            <li data-s="done"><span class="dot"><svg class="i"><use href="#i-check"/></svg></span>审稿</li>
+            <li data-s="now"><span class="dot"></span>修稿</li>
+            <li data-s="todo"><span class="dot"></span>定稿</li>
+          </ol>
+          <div class="actions">
+            <button class="btn btn-primary"><svg class="i"><use href="#i-spark"/></svg>开始修稿</button>
+            <button class="btn btn-secondary">重新审稿</button>
+            <button class="btn btn-ghost btn-icon" aria-label="更多"><svg class="i"><use href="#i-more"/></svg></button>
+            <span class="hint">已选 2 项审稿意见</span>
+          </div>
+          <article class="prose">
+            <p>雨从傍晚开始就没有停过。林舟站在空荡的站台上，手里攥着那封没有署名的信，信封的边角已经被雨水泡软。</p>
+            <p><mark class="soft">最后一班列车晚点了十七分钟。广播里的女声重复着同一句道歉，像是在对一个并不存在的人群说话。</mark></p>
+            <p>他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</p>
+            <p>站台尽头的灯闪了一下。有人从雨里走过来，脚步很轻，伞压得很低，看不见脸。林舟把信折好，塞回大衣内侧的口袋。<mark>他想起母亲说过，这座车站在三十年前就该拆了。</mark></p>
+            <p>列车进站的声音先于灯光抵达。铁轨开始震动，雨水在枕木间溅起细碎的白。第三节车厢的门开了，里面没有乘客，只有一盏亮着的阅读灯，和一个空着的座位。</p>
+            <p>他抬脚的时候，身后有人叫了他的名字。</p>
+          </article>
+        </div>
+      </main>
+
+      <aside class="sheet" aria-label="审稿报告">
+        <div class="sheet-head">
+          <div><h3>审稿报告</h3><div class="sheet-sub">3 项 · 1 项严重 · 基于草稿 v2</div></div>
+          <button class="btn btn-ghost btn-icon" aria-label="关闭"><svg class="i"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="sheet-body">
+          <div class="issue" data-on="true"><span class="cb"><svg class="i"><use href="#i-check"/></svg></span>
+            <span class="tag sev">严重 · 前后矛盾</span>
+            <p>第 2 章写明林舟的母亲在他出生前离开，这里的“母亲说过”与之冲突。</p>
+            <q>他想起母亲说过，这座车站在三十年前就该拆了。</q>
+          </div>
+          <div class="issue" data-on="true"><span class="cb"><svg class="i"><use href="#i-check"/></svg></span>
+            <span class="tag sug">建议 · 节奏</span>
+            <p>列车晚点与广播道歉两句信息重叠，可以压缩成一句。</p>
+          </div>
+          <div class="issue" data-on="false"><span class="cb"></span>
+            <span class="tag chk">待核实 · 本章必现</span>
+            <p>阅读灯与空座位已经出现。“不要回头”的伏笔在本章是否回收，由作者决定。</p>
+          </div>
+        </div>
+        <div class="sheet-foot"><span>勾选的意见会用于修稿</span><span>2 / 3</span></div>
+      </aside>
+    </section>
+
+    <!-- 设定屏：新作品首次进入 -->
+    <section class="screen screen-setup">
+      <div class="setup">
+        <div class="eyebrow">第一步 · 设定</div>
+        <h1>这是一部什么样的小说？</h1>
+        <p class="lede">先填几项基础信息，后面的架构、蓝图和正文都会以此为准。拿不准的地方可以交给 AI 填充，之后随时能改。</p>
+        <div class="form">
+          <div class="field w3"><label>作品名</label><div class="input">雨夜列车</div></div>
+          <div class="field w3"><label>写作语言</label><div class="input">简体中文 <svg class="i i-sm"><use href="#i-chev"/></svg></div></div>
+          <div class="field"><label>类型</label><div class="input">悬疑 <svg class="i i-sm"><use href="#i-chev"/></svg></div></div>
+          <div class="field"><label>细分类型 <em>可选</em></label><div class="input">都市怪谈</div></div>
+          <div class="field"><label>目标读者</label><div class="input ph">请选择 <svg class="i i-sm"><use href="#i-chev"/></svg></div></div>
+          <div class="field"><label>总章数</label><div class="input">24</div></div>
+          <div class="field"><label>每章字数</label><div class="input">3,000</div></div>
+          <div class="field"><label>叙事视角</label><div class="input">第三人称有限 <svg class="i i-sm"><use href="#i-chev"/></svg></div></div>
+          <div class="field w6"><label>核心大纲 <em>一两段话即可</em></label><div class="input area focus">一个收到匿名信的年轻人，在一座本该拆除的车站登上末班车。车厢里的每一盏灯，都对应着一个从未被找到的失踪者……</div></div>
+          <div class="adv"><svg class="i i-sm"><use href="#i-chev"/></svg>高级设定 <small>文风、故事结构、全局写作要求、连续性阈值</small></div>
+        </div>
+        <div class="setup-foot">
+          <button class="btn btn-secondary btn-ai"><svg class="i"><use href="#i-spark"/></svg>AI 填充其余设定</button>
+          <span class="req">还差 1 项必填</span>
+          <button class="btn btn-primary" disabled>下一步：故事架构 <svg class="i"><use href="#i-arrow"/></svg></button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="switcher" id="sw">
+  <button data-dir="a">A 纸墨</button><button data-dir="b">B 暗房</button><button data-dir="c">C 格</button>
+  <span></span>
+  <button data-screen="write">写作</button><button data-screen="setup">设定</button>
+</div>
+
+<script>
+const app = document.getElementById('app');
+const NUMS = { a: ['i', 'ii', 'iii', 'iv'], b: ['01', '02', '03', '04'], c: ['1', '2', '3', '4'] };
+const STAGES = {
+  write: [
+    ['done', '设定', '已完成'], ['done', '架构', '4 / 4 已确认'], ['done', '蓝图', '24 章'], ['active', '正文', '2 / 24 定稿'],
+  ],
+  setup: [
+    ['active', '设定', '还差 1 项必填'], ['todo', '架构', '前提、角色、世界观、大纲'], ['todo', '蓝图', '逐章规划'], ['todo', '正文', '写作、审稿、修稿、定稿'],
+  ],
+};
+function renderStages() {
+  const { dir, screen } = app.dataset;
+  document.getElementById('stages').innerHTML = STAGES[screen].map(([state, name, meta], i) => {
+    const s = state === 'active' ? 'now' : state;
+    const num = NUMS[dir][i];
+    return `<li class="stage" data-state="${s}" ${state === 'active' ? 'aria-current="true"' : ''}>
+      <span class="num">${state === 'done' && dir === 'b' ? '<svg class="i i-sm"><use href="#i-check"/></svg>' : num}</span>
+      <span class="name">${name}</span>${meta ? `<span class="meta">${meta}</span>` : ''}</li>`;
+  }).join('');
+  document.querySelector('[data-crumb-write]').hidden = screen !== 'write';
+  document.querySelector('[data-crumb-setup]').hidden = screen !== 'setup';
+  document.querySelector('[data-run]').hidden = screen !== 'write';
+  for (const b of document.querySelectorAll('.switcher button')) {
+    b.setAttribute('aria-pressed', b.dataset.dir === dir || b.dataset.screen === screen);
+  }
+}
+function set(key, value) { app.dataset[key] = value; history.replaceState(null, '', `#${app.dataset.dir}-${app.dataset.screen}`); renderStages(); }
+document.getElementById('sw').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.dir) set('dir', b.dataset.dir); else set('screen', b.dataset.screen);
+});
+addEventListener('keydown', e => {
+  if (e.key === '1' || e.key === '2' || e.key === '3') set('dir', 'abc'[+e.key - 1]);
+  if (e.key === 'q') set('screen', 'write');
+  if (e.key === 'w') set('screen', 'setup');
+  if (e.key === 'h') document.getElementById('sw').classList.toggle('hidden');
+});
+const m = location.hash.match(/^#([abc])-(write|setup)(-clean)?$/);
+if (m) { app.dataset.dir = m[1]; app.dataset.screen = m[2]; if (m[3]) document.getElementById('sw').classList.add('hidden'); }
+renderStages();
+</script>
+</body>
+</html>

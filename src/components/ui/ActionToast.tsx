@@ -20,12 +20,14 @@
 
 import { createRoot } from 'react-dom/client'
 import { useEffect, useState, useCallback } from 'react'
-import { X, CheckCircle2, AlertTriangle, Info, Sparkles } from 'lucide-react'
+import { X, CheckCircle2, AlertTriangle, Info, OctagonAlert, Sparkles } from 'lucide-react'
 import { useLocaleStore } from '../../stores/locale-store'
+import { isStageShell } from './ink-overlay'
+import { pushToast, type ToastTone } from './ToastStack'
 
 // ===== 类型定义 =====
 
-export type ActionToastType = 'success' | 'info' | 'warning' | 'ai'
+export type ActionToastType = 'success' | 'info' | 'warning' | 'error' | 'ai'
 
 export interface ActionToastAction {
   /** 按钮文案 */
@@ -145,6 +147,10 @@ const TYPE_STYLE: Record<ActionToastType, { border: string; icon: React.ReactNod
   warning: {
     border: 'var(--color-warning)',
     icon: <AlertTriangle size={16} style={{ color: 'var(--color-warning)', flexShrink: 0 }} />,
+  },
+  error: {
+    border: 'var(--color-error)',
+    icon: <OctagonAlert size={16} style={{ color: 'var(--color-error)', flexShrink: 0 }} />,
   },
   ai: {
     border: 'var(--color-accent)',
@@ -290,35 +296,39 @@ function ActionToastCard({ item, onRemove }: { item: ActionToastItem; onRemove: 
 
 // ===== 公共 API =====
 
+const INK_TONE: Record<ActionToastType, ToastTone> = { success: 'ok', info: 'info', warning: 'warn', error: 'danger', ai: 'info' }
+
+/** 新外壳进共用的纸墨提示栈，旧外壳仍用自己的容器。 */
+function enqueue(options: ActionToastOptions): () => void {
+  if (isStageShell()) {
+    return pushToast({
+      tone: INK_TONE[options.type ?? 'info'],
+      message: options.message,
+      actions: options.actions?.map(action => ({ label: action.label, onClick: action.onClick, emphasis: action.variant === 'ghost' ? 'text' : 'secondary' })),
+      duration: options.duration ?? 8000,
+    })
+  }
+  ensureContainer()
+  const item: ActionToastItem = { id: ++_counter, ...options }
+  if (_addItem) _addItem(item)
+  else _pendingItems.push(item)
+  return () => dismissItem(item.id)
+}
+
 export const actionToast = {
   /**
    * 显示带操作按钮的 Toast 通知
    */
-  show: (options: ActionToastOptions) => {
-    ensureContainer()
-    const item: ActionToastItem = { id: ++_counter, ...options }
-    if (_addItem) _addItem(item)
-    else _pendingItems.push(item)
-    return () => dismissItem(item.id)
-  },
+  show: (options: ActionToastOptions) => enqueue(options),
 
   /** 工作流完成快捷方法 */
   workflowComplete: (message: string, openAction?: () => void | Promise<void>) => {
-    ensureContainer()
     const actions: ActionToastAction[] = []
     if (openAction) {
       const text = useLocaleStore.getState().text
       actions.push({ label: text('打开查看', 'Open'), onClick: openAction })
       actions.push({ label: text('忽略', 'Dismiss'), variant: 'ghost' })
     }
-    const item: ActionToastItem = {
-      id: ++_counter,
-      type: 'ai',
-      message,
-      actions,
-      duration: openAction ? 10000 : 6000,
-    }
-    if (_addItem) _addItem(item)
-    else _pendingItems.push(item)
+    enqueue({ type: 'ai', message, actions, duration: openAction ? 10000 : 6000 })
   },
 }

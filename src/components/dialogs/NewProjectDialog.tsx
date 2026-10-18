@@ -1,8 +1,4 @@
-import type { ProjectDirectoryGrant } from '../../shared/ipc-channels'
-import { useState, useEffect } from 'react'
 import { FolderOpen, Sparkles } from 'lucide-react'
-import { useProjectStore } from '../../stores/project-store'
-import { ipc } from '../../services/ipc-client'
 import {
   Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription,
 } from '../ui/Dialog'
@@ -10,6 +6,7 @@ import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { Label } from '../ui/Label'
 import { useLocaleStore } from '../../stores/locale-store'
+import { useNewProjectForm } from './use-new-project-form'
 
 interface NewProjectDialogProps {
   open: boolean
@@ -18,45 +15,8 @@ interface NewProjectDialogProps {
 
 /** 新建项目对话框 */
 export default function NewProjectDialog({ open, onClose }: NewProjectDialogProps) {
-  const createProject = useProjectStore((s) => s.createProject)
-  const [name, setName] = useState('')
-  const [path, setPath] = useState<ProjectDirectoryGrant | null>(null)
-  const [creating, setCreating] = useState(false)
-  const { locale, text } = useLocaleStore()
-
-  /** 对话框每次打开时重置名称 */
-  useEffect(() => {
-    if (!open) return
-    let mounted = true
-    Promise.resolve().then(() => {
-      if (mounted) { setName(''); setPath(null) }
-    })
-    return () => { mounted = false }
-  }, [open])
-
-  /** 选择文件夹 */
-  const handleSelectFolder = async () => {
-    const selected = await ipc.invoke('dialog:select-folder', 'project-create')
-    if (selected) setPath(selected)
-  }
-
-  /** 创建项目（类型/受众留空，在小说配置页面填写） */
-  const handleCreate = async () => {
-    if (!name.trim() || !path) return
-    setCreating(true)
-    const success = await createProject({
-      name: name.trim(),
-      parentGrantId: path.grantId,
-      genre: '',
-      targetAudience: '',
-      writingLanguage: locale,
-    })
-    setPath(null)
-    setCreating(false)
-    if (success) {
-      onClose()
-    }
-  }
+  const { text } = useLocaleStore()
+  const { name, setName, path, selectFolder: handleSelectFolder, creating, canCreate, create: handleCreate } = useNewProjectForm(open, onClose)
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -105,7 +65,7 @@ export default function NewProjectDialog({ open, onClose }: NewProjectDialogProp
           <Button variant="ghost" onClick={onClose}>{text('取消', 'Cancel')}</Button>
           <Button
             onClick={handleCreate}
-            disabled={creating || !name.trim() || !path}
+            disabled={!canCreate}
           >
             <Sparkles size={14} />
             {creating ? text('创建中...', 'Creating...') : text('创建项目', 'Create project')}

@@ -76,3 +76,6 @@ tauri-app/src-tauri/gen/schemas
 *.tsbuildinfo
 gitleaks.sarif
 gitleaks-report.json
+
+# 浏览器测试失败时生成的截图，不入库
+__screenshots__/

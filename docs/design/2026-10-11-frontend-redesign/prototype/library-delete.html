@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>书房 · 删除作品确认</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<!-- 书房页面本体从 library.html 读取，这里只叠加危险确认对话框，避免两份页面标记走样。 -->
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog danger" role="alertdialog" aria-labelledby="del-title">
+      <div class="dialog-head">
+        <div class="dialog-title" id="del-title">删除《雨夜列车》？</div>
+        <p class="dialog-desc">作品文件夹会连同全部章节和版本历史一起删除，无法撤销。</p>
+      </div>
+      <div class="dialog-body">
+        <div class="field">
+          <span class="label">输入作品名确认</span>
+          <div class="input is-focus">雨夜列车</div>
+        </div>
+        <p class="help" style="margin-top:12px">只想让它从书架上消失？用“从最近项目移除”，文件会留在原处。</p>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-danger-solid"><svg class="i"><use href="#i-trash-2"/></svg>删除作品</button>
+      </div>
+    </div>
+  </div>
+</template>
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+fetch('library.html').then(r => r.text()).then(html => {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.head.querySelectorAll('style').forEach(s => document.head.append(s));
+  document.body.prepend(doc.getElementById('screen'));
+  Shell.mount({ title: '书房 · 删除作品确认', spine: false, work: null });
+});
+</script>
+</body>
+</html>

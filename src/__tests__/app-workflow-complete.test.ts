@@ -33,9 +33,9 @@ it('preserves complete workflow titles in Chinese and English completion notific
   for (const title of [
     '续写章节蓝图（从第 1 章）',
     'AI 生成小说配置',
-    '写稿 — 第 1 章 · 初遇',
+    '第 1 章 · 写稿',
     'Continue chapter blueprints (from chapter 1)',
-    'Apply review — Chapter 2 A New Term',
+    'Chapter 2 · Apply review',
   ]) {
     completedRun.title = title
     for (english of [false, true]) {

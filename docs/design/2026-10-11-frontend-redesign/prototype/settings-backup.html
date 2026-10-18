@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置 · 项目备份</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 设置页骨架：与 settings.html 相同 */
+  .set { display: grid; grid-template-columns: 220px 1fr; min-height: 100%; }
+  .set-nav { padding: var(--s-8) var(--s-3) var(--s-6); border-right: 1px solid var(--rule); background: var(--bg); }
+  .set-nav-title { padding: 0 var(--s-3); font: 600 var(--fs-20)/1.3 var(--font-display); }
+  .set-group { margin-top: var(--s-6); }
+  .set-group-label { padding: 0 var(--s-3) var(--s-1); font-size: var(--fs-11); letter-spacing: .14em; color: var(--ink-3); }
+  .set-link { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--radius); color: var(--ink-2); cursor: pointer; }
+  .set-link:hover { background: var(--surface-2); color: var(--ink); }
+  .set-link[aria-current="page"] { background: var(--surface); color: var(--accent); box-shadow: inset 0 0 0 1px var(--rule); font-weight: 500; }
+  .set-body { padding: var(--s-8) var(--s-12) var(--s-12); min-width: 0; }
+  .set-inner { max-width: 820px; }
+
+  .bk-cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); }
+  .bk-card-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .bk-card-title .i { color: var(--ink-3); }
+  .bk-card p { margin: 6px 0 var(--s-3); color: var(--ink-3); font-size: var(--fs-12); line-height: 1.6; }
+  .bind { display: flex; align-items: center; gap: var(--s-3); }
+  .bind-addr { font-family: var(--font-mono); font-size: var(--fs-12); color: var(--ink-2); }
+  .gen-table tr[aria-selected="true"] td { background: var(--accent-soft); color: var(--ink); }
+  .gen-table td:first-child { font-family: var(--font-num); font-size: var(--fs-14); color: var(--ink); }
+  .gen-table td .badge { margin-left: 6px; }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="set">
+    <nav class="set-nav" aria-label="设置分组">
+      <div class="set-nav-title">设置</div>
+      <div class="set-group">
+        <div class="set-group-label">常用</div>
+        <div class="set-link"><svg class="i"><use href="#i-cpu"/></svg>AI 模型</div>
+        <div class="set-link"><svg class="i"><use href="#i-sun"/></svg>外观</div>
+      </div>
+      <div class="set-group">
+        <div class="set-group-label">高级</div>
+        <div class="set-link"><svg class="i"><use href="#i-search"/></svg>检索模型</div>
+        <div class="set-link"><svg class="i"><use href="#i-globe"/></svg>网络代理</div>
+        <div class="set-link"><svg class="i"><use href="#i-scroll-text"/></svg>提示词模板</div>
+        <div class="set-link"><svg class="i"><use href="#i-puzzle"/></svg>写作 Skills</div>
+      </div>
+      <div class="set-group">
+        <div class="set-group-label">其他</div>
+        <div class="set-link" aria-current="page"><svg class="i"><use href="#i-archive"/></svg>项目备份</div>
+        <div class="set-link"><svg class="i"><use href="#i-info"/></svg>关于与更新</div>
+      </div>
+    </nav>
+
+    <div class="set-body"><div class="set-inner">
+      <h1 class="h2">项目备份</h1>
+      <p class="lede" style="margin-top:6px;max-width:none">备份《雨夜列车》的全部内容。无论从哪里恢复，都会另存为一份新的作品副本，不会覆盖现在这部。</p>
+
+      <div class="section" style="margin-top:var(--s-6)">
+        <div class="section-head"><h2 class="h3">本地存档</h2></div>
+        <div class="bk-cols">
+          <div class="card bk-card">
+            <div class="bk-card-title"><svg class="i"><use href="#i-download"/></svg>导出本地存档</div>
+            <p>把整部作品打包成一个文件，保存到你选的位置。上次导出：10 月 9 日 22:40。</p>
+            <button class="btn btn-secondary btn-sm">导出存档…</button>
+          </div>
+          <div class="card bk-card">
+            <div class="bk-card-title"><svg class="i"><use href="#i-upload"/></svg>从存档恢复</div>
+            <p>选择一个存档文件，恢复成一部新的作品副本。不需要先打开作品。</p>
+            <button class="btn btn-secondary btn-sm">选择存档文件…</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" style="margin-top:var(--s-8)">
+        <div class="section-head">
+          <h2 class="h3">云备份 <span class="muted" style="font-weight:400">通过 WebDAV</span></h2>
+          <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-refresh-cw"/></svg>刷新</button>
+        </div>
+        <div class="card">
+          <div class="bind">
+            <svg class="i i-lg" style="color:var(--ink-3)"><use href="#i-cloud"/></svg>
+            <div style="min-width:0">
+              <div class="row"><b style="font-weight:600">坚果云</b><span class="badge ok">已绑定</span></div>
+              <div class="bind-addr">https://dav.jianguoyun.com/dav/ · linzhou@example.com</div>
+            </div>
+            <span style="margin-left:auto" class="row">
+              <button class="btn btn-ghost btn-sm">更换连接</button>
+              <button class="btn btn-primary"><svg class="i"><use href="#i-hard-drive-upload"/></svg>立即云备份</button>
+            </span>
+          </div>
+          <div class="help" style="margin-top:var(--s-3)">每次备份都会在云端另存一份，旧的几份会保留。备份过程中可以随时取消，已有的份次不受影响。</div>
+                </div>
+
+        <table class="table gen-table" style="margin-top:var(--s-4)">
+          <thead><tr><th>份次</th><th>备份时间</th><th>来自</th><th class="num">已定稿</th><th></th></tr></thead>
+          <tbody>
+            <tr aria-selected="true"><td>第 12 份</td><td>今天 20:05<span class="badge plain accent">最新</span></td><td>这台电脑</td><td class="num">2 章</td>
+              <td style="text-align:right"><button class="btn btn-secondary btn-sm">恢复为副本</button></td></tr>
+            <tr><td>第 11 份</td><td>昨天 23:12</td><td>这台电脑</td><td class="num">2 章</td><td></td></tr>
+            <tr><td>第 10 份</td><td>10 月 8 日 21:47</td><td>书房笔记本</td><td class="num">1 章</td><td></td></tr>
+            <tr><td>第 9 份</td><td>10 月 6 日 19:30</td><td>书房笔记本</td><td class="num">1 章</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" style="margin-top:var(--s-8)">
+        <div class="section-head"><h2 class="h3" style="color:var(--danger)">危险区</h2></div>
+        <ul class="list danger-zone">
+          <li class="list-item">
+            <div><div style="font-weight:500">清除本机保存的云备份登录信息</div>
+              <div class="help">云端已有的备份不受影响。之后需要重新输入账号和应用密码才能继续云备份。</div></div>
+            <button class="btn btn-danger btn-sm" style="margin-left:auto">清除登录信息…</button>
+          </li>
+        </ul>
+      </div>
+    </div></div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '设置 · 项目备份', ref: 'settings', chapters: false, crumbs: ['设置', '项目备份'] });
+</script>
+</body>
+</html>

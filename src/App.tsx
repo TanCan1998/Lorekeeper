@@ -1,21 +1,22 @@
 import { type ReactNode, useEffect } from 'react'
 import { type Theme, useThemeStore } from './stores/theme-store'
 import { useLayoutStore } from './stores/layout-store'
+import { useAppearanceStore } from './stores/appearance-bootstrap'
+import { navigate } from './stores/navigation/navigation-intents'
 import { useLLMStore } from './stores/llm-store'
 import { useProjectStore } from './stores/project-store'
-import { useMCPStore } from './stores/mcp-store'
 import { useWorkflowStore } from './stores/workflow-store'
 import { useLocaleStore } from './stores/locale-store'
 import { useSkinStore } from './stores/skin-store'
 import { ipc } from './services/ipc-client'
 import TitleBar from './components/layout/TitleBar'
+import { useWindowCloseGuard } from './components/layout/use-window-close-guard'
 import StatusBar from './components/layout/StatusBar'
 import LeftToolWindowBar from './components/layout/LeftToolWindowBar'
 import RightToolWindowBar from './components/layout/RightToolWindowBar'
 import ShellV2 from './components/layout/v2/ShellV2'
 import Sidebar from './components/panels/Sidebar'
 import EditorArea from './components/panels/EditorArea'
-import AIPanel from './components/panels/AIPanel'
 import AIOutputPanel from './components/panels/AIOutputPanel'
 import BottomPanel from './components/panels/BottomPanel'
 import NewProjectDialog from './components/dialogs/NewProjectDialog'
@@ -23,8 +24,11 @@ import ImportNovelDialog from './components/dialogs/ImportNovelDialog'
 import ChapterCreationDialog from './components/dialogs/ChapterCreationDialog'
 import ExportDialog from './components/dialogs/ExportDialog'
 import SettingsModal from './components/settings/SettingsModal'
+import { leaveSettingsThen, openProjectFolder } from './components/settings/unsaved-settings'
 import { ANIME_SKIN_URL } from './components/settings/AppearanceSettings'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import StageRoot from './components/stage/StageRoot'
+import StageShell from './components/stage/StageShell'
 import { actionToast } from './components/ui/ActionToast'
 import { UpdateNotifier } from './components/updates/UpdateNotifier'
 import { globalEventBus } from './shared/event-bus'
@@ -101,7 +105,6 @@ export default function App() {
   const aiPanelOpen = useLayoutStore(s => s.aiPanelOpen)
   const bottomPanelOpen = useLayoutStore(s => s.bottomPanelOpen)
   const immersive = useLayoutStore(s => s.immersive)
-  const rightView = useLayoutStore(s => s.rightView)
   const settingsOpen = useLayoutStore(s => s.settingsOpen)
   const closeSettings = useLayoutStore(s => s.closeSettings)
   const newProjectOpen = useLayoutStore(s => s.newProjectOpen)
@@ -120,6 +123,8 @@ export default function App() {
   const initSkin = useSkinStore((s) => s.init)
   const disposeSkin = useSkinStore((s) => s.dispose)
   const recoverFromImageFailure = useSkinStore((s) => s.recoverFromImageFailure)
+  const shell = useAppearanceStore((s) => s.resolvedShell)
+  const exitGuard = useWindowCloseGuard()
 
   // 初始化：主题 + LLM 模型 + 最近项目 + 缩放级别
   useEffect(() => {
@@ -127,8 +132,6 @@ export default function App() {
     initTheme()
     initLLM()
     loadRecentProjects()
-    // 初始化 MCP Store
-    useMCPStore.getState().init().catch(e => console.warn('[MCP] 初始化失败:', e))
     // 初始化 ProjectService — 注册全局事件监听（生命周期与 App 一致）
     import('./services/project-service').then(({ initProjectService }) => {
       initProjectService()
@@ -147,7 +150,7 @@ export default function App() {
       if (!completedRun) return
       actionToast.workflowComplete(
         text(`「${completedRun.title}」已完成`, `“${completedRun.title}” completed`),
-        () => useLayoutStore.getState().openRightPanel('ai-output')
+        () => navigate({ kind: 'run', facet: 'output', runId }),
       )
     })
 
@@ -190,7 +193,7 @@ export default function App() {
             blueprint as NextChapterBlueprint | null,
             existingDraft !== null,
           )
-          if (prefill) useLayoutStore.getState().openChapterCreation(prefill)
+          if (prefill) navigate({ kind: 'chapter', chapterNumber: nextChapterNumber, write: prefill })
         } catch (error) {
           console.warn('[AutoNextChapter] 无法打开下一章创作窗口:', error)
         }
@@ -224,69 +227,35 @@ export default function App() {
     }).catch(error => console.error('[SmokeProjectOpen]', error))
   }, [])
 
-  // 全局快捷键: Cmd+N 新建项目，Cmd+O 打开项目
-  // 注意：Cmd+=/- 缩放已由 TitleBar.tsx 统一处理，此处不重复注册
+  // 全局快捷键: Cmd+N 新建项目，Cmd+O 打开项目，Cmd+= / Cmd+- / Cmd+0 缩放；两种外壳共用
   useEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
       if (!mod) return
       if (e.key === 'n' || e.key === 'N') {
         e.preventDefault()
-        useLayoutStore.getState().openNewProject()
+        leaveSettingsThen(() => useLayoutStore.getState().openNewProject())
       } else if (e.key === 'o' || e.key === 'O') {
         e.preventDefault()
-        const folder = await ipc.invoke('dialog:select-folder', 'project-open')
-        if (folder) {
-          useProjectStore.getState().openProject(folder)
-        }
+        openProjectFolder()
+      } else if (e.key === '=' || e.key === '+') {
+        e.preventDefault()
+        useThemeStore.getState().zoomIn()
+      } else if (e.key === '-') {
+        e.preventDefault()
+        useThemeStore.getState().zoomOut()
+      } else if (e.key === '0') {
+        e.preventDefault()
+        useThemeStore.getState().zoomReset()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  return (
-    <AppSkinRoot theme={resolvedTheme} skinId={skinState.activeSkin}>
-      <SkinBackgroundLayer
-        skinId={skinState.activeSkin}
-        backgroundUrl={skinBackgroundUrl}
-        onImageError={() => void recoverFromImageFailure()}
-      />
-      <UpdateNotifier />
-      <ShellV2
-        home={!currentProject || sidebarView === 'home'}
-        theme={resolvedTheme}
-        titleBar={<TitleBar />}
-        rail={<LeftToolWindowBar />}
-        sidebar={(
-          <ErrorBoundary fallbackLabel={text('侧边栏渲染失败', 'Sidebar failed to render')}>
-            <Sidebar />
-          </ErrorBoundary>
-        )}
-        editor={(
-          <ErrorBoundary fallbackLabel={text('编辑区渲染失败', 'Editor failed to render')}>
-            <EditorArea onNewProject={() => useLayoutStore.getState().openNewProject()} />
-          </ErrorBoundary>
-        )}
-        aiPanel={(
-          <ErrorBoundary fallbackLabel={text('AI 面板渲染失败', 'AI panel failed to render')}>
-            {rightView === 'ai-output' ? <AIOutputPanel /> : <AIPanel />}
-          </ErrorBoundary>
-        )}
-        bottom={<BottomPanel />}
-        statusBar={<StatusBar />}
-        rightRail={<RightToolWindowBar />}
-        sidebarOpen={sidebarOpen}
-        aiPanelOpen={aiPanelOpen}
-        bottomOpen={bottomPanelOpen}
-        immersive={immersive}
-      />
-
+  const globalDialogs = (
+    <>
       {/* 全局对话框 — 由 layout-store 控制开关，不再依赖 window.dispatchEvent */}
-      <NewProjectDialog
-        open={newProjectOpen}
-        onClose={closeNewProject}
-      />
       <ImportNovelDialog
         open={importNovelOpen}
         onClose={closeImportNovel}
@@ -300,12 +269,69 @@ export default function App() {
         isOpen={exportOpen}
         onClose={closeExport}
       />
+    </>
+  )
+
+  if (shell === 'stage') {
+    return (
+      <>
+        <StageRoot theme={resolvedTheme} exitGuard={exitGuard}>
+          <StageShell theme={resolvedTheme} />
+        </StageRoot>
+        <UpdateNotifier />
+        {globalDialogs}
+      </>
+    )
+  }
+
+  return (
+    <AppSkinRoot theme={resolvedTheme} skinId={skinState.activeSkin}>
+      <SkinBackgroundLayer
+        skinId={skinState.activeSkin}
+        backgroundUrl={skinBackgroundUrl}
+        onImageError={() => void recoverFromImageFailure()}
+      />
+      <UpdateNotifier />
+      <ShellV2
+        home={!currentProject || sidebarView === 'home'}
+        theme={resolvedTheme}
+        titleBar={<TitleBar exitGuard={exitGuard} />}
+        rail={<LeftToolWindowBar />}
+        sidebar={(
+          <ErrorBoundary fallbackLabel={text('侧边栏渲染失败', 'Sidebar failed to render')}>
+            <Sidebar />
+          </ErrorBoundary>
+        )}
+        editor={(
+          <ErrorBoundary fallbackLabel={text('编辑区渲染失败', 'Editor failed to render')}>
+            <EditorArea onNewProject={() => useLayoutStore.getState().openNewProject()} />
+          </ErrorBoundary>
+        )}
+        aiPanel={(
+          <ErrorBoundary fallbackLabel={text('AI 面板渲染失败', 'AI panel failed to render')}>
+            <AIOutputPanel />
+          </ErrorBoundary>
+        )}
+        bottom={<BottomPanel />}
+        statusBar={<StatusBar />}
+        rightRail={<RightToolWindowBar />}
+        sidebarOpen={sidebarOpen}
+        aiPanelOpen={aiPanelOpen}
+        bottomOpen={bottomPanelOpen}
+        immersive={immersive}
+      />
+
+      {/* 新外壳有自己的纸墨新建对话框与设置页，这两个弹窗只属于旧外壳。 */}
+      <NewProjectDialog
+        open={newProjectOpen}
+        onClose={closeNewProject}
+      />
+      {globalDialogs}
       {/* 全屏设置弹窗 */}
       <SettingsModal
         open={settingsOpen}
         onClose={closeSettings}
       />
-
     </AppSkinRoot>
   )
 }

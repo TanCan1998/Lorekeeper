@@ -1,3 +1,5 @@
+import type { ChapterWritePrefill } from '../stores/layout-store'
+
 export interface NextChapterBlueprint {
   chapterNumber: number
   title: string
@@ -17,13 +19,12 @@ export function getAutoNextChapterPrefill(
   completedChapter: number,
   blueprint: NextChapterBlueprint | null,
   hasExistingDraft: boolean,
-): Record<string, unknown> | null {
+): ChapterWritePrefill | null {
   if (!enabled || hasExistingDraft || !blueprint || blueprint.chapterNumber !== completedChapter + 1) {
     return null
   }
 
   return {
-    chapterNumber: blueprint.chapterNumber,
     title: blueprint.title,
     role: blueprint.role,
     purpose: blueprint.purpose,

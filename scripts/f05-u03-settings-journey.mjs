@@ -330,7 +330,7 @@ async function main() {
     currentStep = 'U03.A10-skill-install'
     const installedRoot = path.join(root(), 'skills', skillName)
     await settings(page).getByRole('button', { name: '确认安装' }).click()
-    await page.getByRole('dialog').getByRole('button', { name: '确认' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '确认', exact: true }).click()
     for (let attempt = 0; attempt < 100 && !fs.existsSync(path.join(installedRoot, 'SKILL.md')); attempt++) {
       await new Promise(resolve => setTimeout(resolve, 100))
     }
@@ -363,7 +363,7 @@ async function main() {
     await page.getByRole('button', { name: 'AI 生成架构' }).click()
     const generationDialog = page.getByRole('dialog')
     await generationDialog.getByRole('button', { name: '全选' }).click()
-    for (const label of ['角色图谱', '情节大纲']) {
+    for (const label of ['角色名单', '情节大纲']) {
       await generationDialog.locator('label').filter({ hasText: label }).click()
     }
     await generationDialog.getByRole('button', { name: '确认生成（2/4）' }).click()
@@ -429,7 +429,7 @@ async function main() {
     await settings(page).getByRole('combobox', { name: '修稿与定稿前润色 Skill' }).selectOption('user:safe-prose')
     await persisted(bindingFile, value => value.bindings?.refinement === 'user:safe-prose')
     await settings(page).getByRole('button', { name: '卸载 safe-prose' }).click()
-    await page.getByRole('dialog').getByRole('button', { name: '确认' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '确认', exact: true }).click()
     await settings(page).getByRole('button', { name: '卸载 safe-prose' }).waitFor({ state: 'detached' })
     assert.equal(fs.existsSync(installedRoot), false)
     await persisted(bindingFile, value => value.bindings?.refinement === undefined && value.bindings?.planning === undefined)

@@ -11,6 +11,8 @@ import { useLocaleStore } from '../../stores/locale-store'
 import { Button } from '../ui/Button'
 import { Label } from '../ui/Label'
 import { NativeSelect } from '../ui/NativeSelect'
+import { chapterWindow, plotChapters } from '../stage/plot/plot-shape'
+import { pluralEn } from '../../shared/plural-en'
 
 const CHAPTER_WIDTH = 128
 const CHAPTER_WINDOW_SIZE = 40
@@ -60,24 +62,8 @@ export default function PlotTreeView({
   const viewportRef = useRef<HTMLDivElement>(null)
   const [selectedEvent, setSelectedEvent] = useState<PlotTreeEvent | null>(null)
   const [requestedWindowStart, setRequestedWindowStart] = useState<number | null>(null)
-  const allChapters = useMemo(() => {
-    const values = new Set<number>()
-    const add = (chapter: number) => {
-      if (Number.isSafeInteger(chapter) && chapter >= 1) values.add(chapter)
-    }
-    add(currentChapter)
-    for (const track of snapshot?.tracks ?? []) {
-      add(track.startChapter)
-      add(track.endChapter)
-      for (const event of track.events) add(event.chapterNumber)
-    }
-    return [...values].sort((left, right) => left - right)
-  }, [currentChapter, snapshot])
-  const currentIndex = allChapters.findIndex(chapter => chapter >= currentChapter)
-  const centeredWindowStart = Math.max(0, currentIndex - Math.floor(CHAPTER_WINDOW_SIZE / 2))
-  const maximumWindowStart = Math.max(0, allChapters.length - CHAPTER_WINDOW_SIZE)
-  const chapterWindowStart = Math.min(requestedWindowStart ?? centeredWindowStart, maximumWindowStart)
-  const chapters = allChapters.slice(chapterWindowStart, chapterWindowStart + CHAPTER_WINDOW_SIZE)
+  const allChapters = useMemo(() => plotChapters(snapshot, currentChapter), [currentChapter, snapshot])
+  const { start: chapterWindowStart, maximum: maximumWindowStart, visible: chapters } = chapterWindow(allChapters, currentChapter, CHAPTER_WINDOW_SIZE, requestedWindowStart)
   const stale = Boolean(snapshot && snapshot.sourceRevision !== sourceRevision)
 
   useEffect(() => {
@@ -149,7 +135,7 @@ export default function PlotTreeView({
             </Button>
             <span>{text(
               `显示 ${chapters[0]}–${chapters.at(-1)} 章（共 ${allChapters.length} 个有内容的章节）`,
-              `Showing Chapters ${chapters[0]}–${chapters.at(-1)} (${allChapters.length} chapters with content)`,
+              `Showing Chapters ${chapters[0]}–${chapters.at(-1)} (${allChapters.length} ${pluralEn(allChapters.length, 'chapter')} with content)`,
             )}</span>
             <Button
               size="sm"

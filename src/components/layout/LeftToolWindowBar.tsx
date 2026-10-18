@@ -13,9 +13,10 @@ import {
   Cpu,
 } from 'lucide-react'
 import { useLayoutStore, type SidebarView, type BottomTab } from '../../stores/layout-store'
+import { navigate } from '../../stores/navigation/navigation-intents'
 import { useWorkflowStore } from '../../stores/workflow-store'
 import { useProjectStore } from '../../stores/project-store'
-import { openBuiltinEditor } from '../panels/sidebar/sidebar-file-openers'
+import { openBuiltinEditor } from '../../stores/open-builtin-editor'
 import { useLocaleStore } from '../../stores/locale-store'
 
 /** 左侧侧边栏视图按钮配置（不含 Home，它单独渲染） */
@@ -77,7 +78,6 @@ export default function LeftToolWindowBar() {
   const currentProject = useProjectStore(s => s.currentProject)
   const setSidebarView = useLayoutStore(s => s.setSidebarView)
   const setBottomTab = useLayoutStore(s => s.setBottomTab)
-  const openSettings = useLayoutStore(s => s.openSettings)
   const currentRun = useWorkflowStore(s => s.currentRun)
   const text = useLocaleStore(s => s.text)
 
@@ -207,7 +207,7 @@ export default function LeftToolWindowBar() {
           icon={Settings}
           label={text('设置', 'Settings')}
           active={activeRailItem === 'settings'}
-          onClick={() => openSettings()}
+          onClick={() => navigate({ kind: 'settings', section: 'llm' })}
         />
       </div>
     </div>

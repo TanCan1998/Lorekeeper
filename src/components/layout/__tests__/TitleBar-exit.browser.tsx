@@ -10,7 +10,7 @@ import {
   registerEditorExitSaveHandler,
   useEditorStore,
 } from '../../../stores/editor-store'
-import TitleBar from '../TitleBar'
+import { GuardedTitleBar } from './guarded-title-bar'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -77,7 +77,7 @@ afterEach(async () => {
 
 describe('TitleBar native exit settlement', () => {
   it('lets a clean system close proceed without prompting', async () => {
-    await act(async () => root.render(<TitleBar />))
+    await act(async () => root.render(<GuardedTitleBar />))
 
     await act(async () => closeRequested?.({ requestId: 'close-clean' }))
 
@@ -97,7 +97,7 @@ describe('TitleBar native exit settlement', () => {
         dirty: true,
       }],
     })
-    await act(async () => root.render(<TitleBar />))
+    await act(async () => root.render(<GuardedTitleBar />))
 
     await act(async () => closeRequested?.({ requestId: 'close-cancel' }))
     await expect.element(page.getByRole('dialog')).toBeVisible()
@@ -151,7 +151,7 @@ describe('TitleBar native exit settlement', () => {
       }],
     })
     invoke.mockImplementationOnce(failure)
-    await act(async () => root.render(<TitleBar />))
+    await act(async () => root.render(<GuardedTitleBar />))
 
     await act(async () => closeRequested?.({ requestId: 'close-rejected' }))
     await act(async () => page.getByRole('button', { name: '放弃并退出' }).click())
@@ -169,7 +169,7 @@ describe('TitleBar native exit settlement', () => {
     })
     const cancellation = deferred<{ success: boolean }>()
     invoke.mockReturnValueOnce(cancellation.promise)
-    await act(async () => root.render(<TitleBar />))
+    await act(async () => root.render(<GuardedTitleBar />))
     await act(async () => closeRequested?.({ requestId: 'close-busy' }))
 
     await act(async () => page.getByRole('button', { name: '取消' }).click())
@@ -186,7 +186,7 @@ describe('TitleBar native exit settlement', () => {
     useWorkflowStore.setState({
       activeRuns: [{ projectPath: PROJECT, status: 'running' }] as never,
     })
-    await act(async () => root.render(<TitleBar />))
+    await act(async () => root.render(<GuardedTitleBar />))
 
     await act(async () => closeRequested?.({ requestId: 'close-workflow' }))
 

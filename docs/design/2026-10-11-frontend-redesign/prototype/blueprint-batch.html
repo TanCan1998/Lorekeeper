@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>蓝图 · 批量创作</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .mode { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
+  .mode-opt { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); text-align: left; }
+  .mode-opt[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .mode-opt b { display: block; font-weight: 500; }
+  .mode-opt small { display: block; margin-top: 2px; color: var(--ink-3); font-size: var(--fs-12); line-height: 1.5; }
+  .range-note { margin-top: var(--s-3); padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); color: var(--ink-2); font-size: var(--fs-12); }
+</style>
+</head>
+<body>
+<!-- 蓝图页本体从 blueprint.html 读取，这里叠加批量创作对话框。 -->
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog" role="dialog" aria-labelledby="bb-title" style="width:560px">
+      <div class="dialog-head">
+        <div class="dialog-title" id="bb-title">批量创作</div>
+        <p class="dialog-desc">按蓝图连续写几章。每章写完会留在正文里等你审稿，一次最多 10 章。</p>
+      </div>
+      <div class="dialog-body">
+        <div class="form-grid">
+          <div class="field"><span class="label">从第几章开始</span><div class="input">5</div></div>
+          <div class="field"><span class="label">写几章 <em>最多 10</em></span><div class="input">4</div></div>
+          <div class="field"><span class="label">模型</span><div class="select">默认模型 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+          <div class="field w6"><span class="label">写完之后</span>
+            <div class="mode" role="radiogroup">
+              <button class="mode-opt" role="radio" aria-checked="true"><span class="check" data-on="true"><span class="radio-dot"></span></span><span><b>留作草稿，等我审稿</b><small>每章停在草稿，你逐章审稿、修稿、定稿。</small></span></button>
+              <button class="mode-opt" role="radio" aria-checked="false"><span class="check" data-on="false"><span class="radio-dot"></span></span><span><b>自动审稿并定稿</b><small>不经你确认直接定稿，开始前会再问一次。</small></span></button>
+            </div>
+          </div>
+        </div>
+        <p class="range-note">将写第 5～8 章：不要回头、阅读灯、终点站以北、失物招领处。第 4 章正在生成，完成后才会开始。</p>
+      </div>
+      <div class="dialog-foot">
+        <span class="note">进度在顶栏“运行”里查看</span>
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-primary">开始写 4 章</button>
+      </div>
+    </div>
+  </div>
+</template>
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+fetch('blueprint.html').then(r => r.text()).then(html => {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.head.querySelectorAll('style').forEach(s => document.head.append(s));
+  document.body.prepend(doc.getElementById('screen'));
+  Shell.mount({ title: '蓝图 · 批量创作', stage: 'plan', crumbs: ['蓝图', '第 5 章'], saved: true, run: { label: '第 4 章 · 生成草稿', pct: 62 } });
+});
+</script>
+</body>
+</html>

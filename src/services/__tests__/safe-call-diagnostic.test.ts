@@ -119,4 +119,16 @@ describe('formatSafeCallDiagnostic', () => {
     expect(diagnostic).toContain('- 实际模型: 未知')
     expect(diagnostic).not.toMatch(/secret|API_KEY_LURE|C:\\private|content_filter plus/)
   })
+  it.each([
+    ['zh-CN', '第 3 章 · 生成草稿待审', '- 步骤: 第 3 章 · 生成草稿待审'],
+    ['en-US', 'Chapter 3 · Auto-finalize and post-process', '- Step: Chapter 3 · Auto-finalize and post-process'],
+  ] as const)('批量与审修恢复步骤名里的分隔点「·」照常写出：%s', (locale, stepName, line) => {
+    const diagnostic = formatSafeCallDiagnostic({
+      locale, appVersion: '0.8.6', platform: 'windows',
+      call: { id: 1, modelId: 'flash', modelName: 'Flash', purpose: 'chapter-draft', promptTokens: 1, completionTokens: 1, totalTokens: 2,
+        durationMs: 1, success: false, createdAt: '2026-08-29T10:00:00.000Z', errorMessage: '' } as LLMCallRecord,
+      workflow: { status: 'failed', stepName },
+    })
+    expect(diagnostic).toContain(line)
+  })
 })

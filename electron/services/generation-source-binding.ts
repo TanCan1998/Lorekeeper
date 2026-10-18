@@ -542,7 +542,9 @@ export function buildGenerationSourceBinding(deps: GenerationSourceBindingDepend
     const outlinePolicy = plotOutlinePolicy({ operation: input.operation, policy: input.policy });
     const plotOutlineSource = outlinePolicy ? input.plotOutlineSource ?? { version: 1 as const, core: facts.core as PlotOutlineSource['core'] } : undefined;
     if (plotOutlineSource && outlinePolicy) {
-        plotOutlineConfirmedPrefix(plotOutlineExpected(plotOutlineSource), outlinePolicy.range);
+        const expected = plotOutlineExpected(plotOutlineSource);
+        // 冻结的来源开跑时已按当时的规则判过；重建时再按现行规则判，升级前的任务就连「来源是否未变」都比不了。续写与写回各自按现行规则拒绝。
+        if (!input.plotOutlineSource) plotOutlineConfirmedPrefix(expected, outlinePolicy.range);
         add('plot-outline:origin', 0, stable(plotOutlineSource), 'author-constraint', 'main captured original project facts and synopsis for final outline compare-and-set');
     }
     const agentContext = agentInput && agentPrompt ? buildAgentGenerationContext(agentInput, facts.core, facts.language, agentPrompt.selected, agentPrompt.builtin) : undefined;

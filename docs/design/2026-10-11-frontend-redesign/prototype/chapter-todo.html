@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正文 · 待写</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 本章蓝图摘要：纸面上的只读引用块 */
+  .plan { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--surface); }
+  .plan-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: 12px var(--s-4); border-bottom: 1px solid var(--rule); }
+  .plan-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .plan-title small { font-weight: 400; color: var(--ink-3); font-size: var(--fs-12); }
+  .plan-link { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: var(--fs-12); font-weight: 500; }
+  .plan-grid { display: grid; grid-template-columns: 88px 1fr; gap: 10px var(--s-4); padding: var(--s-4); }
+  .plan-grid dt { color: var(--ink-3); font-size: var(--fs-12); padding-top: 2px; }
+  .plan-grid dd { margin: 0; color: var(--ink-2); line-height: 1.7; }
+  .plan-grid dd.prose-sm { font-family: var(--font-prose); font-size: var(--fs-14); color: var(--ink); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink-2); font-size: var(--fs-12); }
+  .not-started { margin-top: var(--s-10); text-align: center; color: var(--ink-3); }
+  .not-started b { display: block; font: 500 var(--fs-16)/1.5 var(--font-display); color: var(--ink-2); margin-bottom: 4px; }
+
+  /* 写作此章的小弹层 */
+  .write-pop { width: 392px; padding: 0; }
+  .pop-sec { padding: var(--s-4); display: flex; flex-direction: column; gap: var(--s-3); }
+  .pop-sec + .pop-sec { border-top: 1px solid var(--rule); }
+  .pop-sec .textarea { min-height: 72px; font-size: var(--fs-13); }
+  .pop-sec .input, .pop-sec .select { height: 34px; }
+  .pop-sec .disclosure { border-top: 0; padding-top: 0; }
+  .preflight { padding: var(--s-3); border-radius: var(--radius); background: var(--warn-soft); }
+  .preflight-head { display: flex; align-items: center; gap: 8px; color: var(--warn); font-weight: 600; font-size: var(--fs-12); }
+  .preflight p { margin-top: 6px; color: var(--ink-2); line-height: 1.65; }
+  .preflight-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: var(--s-2); }
+  .pop-foot { padding: 10px var(--s-4); border-top: 1px solid var(--rule); color: var(--ink-3); font-size: var(--fs-12); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 5 章 · 转折</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">不要回头</h1>
+        <span class="badge plain">尚无草稿 · 目标 3,000 字</span>
+      </div>
+      <ol class="life" aria-label="本章进度" style="margin-top:22px">
+        <li data-s="now"><span class="node"></span>写作</li>
+        <li data-s="todo"><span class="node"></span>审稿</li>
+        <li data-s="todo"><span class="node"></span>修稿</li>
+        <li data-s="todo"><span class="node"></span>定稿</li>
+      </ol>
+      <div class="chapter-actions">
+        <div class="btn-group">
+          <button class="btn btn-primary"><svg class="i"><use href="#i-feather"/></svg>写作此章</button>
+          <button class="btn btn-primary" aria-label="本次写作选项" aria-expanded="true"><svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+        </div>
+        <button class="btn btn-ghost btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+        <span class="hint">按本章蓝图写作，不再重复填写参数</span>
+      </div>
+
+      <section class="plan" aria-label="本章蓝图">
+        <div class="plan-head">
+          <div class="plan-title"><svg class="i"><use href="#i-map"/></svg>本章蓝图 <small>只读 · 写作以此为准</small></div>
+          <a class="plan-link" href="#">在蓝图中编辑<svg class="i i-sm"><use href="#i-arrow-right"/></svg></a>
+        </div>
+        <dl class="plan-grid">
+          <dt>定位</dt><dd>转折。林舟第一次违背信上的警告。</dd>
+          <dt>出场角色</dt><dd><div class="chips"><span class="chip">林舟</span><span class="chip">穿灰大衣的女人</span><span class="chip">列车员老周</span></div></dd>
+          <dt>本章目的</dt><dd class="prose-sm">让林舟回头，看见第三节车厢里不该存在的乘客，确认匿名信不是恶作剧。</dd>
+          <dt>关键事件</dt><dd>阅读灯熄灭三次；老周查票时叫出林舟母亲的名字；车窗倒影里多了一个人。</dd>
+          <dt>作者指导</dt><dd>节奏放慢，前半章只写声音，不写人脸。</dd>
+        </dl>
+      </section>
+
+      <div class="not-started">
+        <b>这一章还是空白</b>
+        点“写作此章”，AI 会按上面的蓝图写出草稿 v1。
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="popover write-pop" style="left:536px; top:296px" role="dialog" aria-label="本次写作选项">
+    <div class="pop-sec">
+      <div class="field"><span class="label">本次模型 <em>只用于这一次</em></span>
+        <div class="select">DeepSeek V4 Flash（默认） <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+      <div class="field"><span class="label">作者微操指导 <em>可选</em></span>
+        <div class="textarea placeholder">比如：老周说话带一点口音；结尾停在林舟回头之前。</div></div>
+      <div class="disclosure"><svg class="i i-sm"><use href="#i-chevron-right"/></svg>更多 <small>知识库检索关键词</small></div>
+    </div>
+    <div class="pop-sec">
+      <div class="preflight">
+        <div class="preflight-head"><svg class="i i-sm"><use href="#i-triangle-alert"/></svg>一致性预检 · 1 条叙事线索提醒</div>
+        <p>“灰色的信”这条线索已沉寂 3 章，原计划在第 5 章推进，本章蓝图没有提到它。</p>
+        <div class="preflight-actions">
+          <button class="btn btn-secondary btn-sm">保存安排</button>
+          <button class="btn btn-ghost btn-sm">仅本次忽略</button>
+          <button class="btn btn-ghost btn-sm">改蓝图后重检</button>
+        </div>
+      </div>
+    </div>
+    <div class="pop-foot">这些选项只用于本次写作，点“写作此章”开始</div>
+  </div>
+  <div class="toast" role="status">第 4 章草稿已生成
+    <button class="btn btn-ghost btn-sm">打开查看</button><button class="btn btn-ghost btn-sm">忽略</button>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '正文 · 待写', stage: 'text', chapter: 5, chapterStatus: { 4: 'draft' }, crumbs: ['正文', '第 5 章'], saved: true,
+  run: { label: '第 4 章 · 草稿已生成', pct: 100 },
+});
+</script>
+</body>
+</html>

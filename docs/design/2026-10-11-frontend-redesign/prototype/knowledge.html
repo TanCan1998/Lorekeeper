@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识库</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 三栏资料页：资料列表 / 原文 / 检索 */
+  .kb { display: grid; grid-template-columns: 272px minmax(0, 1fr) 340px; height: 100%; }
+  .kb-col { display: flex; flex-direction: column; min-height: 0; }
+  .kb-list { border-right: 1px solid var(--rule); background: var(--bg); }
+  .kb-find { border-left: 1px solid var(--rule); background: var(--surface); }
+  .kb-pad { padding: var(--s-5) var(--s-4) var(--s-3); }
+  .kb-title { font: 600 var(--fs-20)/1.3 var(--font-display); }
+  .docs { list-style: none; margin: 0; padding: 0 var(--s-2); flex: 1; min-height: 0; overflow: auto; }
+  .doc { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--radius); cursor: pointer; color: var(--ink-2); }
+  .doc:hover { background: var(--surface-2); color: var(--ink); }
+  .doc[aria-current="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
+  .doc .i { color: var(--ink-3); }
+  .doc-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .doc small { font-size: var(--fs-11); color: var(--ink-3); font-weight: 400; }
+  .kb-foot { padding: var(--s-3) var(--s-4) var(--s-4); }
+  .kb-foot .list-item { padding: 10px 12px; }
+
+  .reader { overflow: auto; padding: var(--s-6) var(--s-10) var(--s-12); }
+  .reader-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); }
+  .reader-title { font: 600 var(--fs-24)/1.35 var(--font-display); }
+  .reader-meta { margin-top: 4px; font-size: var(--fs-12); color: var(--ink-3); }
+  .callout { display: flex; align-items: flex-start; gap: var(--s-3); margin-top: var(--s-4); padding: 12px 14px; border: 1px solid var(--accent-line); border-radius: var(--radius-lg); background: var(--accent-soft); font-size: var(--fs-12); color: var(--ink-2); }
+  .callout .i { color: var(--accent); margin-top: 1px; }
+  .callout b { color: var(--ink); font-weight: 600; }
+  .callout-actions { display: flex; gap: var(--s-1); margin-top: 8px; }
+  .doc-text { margin-top: var(--s-4); padding: var(--s-5) var(--s-6); border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--paper); font: 15px/2 var(--font-prose); color: var(--ink); }
+  .doc-text p + p { margin-top: .6em; }
+  .doc-text.editing { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .caret { display: inline-block; width: 1.5px; height: 1.1em; vertical-align: -2px; background: var(--accent); }
+
+  .searchbox { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px; border: 1px solid var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); border-radius: var(--radius); background: var(--paper); }
+  .searchbox .i { color: var(--ink-3); }
+  .searchbox span { flex: 1; }
+  .ready { display: flex; align-items: flex-start; gap: 6px; margin-top: 8px; font-size: var(--fs-12); color: var(--ink-3); line-height: 1.6; }
+  .ready .i { color: var(--ok); margin-top: 2px; }
+  .hits { flex: 1; min-height: 0; overflow: auto; padding: 0 var(--s-4) var(--s-4); display: flex; flex-direction: column; gap: var(--s-2); }
+  .hit { padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); cursor: pointer; }
+  .hit:hover { border-color: var(--rule-strong); }
+  .hit-src { display: flex; align-items: center; gap: 6px; font-size: var(--fs-11); color: var(--ink-3); }
+  .hit p { margin-top: 4px; font: 13px/1.75 var(--font-prose); color: var(--ink-2); }
+  .hit mark { background: var(--accent-soft); color: var(--ink); border-radius: 2px; padding: 0 1px; }
+  .hits-head { display: flex; align-items: center; justify-content: space-between; padding: var(--s-3) var(--s-4) var(--s-2); font-size: var(--fs-12); color: var(--ink-3); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="kb">
+    <div class="kb-col kb-list">
+      <div class="kb-pad">
+        <div class="spread"><h1 class="kb-title">知识库</h1>
+          <button class="btn btn-ghost btn-sm btn-icon" aria-label="刷新列表"><svg class="i i-sm"><use href="#i-refresh-cw"/></svg></button></div>
+        <p class="help" style="margin-top:4px">写作和审稿时，AI 会从这里查找相关资料。</p>
+        <button class="btn btn-secondary" style="width:100%;margin-top:var(--s-3)"><svg class="i"><use href="#i-file-input"/></svg>导入创作资料</button>
+        <div class="seg" style="width:100%;margin-top:var(--s-3)" role="group" aria-label="资料类型">
+          <button aria-pressed="true" style="flex:1">我导入的 12</button><button aria-pressed="false" style="flex:1">定稿章节 2</button>
+        </div>
+      </div>
+      <ul class="docs">
+        <li class="doc" aria-current="true"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">车站档案：1994 年事故报道</span><small>刚导入</small></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">林舟人物小传</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">母亲的日记摘抄</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">守夜人设定</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">末班车时刻表</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">铁路线路图说明</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">车厢结构与座位编号</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">失踪者名单</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">旧报纸剪报</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">方言与称呼</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">雨夜氛围参考</span></li>
+        <li class="doc"><svg class="i"><use href="#i-file-text"/></svg><span class="doc-name">悬疑节奏笔记</span></li>
+      </ul>
+      <div class="kb-foot">
+        <ul class="list danger-zone">
+          <li class="list-item" style="flex-direction:column;align-items:stretch;gap:8px"><span class="help">清空全部资料与检索记录，之后需要重新导入</span>
+            <button class="btn btn-danger btn-sm">清空知识库…</button></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="reader">
+      <div class="reader-head">
+        <div class="eyebrow">作品资料 · 知识库</div>
+        <div class="row" style="flex:none">
+          <span class="saved" data-dirty="true"><svg class="i i-sm"><use href="#i-circle-dashed"/></svg>有未保存的修改</span>
+          <button class="btn btn-primary">保存副本</button>
+        </div>
+      </div>
+      <h2 class="reader-title" style="margin-top:10px">车站档案：1994 年事故报道</h2>
+      <div class="reader-meta">项目副本 · 2,410 字 · 修改不会影响你电脑上的原文件</div>
+
+      <div class="callout">
+        <svg class="i"><use href="#i-users"/></svg>
+        <div>
+          <b>这份资料里提到了 4 个人物。</b>要从中提取角色卡吗？提取时会把这份资料的内容发给 DeepSeek V4 Flash，生成的角色卡会先给你确认，再加入角色名单。
+          <div class="callout-actions">
+            <button class="btn btn-secondary btn-ai btn-sm"><svg class="i i-sm"><use href="#i-sparkles"/></svg>提取角色卡…</button>
+            <button class="btn btn-ghost btn-sm">不用</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-text editing">
+        <p>本报讯　三月十二日深夜十一时四十分左右，北郊车站三号站台发生一起列车事故。一列本应停运的夜班车在暴雨中驶入站台，随后与站内调车机车发生侧面擦碰。</p>
+        <p>据车站值班员回忆，事故发生前，第三节车厢的阅读灯一直亮着，“像是有人在等车”。事故造成两人轻伤，另有一名女性乘客下落不明，警方仍在搜寻。<span class="caret"></span></p>
+        <p>车站方面表示，该线路将在年内停运，车站计划拆除。目前，三号站台已暂时封闭。</p>
+      </div>
+      <p class="help" style="margin-top:var(--s-2)">保存后会自动更新检索，写作时就能查到新内容。</p>
+    </div>
+
+    <div class="kb-col kb-find">
+      <div class="kb-pad" style="padding-bottom:0">
+        <h2 class="h3" style="margin-bottom:var(--s-2)">在资料里查找</h2>
+        <div class="searchbox"><svg class="i"><use href="#i-search"/></svg><span>三号站台 失踪</span>
+          <button class="btn btn-ghost btn-sm btn-icon" aria-label="清除"><svg class="i i-sm"><use href="#i-x"/></svg></button></div>
+        <div class="ready"><svg class="i i-sm"><use href="#i-circle-check"/></svg><span>检索已就绪，可按字词查找。在设置里配置检索模型后，还能按意思查找。</span></div>
+      </div>
+      <div class="hits-head"><span>找到 3 条</span><span class="row">最多显示 <span class="select" style="height:26px;padding:0 6px;font-size:var(--fs-12)">5 条 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></span></span></div>
+      <div class="hits">
+        <div class="hit">
+          <div class="hit-src"><svg class="i i-sm"><use href="#i-file-text"/></svg>车站档案：1994 年事故报道</div>
+          <p>……北郊车站<mark>三号站台</mark>发生一起列车事故。一列本应停运的夜班车在暴雨中驶入站台……</p>
+        </div>
+        <div class="hit">
+          <div class="hit-src"><svg class="i i-sm"><use href="#i-file-text"/></svg>失踪者名单</div>
+          <p>……最后一次被人看见，是在<mark>三号站台</mark>的候车长椅上，此后<mark>失踪</mark>，至今没有消息……</p>
+        </div>
+        <div class="hit">
+          <div class="hit-src"><svg class="i i-sm"><use href="#i-book-open"/></svg>第 2 章 母亲的旧照片 · 定稿</div>
+          <p>……背面是母亲的字，铅笔写的，已经淡得快要看不见：一九九四，<mark>三号站台</mark>。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '知识库', ref: 'knowledge', chapters: false, crumbs: ['作品资料', '知识库'], saved: false });
+</script>
+</body>
+</html>

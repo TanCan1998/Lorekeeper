@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>正文 · 定稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 定稿后处理状态 */
+  .post { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--surface); }
+  .post-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: 10px 10px 10px var(--s-4); border-bottom: 1px solid var(--rule); }
+  .post-title { font-weight: 600; }
+  .post-title small { margin-left: 8px; font-weight: 400; color: var(--ink-3); font-size: var(--fs-12); }
+  .post-steps { list-style: none; margin: 0; padding: 6px 0; }
+  .post-step { display: grid; grid-template-columns: 20px 88px 1fr auto; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px 0 var(--s-4); }
+  .post-step[data-s="ok"] .i { color: var(--ok); }
+  .post-step[data-s="fail"] .i { color: var(--danger); }
+  .post-step[data-s="fail"] { background: var(--danger-soft); }
+  .post-step b { font-weight: 500; }
+  .post-step span { color: var(--ink-3); font-size: var(--fs-12); }
+  .post-step[data-s="fail"] span { color: var(--danger); }
+  .nudge { display: flex; align-items: center; gap: var(--s-3); margin-top: var(--s-3); padding: 10px 10px 10px var(--s-4);
+    border-radius: var(--radius-lg); background: var(--accent-soft); color: var(--ink-2); }
+  .nudge > .i { color: var(--accent); }
+  .nudge p { flex: 1; }
+  .prose-gap { margin-top: var(--s-8); }
+  .mi-text { display: flex; flex-direction: column; }
+  .mi-text small { color: var(--ink-3); font-size: var(--fs-11); }
+  .consequences { margin: 0; padding-left: 18px; color: var(--ink-2); line-height: 1.75; }
+  .consequences li + li { margin-top: 6px; }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 2 章 · 铺垫</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">母亲的旧照片</h1>
+        <button class="version">定稿 · 3,028 字 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></button>
+      </div>
+      <ol class="life" aria-label="本章进度" style="margin-top:22px">
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>写作</li>
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>审稿</li>
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>修稿</li>
+        <li data-s="done"><span class="node"><svg class="i"><use href="#i-check"/></svg></span>定稿</li>
+      </ol>
+      <div class="chapter-actions">
+        <button class="btn btn-primary">写第 5 章 <svg class="i"><use href="#i-arrow-right"/></svg></button>
+        <button class="btn btn-ghost btn-icon" aria-label="更多操作" aria-expanded="true"><svg class="i"><use href="#i-more"/></svg></button>
+        <span class="hint readonly-note"><svg class="i i-sm"><use href="#i-lock"/></svg>已定稿，只读 · 今天 19:02</span>
+      </div>
+
+      <section class="post" aria-label="定稿后处理">
+        <div class="post-head">
+          <div class="post-title">定稿后处理<small>3 / 4 完成</small></div>
+          <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-refresh-cw"/></svg>重试失败步骤</button>
+        </div>
+        <ol class="post-steps">
+          <li class="post-step" data-s="ok"><svg class="i"><use href="#i-circle-check"/></svg><b>章节摘要</b><span>已写入前情摘要，后续章节会读取</span></li>
+          <li class="post-step" data-s="ok"><svg class="i"><use href="#i-circle-check"/></svg><b>连续性</b><span>时间线与 2 条叙事线索已更新</span></li>
+          <li class="post-step" data-s="fail"><svg class="i"><use href="#i-circle-alert"/></svg><b>角色状态</b><span>模型长时间没有响应，未更新</span>
+            <button class="btn btn-ghost btn-sm">重试</button></li>
+          <li class="post-step" data-s="ok"><svg class="i"><use href="#i-circle-check"/></svg><b>知识入库</b><span>本章已可在知识库中检索</span></li>
+        </ol>
+      </section>
+      <div class="nudge">
+        <svg class="i"><use href="#i-users"/></svg>
+        <p>定稿产生 2 项角色建议：林舟母亲的新关系，以及新人物“照相馆老板”。</p>
+        <button class="btn btn-ghost btn-sm">去角色名单处理 <svg class="i i-sm"><use href="#i-arrow-right"/></svg></button>
+      </div>
+
+      <div class="prose prose-gap">
+        <p>照片是在旧书的夹层里找到的。黑白的，边缘发黄，一个穿浅色外套的女人站在车站的钟下面，钟面上的指针停在十一点四十分。</p>
+        <p>林舟认得那件外套。他在家里唯一一张全家福里见过它，只是那张照片里，母亲的脸被人用指甲刮掉了。</p>
+        <p>照片背面盖着一枚褪色的印章：北站照相馆。</p>
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="menu" style="left:648px; top:296px; width:220px" role="menu" aria-label="更多操作">
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-history"/></svg>版本历史</button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-copy"/></svg>复制本章正文</button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-file-down"/></svg><span class="mi-text">重新写入正文文件<small>正文文件写入失败时出现</small></span></button>
+    <div class="menu-sep"></div>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>删除正文…</button>
+  </div>
+
+  <div class="scrim" style="align-items:end; padding-bottom:var(--s-4)">
+    <div class="dialog danger" role="alertdialog" aria-labelledby="del-title">
+      <div class="dialog-head">
+        <div class="dialog-title" id="del-title">删除第 2 章正文？这一步不能撤销</div>
+      </div>
+      <div class="dialog-body">
+        <ul class="consequences">
+          <li>定稿正文和正文文件会被删除，第 2 章回到“待写”。</li>
+          <li>这次定稿写入的章节摘要、连续性记录、角色状态和知识库条目一并撤下。</li>
+          <li>第 3、4 章仍保留，但它们参考过的第 2 章内容不再存在。</li>
+          <li>草稿 v1、v2 和修稿留在版本历史里，可以从那里恢复为草稿。</li>
+        </ul>
+      </div>
+      <div class="dialog-foot">
+        <span class="note">删除中断时，会提示你重试清理或人工核对</span>
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-danger-solid"><svg class="i"><use href="#i-trash-2"/></svg>删除正文</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '正文 · 定稿', stage: 'text', chapter: 2, crumbs: ['正文', '第 2 章'], saved: true,
+  run: { label: '第 4 章 · 生成草稿', pct: 62 },
+});
+</script>
+</body>
+</html>

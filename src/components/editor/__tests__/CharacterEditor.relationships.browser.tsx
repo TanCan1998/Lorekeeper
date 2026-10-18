@@ -359,6 +359,22 @@ describe('CharacterEditor relationship field', () => {
     )
   })
 
+  it('asks in English to delete the only character, not all 1 character', async () => {
+    useLocaleStore.setState({ locale: 'en-US' })
+    useCharacterStore.setState({ characters: [character('沈砺')], clearAllCharacters: vi.fn().mockResolvedValue(true) })
+    await act(async () => {
+      root?.render(<CharacterEditor projectKey={PROJECT_PATH} />)
+    })
+
+    await act(async () => page.getByRole('button', { name: 'Relationship graph' }).click())
+    await act(async () => page.getByRole('button', { name: 'Delete all characters and relationships' }).click())
+    await expect.element(page.getByRole('dialog')).toHaveTextContent('Delete the only character and its relationships? The graph is a projection of the roster and cannot be cleared independently. This cannot be undone.')
+    await act(async () => {
+      await page.getByRole('button', { name: 'Cancel' }).click()
+      await new Promise(resolve => setTimeout(resolve, 220))
+    })
+  })
+
   it('propagates character save failure to the exit gate', async () => {
     useCharacterStore.setState({
       saveAll: vi.fn(async () => { throw new Error('角色写入失败') }),

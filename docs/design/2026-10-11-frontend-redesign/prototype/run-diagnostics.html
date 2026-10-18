@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运行 · 诊断</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 诊断分页需要放下明细表，侧页加宽 */
+  /* 侧页加宽后纸面变窄，生命周期改用短连线 */
+  .life li { white-space: nowrap; }
+  .life li + li::before { width: 20px; margin: 0 8px; }
+  .diag-head { display: flex; align-items: center; gap: var(--s-2); }
+  .diag-head .h3 { margin-right: auto; }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: var(--fs-12); }
+  .log { margin: 0; padding: 10px 12px; height: 196px; overflow: hidden; border-radius: var(--radius); background: var(--sunken);
+    font: 12px/1.75 var(--font-ui); color: var(--ink-2); }
+  .log-line { display: grid; grid-template-columns: 64px 32px 1fr; gap: 8px; white-space: nowrap; }
+  .log-line time { color: var(--ink-3); font: 11.5px/1.9 var(--font-mono); }
+  .log-line b { font-weight: 400; color: var(--ink-3); }
+  .log-line[data-lv="warn"] b { color: var(--warn); }
+  .log-line[data-lv="error"] b, .log-line[data-lv="error"] span { color: var(--danger); }
+  .log-line span { overflow: hidden; text-overflow: ellipsis; }
+  .confirm-row { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px; border-radius: var(--radius); background: var(--danger-soft); color: var(--danger); font-size: var(--fs-12); }
+  .confirm-row span { flex: 1; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stats div { padding: 10px 12px; border-radius: var(--radius); background: var(--sunken); }
+  .stats b { display: block; font: 500 20px/1.2 var(--font-num); }
+  .stats span { font-size: var(--fs-11); color: var(--ink-3); }
+  .calls { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--paper); overflow: hidden; }
+  .calls .table td, .calls .table th { padding: 7px 10px; white-space: nowrap; }
+  .calls .table { margin-bottom: -1px; }
+  .col-time { width: 52px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .calls .table .col-copy { padding: 0 6px; width: 34px; }
+  .copy-btn { color: var(--ink-3); }
+  .safe-note { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: var(--fs-12); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="manuscript-bg">
+    <article class="page">
+      <div class="eyebrow">第 4 章 · 发展</div>
+      <div class="chapter-head">
+        <h1 class="chapter-h1">第三节车厢</h1>
+      </div>
+      <ol class="life" aria-label="本章进度" style="margin-top:22px">
+        <li data-s="now"><span class="node"></span>写作</li>
+        <li data-s="todo"><span class="node"></span>审稿</li>
+        <li data-s="todo"><span class="node"></span>修稿</li>
+        <li data-s="todo"><span class="node"></span>定稿</li>
+      </ol>
+      <div class="chapter-actions">
+        <button class="btn btn-secondary" disabled>AI 审稿</button>
+      </div>
+      <div class="empty">
+        <svg class="i"><use href="#i-feather"/></svg>
+        <div class="empty-title">第 4 章正在写</div>
+        <p>写完会以草稿 v1 出现在这里。</p>
+      </div>
+    </article>
+  </div>
+</template>
+
+<template id="sheet">
+  <div class="sheet-head">
+    <div><div class="sheet-title">运行</div><div class="sheet-sub">诊断信息只用于排查问题，不影响写作</div></div>
+    <button class="btn btn-ghost btn-sm btn-icon" aria-label="收起运行"><svg class="i"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="sheet-tabs" role="tablist">
+    <button class="sheet-tab" role="tab" aria-selected="false">进行中</button>
+    <button class="sheet-tab" role="tab" aria-selected="false">历史</button>
+    <button class="sheet-tab" role="tab" aria-selected="true">诊断</button>
+  </div>
+  <div class="sheet-body">
+    <div class="diag-head">
+      <div class="h3">日志</div>
+      <span class="toggle"><span class="switch" data-on="true"></span>自动滚动</span>
+      <button class="btn btn-ghost btn-sm" aria-expanded="true"><svg class="i i-sm"><use href="#i-trash-2"/></svg>清空日志…</button>
+    </div>
+    <div class="confirm-row" role="alert"><span>清空后，今天的 214 行日志无法找回</span>
+      <button class="btn btn-ghost btn-sm">保留</button><button class="btn btn-danger-solid btn-sm">清空</button></div>
+    <div class="log" role="log" aria-live="polite">
+      <div class="log-line"><time>21:26:02</time><b>信息</b><span>开始：第 4 章 · 生成草稿</span></div>
+      <div class="log-line"><time>21:26:04</time><b>信息</b><span>读取蓝图、前 3 章摘要与 4 个出场角色</span></div>
+      <div class="log-line"><time>21:26:08</time><b>信息</b><span>从知识库找到 6 段相关资料</span></div>
+      <div class="log-line" data-lv="warn"><time>21:26:26</time><b>提醒</b><span>细纲比目标字数多出 18%，正文会按 3,000 字控制</span></div>
+      <div class="log-line"><time>21:27:51</time><b>信息</b><span>正文第 2 / 5 节完成，1,204 字</span></div>
+      <div class="log-line" data-lv="error"><time>21:28:40</time><b>失败</b><span>第 2 章角色状态更新：模型长时间没有响应</span></div>
+      <div class="log-line"><time>21:29:12</time><b>信息</b><span>正文第 3 / 5 节开始</span></div>
+      <div class="log-line"><time>21:31:05</time><b>信息</b><span>已写 1,940 字</span></div>
+    </div>
+
+    <div class="diag-head" style="margin-top:var(--s-3)">
+      <div class="h3">AI 调用记录</div>
+      <span class="safe-note"><svg class="i i-sm"><use href="#i-lock"/></svg>安全诊断不含正文和密钥</span>
+    </div>
+    <div class="stats">
+      <div><b>38</b><span>今天调用次数</span></div>
+      <div><b>21.4 万</b><span>输入字数</span></div>
+      <div><b>6.2 万</b><span>输出字数</span></div>
+      <div><b>1</b><span>失败</span></div>
+    </div>
+    <div class="calls">
+      <table class="table">
+        <thead><tr><th class="col-time">时间</th><th>用途</th><th>模型</th><th class="num">输入字数</th><th class="num">输出字数</th><th class="num">耗时</th><th>状态</th><th class="col-copy"><span class="sr-only">复制</span></th></tr></thead>
+        <tbody>
+          <tr><td class="col-time">21:31</td><td>第 4 章 · 写正文</td><td>V4 Flash</td><td class="num">8,420</td><td class="num">1,236</td><td class="num">41 秒</td><td><span class="badge run accent">进行中</span></td><td class="col-copy"><button class="btn btn-ghost btn-sm btn-icon copy-btn" aria-label="复制安全诊断"><svg class="i i-sm"><use href="#i-copy"/></svg></button></td></tr>
+          <tr><td class="col-time">21:29</td><td>第 4 章 · 写正文</td><td>V4 Flash</td><td class="num">7,960</td><td class="num">1,204</td><td class="num">52 秒</td><td><span class="badge ok">成功</span></td><td class="col-copy"><button class="btn btn-ghost btn-sm btn-icon copy-btn" aria-label="复制安全诊断"><svg class="i i-sm"><use href="#i-copy"/></svg></button></td></tr>
+          <tr><td class="col-time">21:28</td><td>第 2 章 · 角色状态</td><td>V4 Flash</td><td class="num">5,310</td><td class="num">0</td><td class="num">120 秒</td><td><span class="badge danger">超时</span></td><td class="col-copy"><button class="btn btn-ghost btn-sm btn-icon copy-btn" aria-label="复制安全诊断"><svg class="i i-sm"><use href="#i-copy"/></svg></button></td></tr>
+          <tr><td class="col-time">21:26</td><td>第 4 章 · 细纲</td><td>V4 Flash</td><td class="num">6,140</td><td class="num">902</td><td class="num">18 秒</td><td><span class="badge ok">成功</span></td><td class="col-copy"><button class="btn btn-ghost btn-sm btn-icon copy-btn" aria-label="复制安全诊断"><svg class="i i-sm"><use href="#i-copy"/></svg></button></td></tr>
+          <tr><td class="col-time">21:14</td><td>第 3 章 · 审稿</td><td>V4 Pro</td><td class="num">4,880</td><td class="num">1,320</td><td class="num">27 秒</td><td><span class="badge ok">成功</span></td><td class="col-copy"><button class="btn btn-ghost btn-sm btn-icon copy-btn" aria-label="复制安全诊断"><svg class="i i-sm"><use href="#i-copy"/></svg></button></td></tr>
+          <tr><td class="col-time">20:58</td><td>第 3 章 · 修稿</td><td>V4 Pro</td><td class="num">5,020</td><td class="num">1,268</td><td class="num">33 秒</td><td><span class="badge ok">成功</span></td><td class="col-copy"><button class="btn btn-ghost btn-sm btn-icon copy-btn" aria-label="复制安全诊断"><svg class="i i-sm"><use href="#i-copy"/></svg></button></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({
+  title: '运行 · 诊断', stage: 'text', chapter: 4, crumbs: ['正文', '第 4 章'], saved: true,
+  run: { label: '第 4 章 · 生成草稿', pct: 62, open: true }, sheetWide: true,
+});
+</script>
+</body>
+</html>

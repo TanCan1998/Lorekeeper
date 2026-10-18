@@ -1,23 +1,26 @@
-import { CANONICAL_PROJECT_DIRECTORY } from '../../shared/project-format'
 import { useState, useEffect, useRef } from 'react'
 import { Sparkles, Play, AlertCircle } from 'lucide-react'
 import { useProjectStore } from '../../stores/project-store'
 import { useLLMStore } from '../../stores/llm-store'
-import { useWorkflowStore, workflowResourceConflictMessage } from '../../stores/workflow-store'
-
-import { createChapterWorkflow } from '../../services/workflows/chapter-workflow'
 import {
   CHAPTER_WORDS_TARGET_MAX,
   CHAPTER_WORDS_TARGET_MIN,
-  createChapterInfoFromDialogInput,
   DEFAULT_CHAPTER_WORDS_TARGET,
   normalizeChapterWordsTarget,
 } from '../../services/workflows/chapter-creation-parameters'
-import { guardChapterWriting } from '../../services/workflow-guards'
+import {
+  chapterDefaultWordsTarget,
+  chapterWriteFormFromPrefill,
+  CREATION_LOG_REL,
+  generationModelError,
+  isGenerationModel,
+  launchChapterWrite,
+  preferredGenerationModelId,
+} from '../../services/workflows/chapter-write-launch'
 import { ipc } from '../../services/ipc-client'
 import { requireIpcSuccess } from '../../services/ipc-result'
 import { readAuthoritativeNextChapter } from '../../services/authoritative-chapter-sequence'
-import { readConsistencyPreflight, type ConsistencyPreflightResult } from '../../services/consistency-preflight'
+import type { ConsistencyPreflightResult } from '../../services/consistency-preflight'
 import {
   Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription,
 } from '../ui/Dialog'
@@ -34,7 +37,6 @@ import {
   captureProjectSession,
   isProjectSessionCurrent,
 } from '../project-session-gate'
-import type { ModelProfile, ProjectSessionContext } from '../../shared/ipc-channels'
 import ConsistencyPreflightPanel from './ConsistencyPreflightPanel'
 
 import { chapterRoleOptions, chapterRoleSelectValue } from '../../shared/chapter-role'
@@ -44,28 +46,6 @@ interface Props {
   onClose: () => void
   /** 从章节蓝图「写作此章」传入的预填参数，优先级高于历史记录 */
   prefill?: Record<string, unknown> | null
-}
-
-/** 章节创作参数持久化路径（相对于项目路径） */
-const CREATION_LOG_REL = `${CANONICAL_PROJECT_DIRECTORY}/chapter_creation_log.json`
-
-function isGenerationModel(model: ModelProfile): boolean {
-  return model.purposes.includes('generation')
-}
-
-function availableGenerationModelId(
-  models: ModelProfile[],
-  modelId: string | null | undefined,
-): string | null {
-  return modelId && models.some(model => model.id === modelId && isGenerationModel(model))
-    ? modelId
-    : null
-}
-
-function preferredGenerationModelId(models: ModelProfile[], defaultModelId: string | null): string | null {
-  return availableGenerationModelId(models, defaultModelId)
-    ?? models.find(isGenerationModel)?.id
-    ?? null
 }
 
 /** 章节创作对话框 — 配置并启动章节创作工作流（步进式，每步等待用户确认） */
@@ -87,9 +67,6 @@ function ChapterCreationDialogSession({ isOpen, onClose, prefill }: Props) {
   const currentProject = useProjectStore(s => s.currentProject)
   const models = useLLMStore(s => s.models)
   const defaultModelId = useLLMStore(s => s.defaultModelId)
-  // ✅ action 用 getState() 获取，不订阅 workflow store 高频更新
-  const startWorkflow = useWorkflowStore.getState().startWorkflow
-  const addLog = useWorkflowStore.getState().addLog
   const [chapterNumber, setChapterNumber] = useState<number | ''>(1)
   const [title, setTitle] = useState('')
   const [role, setRole] = useState('发展')
@@ -112,18 +89,7 @@ function ChapterCreationDialogSession({ isOpen, onClose, prefill }: Props) {
   const generationModels = models.filter(isGenerationModel)
   const fallbackGenerationModelId = preferredGenerationModelId(models, defaultModelId)
   const selectedGenerationModelId = generationModelId ?? fallbackGenerationModelId
-  const selectedGenerationModel = generationModels.find(model => model.id === selectedGenerationModelId)
-  const modelSelectionError = generationModels.length === 0
-    ? text(
-      '没有已配置且可用于文本生成的模型。请在设置中添加或启用一项生成模型。',
-      'No configured model can generate text. Add or enable a generation model in Settings.',
-    )
-    : !selectedGenerationModel
-      ? text(
-        '所选创作模型已不可用。请选择一项可用于文本生成的模型后再试。',
-        'The selected writing model is no longer available. Select a compatible generation model and try again.',
-      )
-      : null
+  const modelSelectionError = generationModelError(models, selectedGenerationModelId, text)
 
   useEffect(() => {
     if (!isOpen) return
@@ -143,10 +109,7 @@ function ChapterCreationDialogSession({ isOpen, onClose, prefill }: Props) {
     const projectSession = captureProjectSession(currentProject)
     if (!projectSession) return
     const projectPath = projectSession.projectPath
-    const defaultWordsTarget = normalizeChapterWordsTarget(
-      currentProject.novelConfig.wordsPerChapter,
-      DEFAULT_CHAPTER_WORDS_TARGET,
-    )
+    const defaultWordsTarget = chapterDefaultWordsTarget(currentProject.novelConfig.wordsPerChapter)
     const gate = loadGate.current
     const requestToken = gate.begin(projectPath)
     const isCurrentRequest = () => gate.isCurrent(
@@ -209,14 +172,15 @@ function ChapterCreationDialogSession({ isOpen, onClose, prefill }: Props) {
       setAuthorityError(null)
       if (prefill) {
         // 使用章节蓝图预填数据
-        setChapterNumber(Number(prefill.chapterNumber) || 1)
-        setTitle(String(prefill.title || ''))
-        setRole(String(prefill.role ?? '发展'))
-        setPurpose(String(prefill.purpose || ''))
-        setKeyEvents(String(prefill.keyEvents || ''))
-        setCharacters(String(prefill.characters || ''))
-        setUserGuidance(String(prefill.userGuidance || ''))
-        setWordsTarget(defaultWordsTarget)
+        const form = chapterWriteFormFromPrefill(prefill, defaultWordsTarget)
+        setChapterNumber(form.chapterNumber)
+        setTitle(form.title)
+        setRole(form.role)
+        setPurpose(form.purpose)
+        setKeyEvents(form.keyEvents)
+        setCharacters(form.characters)
+        setUserGuidance(form.userGuidance)
+        setWordsTarget(form.wordsTarget)
         setLoadedFromBlueprint(true)
         setLoadedFromHistory(false)
       } else {
@@ -232,168 +196,34 @@ function ChapterCreationDialogSession({ isOpen, onClose, prefill }: Props) {
 
 
 
-  /** 保存当前参数到持久化文件 */
-  const saveParams = async (projectSession: ProjectSessionContext, normalizedWordsTarget: number) => {
-    const projectPath = projectSession.projectPath
-    const params = { chapterNumber, title, role, purpose, keyEvents, characters, userGuidance, wordsTarget: normalizedWordsTarget }
-    try {
-      // 读取已有 log
-      let log: { lastUsed?: object; history?: object[] } = {}
-      const existing = await ipc.invokeWithProjectSession(
-        projectSession,
-        'fs:read-json',
-        `${projectPath}/${CREATION_LOG_REL}`,
-        projectPath,
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      if (existing.success && existing.data) {
-        log = existing.data as typeof log
-      }
-
-      log.lastUsed = params
-      log.history = [
-        { ...params, createdAt: new Date().toISOString() },
-        ...((log.history || []) as object[]).slice(0, 49), // 最多保留 50 条历史
-      ]
-
-      requireIpcSuccess(
-        await ipc.invokeWithProjectSession(
-          projectSession,
-          'fs:write-json',
-          `${projectPath}/${CREATION_LOG_REL}`,
-          log,
-          projectPath,
-        ),
-        '保存章节创作记录',
-      )
-    } catch (e) {
-      console.warn('[ChapterCreation] 参数持久化失败:', e)
-    }
-  }
-
   const handleStart = async (ignoreFindingsOnce = false) => {
-    if (modelSelectionError || !selectedGenerationModel) {
-      const message = modelSelectionError ?? text(
-        '请选择一项可用于文本生成的模型。',
-        'Select a compatible generation model before starting.',
-      )
-      setGuardError(message)
-      addLog('error', message)
-      return
-    }
     const projectSession = captureProjectSession(currentProject)
     if (!projectSession) return
-    const projectPath = projectSession.projectPath
-
-    const targetChapter = Number(chapterNumber) || 1
-    let authoritativeNextChapter: number
-    try {
-      authoritativeNextChapter = await readAuthoritativeNextChapter(projectSession, locale)
-    } catch (error) {
-      if (!isProjectSessionCurrent(projectSession)) return
-      setAuthorityError(error instanceof Error ? error.message : String(error))
-      return
+    const outcome = await launchChapterWrite({
+      session: projectSession,
+      form: { chapterNumber, title, role, purpose, keyEvents, characters, userGuidance, knowledgeHint, wordsTarget },
+      generationModelId: selectedGenerationModelId,
+      wordsPerChapter: currentProject?.novelConfig.wordsPerChapter,
+      ignoreFindingsOnce,
+      locale,
+    })
+    switch (outcome.kind) {
+      case 'authority-error':
+        setAuthorityError(outcome.message)
+        return
+      case 'blocked':
+        setAuthorityError(null)
+        setGuardError(outcome.message)
+        return
+      case 'preflight':
+        setAuthorityError(null)
+        setGuardError(null)
+        setConsistencyPreflight(outcome.preflight)
+        return
+      case 'started':
+        setConsistencyPreflight(null)
+        onClose()
     }
-    if (!isProjectSessionCurrent(projectSession)) return
-    setAuthorityError(null)
-    if (targetChapter !== authoritativeNextChapter) {
-      setGuardError(text(
-        `当前权威定稿之后只能创作第 ${authoritativeNextChapter} 章。请从该章蓝图进入，或修复定稿章节后重试。`,
-        `Only Chapter ${authoritativeNextChapter} can be written after the current finalized authority. Open that blueprint, or repair finalized chapters before retrying.`,
-      ))
-      return
-    }
-
-    // 前置校验：章节蓝图是否已生成，以及（若篇章>1）前一章是否已定稿
-    const guard = await guardChapterWriting(targetChapter, projectPath, projectSession)
-    if (!isProjectSessionCurrent(projectSession)) return
-    const guardedGenerationModelId = availableGenerationModelId(
-      useLLMStore.getState().models,
-      selectedGenerationModelId,
-    )
-    if (!guardedGenerationModelId) {
-      setGuardError(text(
-        '所选创作模型已不可用。请选择一项可用于文本生成的模型后再试。',
-        'The selected writing model is no longer available. Select a compatible generation model and try again.',
-      ))
-      return
-    }
-    if (!guard.ok) {
-      setGuardError(guard.message || text('前置条件未满足', 'Prerequisites are not met.'))
-      return
-    }
-    setGuardError(null)
-
-    if (!ignoreFindingsOnce) {
-      try {
-        const preflight = await readConsistencyPreflight(projectSession, [{
-          chapterNumber: targetChapter,
-          title,
-          role,
-          purpose,
-          keyEvents,
-          characters: characters.split(/[、,，]/u).map(value => value.trim()).filter(Boolean),
-          suspenseHook: '',
-          userGuidance,
-          notes: '',
-        }])
-        if (!isProjectSessionCurrent(projectSession)) return
-        setConsistencyPreflight(preflight)
-        if (preflight.findings.length > 0) return
-      } catch {
-        if (!isProjectSessionCurrent(projectSession)) return
-        addLog('info', text(
-          '一致性证据暂时不可用；本次创作仍会继续。',
-          'Continuity evidence is temporarily unavailable; writing will continue.',
-        ))
-      }
-    }
-    setConsistencyPreflight(null)
-
-    const normalizedWordsTarget = normalizeChapterWordsTarget(
-      wordsTarget,
-      currentProject?.novelConfig.wordsPerChapter,
-    )
-    setWordsTarget(normalizedWordsTarget)
-
-    // 持久化本次参数
-    await saveParams(projectSession, normalizedWordsTarget)
-    if (!isProjectSessionCurrent(projectSession)) return
-    const frozenGenerationModelId = availableGenerationModelId(
-      useLLMStore.getState().models,
-      selectedGenerationModelId,
-    )
-    if (!frozenGenerationModelId) {
-      setGuardError(text(
-        '所选创作模型已不可用。请选择一项可用于文本生成的模型后再试。',
-        'The selected writing model is no longer available. Select a compatible generation model and try again.',
-      ))
-      return
-    }
-
-    const workflow = createChapterWorkflow(createChapterInfoFromDialogInput({
-      projectPath,
-      chapterNumber,
-      title,
-      role,
-      purpose,
-      keyEvents,
-      characters,
-      userGuidance,
-      knowledgeQueryHint: knowledgeHint,
-      wordsTarget: normalizedWordsTarget,
-      defaultWordsTarget: currentProject?.novelConfig.wordsPerChapter ?? DEFAULT_CHAPTER_WORDS_TARGET,
-    }), projectSession, { generationModelId: frozenGenerationModelId })
-
-    // 启动任务后关闭设定弹窗，由全局 Overlay 接管展示
-    if (!isProjectSessionCurrent(projectSession)) return
-    const resourceConflict = useWorkflowStore.getState().getResourceConflict(workflow)
-    if (resourceConflict) {
-      setGuardError(workflowResourceConflictMessage(locale, resourceConflict.title))
-      return
-    }
-    void startWorkflow(workflow, false)
-    onClose()
   }
 
   const handleOpenChange = (open: boolean) => {

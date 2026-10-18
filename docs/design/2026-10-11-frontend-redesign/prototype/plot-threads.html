@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>剧情与伏笔 · 伏笔线索</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .ref-pad { padding: var(--s-8) var(--s-12) var(--s-12); }
+  .ref-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--s-6); }
+  .cols { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); margin-top: var(--s-6); align-items: start; }
+
+  /* 线索计划：每行一条线索，右侧是埋设→推进→解决的小路线 */
+  .thread { display: grid; grid-template-columns: minmax(0, 1fr) 236px auto; align-items: center; gap: var(--s-4); }
+  .thread-name { font-weight: 500; }
+  .thread-sub { margin-top: 2px; font-size: var(--fs-12); color: var(--ink-3); }
+  .thread-sub.warn { color: var(--warn); display: flex; align-items: center; gap: 5px; }
+  .route { display: grid; grid-template-columns: repeat(3, 1fr); position: relative; }
+  .route::before { content: ""; position: absolute; left: 16%; right: 16%; top: 5px; height: 1px; background: var(--rule-strong); }
+  .route span { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: var(--fs-11); color: var(--ink-3); }
+  .route span::before { content: ""; width: 11px; height: 11px; border-radius: 50%; border: 1.5px dashed var(--ink-3); background: var(--surface); }
+  .route span[data-s="done"]::before { background: var(--ink); border: 1.5px solid var(--ink); }
+  .route span[data-s="late"]::before { border: 1.5px solid var(--warn); background: var(--warn-soft); }
+  .route span[data-s="late"] { color: var(--warn); }
+  .route span[data-s="none"] { visibility: hidden; }
+
+  .cand { padding: var(--s-4); border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--surface); }
+  .cand-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
+  .cand-title { font-weight: 600; }
+  .cand q { display: block; margin: 10px 0 8px; padding-left: 10px; border-left: 2px solid var(--rule-strong); font: 13.5px/1.8 var(--font-prose); color: var(--ink-2); quotes: none; }
+  .cand p { font-size: var(--fs-12); color: var(--ink-3); line-height: 1.6; }
+  .cand-foot { display: flex; align-items: center; gap: var(--s-2); margin-top: var(--s-3); }
+  .cand-foot .seg { margin-right: auto; }
+  .pane-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin-top: var(--s-3); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="ref-pad">
+    <div class="ref-head">
+      <div>
+        <div class="eyebrow">作品资料</div>
+        <h1 class="h1" style="font-size:var(--fs-30)">剧情与伏笔</h1>
+      </div>
+      <div class="seg" role="group" aria-label="视图">
+        <button aria-pressed="false">剧情树</button><button aria-pressed="true">伏笔线索</button>
+      </div>
+    </div>
+
+    <div class="cols">
+      <section>
+        <div class="section-head">
+          <div><h2 class="h3">线索计划 <span class="muted" style="font-weight:400">7 条</span></h2>
+            <div class="help">每条线索计划在哪章埋下、哪章推进、哪章解决。写作和审稿会参考这里。</div></div>
+          <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-plus"/></svg>新建线索</button>
+        </div>
+        <ul class="list">
+          <li class="list-item thread">
+            <div><div class="thread-name">“不要回头”的警告</div>
+              <div class="thread-sub warn"><svg class="i i-sm"><use href="#i-triangle-alert"/></svg>已过计划推进章：第 3 章草稿里没有推进</div></div>
+            <div class="route"><span data-s="done">埋 · 第 1 章</span><span data-s="late">推 · 第 3 章</span><span>解 · 第 5 章</span></div>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </li>
+          <li class="list-item thread">
+            <div><div class="thread-name">灰色的信是谁寄的</div><div class="thread-sub">贯穿全书 · 进行中</div></div>
+            <div class="route"><span data-s="done">埋 · 第 1 章</span><span>推 · 第 9 章</span><span>解 · 第 22 章</span></div>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </li>
+          <li class="list-item thread">
+            <div><div class="thread-name">母亲的旧照片</div><div class="thread-sub">支线 · 进行中</div></div>
+            <div class="route"><span data-s="done">埋 · 第 2 章</span><span>推 · 第 6 章</span><span>解 · 第 20 章</span></div>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </li>
+          <li class="list-item thread">
+            <div><div class="thread-name">三十年前的车站事故</div><div class="thread-sub">支线 · 进行中</div></div>
+            <div class="route"><span data-s="done">埋 · 第 2 章</span><span>推 · 第 7 章</span><span>解 · 第 19 章</span></div>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </li>
+          <li class="list-item thread">
+            <div><div class="thread-name">第三节车厢的阅读灯</div><div class="thread-sub">主线 · 计划中</div></div>
+            <div class="route"><span>埋 · 第 4 章</span><span>推 · 第 6 章</span><span>解 · 第 18 章</span></div>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </li>
+          <li class="list-item thread">
+            <div><div class="thread-name">失物招领处的旧皮箱</div><div class="thread-sub">支线 · 计划中</div></div>
+            <div class="route"><span>埋 · 第 8 章</span><span data-s="none">推</span><span>解 · 第 16 章</span></div>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </li>
+          <li class="list-item thread">
+            <div><div class="thread-name">守夜人的身份</div><div class="thread-sub">主线 · 计划中</div></div>
+            <div class="route"><span>埋 · 第 10 章</span><span data-s="none">推</span><span>解 · 第 21 章</span></div>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <div><h2 class="h3">定稿里的线索变化 <span class="badge warn" style="margin-left:4px">2 条待确认</span></h2>
+            <div class="help">从第 1、2 章定稿里识别出的埋设、推进和解决。确认后才会记入线索计划。</div></div>
+        </div>
+        <div class="stack">
+          <div class="cand">
+            <div class="cand-head"><span class="cand-title">三十年前的车站事故</span><span class="muted" style="font-size:var(--fs-12)">第 2 章定稿</span></div>
+            <q>母亲在照片背面写下的日期，正好是那场事故的前一天。</q>
+            <p>理由：首次把母亲与事故联系起来，读者第一次意识到两者有关。</p>
+            <div class="cand-foot">
+              <div class="seg" role="group" aria-label="变化类型"><button aria-pressed="true">埋设</button><button aria-pressed="false">推进</button><button aria-pressed="false">解决</button><button aria-pressed="false">放弃</button></div>
+              <button class="btn btn-ghost btn-sm">不采纳</button>
+              <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-check"/></svg>确认</button>
+            </div>
+          </div>
+          <div class="cand">
+            <div class="cand-head"><span class="cand-title">灰色的信是谁寄的</span><span class="muted" style="font-size:var(--fs-12)">第 1 章定稿</span></div>
+            <q>信封上没有邮戳，像是有人亲手塞进了门缝。</q>
+            <p>理由：暗示寄信人就在附近，但没有给出身份，属于埋设而不是推进。</p>
+            <div class="cand-foot">
+              <div class="seg" role="group" aria-label="变化类型"><button aria-pressed="true">埋设</button><button aria-pressed="false">推进</button><button aria-pressed="false">解决</button><button aria-pressed="false">放弃</button></div>
+              <button class="btn btn-ghost btn-sm">不采纳</button>
+              <button class="btn btn-secondary btn-sm"><svg class="i i-sm"><use href="#i-check"/></svg>确认</button>
+            </div>
+          </div>
+        </div>
+        <div class="pane-foot">
+          <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-scan-text"/></svg>重新识别定稿</button>
+          <button class="btn btn-primary">保存确认结果</button>
+        </div>
+
+        <div class="section" style="margin-top:var(--s-8)">
+          <div class="section-head"><h2 class="h3">AI 建议的伏笔</h2></div>
+          <div class="card" style="padding:0">
+            <div class="empty" style="padding:var(--s-6)">
+              <svg class="i"><use href="#i-sparkles"/></svg>
+              <div class="empty-title">还没有建议</div>
+              <div>AI 会读完 24 章蓝图，建议可以提前埋下的伏笔。建议只列在这里，由你决定是否加入计划。</div>
+              <button class="btn btn-secondary btn-ai btn-sm"><svg class="i i-sm" style="width:14px;height:14px"><use href="#i-sparkles"/></svg>根据蓝图建议伏笔</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '剧情与伏笔 · 伏笔线索', ref: 'plot', chapters: false, crumbs: ['作品资料', '剧情与伏笔'], saved: true });
+</script>
+</body>
+</html>

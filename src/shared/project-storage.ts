@@ -30,7 +30,7 @@ export function assertDistinctStorageRoots(roots: readonly StorageRootProof[]): 
 }
 export type MainReady = { state: 'pending' | 'blocked' } | { state: 'ready'; globalGeneration: string; skinRevision: number }
 export interface AppearanceProfile {
-  revision: number; shellPreference: 'unset' | 'classic' | 'writer'
+  revision: number; shellPreference: 'unset' | 'classic' | 'writer' | 'stage'
   colorTheme: string; zoom: number; writingFont: string; uiFont: string
   origin: 'legacy-import' | 'author'; legacyImportCompleted: boolean
 }

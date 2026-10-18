@@ -23,6 +23,7 @@ import { captureProjectSession, isProjectSessionCurrent } from '../project-sessi
 import { Button } from '../ui/Button'
 import { cn } from '../../lib/utils'
 import { useLocaleStore } from '../../stores/locale-store'
+import { useUnsavedSettings } from './unsaved-settings'
 
 // ==================== 来源标签配置 ====================
 
@@ -256,6 +257,11 @@ function TemplateItem({
     setPrevExpanded(isExpanded)
     setPrevContent(currentTemplate.content)
   }
+
+  useUnsavedSettings(isExpanded && (
+    editRole !== (currentTemplate.systemRole ?? '')
+    || editGuidance !== (currentTemplate.taskGuidance ?? (source === 'builtin' ? '' : currentTemplate.content))
+  ))
 
   const sourceConf = SOURCE_CONFIG[source]
 

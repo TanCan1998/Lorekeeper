@@ -39,7 +39,7 @@ const model = { id: 'v3-history-fixture', name: 'V3 history fixture', provider: 
 const steps = []
 const pass = (name, observed) => steps.push({ name, outcome: 'PASS', observed })
 const invoke = (page, channel, ...args) => page.evaluate(({ channel, args }) => window.aiNovelAPI.invoke(channel, ...args), { channel, args })
-const assistant = page => page.locator('[aria-label="写作助手"]')
+const assistant = page => page.locator('[aria-label="AI 输出"]')
 let secondRequestResolve
 const secondRequest = new Promise(resolve => { secondRequestResolve = resolve })
 const fixture = { requests: 0 }

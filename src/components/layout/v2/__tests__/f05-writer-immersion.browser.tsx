@@ -3,15 +3,14 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import ShellV2 from '../ShellV2'
-import TitleBar from '../../TitleBar'
+import { GuardedTitleBar } from '../../__tests__/guarded-title-bar'
 import LeftToolWindowBar from '../../LeftToolWindowBar'
 import RightToolWindowBar from '../../RightToolWindowBar'
 import EditorArea from '../../../panels/EditorArea'
-import AIPanel from '../../../panels/AIPanel'
 import { useAppearanceStore } from '../../../../stores/appearance-bootstrap'
-import { useAgentStore } from '../../../../stores/agent-store'
 import { useEditorStore } from '../../../../stores/editor-store'
 import { useLayoutStore } from '../../../../stores/layout-store'
+import { navigate } from '../../../../stores/navigation/navigation-intents'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useProjectStore } from '../../../../stores/project-store'
@@ -20,7 +19,6 @@ import type { ProjectData } from '../../../../shared/ipc-channels'
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const originalAppearance = useAppearanceStore.getState()
-const originalAgent = useAgentStore.getState()
 const originalEditor = useEditorStore.getState()
 const originalLayout = useLayoutStore.getState()
 const originalLLM = useLLMStore.getState()
@@ -33,10 +31,10 @@ let root: Root
 
 function WriterFixture() {
   const layout = useLayoutStore()
-  return <ShellV2 theme="paper" titleBar={<TitleBar />}
+  return <ShellV2 theme="paper" titleBar={<GuardedTitleBar />}
     rail={<LeftToolWindowBar />} rightRail={<RightToolWindowBar />}
     sidebar={<p>作品资料</p>} editor={<EditorArea onNewProject={vi.fn()} />}
-    aiPanel={<AIPanel />}
+    aiPanel={<p>AI 输出内容</p>}
     bottom={<p>任务与日志</p>} statusBar={<p>状态</p>}
     sidebarOpen={layout.sidebarOpen} aiPanelOpen={layout.aiPanelOpen}
     bottomOpen={layout.bottomPanelOpen} immersive={layout.immersive} home={layout.sidebarView === 'home'} />
@@ -53,7 +51,6 @@ beforeEach(() => {
     invoke: vi.fn(async () => ({ success: true })), on: vi.fn(() => () => {}), once: vi.fn(), send: vi.fn(),
   } })
   useAppearanceStore.setState({ resolvedShell: 'writer' })
-  useAgentStore.setState({ showHistory: false, conversations: [], activeConversationId: null })
   useLLMStore.setState({ loaded: true })
   useLocaleStore.setState({ locale: 'zh-CN' })
   useLayoutStore.setState({ sidebarView: 'project', activeRailItem: 'project', sidebarOpen: true,
@@ -70,7 +67,6 @@ afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
   useAppearanceStore.setState(originalAppearance, true)
-  useAgentStore.setState(originalAgent, true)
   useEditorStore.setState(originalEditor, true)
   useLayoutStore.setState(originalLayout, true)
   useLLMStore.setState(originalLLM, true)
@@ -97,27 +93,17 @@ it('U07.A06 标签选择同步 Writer 栏目高亮与正文', async () => {
   expect(host.textContent).toContain('测试大纲')
 })
 
-it('U07.A07/A08 沉浸进入退出，打开助手退出且未发送输入仍在', async () => {
+it('U07.A07/A08 沉浸进入退出，打开 AI 输出退出沉浸', async () => {
   await act(async () => root.render(<WriterFixture />))
-  const input = host.querySelector<HTMLTextAreaElement>('textarea[placeholder="输入消息，@ 提及，/ 使用工作流..."]')!
-  expect(input).toBeTruthy()
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
-    setter.call(input, '草稿里的未发送提问')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-  expect(input.value).toBe('草稿里的未发送提问')
   await click('button[title="进入沉浸写作"]')
   expect(useLayoutStore.getState()).toMatchObject({ immersive: true, sidebarOpen: false, aiPanelOpen: false, bottomPanelOpen: false })
   expect(host.querySelector('[data-writer-immersive="true"]')).toBeTruthy()
-  expect(host.querySelector('textarea[placeholder="输入消息，@ 提及，/ 使用工作流..."]')).toBe(input)
   await click('button[title="退出沉浸写作"]')
   expect(useLayoutStore.getState()).toMatchObject({ immersive: false, sidebarOpen: true, aiPanelOpen: true, bottomPanelOpen: true })
   await click('button[title="进入沉浸写作"]')
-  await click('button[title="AI Agent 面板"]')
-  expect(useLayoutStore.getState()).toMatchObject({ immersive: false, aiPanelOpen: true, rightView: 'agent' })
-  expect(host.querySelector('textarea[placeholder="输入消息，@ 提及，/ 使用工作流..."]')).toBe(input)
-  expect(input.value).toBe('草稿里的未发送提问')
+  await click('button[title="AI 输出"]')
+  expect(useLayoutStore.getState()).toMatchObject({ immersive: false, aiPanelOpen: true })
+  expect(host.querySelector('#writer-assistant')?.textContent).toContain('AI 输出内容')
 })
 
 it('reveals explicitly opened panels from the bookshelf', async () => {
@@ -129,13 +115,13 @@ it('reveals explicitly opened panels from the bookshelf', async () => {
     expect(useLayoutStore.getState()).toMatchObject({ sidebarView: 'project', bottomTab: tab, bottomPanelOpen: true })
   }
   await act(async () => useLayoutStore.getState().setSidebarView('home'))
-  await act(async () => useLayoutStore.getState().openBottomTab('tasks'))
+  await act(async () => navigate({ kind: 'run', facet: 'tasks' }))
   expect(host.querySelector('#writer-bottom')?.hasAttribute('hidden')).toBe(false)
   expect(useLayoutStore.getState().sidebarView).toBe('project')
   await act(async () => useLayoutStore.getState().setSidebarView('home'))
-  await act(async () => useLayoutStore.getState().openRightPanel('ai-output'))
+  await act(async () => navigate({ kind: 'run', facet: 'output' }))
   expect(host.querySelector('#writer-assistant')?.hasAttribute('hidden')).toBe(false)
-  expect(useLayoutStore.getState()).toMatchObject({ sidebarView: 'project', rightView: 'ai-output', aiPanelOpen: true })
+  expect(useLayoutStore.getState()).toMatchObject({ sidebarView: 'project', aiPanelOpen: true })
   await act(async () => useLayoutStore.getState().setSidebarView('home'))
   await click('button[title="AI 输出"]')
   expect(host.querySelector('#writer-assistant')?.hasAttribute('hidden')).toBe(false)

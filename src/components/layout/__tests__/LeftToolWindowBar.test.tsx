@@ -34,7 +34,6 @@ describe('LeftToolWindowBar', () => {
       sidebarOpen: true,
       sidebarView: 'project',
       aiPanelOpen: true,
-      rightView: 'agent',
       bottomPanelOpen: true,
       bottomTab: 'models',
     })

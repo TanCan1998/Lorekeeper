@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>架构 · 部分完成</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .arch { display: flex; flex-direction: column; gap: var(--s-3); margin-top: var(--s-8); }
+  .sec { padding: 0; }
+  .sec-head { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; column-gap: var(--s-3); padding: var(--s-4) var(--s-4) var(--s-4) var(--s-5); }
+  .sec-no { font: italic 18px/1 var(--font-num); color: var(--ink-3); }
+  .sec[data-state="done"] .sec-no { color: var(--ok); }
+  .sec-title { display: flex; align-items: center; gap: var(--s-3); font: 600 var(--fs-16)/1.4 var(--font-display); }
+  .sec-sum { grid-column: 2; margin-top: 4px; color: var(--ink-2); font-size: var(--fs-13); max-width: 46em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sec-actions { grid-row: 1 / span 2; grid-column: 3; display: flex; align-items: center; gap: var(--s-1); }
+  .sec-body { border-top: 1px solid var(--rule); padding: var(--s-4) var(--s-5) var(--s-4) calc(var(--s-5) + 28px + var(--s-3)); display: flex; flex-direction: column; gap: var(--s-3); }
+
+  /* 恢复提示条：部分完成时出现在分节内 */
+  .resume { display: flex; align-items: center; gap: var(--s-3); padding: 10px 12px; border-radius: var(--radius); background: var(--warn-soft); color: var(--ink); }
+  .resume > .i { color: var(--warn); }
+  .resume-text { flex: 1; min-width: 0; }
+  .resume-text small { display: block; color: var(--ink-2); font-size: var(--fs-12); }
+
+  /* 就地编辑区 */
+  .doc { border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); }
+  .doc-text { max-height: 168px; overflow: hidden; padding: 12px 16px; font: 14px/1.9 var(--font-prose); color: var(--ink); }
+  .doc-text b { font-weight: 600; }
+  .doc-text p { margin-bottom: 6px; }
+  .doc-text .pending { color: var(--ink-4); }
+  .doc-foot { display: flex; align-items: center; gap: var(--s-2); padding: 8px 10px 8px 16px; border-top: 1px solid var(--rule); color: var(--ink-3); font-size: var(--fs-12); }
+  .doc-foot .gap { flex: 1; }
+  .mini-select { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border: 1px solid var(--rule); border-radius: var(--radius-sm); background: var(--paper); color: var(--ink); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="page-pad page-wide">
+    <div class="page-head">
+      <div>
+        <div class="eyebrow">第二步 · 架构</div>
+        <h1 class="h1">故事的骨架</h1>
+        <p class="lede">前提、角色、世界观和情节大纲。四节都确认后，就可以逐章规划蓝图。</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn btn-ghost btn-icon" aria-label="更多：刷新生成状态"><svg class="i"><use href="#i-more"/></svg></button>
+        <button class="btn btn-secondary" disabled>下一步：章节蓝图 <svg class="i"><use href="#i-arrow-right"/></svg></button>
+        <button class="btn btn-primary"><svg class="i"><use href="#i-sparkles"/></svg>继续生成架构</button>
+      </div>
+    </div>
+
+    <div class="arch">
+      <section class="card sec" data-state="done">
+        <div class="sec-head">
+          <span class="sec-no">i</span>
+          <h2 class="sec-title">故事前提 <span class="badge ok">已确认</span></h2>
+          <p class="sec-sum">收到匿名信的林舟登上一座本该拆除的车站的末班车，发现每盏阅读灯都对应一个失踪者。</p>
+          <div class="sec-actions">
+            <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-pen-line"/></svg>编辑</button>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="故事前提更多操作" aria-expanded="true"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card sec" data-state="done">
+        <div class="sec-head">
+          <span class="sec-no">ii</span>
+          <h2 class="sec-title">角色名单 <span class="badge ok">已确认</span></h2>
+          <p class="sec-sum">9 位角色：林舟、沈砚、列车员老周、苏晚、林母（回忆）……</p>
+          <div class="sec-actions">
+            <button class="btn btn-ghost btn-sm">打开角色名单 <svg class="i i-sm"><use href="#i-arrow-right"/></svg></button>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="角色名单更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card sec" data-state="todo">
+        <div class="sec-head">
+          <span class="sec-no">iii</span>
+          <h2 class="sec-title">世界观 <span class="badge plain">待生成</span></h2>
+          <p class="sec-sum muted">还没有内容。可以让 AI 按设定生成，也可以自己写。</p>
+          <div class="sec-actions">
+            <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-pen-line"/></svg>自己写</button>
+            <button class="btn btn-secondary btn-ai btn-sm"><svg class="i i-sm"><use href="#i-sparkles"/></svg>AI 生成此节</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card sec" data-state="partial">
+        <div class="sec-head">
+          <span class="sec-no">iv</span>
+          <h2 class="sec-title">情节大纲 <span class="badge warn">部分完成 · 16 / 24 章</span></h2>
+          <p class="sec-sum">三幕结构。第一幕到第 8 章收束，林舟确认母亲的照片出现在失踪者名单里。</p>
+          <div class="sec-actions">
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="收起情节大纲"><svg class="i"><use href="#i-chevron-down"/></svg></button>
+            <button class="btn btn-ghost btn-sm btn-icon" aria-label="情节大纲更多操作"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+        <div class="sec-body">
+          <div class="resume" role="status">
+            <svg class="i"><use href="#i-circle-alert"/></svg>
+            <div class="resume-text">上次生成到第 16 章停下了，第 17～24 章还没有大纲。
+              <small>已生成的 16 章保存在恢复稿里，续写不会改动它们。</small></div>
+            <button class="btn btn-ghost btn-sm">查看未完成候选</button>
+            <button class="btn btn-secondary btn-ai btn-sm"><svg class="i i-sm"><use href="#i-sparkles"/></svg>续写第 17～24 章</button>
+          </div>
+          <div class="doc">
+            <div class="doc-text">
+              <p><b>第 15 章 第十七分钟</b>　林舟发现每次列车晚点都恰好十七分钟，与母亲失踪当晚的站务记录吻合。</p>
+              <p><b>第 16 章 无人认领</b>　失物招领处的老人交出一只旧皮箱，箱里是写给林舟的第三封信。</p>
+              <p class="pending"><b>第 17 章 阅读灯熄灭之后</b>　尚未生成</p>
+            </div>
+            <div class="doc-foot">
+              <span>恢复稿 · 保存到第</span><span class="mini-select">16 章 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></span>
+              <span class="gap"></span>
+              <span><span class="kbd">⌘S</span> 保存</span>
+              <button class="btn btn-secondary btn-sm">保存恢复稿</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</template>
+
+<template id="overlay">
+  <div class="menu" style="top:290px;left:1110px" role="menu" aria-label="故事前提更多操作">
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-refresh-cw"/></svg>重新读取文件</button>
+    <button class="menu-item" role="menuitem"><svg class="i"><use href="#i-sparkles"/></svg>AI 重新生成此节…</button>
+    <div class="menu-sep"></div>
+    <div class="menu-label">危险</div>
+    <button class="menu-item danger" role="menuitem"><svg class="i"><use href="#i-trash-2"/></svg>清空此节…</button>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '架构 · 部分完成', stage: 'arch', preset: 'arch', crumbs: ['架构'], saved: true });
+</script>
+</body>
+</html>

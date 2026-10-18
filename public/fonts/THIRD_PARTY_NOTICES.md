@@ -46,3 +46,18 @@ Official source: [Google Fonts download manifest](https://fonts.google.com/downl
 
 - `NotoSerifSC-VariableFont_wght.ttf` — SHA-256 `e553aa4a7eb6e45ba39d7a562ef4b51ac5764d21ce9ea12995f264a9b3e63cd7`
 - License: [`licenses/NotoSerifSC-OFL-1.1.txt`](licenses/NotoSerifSC-OFL-1.1.txt)
+
+## Instrument Serif (Google Fonts v5)
+
+Copyright 2022 The Instrument Serif Project Authors
+(https://github.com/Instrument/instrument-serif).
+
+Source: the Latin subset WOFF2 files of the npm package
+[`@fontsource/instrument-serif` 5.3.0](https://www.npmjs.com/package/@fontsource/instrument-serif)
+(OFL-1.1). These two files are Fontsource's Latin subsets of the upstream
+fonts, renamed and otherwise unmodified; the app uses them only for chapter
+and stage numerals.
+
+- `InstrumentSerif-Latin-Regular.woff2` — SHA-256 `5eb09b5ac0e28b67c2f041c8ba6d244604ca0c0980d65912ab2d47fed84ddc31`
+- `InstrumentSerif-Latin-Italic.woff2` — SHA-256 `5a51946dfffa82972bc98745359c46761515641fda557c25116459a9f83da4a7`
+- License: [`licenses/InstrumentSerif-OFL-1.1.txt`](licenses/InstrumentSerif-OFL-1.1.txt)

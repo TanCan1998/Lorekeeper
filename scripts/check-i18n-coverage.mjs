@@ -7,6 +7,20 @@ import ts from 'typescript'
 
 const han = /\p{Script=Han}/u
 const latinWord = /[A-Za-z]{2,}/
+/**
+ * 英文里数量后的复数名词，中间可隔一两个修饰词（the ${n} existing blueprints）：数量是 1 时读成「1 chapters」，要走 pluralEn。
+ * 插值后接 checks/changes 作动词（${who} checks the chapter）也会被拦：改写句子，或用 pluralEn。
+ */
+const fixedPluralAfterCount = /^ (?:[a-z]+ ){0,2}(?:chapters|files|characters|items|lines|calls|drafts|words|documents|chunks|days|notes|versions|entries|kinds|blueprints|events|minutes|passages|candidates|tasks|suggestions|changes|checks)\b/
+/** 数量前的 these、those 与数量后直接跟的 have、are：数量是 1 时读成「these 1 log line」「1 have」。 */
+const pluralBeforeCount = /\b(?:these|those)\s$/i
+const pluralVerbAfterCount = /^ (?:have|are|were)\b/
+const pluralHint = "Write the noun with pluralEn(count, 'chapter'); pass irregular plurals explicitly, as in pluralEn(count, 'entry', 'entries'). Write a verb that follows the count the same way, as in pluralEn(count, 'has', 'have')."
+/**
+ * 英文文案在哪个实参（从 0 数）：(locale, 中文, 英文) 形式的翻译函数与 projectError、artifactError（error, 中文兜底, 英文兜底）
+ * 在第 3 个，其余在第 2 个。
+ */
+const englishArgumentIndex = new Map([['localize', 2], ['stepDesc', 2], ['mainText', 2], ['projectError', 2], ['artifactError', 2]])
 
 /**
  * The broad renderer roots preserve the existing visible-copy check.  The
@@ -20,19 +34,29 @@ export const I18N_COVERAGE_BOUNDARIES = Object.freeze({
     'src/components/pages',
     'src/components/dialogs',
     'src/components/settings/SettingsModal.tsx',
+    'src/components/settings/use-model-section.ts',
+    'src/components/settings/use-proxy-settings.ts',
+    'src/components/settings/use-auto-open-next-chapter.ts',
+    'src/components/settings/model-provider-resource.ts',
     'src/components/settings/PromptSettings.tsx',
     'src/components/settings/ModelSettings.tsx',
     'src/components/panels/Sidebar.tsx',
     'src/components/panels/KnowledgePanel.tsx',
     'src/components/panels/EditorArea.tsx',
+    'src/components/panels/EditorTabContent.tsx',
+    'src/components/stage',
+    'src/components/run',
     'src/components/panels/sidebar',
     'src/components/panels/agent/ToolCallBlock.tsx',
     'src/components/editor/NovelConfigEditor.tsx',
+    'src/components/editor/use-novel-config-form.ts',
     'src/components/editor/ThreeWayMerge.tsx',
     'src/components/editor/DraftEditor.tsx',
     'src/components/editor/ChapterCardEditor.tsx',
+    'src/components/editor/use-chapter-blueprints.ts',
     'src/components/editor/CharacterEditor.tsx',
     'src/components/editor/ReviewReport.tsx',
+    'src/components/editor/review-checklist.ts',
     'src/components/panels/sidebar/CharactersView.tsx',
     'src/components/ErrorBoundary.tsx',
     'src/components/ui/ActionToast.tsx',
@@ -88,8 +112,10 @@ const notificationCallNames = new Set([
 const enhancedCoverageFiles = new Set([
   'src/components/editor/DraftEditor.tsx',
   'src/components/editor/ChapterCardEditor.tsx',
+  'src/components/editor/use-chapter-blueprints.ts',
   'src/components/editor/CharacterEditor.tsx',
   'src/components/editor/ReviewReport.tsx',
+  'src/components/editor/review-checklist.ts',
   'src/components/panels/sidebar/CharactersView.tsx',
   'src/services/project-service.ts',
   'src/services/workflows/architecture-workflow.ts',
@@ -238,6 +264,28 @@ function isUnsafeErrorForward(node, sourceFile, bindings, seen = new Set()) {
   return false
 }
 
+/** text(中文, 英文) 的英文一侧里，`${n} chapters` 这类数量后跟固定复数的模板。 */
+function inspectEnglishCounts(violations, root, file, sourceFile, node) {
+  if (
+    ts.isTemplateExpression(node)
+    && node.templateSpans.some((span, index) => {
+      const before = index === 0 ? node.head.text : node.templateSpans[index - 1].literal.text
+      // 「1–${n} chapters」里的数量是范围的终点，永远不是 1
+      if (/[-–]$/.test(before)) return false
+      // pluralEn(...) 是已经按数量变过的名词，不是数量；但它后面的 have/are 仍随数量变。
+      // 数量所在分句里带 and 的是并列主语（the thread and its ${n} confirmed events are removed），本来就用复数动词
+      if (span.expression.getText(sourceFile).startsWith('pluralEn(')) {
+        const head = [node.head.text, ...node.templateSpans.slice(0, index).map(earlier => earlier.literal.text)].join(' ')
+        return pluralVerbAfterCount.test(span.literal.text) && !/\band\b[^.;:!?·—\n。：；！？]*$/i.test(head)
+      }
+      return fixedPluralAfterCount.test(span.literal.text) || pluralBeforeCount.test(before) || pluralVerbAfterCount.test(span.literal.text)
+    })
+  ) {
+    add(violations, root, file, sourceFile, node, node.getText(sourceFile), 'english-plural')
+  }
+  ts.forEachChild(node, child => inspectEnglishCounts(violations, root, file, sourceFile, child))
+}
+
 function inspectVisibleExpression(violations, root, file, sourceFile, node, kind) {
   if (isLocalizedCall(node, sourceFile)) return
   if (nodeContainsHan(node, sourceFile)) {
@@ -302,6 +350,10 @@ function inspectRendererFile(violations, root, file, sourceFile) {
   const bindings = collectBindings(sourceFile)
 
   const visit = (node) => {
+    if (isLocalizedCall(node, sourceFile)) {
+      const english = node.arguments[englishArgumentIndex.get(callName(node, sourceFile)) ?? 1]
+      if (english) inspectEnglishCounts(violations, root, file, sourceFile, english)
+    }
     if (
       promptSettings
       && ts.isJsxExpression(node)
@@ -439,6 +491,7 @@ export function runI18nCoverageCheck(root = process.cwd()) {
   const violations = collectI18nCoverageViolations(root)
   if (violations.length > 0) {
     console.error(`Found ${violations.length} unlocalized visible strings:\n${violations.join('\n')}`)
+    if (violations.some(violation => violation.includes('[english-plural]'))) console.error(pluralHint)
     return 1
   }
   console.log('i18n coverage check passed: no unlocalized renderer or main-boundary copy')

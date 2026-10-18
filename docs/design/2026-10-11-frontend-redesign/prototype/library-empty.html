@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>书房 · 第一次打开</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .first { max-width: 640px; margin: 0 auto; padding: 120px var(--s-6) var(--s-16); }
+  .first .empty { padding: var(--s-10) 0 var(--s-8); }
+  .first .empty-title { font-size: var(--fs-24); color: var(--ink); }
+  .first .btn .i { width: 16px; height: 16px; color: inherit; }
+  .alt { display: flex; justify-content: center; gap: var(--s-2); padding-top: var(--s-5); border-top: 1px solid var(--rule); }
+</style>
+</head>
+<body>
+<template id="screen">
+  <div class="first">
+    <div class="empty">
+      <svg class="i"><use href="#i-book-open"/></svg>
+      <div class="empty-title">书架还是空的</div>
+      <p>新建一部作品，从设定开始写。已有作品文件夹的话，直接打开。</p>
+      <button class="btn btn-primary btn-lg" style="margin-top:8px"><svg class="i"><use href="#i-plus"/></svg>新建作品</button>
+    </div>
+    <div class="alt">
+      <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-folder-open"/></svg>打开作品 <span class="kbd">⌘O</span></button>
+      <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-scan-text"/></svg>小说拆解与仿写</button>
+      <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-archive"/></svg>导入旧项目副本</button>
+      <button class="btn btn-ghost btn-sm"><svg class="i i-sm"><use href="#i-settings"/></svg>设置</button>
+    </div>
+  </div>
+</template>
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '书房 · 第一次打开', spine: false, work: null });
+</script>
+</body>
+</html>

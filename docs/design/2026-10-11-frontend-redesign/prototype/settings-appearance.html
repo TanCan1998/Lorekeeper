@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置 · 外观</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* 设置页骨架：与 settings.html 相同 */
+  .set { display: grid; grid-template-columns: 220px 1fr; min-height: 100%; }
+  .set-nav { padding: var(--s-8) var(--s-3) var(--s-6); border-right: 1px solid var(--rule); background: var(--bg); }
+  .set-nav-title { padding: 0 var(--s-3); font: 600 var(--fs-20)/1.3 var(--font-display); }
+  .set-group { margin-top: var(--s-6); }
+  .set-group-label { padding: 0 var(--s-3) var(--s-1); font-size: var(--fs-11); letter-spacing: .14em; color: var(--ink-3); }
+  .set-link { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--radius); color: var(--ink-2); cursor: pointer; }
+  .set-link:hover { background: var(--surface-2); color: var(--ink); }
+  .set-link[aria-current="page"] { background: var(--surface); color: var(--accent); box-shadow: inset 0 0 0 1px var(--rule); font-weight: 500; }
+  .set-body { padding: var(--s-8) var(--s-12) var(--s-12); min-width: 0; }
+  .set-inner { max-width: 760px; }
+
+  /* 设置行：左说明，右控件 */
+  .set-row { display: grid; grid-template-columns: 1fr 300px; align-items: center; gap: var(--s-6); padding: var(--s-4) 0; border-top: 1px solid var(--rule); }
+  .set-row-title { font-weight: 500; }
+  .set-row-desc { margin-top: 2px; font-size: var(--fs-12); color: var(--ink-3); }
+  .set-row-ctl { display: flex; justify-content: flex-end; align-items: center; gap: var(--s-2); }
+  .set-row-ctl .select { width: 100%; }
+
+  /* 主题三选一 */
+  .themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-3); margin-top: var(--s-3); }
+  .theme { padding: var(--s-2); border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--surface); cursor: pointer; }
+  .theme[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .theme-swatch { height: 76px; border-radius: var(--radius); display: grid; place-items: center; background: var(--sunken); color: var(--ink-3); }
+  .theme[aria-checked="true"] .theme-swatch { background: var(--accent-soft); color: var(--accent); }
+  .theme-label { display: flex; align-items: center; gap: 8px; padding: 10px 4px 2px; font-weight: 500; }
+  .theme-label .radio-dot { margin-left: auto; }
+  .font-sample { margin-top: var(--s-2); padding: 12px 14px; border-radius: var(--radius); background: var(--paper); border: 1px solid var(--rule); font: 16px/1.9 var(--font-prose); color: var(--ink-2); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8m-4-4v4"/></symbol>
+</svg>
+<template id="screen">
+  <div class="set">
+    <nav class="set-nav" aria-label="设置分组">
+      <div class="set-nav-title">设置</div>
+      <div class="set-group">
+        <div class="set-group-label">常用</div>
+        <div class="set-link"><svg class="i"><use href="#i-cpu"/></svg>AI 模型</div>
+        <div class="set-link" aria-current="page"><svg class="i"><use href="#i-sun"/></svg>外观</div>
+      </div>
+      <div class="set-group">
+        <div class="set-group-label">高级</div>
+        <div class="set-link"><svg class="i"><use href="#i-search"/></svg>检索模型</div>
+        <div class="set-link"><svg class="i"><use href="#i-globe"/></svg>网络代理</div>
+        <div class="set-link"><svg class="i"><use href="#i-scroll-text"/></svg>提示词模板</div>
+        <div class="set-link"><svg class="i"><use href="#i-puzzle"/></svg>写作 Skills</div>
+      </div>
+      <div class="set-group">
+        <div class="set-group-label">其他</div>
+        <div class="set-link"><svg class="i"><use href="#i-archive"/></svg>项目备份</div>
+        <div class="set-link"><svg class="i"><use href="#i-info"/></svg>关于与更新</div>
+      </div>
+    </nav>
+
+    <div class="set-body"><div class="set-inner">
+      <h1 class="h2">外观</h1>
+      <p class="lede" style="margin-top:6px;max-width:none">改动立即生效，不需要保存。</p>
+
+      <div class="section" style="margin-top:var(--s-6)">
+        <div class="set-row-title">主题</div>
+        <div class="themes" role="radiogroup" aria-label="主题">
+          <div class="theme" role="radio" aria-checked="false">
+            <div class="theme-swatch"><svg class="i" style="width:26px;height:26px"><use href="#i-sun"/></svg></div>
+            <div class="theme-label check">浅色<span class="radio-dot"></span></div>
+          </div>
+          <div class="theme" role="radio" aria-checked="false">
+            <div class="theme-swatch"><svg class="i" style="width:26px;height:26px"><use href="#i-moon"/></svg></div>
+            <div class="theme-label check">深色<span class="radio-dot"></span></div>
+          </div>
+          <div class="theme" role="radio" aria-checked="true">
+            <div class="theme-swatch"><svg class="i" style="width:26px;height:26px"><use href="#i-monitor"/></svg></div>
+            <div class="theme-label check" data-on="true">跟随系统<span class="radio-dot"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:var(--s-8)">
+        <div class="set-row">
+          <div><div class="set-row-title">界面语言</div><div class="set-row-desc">菜单、按钮与提示的语言。AI 写作语言在作品设定里单独设置。</div></div>
+          <div class="set-row-ctl"><div class="select"><span class="row"><svg class="i i-sm"><use href="#i-languages"/></svg>简体中文</span> <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+        </div>
+        <div class="set-row">
+          <div><div class="set-row-title">界面字体</div><div class="set-row-desc">菜单、表单和列表使用的字体。</div></div>
+          <div class="set-row-ctl"><div class="select">思源黑体（默认） <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+        </div>
+        <div class="set-row">
+          <div><div class="set-row-title">写作字体</div><div class="set-row-desc">正文编辑区和审稿差异使用的字体。</div>
+            <div class="font-sample">雨从傍晚开始就没有停过。林舟站在空荡的站台上。</div></div>
+          <div class="set-row-ctl" style="align-self:start"><div class="select">思源宋体（默认） <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+        </div>
+        <div class="set-row">
+          <div><div class="set-row-title">界面缩放</div><div class="set-row-desc">也可以用 <span class="kbd">Ctrl</span> <span class="kbd">=</span> 放大、<span class="kbd">Ctrl</span> <span class="kbd">-</span> 缩小、<span class="kbd">Ctrl</span> <span class="kbd">0</span> 还原。</div></div>
+          <div class="set-row-ctl">
+            <div class="seg" role="group" aria-label="界面缩放">
+              <button aria-pressed="false">90%</button><button aria-pressed="true">100%</button><button aria-pressed="false">110%</button><button aria-pressed="false">125%</button>
+            </div>
+          </div>
+        </div>
+        <div class="set-row">
+          <div><div class="set-row-title">定稿后自动打开下一章</div><div class="set-row-desc">某章定稿后，直接切到下一章的写作页。</div></div>
+          <div class="set-row-ctl"><span class="switch" data-on="true" role="switch" aria-checked="true" aria-label="定稿后自动打开下一章"></span></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '设置 · 外观', ref: 'settings', chapters: false, crumbs: ['设置', '外观'] });
+</script>
+</body>
+</html>

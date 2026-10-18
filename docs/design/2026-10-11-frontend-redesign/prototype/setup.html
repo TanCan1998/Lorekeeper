@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设定 · 新作品</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<template id="screen">
+  <div class="page-pad page-narrow">
+    <div class="eyebrow">第一步 · 设定</div>
+    <h1 class="h1">这是一部什么样的小说？</h1>
+    <p class="lede">先填几项基础信息，后面的架构、蓝图和正文都以此为准。拿不准的地方可以交给 AI 填充，之后随时能改。</p>
+
+    <div class="form-grid" style="margin-top:36px">
+      <div class="field w3"><span class="label">作品名</span><div class="input">雨夜列车</div></div>
+      <div class="field w3"><span class="label">写作语言 <em>只影响 AI 写作，不改界面语言</em></span><div class="select">简体中文 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+      <div class="field"><span class="label">类型</span><div class="select">悬疑 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+      <div class="field"><span class="label">细分类型 <em>可选</em></span><div class="input">都市怪谈</div></div>
+      <div class="field"><span class="label">目标读者</span><div class="select placeholder is-invalid">请选择 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+      <div class="field"><span class="label">总章数</span><div class="input">24</div></div>
+      <div class="field"><span class="label">每章字数</span><div class="input">3,000</div></div>
+      <div class="field"><span class="label">叙事视角</span><div class="select">第三人称有限 <svg class="i i-sm"><use href="#i-chevron-down"/></svg></div></div>
+      <div class="field w6">
+        <span class="label">核心大纲 <em>一两段话即可</em></span>
+        <div class="textarea is-focus">一个收到匿名信的年轻人，在一座本该拆除的车站登上末班车。车厢里的每一盏灯，都对应着一个从未被找到的失踪者……</div>
+      </div>
+      <div class="field w6">
+        <div class="disclosure"><svg class="i i-sm"><use href="#i-chevron-right"/></svg>更多设定 <small>世界观、金手指、主角人设、文风、参考作品、全局写作要求、故事结构</small></div>
+        <div class="disclosure" style="border-top:0;padding-top:4px"><svg class="i i-sm"><use href="#i-chevron-right"/></svg>高级 <small>伏笔沉寂提醒阈值</small></div>
+      </div>
+    </div>
+
+    <div class="footbar">
+      <button class="btn btn-secondary btn-ai"><svg class="i"><use href="#i-sparkles"/></svg>AI 填充其余设定</button>
+      <span class="note">还差 1 项必填：目标读者</span>
+      <button class="btn btn-primary" disabled>下一步：故事架构 <svg class="i"><use href="#i-arrow-right"/></svg></button>
+    </div>
+  </div>
+</template>
+
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+Shell.mount({ title: '设定 · 新作品', stage: 'setup', preset: 'new', crumbs: ['设定'], saved: true });
+</script>
+</body>
+</html>

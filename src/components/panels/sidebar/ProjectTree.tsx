@@ -26,11 +26,11 @@ import { ARCH_FILES } from './sidebar-arch-files'
 import {
   confirmCurrentProjectSession,
   openArchFile,
-  openBuiltinEditor,
 } from './sidebar-file-openers'
+import { openBuiltinEditor } from '../../../stores/open-builtin-editor'
 import { renderIcon } from './sidebar-icons'
 import { showSidebarMenu } from './sidebar-menu'
-import { createProjectArchTabId } from '../../editor/arch-file-refresh-policy'
+import { clearArchSection } from '../../editor/clear-arch-section'
 import DraftBoxGroup from './DraftBoxGroup'
 import ManuscriptGroup from './ManuscriptGroup'
 import { useLocaleStore } from '../../../stores/locale-store'
@@ -42,12 +42,14 @@ import {
 } from '../../project-session-gate'
 import { globalEventBus } from '../../../shared/event-bus'
 import { shouldRefreshBlueprints } from '../../editor/blueprint-refresh'
+import { ARCH_STEP_NAMES } from '../../../services/architecture-step-selection'
+import { pluralEn } from '../../../shared/plural-en'
 
 const ARCH_FILE_EN: Record<string, { label: string; desc: string }> = {
-  premise: { label: 'Premise', desc: 'Core premise and conflict' },
-  characters: { label: 'Character map', desc: 'Character arcs and relationships' },
-  worldbuilding: { label: 'World building', desc: 'World rules and systems' },
-  synopsis: { label: 'Plot synopsis', desc: 'Overall plot structure' },
+  premise: { label: ARCH_STEP_NAMES.premise[1], desc: 'Core premise and conflict' },
+  characters: { label: ARCH_STEP_NAMES.characters[1], desc: 'Character arcs and relationships' },
+  worldbuilding: { label: ARCH_STEP_NAMES.worldbuilding[1], desc: 'World rules and systems' },
+  synopsis: { label: ARCH_STEP_NAMES.synopsis[1], desc: 'Overall plot structure' },
 }
 
 export default function ProjectTree() {
@@ -307,7 +309,7 @@ export default function ProjectTree() {
         iconName="layout-list"
         label={text('章节蓝图', 'Chapter blueprints')}
         desc={text('AI 生成的章节目录，可编辑', 'Editable AI-generated chapter plans')}
-        badge={blueprintCount > 0 ? text(`${blueprintCount}/${nc.totalChapters} 章`, `${blueprintCount}/${nc.totalChapters} chapters`) : text('待生成', 'Pending')}
+        badge={blueprintCount > 0 ? text(`${blueprintCount}/${nc.totalChapters} 章`, `${blueprintCount}/${nc.totalChapters} ${pluralEn(nc.totalChapters, 'chapter')}`) : text('待生成', 'Pending')}
         badgeColor={
           blueprintCount >= nc.totalChapters
             ? 'var(--color-success-text)'
@@ -444,20 +446,12 @@ function ArchFileRow({
       }),
     )
     if (!projectSession) return
-    const projectKey = projectSession.projectPath
-
-    const { writeCoreContent } = await import('../../../services/resource-protocol')
-    const success = await writeCoreContent(filePath, '', projectSession)
+    const success = await clearArchSection(filePath, projectSession)
     if (!isProjectSessionCurrent(projectSession)) return
     if (!success) {
       toast.error(text(`清空「${f.label}」失败`, `Could not clear “${english.label}”`))
       return
     }
-
-    const store = useEditorStore.getState()
-    const tabId = createProjectArchTabId(projectKey, filePath)
-    store.syncTabContent(tabId, '')
-    store.markTabSaved(tabId, '')
     await onCleared()
     if (!isProjectSessionCurrent(projectSession)) return
     toast.success(text(`已清空「${f.label}」`, `Cleared “${english.label}”`))

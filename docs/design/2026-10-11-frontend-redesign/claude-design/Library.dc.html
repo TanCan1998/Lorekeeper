@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>书房</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Noto+Sans+SC:wght@400;500;600&amp;family=Noto+Serif+SC:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2C4A8C}a:hover{color:#1F3870}
+.book{display:flex;flex-direction:column;gap:12px;text-decoration:none;color:#17171A}
+.cover{position:relative;aspect-ratio:3/4;border-radius:6px 10px 10px 6px;padding:18px 16px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:inset 6px 0 0 rgba(23,23,26,.06),0 0 0 1px rgba(23,23,26,.07),0 18px 30px -22px rgba(23,23,26,.45);transition:transform .2s}
+.book:hover .cover{transform:translateY(-3px)}
+.start{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:12px;border:1px solid rgba(23,23,26,.08);background:#FFFFFF;text-decoration:none;color:#17171A}
+.start:hover{border-color:rgba(23,23,26,.16)}
+</style>
+</helmet>
+<div style="height: 100vh; min-height: 720px; display: flex; flex-direction: column; background: #EEEDE8; color: #17171A; font-family: 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif; font-size: 13px; line-height: 1.55; -webkit-font-smoothing: antialiased">
+
+  <header style="height: 46px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 0 0 16px">
+    <div style="width: 22px; height: 22px; border-radius: 6px; background: #17171A; color: #EEEDE8; display: grid; place-items: center; font: 600 12px 'Noto Serif SC', serif">墨</div>
+    <span style="font: 600 13.5px 'Noto Serif SC', serif">AI 小说作家</span>
+    <div style="flex: 1; display: flex; justify-content: center">
+      <button style="width: 340px; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid rgba(23,23,26,.08); border-radius: 9px; background: rgba(255,255,255,.55); color: #8A8A93; font: 400 12.5px 'Noto Sans SC', sans-serif; cursor: pointer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 21l-4.34-4.34"></path><circle cx="11" cy="11" r="8"></circle></svg>
+        <span style="flex: 1; text-align: left">搜索作品，或打开文件夹</span>
+        <kbd style="font: 500 11px 'Noto Sans SC', sans-serif; color: #8A8A93; border: 1px solid rgba(23,23,26,.12); border-radius: 5px; padding: 0 5px">Ctrl K</kbd>
+      </button>
+    </div>
+    <button aria-label="设置" style="width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: #55555E; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0a2.34 2.34 0 0 0 3.319 1.915a2.34 2.34 0 0 1 2.33 4.033a2.34 2.34 0 0 0 0 3.831a2.34 2.34 0 0 1-2.33 4.033a2.34 2.34 0 0 0-3.319 1.915a2.34 2.34 0 0 1-4.659 0a2.34 2.34 0 0 0-3.32-1.915a2.34 2.34 0 0 1-2.33-4.033a2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
+    <div style="display: flex; height: 46px">
+      <button aria-label="最小化" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"></path></svg></button>
+      <button aria-label="最大化" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"></rect></svg></button>
+      <button aria-label="关闭" style="width: 46px; border: 0; background: transparent; color: #8A8A93; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
+    </div>
+  </header>
+
+  <main style="flex: 1; min-height: 0; margin: 0 10px 10px; border-radius: 14px; background: #F7F6F2; box-shadow: 0 0 0 1px rgba(23,23,26,.07), 0 12px 32px -18px rgba(23,23,26,.22); overflow: auto">
+    <div style="max-width: 1180px; margin: 0 auto; padding: 48px 48px 56px; display: flex; flex-wrap: wrap; gap: 40px">
+
+      <section style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 32px">
+        <div>
+          <div style="font: 400 12px 'Noto Serif SC', serif; letter-spacing: .24em; color: #8A8A93">书房</div>
+          <h1 style="margin: 10px 0 0; font: 600 40px/1.2 'Noto Serif SC', serif; letter-spacing: .02em">今晚写哪一部？</h1>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 12px">
+          <a href="Setup.dc.html" class="start">
+            <span style="width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: #F1F0EC; color: #17171A"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14m-7-7v14"></path></svg></span>
+            <span style="display: flex; flex-direction: column"><b style="font-weight: 600">新建作品</b><span style="font-size: 12px; color: #8A8A93">从设定开始</span></span>
+          </a>
+          <a href="Library.dc.html" class="start">
+            <span style="width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: #F1F0EC; color: #17171A"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"></path></svg></span>
+            <span style="display: flex; flex-direction: column"><b style="font-weight: 600">打开作品</b><span style="font-size: 12px; color: #8A8A93">选择已有的作品文件夹</span></span>
+          </a>
+          <a href="Library.dc.html" class="start">
+            <span style="width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: #F1F0EC; color: #17171A"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1"></path><path d="M14 2v5a1 1 0 0 0 1 1h5M2 15h10m-3 3l3-3l-3-3"></path></svg></span>
+            <span style="display: flex; flex-direction: column"><b style="font-weight: 600">导入</b><span style="font-size: 12px; color: #8A8A93">拆解一部小说，或旧项目</span></span>
+          </a>
+        </div>
+
+        <div>
+          <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px">
+            <h2 style="margin: 0; font: 600 16px 'Noto Serif SC', serif">书架</h2>
+            <span style="font-size: 12px; color: #8A8A93">点封面查看概览，不会打开作品</span>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); gap: 28px 22px">
+            <a href="Library.dc.html" class="book" aria-current="true">
+              <div class="cover" style="background: #1F2B44; color: #EEF1F7; box-shadow: inset 6px 0 0 rgba(0,0,0,.18), 0 0 0 2px #F7F6F2, 0 0 0 4px #2C4A8C, 0 18px 30px -18px rgba(23,23,26,.55)">
+                <span style="font-size: 10.5px; letter-spacing: .2em; opacity: .7">悬疑</span>
+                <span style="font: 600 24px/1.25 'Noto Serif SC', serif; writing-mode: vertical-rl; align-self: flex-end; letter-spacing: .12em">雨夜列车</span>
+                <span style="font: italic 15px 'Instrument Serif', serif; opacity: .75">2 / 24</span>
+              </div>
+              <div><div style="font-weight: 600">雨夜列车</div><div style="font-size: 12px; color: #8A8A93">正文 · 今天 21:14</div></div>
+            </a>
+            <a href="Library.dc.html" class="book">
+              <div class="cover" style="background: #E7E2D6; color: #2B2620">
+                <span style="font-size: 10.5px; letter-spacing: .2em; opacity: .6">现实</span>
+                <span style="font: 600 24px/1.25 'Noto Serif SC', serif; writing-mode: vertical-rl; align-self: flex-end; letter-spacing: .12em">盐湖往事</span>
+                <span style="font: italic 15px 'Instrument Serif', serif; opacity: .6">0 / 18</span>
+              </div>
+              <div><div style="font-weight: 600">盐湖往事</div><div style="font-size: 12px; color: #8A8A93">架构 · 昨天</div></div>
+            </a>
+            <a href="Library.dc.html" class="book">
+              <div class="cover" style="background: #DDE3E1; color: #1E2A27">
+                <span style="font-size: 10.5px; letter-spacing: .2em; opacity: .6">科幻</span>
+                <span style="font: 600 24px/1.25 'Noto Serif SC', serif; writing-mode: vertical-rl; align-self: flex-end; letter-spacing: .12em">北方以北</span>
+                <span style="font: italic 15px 'Instrument Serif', serif; opacity: .6">11 / 30</span>
+              </div>
+              <div><div style="font-weight: 600">北方以北</div><div style="font-size: 12px; color: #8A8A93">正文 · 3 天前</div></div>
+            </a>
+            <a href="Library.dc.html" class="book">
+              <div class="cover" style="background: #2A2622; color: #F1ECE4">
+                <span style="font-size: 10.5px; letter-spacing: .2em; opacity: .7">奇幻</span>
+                <span style="font: 600 24px/1.25 'Noto Serif SC', serif; writing-mode: vertical-rl; align-self: flex-end; letter-spacing: .12em">第七个房客</span>
+                <span style="font: italic 15px 'Instrument Serif', serif; opacity: .7">设定中</span>
+              </div>
+              <div><div style="font-weight: 600">第七个房客</div><div style="font-size: 12px; color: #8A8A93">设定 · 10 月 2 日</div></div>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <aside style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+        <div style="padding: 24px; border-radius: 16px; background: #FFFFFF; box-shadow: 0 0 0 1px rgba(23,23,26,.07), 0 18px 40px -28px rgba(23,23,26,.35)">
+          <div style="font-size: 11px; letter-spacing: .2em; color: #8A8A93">继续</div>
+          <h2 style="margin: 8px 0 2px; font: 600 26px/1.3 'Noto Serif SC', serif">雨夜列车</h2>
+          <div style="font-size: 12px; color: #8A8A93">悬疑 · 24 章 · 每章约 3,000 字</div>
+
+          <ol aria-label="阶段进度" style="list-style: none; margin: 22px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px">
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: #2F6B4F"></span><span style="font-size: 11.5px; color: #55555E">设定</span></li>
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: #2F6B4F"></span><span style="font-size: 11.5px; color: #55555E">架构</span></li>
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: #2F6B4F"></span><span style="font-size: 11.5px; color: #55555E">蓝图</span></li>
+            <li style="display: flex; flex-direction: column; gap: 7px"><span style="height: 3px; border-radius: 3px; background: linear-gradient(90deg, #2C4A8C 8%, rgba(23,23,26,.1) 8%)"></span><span style="font-size: 11.5px; font-weight: 600; color: #2C4A8C">正文 2 / 24</span></li>
+          </ol>
+
+          <blockquote style="margin: 22px 0 0; padding: 14px 16px; border-radius: 10px; background: #F7F6F2; font: 15px/1.9 'Noto Serif SC', serif; color: #3A3A42">他第三次展开信纸。字迹很淡，只有一行：十一点四十分，第三节车厢，不要回头。</blockquote>
+          <div style="margin-top: 8px; font-size: 11.5px; color: #8A8A93">第 3 章 · 雨夜车站 · 等待修稿</div>
+
+          <a href="Main.dc.html" style="margin-top: 22px; height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; background: #2C4A8C; color: #FFFFFF; font: 500 14px 'Noto Sans SC', sans-serif; text-decoration: none; box-shadow: 0 1px 2px rgba(23,23,26,.2)">继续写作 · 第 3 章修稿<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-7-7l7 7l-7 7"></path></svg></a>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 12px; border: 1px solid rgba(23,23,26,.08); background: rgba(255,255,255,.6)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2C4A8C" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3m9 12v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10l5 5l5-5"></path></svg>
+          <span style="flex: 1; display: flex; flex-direction: column"><b style="font-weight: 600">新版本 1.2.3 可用</b><span style="font-size: 12px; color: #8A8A93">[更新说明摘要]</span></span>
+          <button style="height: 30px; padding: 0 12px; border: 1px solid rgba(23,23,26,.14); border-radius: 8px; background: #FFFFFF; font: 500 12.5px 'Noto Sans SC', sans-serif; cursor: pointer">下载</button>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

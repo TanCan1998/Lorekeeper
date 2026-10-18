@@ -1,0 +1,79 @@
+/* ================= 悬浮内容面板 ================= */
+.stage-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  margin: 0 10px 10px 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
+}
+
+.stage-shell[data-library] .stage-panel,
+.stage-shell[data-focus] .stage-panel {
+  margin-left: 10px;
+}
+
+.stage-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.stage-content {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 设置页盖在内容区上时，标签内容保持挂载但不显示。 */
+.stage-content[hidden] {
+  display: none;
+}
+
+.stage-content:focus {
+  outline: none;
+}
+
+.stage-content > *,
+.stage-library > * {
+  flex: 1;
+  min-height: 0;
+}
+
+.stage-library {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+/* 侧页贴在面板右缘，与画板里的审稿、运行侧页一致：不再浮起，用一条分隔线区分 */
+.stage-sheet-slot {
+  width: var(--sheet-w);
+  flex: none;
+  min-height: 0;
+  display: flex;
+  border-left: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--surface) 45%, var(--paper));
+  transition: width var(--dur) var(--ease);
+}
+
+.stage-sheet-slot[data-wide] {
+  width: var(--sheet-w-wide);
+}
+
+.stage-sheet-slot > .pi-sheet {
+  width: 100%;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}

@@ -1,190 +1,40 @@
-import { useState, useEffect, useCallback } from 'react'
 import { History, RotateCcw, ArrowLeftRight, RefreshCw } from 'lucide-react'
 import { useEditorStore } from '../../stores/editor-store'
 import { useLocaleStore } from '../../stores/locale-store'
-import { useProjectStore } from '../../stores/project-store'
 import { Button } from '../ui/Button'
 import { cn } from '../../lib/utils'
-import type { VersionRecord } from '../../services/version-service'
-import { ipc } from '../../services/ipc-client'
-import { requireIpcSuccess } from '../../services/ipc-result'
-import { countDraftUnits } from '../../shared/draft-units'
-import {
-  captureProjectSession,
-  isProjectSessionCurrent,
-  isProjectSessionPath,
-} from '../project-session-gate'
-
-/** 章节元数据 */
-interface ChapterMeta {
-  id: string
-  chapter_number: number
-  title: string
-  status: string
-}
+import { useVersionHistory } from '../stage/history/use-version-history'
+import { pluralEn } from '../../shared/plural-en'
 
 /** 版本历史面板 — 查看章节版本并与当前内容对比 */
 export default function VersionHistory({ projectKey }: { projectKey: string }) {
-  const currentProject = useProjectStore(s => s.currentProject)
   const locale = useLocaleStore(s => s.locale)
   const text = useLocaleStore(s => s.text)
-  const [chapters, setChapters] = useState<ChapterMeta[]>([])
-  const [selectedChapter, setSelectedChapter] = useState<string | null>(null)
-  const [versions, setVersions] = useState<VersionRecord[]>([])
-  const [loading, setLoading] = useState(true)
-
-  const loadChapters = useCallback(async () => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectKey)) return
-    setLoading(true)
-    try {
-      const blueprints = await ipc.invokeWithProjectSession(
-        projectSession,
-        'db:blueprint-get-all',
-        projectSession.projectPath,
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      setChapters(blueprints.map(c => ({
-        id: String(c.chapterNumber),
-        chapter_number: c.chapterNumber,
-        title: c.title || text(`第 ${c.chapterNumber} 章`, `Chapter ${c.chapterNumber}`),
-        status: 'draft',
-      })))
-    } catch {
-      if (isProjectSessionCurrent(projectSession)) setChapters([])
-    } finally {
-      if (isProjectSessionCurrent(projectSession)) setLoading(false)
-    }
-  }, [currentProject, projectKey, text])
-
-  // 加载章节列表
-  useEffect(() => {
-    let mounted = true
-    Promise.resolve().then(() => { if (mounted) loadChapters() })
-    return () => { mounted = false }
-  }, [currentProject, loadChapters])
-
-  // 加载版本列表
-  const loadVersions = useCallback(async (chapterId: string) => {
-    const projectSession = captureProjectSession(useProjectStore.getState().currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectKey)) return
-    try {
-      const chapterNumber = Number.parseInt(chapterId, 10)
-      if (!Number.isFinite(chapterNumber)) return
-      const drafts = await ipc.invokeWithProjectSession(
-        projectSession,
-        'db:draft-list',
-        chapterNumber,
-        projectSession.projectPath,
-      )
-      if (!isProjectSessionCurrent(projectSession)) return
-      setVersions(drafts.map(draft => ({
-        id: draft.id,
-        version: draft.version,
-        type: draft.status === 'finalized' ? 'final' : (draft.status === 'revised' ? 'refined' : 'draft'),
-        word_count: draft.wordCount || 0,
-        created_at: draft.createdAt,
-        dependencies_stale: draft.dependenciesStale,
-      })))
-    } catch {
-      if (isProjectSessionCurrent(projectSession)) setVersions([])
-    }
-  }, [projectKey])
-
-  useEffect(() => {
-    if (!selectedChapter) return
-    let mounted = true
-    Promise.resolve().then(() => { if (mounted) loadVersions(selectedChapter) })
-    return () => { mounted = false }
-  }, [loadVersions, selectedChapter])
+  const { chapters, loading, selectedChapter, selectChapter, versions, readComparison, createRollbackDraft } = useVersionHistory(projectKey)
 
   /** 查看版本内容（Diff 对比） */
   const handleDiff = async (versionId: number, versionLabel: string) => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectKey) || !selectedChapter) return
-    const chapter = chapters.find((candidate) => candidate.id === selectedChapter)
-    if (!chapter) return
-
-    const oldContent = (await ipc.invokeWithProjectSession(
-      projectSession,
-      'db:draft-get-full',
-      versionId,
-      projectSession.projectPath,
-    ))?.content
-    if (!isProjectSessionCurrent(projectSession)) return
-    if (!oldContent) return
-
-    // 获取最新草稿内容进行比对
-    const latestDraft = await ipc.invokeWithProjectSession(
-      projectSession,
-      'db:draft-get-latest',
-      chapter.chapter_number,
-      projectSession.projectPath,
-    )
-    if (!isProjectSessionCurrent(projectSession)) return
-    const latestContent = latestDraft?.id === undefined
-      ? null
-      : await ipc.invokeWithProjectSession(
-          projectSession,
-          'db:draft-get-full',
-          latestDraft.id,
-          projectSession.projectPath,
-        )
-    if (!isProjectSessionCurrent(projectSession)) return
-    const currentContent = latestDraft?.id === undefined
+    const chapterNumber = selectedChapter
+    const comparison = await readComparison(versionId)
+    if (!comparison || chapterNumber === null) return
+    const currentContent = comparison.current === null
       ? text('（章节尚无内容）', '(Chapter has no content yet)')
-      : (latestContent?.content || text('（内容被错误截断）', '(Content was truncated unexpectedly)'))
+      : (comparison.current || text('（当前稿正文为空）', '(The current draft is empty)'))
 
     useEditorStore.getState().openFile({
       id: `diff-version-${versionId}`,
       name: text(`${versionLabel} vs 当前`, `${versionLabel} vs current`),
       type: 'diff',
-      originalContent: oldContent,
+      originalContent: comparison.older,
       content: currentContent,
-      filePath: `ai-novel://draft/ch${chapter.chapter_number}`, // 不再指向实体文件
+      filePath: `ai-novel://draft/ch${chapterNumber}`, // 不再指向实体文件
       projectKey,
     })
   }
 
   /** 回退到历史版本 */
   const handleRevert = async (versionId: number) => {
-    const projectSession = captureProjectSession(currentProject)
-    if (!projectSession || !isProjectSessionPath(projectSession, projectKey) || !selectedChapter) return
-    const chapter = chapters.find((candidate) => candidate.id === selectedChapter)
-    if (!chapter) return
-
-    const content = (await ipc.invokeWithProjectSession(
-      projectSession,
-      'db:draft-get-full',
-      versionId,
-      projectSession.projectPath,
-    ))?.content
-    if (!isProjectSessionCurrent(projectSession)) return
-    if (!content) return
-
-    const nextVersion = await ipc.invokeWithProjectSession(
-      projectSession,
-      'db:draft-next-version',
-      chapter.chapter_number,
-      projectSession.projectPath,
-    )
-    if (!isProjectSessionCurrent(projectSession)) return
-    requireIpcSuccess(await ipc.invokeWithProjectSession(
-      projectSession,
-      'db:draft-create',
-      {
-        chapterNumber: chapter.chapter_number,
-        version: nextVersion,
-        source: 'rewrite',
-        content,
-        wordCount: countDraftUnits(content),
-      },
-      projectSession.projectPath,
-    ), text('创建回滚草稿', 'Create rollback draft'))
-    if (!isProjectSessionCurrent(projectSession)) return
-
-    // 重新加载版本列表以显示新生成的回滚草稿
-    await loadVersions(selectedChapter)
+    await createRollbackDraft(versionId)
   }
 
   const TYPE_LABELS: Record<string, string> = {
@@ -227,17 +77,17 @@ export default function VersionHistory({ projectKey }: { projectKey: string }) {
           ) : (
             chapters.map((ch) => (
               <div
-                key={ch.id}
+                key={ch.number}
                 className={cn(
                   'px-2.5 py-1.5 rounded-md text-xs cursor-pointer mb-0.5 transition-colors',
-                  selectedChapter === ch.id
+                  selectedChapter === ch.number
                     ? 'bg-[var(--color-active)] text-[var(--color-text)]'
                     : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)]'
                 )}
-                onClick={() => setSelectedChapter(ch.id)}
+                onClick={() => selectChapter(ch.number)}
               >
                 <span className="font-mono text-[0.7rem] opacity-50 mr-1">
-                  {ch.chapter_number}
+                  {ch.number}
                 </span>
                 {ch.title || text('未命名', 'Untitled')}
               </div>
@@ -248,7 +98,7 @@ export default function VersionHistory({ projectKey }: { projectKey: string }) {
 
       {/* 右侧版本列表 */}
       <div className="flex-1 overflow-y-auto">
-        {selectedChapter ? (
+        {selectedChapter !== null ? (
           <div className="max-w-xl mx-auto px-6 py-4">
             <h3 className="text-sm font-bold text-[var(--color-text)] mb-3">
               {text('版本历史', 'Version history')}
@@ -288,7 +138,7 @@ export default function VersionHistory({ projectKey }: { projectKey: string }) {
                       <span className="text-[0.7rem] text-[var(--color-text-muted)]">
                         {text(
                           `${ver.word_count.toLocaleString(locale)} 字`,
-                          `${ver.word_count.toLocaleString(locale)} words`,
+                          `${ver.word_count.toLocaleString(locale)} ${pluralEn(ver.word_count, 'word')}`,
                         )}
                       </span>
                       <span className="text-[0.7rem] text-[var(--color-text-muted)]">

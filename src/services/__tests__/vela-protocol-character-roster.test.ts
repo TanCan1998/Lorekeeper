@@ -72,7 +72,7 @@ describe('structured character roster static contract', () => {
     const roster = source('electron/repositories/character-roster-repository.ts')
     const workflow = source('src/services/workflows/architecture-workflow.ts')
     const projectTree = source('src/components/panels/sidebar/ProjectTree.tsx')
-    const worldBuilding = source('src/components/editor/WorldBuildingEditor.tsx')
+    const worldBuilding = source('src/components/editor/use-architecture-overview.ts')
     const archFileViewer = source('src/components/editor/ArchFileViewer.tsx')
 
     for (const channel of [

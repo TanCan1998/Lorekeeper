@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>蓝图 · AI 生成蓝图</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="ui.css">
+<style>
+  .opts { display: flex; flex-direction: column; gap: var(--s-2); }
+  .opt { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .opt .input { height: 30px; width: 60px; padding: 0 10px; }
+  .cont { display: flex; align-items: center; gap: var(--s-3); padding: 10px 12px; border-radius: var(--radius); background: var(--accent-soft); margin-bottom: var(--s-4); }
+  .cont-text { flex: 1; min-width: 0; }
+  .cont-text small { display: block; color: var(--ink-2); font-size: var(--fs-12); }
+  .sync { display: flex; align-items: center; gap: var(--s-3); margin-top: var(--s-4); padding: 10px 12px; border-radius: var(--radius); background: var(--danger-soft); color: var(--ink); font-size: var(--fs-12); }
+  .sync > .i { color: var(--danger); }
+  .sync span { flex: 1; }
+</style>
+</head>
+<body>
+<!-- 蓝图页本体从 blueprint.html 读取，这里叠加 AI 生成蓝图对话框（目录配置）。 -->
+<template id="overlay">
+  <div class="scrim">
+    <div class="dialog" role="dialog" aria-labelledby="bg-title" style="width:580px">
+      <div class="dialog-head">
+        <div class="dialog-title" id="bg-title">AI 生成蓝图</div>
+        <p class="dialog-desc">按情节大纲为章节生成蓝图。已经写好的蓝图默认不动。</p>
+      </div>
+      <div class="dialog-body">
+        <div class="cont">
+          <div class="cont-text">上次重新生成第 17～24 章时中断
+            <small>恢复稿里已有第 17～20 章，可以接着生成第 21～24 章。</small></div>
+          <button class="btn btn-secondary btn-sm">继续第 21～24 章</button>
+        </div>
+        <div class="form-grid">
+          <div class="field w6"><span class="label">生成范围</span>
+            <div class="opts" role="radiogroup">
+              <span class="check opt" data-on="false"><span class="radio-dot"></span>前 <span class="input">12</span> 章</span>
+              <span class="check opt" data-on="true"><span class="radio-dot"></span>第 <span class="input">21</span> 章至第 <span class="input">24</span> 章</span>
+              <span class="check opt" data-on="false"><span class="radio-dot"></span>全部 24 章</span>
+            </div>
+          </div>
+          <div class="field w3"><span class="label">每章目标字数</span><div class="input">3,000</div></div>
+          <div class="field w3"><span class="label">已有蓝图的章节</span>
+            <div class="seg" role="group"><button aria-pressed="false">保留，只补空缺</button><button aria-pressed="true">覆盖</button></div>
+          </div>
+        </div>
+        <div class="sync" role="alert">
+          <svg class="i"><use href="#i-triangle-alert"/></svg>
+          <span>上次生成后，新出场角色没能同步到角色名单。</span>
+          <button class="btn btn-ghost btn-sm">重试角色同步</button>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <span class="note">第 21～24 章原有蓝图会被覆盖，开始前再确认一次</span>
+        <button class="btn btn-ghost">取消</button>
+        <button class="btn btn-primary"><svg class="i"><use href="#i-sparkles"/></svg>生成 4 章蓝图</button>
+      </div>
+    </div>
+  </div>
+</template>
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script>
+fetch('blueprint.html').then(r => r.text()).then(html => {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.head.querySelectorAll('style').forEach(s => document.head.append(s));
+  document.body.prepend(doc.getElementById('screen'));
+  Shell.mount({ title: '蓝图 · AI 生成蓝图', stage: 'plan', crumbs: ['蓝图', '第 5 章'], saved: true, run: { label: '第 4 章 · 生成草稿', pct: 62 } });
+});
+</script>
+</body>
+</html>
