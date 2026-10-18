@@ -2119,6 +2119,17 @@ impl GenerationRunRepository {
             .optional()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| GENERATION_RUN_MISSING.to_string())?;
+        // 认证冻结历史不是当前执行权威，须先拒绝，再解码已中和的绑定。
+        if frozen_row(conn, self.is_frozen, FREEZE_TABLE_GENERATION_RUNS, run_id)
+            || frozen_row(
+                conn,
+                self.is_frozen,
+                FREEZE_TABLE_GENERATION_ROOTS,
+                &root_action_id,
+            )
+        {
+            return Err("PORTABLE_RUNTIME_FROZEN".to_string());
+        }
         let mut binding: RunBinding = parse_json(&binding_json)?;
         // const { $runEffects, ...frozen } = JSON.parse(row.binding_json)
         binding.extra.remove("$runEffects");
@@ -2706,6 +2717,10 @@ impl GenerationRunRepository {
         conn: &Connection,
         root_id: &str,
     ) -> Result<GenerationBudgetReceipt, String> {
+        // 不把历史预算的 R 列中和值当成当前坏 JSON，也不凭空构造预算。
+        if frozen_row(conn, self.is_frozen, FREEZE_TABLE_GENERATION_ROOTS, root_id) {
+            return Err("PORTABLE_RUNTIME_FROZEN".to_string());
+        }
         let (action_json, budget_json, active_elapsed_ms, active_since_ms, blocked_code) = conn
             .query_row(
                 "SELECT action_json,budget_json,active_elapsed_ms,active_since_ms,blocked_code FROM generation_roots WHERE root_action_id=?",
@@ -4887,6 +4902,23 @@ mod tests {
             .read_listable_run(&conn, "run-1", "project-1")
             .unwrap()
             .is_none());
+        // 按旧身份直读必须在解析中和 JSON 前精确拒绝，不伪造可用预算。
+        assert_eq!(
+            repository.get(&conn, "run-1").unwrap_err(),
+            "PORTABLE_RUNTIME_FROZEN"
+        );
+        assert_eq!(
+            repository.budget(&conn, "root-1").unwrap_err(),
+            "PORTABLE_RUNTIME_FROZEN"
+        );
+        assert_eq!(
+            repository.get(&conn, "missing").unwrap_err(),
+            GENERATION_RUN_MISSING
+        );
+        assert_eq!(
+            repository.budget(&conn, "missing").unwrap_err(),
+            GENERATION_ROOT_MISSING
+        );
         // 冻结行仍不可写：连接级临时触发器继续拒绝。
         let error = conn
             .execute(
@@ -4914,6 +4946,15 @@ mod tests {
         let repository = GenerationRunRepository::default();
         // 没有便携守卫就不是冻结历史：损坏账本继续 fail-closed，不静默跳过。
         assert!(!repository.frozen_root(&conn, "root-1").unwrap());
+        for error in [
+            repository.get(&conn, "run-1").unwrap_err(),
+            repository.budget(&conn, "root-1").unwrap_err(),
+        ] {
+            assert!(
+                error.starts_with("GENERATION_JSON_PARSE_ERROR"),
+                "实际：{error}"
+            );
+        }
         assert!(repository.recover_interrupted(&conn).is_err());
     }
 

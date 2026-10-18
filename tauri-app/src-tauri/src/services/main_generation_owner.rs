@@ -406,10 +406,13 @@ static OWNER_ERROR_CODE: LazyLock<Regex> = LazyLock::new(|| {
 /// 对齐基线 register catch 的错误码映射（generation-controller.ts:160-162）：
 ///
 /// - [`SOURCE_DRAFT_CHANGED`] 字面量，或匹配 [`OWNER_ERROR_CODE`] 正则的
-///   错误码 → **原样透传**；
+///   错误码 → **原样透传**；Tauri 额外精确透传便携历史的 `PORTABLE_RUNTIME_FROZEN`；
 /// - 其余（含会话守卫的中文文案）→ 一律收敛为 [`GENERATION_REQUEST_FAILED`]。
 pub fn map_generation_error(message: &str) -> &str {
-    if message == SOURCE_DRAFT_CHANGED || OWNER_ERROR_CODE.is_match(message) {
+    if message == SOURCE_DRAFT_CHANGED
+        || message == "PORTABLE_RUNTIME_FROZEN"
+        || OWNER_ERROR_CODE.is_match(message)
+    {
         message
     } else {
         GENERATION_REQUEST_FAILED
@@ -12580,6 +12583,10 @@ data: [DONE]
             map_generation_error("FINALIZED_CHARACTER_STATE_INVALID"),
             "FINALIZED_CHARACTER_STATE_INVALID"
         );
+        assert_eq!(
+            map_generation_error("PORTABLE_RUNTIME_FROZEN"),
+            "PORTABLE_RUNTIME_FROZEN"
+        );
     }
 
     #[test]
@@ -12601,6 +12608,15 @@ data: [DONE]
         // 小写 → 不透传
         assert_eq!(
             map_generation_error("generation_epoch_stale"),
+            GENERATION_REQUEST_FAILED
+        );
+        // 不扩大为整个 PORTABLE 前缀透传，内部详细错误仍归一。
+        assert_eq!(
+            map_generation_error("PORTABLE_RUNTIME_FREEZE_INVALID"),
+            GENERATION_REQUEST_FAILED
+        );
+        assert_eq!(
+            map_generation_error("PORTABLE_RUNTIME_FROZEN: internal"),
             GENERATION_REQUEST_FAILED
         );
     }
@@ -12797,6 +12813,23 @@ data: [DONE]
         portable_project_guard::install_guard_for_test(&restored, guard).expect("install guard");
 
         let mut owner = owner_with(&restored);
+        let (run_id, root_id): (String, String) = restored
+            .query_row(
+                "SELECT run_id,root_action_id FROM generation_runs LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let handle = json!({"projectId":"project-1","epoch":"lease-1",
+            "rootActionId":root_id,"runId":run_id});
+        assert_eq!(
+            owner.read_run(&restored, &handle).unwrap_err(),
+            mutating_error("PORTABLE_RUNTIME_FROZEN")
+        );
+        assert_eq!(
+            owner.resume(&restored, &handle).unwrap_err(),
+            mutating_error("PORTABLE_RUNTIME_FROZEN")
+        );
         owner
             .suspend_with_database(&restored)
             .expect("脱敏恢复副本必须能正常挂起关闭");

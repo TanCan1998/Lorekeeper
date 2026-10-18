@@ -776,6 +776,18 @@ fn restored_copy_completes_merge_and_recheck_with_author_content_writable_test()
     .unwrap();
     portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
 
+    // 旧审修 handle 不进入中和回执解码，也不调用候选/来源回调。
+    let error = f
+        .service
+        .read_recovery(
+            &conn,
+            &ReviewRevisionGeneration::handle_of(&f.run),
+            |_| panic!("冻结历史不得重认证来源"),
+            |_| panic!("冻结历史不得发布候选"),
+        )
+        .unwrap_err();
+    assert_eq!(error, mutating_error("PORTABLE_RUNTIME_FROZEN"));
+
     // 作者正文可继续编辑（恢复归档后仍能写）
     conn.execute(
         "UPDATE drafts SET word_count = word_count + 1 WHERE id=?1",
