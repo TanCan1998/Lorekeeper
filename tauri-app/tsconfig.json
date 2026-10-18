@@ -20,10 +20,15 @@
        基线文件位于 ../electron/，模块解析从其位置向上找不到本包 node_modules，
        需显式映射（类型单源不变，运行时零依赖）。 */
     "types": ["node"],
+    /* TS 6 起 paths 相对 tsconfig 目录解析，不再需要 baseUrl。 */
     "paths": {
       "@baseline/*": ["../electron/*"],
       "electron": ["./node_modules/electron/electron.d.ts"],
-      "better-sqlite3": ["./node_modules/@types/better-sqlite3/index.d.ts"]
+      "better-sqlite3": ["./node_modules/@types/better-sqlite3/index.d.ts"],
+      /* CI 只安装 tauri-app 的依赖树，而 @baseline 会把 electron/ 及其反向引用的
+         根 src/ 拉进编译；这些文件里的裸模块（react、zustand 等）必须解析到本包，
+         而不是仓库根 node_modules。 */
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
     },
 
     /* Linting */
