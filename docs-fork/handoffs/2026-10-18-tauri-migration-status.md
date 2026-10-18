@@ -1,126 +1,72 @@
 # Tauri迁移交接快照（2026-10-18）
 
-> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。第 **100** 次交接；同日第95次内容可在提交4646837b查看，上一日快照为[第94次](./2026-10-17-tauri-migration-status.md)。
+> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。第 **101** 次交接；同日第100次摘要见提交1e2e1dc0，上一日为[第94次](./2026-10-17-tauri-migration-status.md)。
 
 ## 当前代码与已验证状态
 
-代码 **1cf260b492f0229b57f5e3357a9f9581b85a3ea6**，master，已推送。云端39100710833成功且产物已核验；当前文档不改变Rust代码指纹，第100次未启动GUI或调用真实模型。
+代码 **b5850fbed96495e0a1e36ada51c4de9ba449765f**，master，已推送。当前文档不改变Rust代码指纹；本轮包含两个后端切片和一次Windows隐藏WebView验收，没有真实模型/MCP/业务云调用或发布。
 
-| 验证 | 结果 | 版本/时间/证据 |
+| 验证 | 结果 | 版本/证据 |
 |---|---|---|
-| 最新云端全量（已下载核验） | 1688通过/0失败；库284.91秒；all-targets 38.70秒无告警 | 1cf260b4 / [39100710833](https://github.com/TanCan1998/Lorekeeper/actions/runs/39100710833)，2026-10-18 05:37 UTC完成 |
-| 第99次云端全量 | 1687通过/0失败；库175.47秒；all-targets 31.08秒无告警 | 7360f4f6 / [39098085472](https://github.com/TanCan1998/Lorekeeper/actions/runs/39098085472) |
-| 第98次云端全量 | 1685通过/0失败；库265.84秒；all-targets 42.05秒无告警 | e093d7d4 / [39096912662](https://github.com/TanCan1998/Lorekeeper/actions/runs/39096912662) |
-| 前片云端全量 | 1684通过/0失败；库269.87秒；all-targets 35.45秒无告警 | 39c1c885 / [39095854001](https://github.com/TanCan1998/Lorekeeper/actions/runs/39095854001) |
-| 前片云端全量 | 1682通过/0失败；库255.35秒；all-targets 36.92秒无告警 | 561e91d0 / [39094795752](https://github.com/TanCan1998/Lorekeeper/actions/runs/39094795752) |
-| 前片云端全量 | 1681通过/0失败；库152.81秒；all-targets 32.06秒无告警 | d709125a9af5a2ed242b7f05c56084dc9ab33526 / [39093896169](https://github.com/TanCan1998/Lorekeeper/actions/runs/39093896169)，2026-10-18 |
-| 本机最新定向 | review_revision 71/0；portable 90/0；generation_owner 213/0；定向rustfmt/diff通过 | 1cf260b4；review-receipt-*日志 |
-| 第99次定向 | legacy_roster 28/0；portable 90/0；generation_owner 213/0 | 7360f4f6；legacy-nonce-*日志 |
-| 本轮前片定向 | character_proposal 12/0；portable 90/0；generation_owner 212/0 | a9f28824；character-import-*日志 |
-| 第98次定向 | agent_generation 57/0；portable 89/0；generation_owner 212/0 | e093d7d4；agent-registration-*日志 |
-| 本机前片定向 | graph_generation 23/0；portable 88/0；legacy_roster 27/0；main_generation_owner 211/0 | 39c1c885；read-proof-*日志，过滤范围不同不混用 |
-| 本机前片审修定向 | review_revision 70/0；portable 87/0 | 561e91d0；typed-deps-final-*日志，本轮未重跑审修 |
-| 本机前片定向 | owner 218/0；review_revision 69/0；generation_run_repository 30/0；portable 87/0 | d709125a，2026-10-18；old-handle-*日志 |
-| 本机最近全量lib | 1681/0，74.15秒 | 6b8108dc提交前相同代码；本轮未在最新SHA重跑本机全量 |
-| 前端 | 本轮未改；未重跑TS | 上次Tauri前端全量190文件2121通过/1跳过及typecheck/lint：8ecfc0fb |
-| 提交规范/秘密扫描 | success | 1cf260b4：39100710788 / 39100710805 |
-| 双栈隔离 | 相对4646837b未修改根配置/lock、electron、src或docs | 本轮git路径差异检查 |
+| 最新云端全量 | 1690通过/0失败，库196.58秒；all-targets35.54秒无告警 | b5850fbe / [39102768655](https://github.com/TanCan1998/Lorekeeper/actions/runs/39102768655)，2026-10-18 06:11 UTC完成 |
+| 前片云端全量 | 1689/0，库260.91秒；all-targets37.99秒无告警 | 58994666 / [39102267581](https://github.com/TanCan1998/Lorekeeper/actions/runs/39102267581)，06:03 UTC完成 |
+| 本机定向 | finalization26/0、portable90/0、generation_owner213/0；后片review_revision72/0、portable90/0、generation_owner213/0 | finalization-read-*、review-parent-*日志；定向rustfmt/diff通过 |
+| 当前后台GUI | 新归档服务导出/恢复后，作者编辑保存、项目关闭重开、应用正常退出重启、旧租约拒绝、定稿不变通过 | b5850fbe隐藏开发构建；current-rules-gui-1792303725757 |
+| 本机构建 | 隐藏构建通过；验收后默认构建恢复通过（32.29秒） | current-gui-build.log、current-gui-default-build.log |
+| 前端 | 本轮未改，未重跑TS；历史190文件2121通过/1跳过、typecheck/lint沿用8ecfc0fb | 不是新前端全量 |
+| 代码规范/秘密扫描 | 两片均success | 58994666：39102267567/39102267572；b5850fbe：39102768641/39102768697 |
+| 双栈隔离 | electron、根src/docs、根配置/lock无差异 | 相对1e2e1dc0保护路径差异检查 |
 
-已下载并核验的独立云端证据（完整expectedSha/testedSha匹配、两个独立退出码0、state=passed，lock哈希匹配，两日志无告警）：
+两片产物已分别下载核验：58994666包31674字节，b5850fbe包31677字节，均与GitHub SHA256匹配。完整expectedSha/testedSha、两个独立退出0、lock哈希、state=passed及两日志已核对。Rust语义切片累计 **0**（b5850fbe全量已核验）。
 
-- 51f3e89f9a6ec561b67cac5e959f696ab8fe0e87 / 39092294785：1680/0，库267.38秒，check 42.05秒。
-- 6b8108dc09cbbe3b2ecb6db5d6d56080d3ab9ebc / 39092830893：1681/0，库261.51秒，check 38.63秒。
-- d709125a9af5a2ed242b7f05c56084dc9ab33526 / 39093896169：1681/0，库152.81秒，check 32.06秒。
-- 561e91d092bfda67c3f1050fda13a499598cc70c / 39094795752：1682/0，库255.35秒，check 36.92秒。
+## 本次授权与定稿后处理读面
 
-- 39c1c885605bae966a07b8a1e061f5fc3fe8c5fa / 39095854001：1684/0，库269.87秒，check35.45秒；产物31587字节、GitHub公布SHA256匹配，validation完整SHA/lock/退出码0/state=passed均已核对。
+用户在总进度明确列出剩余读面、后台GUI及待授权定稿后处理修复后回复“全部进行”。本次仅把已说明的read_finalization_effect读取校验及合成回归纳入；不追溯把旧确认卡取消当同意，不扩大为定稿正文/不可逆生命周期/schema/文件权限修改。仍不派子代理，不允许抢焦点或真实外部业务调用。
 
-- e093d7d4533df2a24607224b7e8896835b531cbd / 39096912662：1685/0，库265.84秒，check42.05秒；产物31573字节及GitHub SHA256匹配，validation完整SHA/lock/两个退出0/state=passed已核对。
+**58994666**：
 
-- 7360f4f67f2c80e47839521199470367ecc6ca2c / 39098085472：1687/0，库175.47秒，check31.08秒；产物31554字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验。
+- 两类后处理（chapter_notes、character_cards）均先复现坏JSON返回Ok(None)，再改为GENERATION_FINALIZATION_EFFECT_INVALID；畸形SavedEffect也不再被吞。
+- SQL NULL保持既有“尚无回执”合同；JSON null回执拒绝。finalizationEffect的null/false/0/空字符串沿用基线假值无声明行为；已声明的对象/数组等必须完成解码与后续证明。
+- 合成SQLite回归覆盖坏JSON/空白/JSON null/畸形声明、可变性判断不误放行及零回写；没有重写任何定稿事实。既有来源、产物身份与生命周期门禁不变。
+- 此为读取/声明校验的有界回归，不等于穷尽所有定稿后处理证明字段。
 
-- 1cf260b492f0229b57f5e3357a9f9581b85a3ea6 / 39100710833：1688/0，库284.91秒，check38.70秒；产物31652字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验。gh watch末次返回1，经独立run view确认success及产物核验后才登记，不把watch退出码单独当验收。
+## 审修确认与复核血缘查找
 
-按“最近已核验全量后”口径，Rust语义切片当前累计 **0**（1cf260b4全量证据已核验）。
+**b5850fbe**：
 
-## 第100次：未获定稿授权后继续普通审修切片
+- 原parent查找对全库usage回执使用.ok()，当前其他根的坏JSON会被略过；作者确认分支已先失败复现。
+- 抽取私有review_effect_attempts，逐行先排认证冻结attempt/run，再严格解析当前JSON；仅按kind/id定位声明，保持匹配数量唯一性与后续完整证明。
+- SQL NULL内部合法null不声明血缘。确认分支坏JSON返回Error: GENERATION_REVIEW_LINEAGE_UNPROVEN；复核分支既有计划完整性检查会更早返回Error: REVIEW_CYCLE_CONFLICT，保留错误优先级，不为测试改生产门禁。
+- 真实审稿→确认→修稿→合并链加独立根账本，覆盖两个分支坏JSON/空白、无写入、NULL无声明仍可读取合法血缘。
+- 最初无关运行夹具sourceManifest为空被GENERATION_BINDING_INVALID先拒绝，已修正夹具；后续复核错误优先级的断言也据实际合同调整。两者不冒充目标缺陷证据。
 
-- 定稿后处理修复确认卡已取消；未获具体授权，不修改finalization_generation。继续其他普通迁移路径，不把卡片取消解释为同意或恢复前台GUI权限。
-- **1cf260b4**：审修saved把坏JSON过滤为无效果，正式read_recovery可在尚未提交效果时错过损坏回执。新增回归先复现返回无错误，再严格解析为Error: GENERATION_REVIEW_RECEIPT_INVALID。
-- SQL NULL内部表示改为合法JSON null，保留“尚无回执”与空串/空白坏回执的区别；基线假值null/false/0/空字符串不产生效果声明。对象声明继续走完整证明，不为未知效果编造身份。
-- 回归覆盖坏JSON/空白、NULL与JSON假值、畸形效果、恢复入口拒绝时无来源/候选回调、无回写；恢复真实账本收据后仍可提交并重读完整报告。
-- 最初“已提交报告+额外简化attempt”夹具被账本完整性门禁抢先拒绝，未当作目标缺陷证据；改为尚未提交效果的真实attempt后复现saved误判。未放松账本校验。
-- 定向review_revision71/0、portable90/0、generation_owner213/0；未改schema/依赖/定稿/权限/准入/CI/前端。此切片不等于其余全库parent/confirmation效果查找路径均已验收。
+## 新归档规则与恢复后创作的后台GUI
 
-## 第99次：持续迁移与两处相邻读面
+仅隔离合成项目、当前正式服务与真实Tauri开发WebView，无真实模型服务：
 
-- 用户要求普通切片持续推进，不逐片停下等“继续”；不恢复代理派发，不取消schema/依赖/定稿/权限/准入等具体确认边界。
-- **a9f28824**：角色提案import分支整库JSON1筛选payload_json，被冻结中和值阻塞；实际sanitizer回归先失败后改逐行排除认证冻结run/receipt。当前坏JSON/匹配收据哈希损坏仍拒绝，缺生成句柄与重复效果不伪造来源，源文件不变、旧行拒写。此为合成导入事实证明，不是完整生成导入或GUI链。
-- **7360f4f6**：旧名册nonce扫描吞坏action/binding后误报冲突，null上下文亦误匹配。先失败回归后严格解析当前JSON、跳过认证冻结根/run，null与缺省不匹配，多个非空上下文仍GENERATION_NONCE_CONFLICT。模型不可用基线仍拒绝，无账本副作用、旧行拒写、源文件不变。
-- 旧名册回归最初以MODEL_MISSING作为基线，实际映射为REQUEST_FAILED；已调整夹具，通过重复匹配上下文与无关坏行区分解析错误和nonce冲突，不为测试修改生产错误映射。历史错误日志不当作目标缺陷已复现。
-- 本轮无schema/依赖/权限/会话准入/CI/前端改动。三文件定向rustfmt/diff均通过。
-- **具体确认边界**：静态对照发现finalization_generation::read_finalization_effect吞坏JSON/畸形SavedEffect，基线JSON.parse及后续证明会拒绝；文件涉及定稿后处理，尚未改动或新增回归，须用户具体确认后再修，不把持续迁移泛授权当作豁免。
-- GUI准备仅审阅旧隐藏配置/原生控件脚本及当前归档对话框代码；未启动窗口或对话框。原生save/pick创建阶段无法保证不激活，不因旧UIAutomation脚本未调用SetFocus就宣称全程不抢焦点。
+1. 用本机不入库Rust辅助程序链接当前库，调用正式export_portable_project→restore_portable_project→ProjectDatabase::open，创建**新规则**归档及新项目身份的恢复副本。不是对话框选取或完整命令层授权流程。
+2. 归档2231498字节，SHA256=c98dd7391221ca69a0f389818099c93f06fe06d65dc01c1cff61feed4dffd8cb；恢复projectId=e8be2614-1a0a-4509-a085-488f8a87a59c，与源身份不同。
+3. 隐藏WebView通过正式项目store打开副本，实际CodeMirror中编辑第二章作者稿，点击真实保存按钮；generation:list为空（冻结历史无可继续候选）。
+4. 正式项目关闭/重开后仓储正文和真实编辑器均与保存内容一致；新lease不同，旧lease读取拒绝，第一章定稿完整内容/元数据不变。
+5. 标题栏正常退出应用后，以同隔离home重新启动隐藏窗口，重复验证持久化、定稿不变及旧lease拒绝通过。
+6. Tauri visible=false/focused=false，Win32目标进程非前台、Lorekeeper主窗口不可见；没有SetFocus/前台激活/全局键鼠/SendKeys。
+7. 恢复库正式连接确认33个generation run全部认证冻结、1个非定稿作者稿可变且依赖为[]；改写历史被PORTABLE_RUNTIME_FROZEN拒绝、total_changes不变。
+8. 窗口正常关闭，独占Vite进程按PID/命令行所有权核对后停止；5190/9226均已收口，无本机Lorekeeper进程；已恢复默认构建。
 
-## 第98次：代理工作流登记逐行过滤冻结历史
+辅助程序最初链接缺Cargo原生CRT参数，后改为复用既有build输出参数；第一次混用斜线路径被正式安全检查拒绝，改为规范Windows路径后通过。首个启动脚本等待Vite超时留下本次独占Vite，核对后续启隐藏窗口，最后已停止。未为夹具改动生产路径/链接/权限规则。
 
-- workflow_registration仍整库SQL json_extract(binding_json)，真实sanitizer副本先失败复现malformed JSON。现复用既有frozen_aware_json_pointer_rows：只跳过认证冻结行，操作/project/登记唯一性及子代来源校验不变。
-- 新回归在实际sanitizer/冻结侧车/连接守卫上，历史不提供登记（MISSING），读取不回写；同库加入当前父轮/子代后登记可读，with_child_effect完成合成效应，transition.actionId正确，冻结中和值未变且仍拒写、源库逐字节不变。
-- 使用既有TestHost合成宿主和真实SQLite服务，不等于完整生产工作流、真实模型或GUI验收。无守卫中和值/当前非冻结坏绑定仍拒绝。
-- 初轮修复后测试曾只因硬编码SQLite的malformed JSON文本失败：共用读面改用serde返回解析错误。测试调整为损坏错误不得变成MISSING/FROZEN，不为匹配旧文字放松生产门禁。
-- 仅改agent_generation.rs；无schema/依赖/权限/会话准入/CI配置/前端变化。其他JSON消费路径尚未验收。
+**仍未计为通过**：原生save/pick对话框在新规则下的完整点击导出/恢复链。其创建可能激活窗口，在“不抢焦点”限制下不擅自启动；本轮服务层准备+GUI恢复后编辑不冒充原生对话框验收。复杂头像/审修原生归档沿用第91次历史证据，不归为本轮新测。
 
-## 第97次：图效果回执严格校验与专用冻结入口
+## 总进度与未解除项
 
-- 对照最新Electron发现stored_effects及事务版stored_effects_in将坏JSON、graphEffects:null吞成无效果。新增回归先失败（unwrap_err收到Ok([])），再修复为GENERATION_GRAPH_EFFECT_INVALID；缺省效果及合法[]仍可读。
-- 合成SQLite证明回归覆盖SQL NULL、空串、坏JSON、JSON null、非数组、坏效果结构及超过8项；普通读面、assert_mutable及事务内读面均拒绝，不回写收据。不是所有效果证明字段的穷尽测试。
-- 实际sanitizer→冻结侧车→连接守卫回归：图/旧名册require与confirm/stage先精确拒绝PORTABLE_RUNTIME_FROZEN，不进入来源回调；无写入、事务退出、旧attempt拒写、源文件逐字节不变。
-- 无守卫中和值及同一恢复连接新增的坏绑定仍按损坏拒绝，不因恢复连接全局豁免。夹具绑定刻意中和，证明入口拒绝顺序；不冒充有效当前旧角色完整证明链。
-- 未改schema、依赖、权限、会话准入或CI配置；本轮无前端变化，无新增GUI验收。
+- #25–29保持完成。#30当前已补齐上述后端缺陷与新副本后台编辑/重启证据；原生对话框约束等仍留明确待验收，暂不登记全项关闭。#31最终验收不提前宣布完成。
+- 频道功能迁移289/290；旧库转换明确首版范围外。四审修频道已于第91次接线开放，旧文档的285/290关闭状态是历史，不反向覆盖当前源码。
+- 不用测试数量或命令注册数推出所有JSON消费者、交错、生产质量或发布准备已认证。macOS/Linux未认证，真实模型/MCP/业务云/发布未授权。
+- 无需为普通切片再次等“继续”；只有实际触及具体确认/无法后台交互边界才停下说明。
 
-## 第96次：恢复副本继续创作与精确冻结拒绝
+## 证据与接续
 
-1. **51f3e89f：可空回执读取修复。** 审修准备扫描generation_attempts时，把可空usage_receipt_json当String读取，脱敏NULL导致Invalid column type Null。改为Option读取，NULL不产生执行收据声明。
-2. **6b8108dc：用户明确选择收窄冻结范围。** 作者内容表drafts、character_relationships不再登记行冻结键；R列仍中和，不迁出原始依赖/来源。执行历史表、定稿出箱等仍冻结，未放宽定稿不可逆、文件授权或生命周期。恢复副本可编辑作者草稿。
-3. **恢复副本审修全链实跑（SQLite集成测试）。** 在真实sanitizer副本和连接守卫上：审稿→作者确认（文风豁免/目标应用）→修稿→合并→定向复核，recheck_count=1且全局严格验证通过；冻结历史无候选、不可改写。此为合成后端集成链，**不是新增GUI或真实模型验收**。
-4. **d709125a：旧handle精确拒绝。** get/budget在解析中和JSON之前检查认证冻结键；owner只额外透传精确PORTABLE_RUNTIME_FROZEN，不开放整个PORTABLE前缀。旧read_run/resume/read_recovery返回Error: PORTABLE_RUNTIME_FROZEN；来源/候选回调不执行。未认证中和值仍按JSON损坏拒绝，缺失身份仍保留原missing错误。
-5. **561e91d0：收紧空依赖豁免。** 复验发现6b8108dc仅凭恢复连接身份允许空串，不能区分恢复后新增/损坏的当前草稿。先失败回归后，sanitizer将drafts.source_dependencies中和为合法空数组[]，移除is_restored_copy整库豁免。普通项目、恢复副本可变旧草稿、新增草稿的空串/空白/坏JSON都拒绝；源库不变。旧空串只对认证冻结草稿行兼容，且仍只读；该单元守卫缝**不等于任意旧归档安装兼容性验收**。
-6. 中间失败保留为历史：旧handle回归先复现JSON解析错误；当前空依赖回归先复现被误放行；新增草稿夹具曾先改变最新版本身份，使旧稿先被来源门禁拒绝，已将对照顺序修正，不降低生产门禁。
-
-## 可空R列扫描与剩余读面
-
-按当前schema解析（逗号分隔列，排除NOT NULL/主键）共13个可空R列：
-
-| 列族 | 核对结论 |
-|---|---|
-| blueprint_character_sync_operations.completion_receipt | 内部行类型Option<String> |
-| import_run_receipts.effect_receipt_json | 内部行类型Option<String>；冻结effect读面不发布当前权威 |
-| post_process_steps.error_msg | Option读取后默认值 |
-| llm_calls的9个可空列 | 文本Option后默认；token/duration保持Option；success Option数值后布尔映射；id为保留主键，不是可空待中和字段 |
-| generation_attempts.usage_receipt_json | 审修全库扫描NULL缺陷已修；generation_draft_effects/finalization/agent相关读点有Option处理；图stored_effects两处和旧角色saved仍有严格String读点 |
-
-图/旧角色这类**证明阶段**不能统一改为吞NULL/坏JSON；最新上游对应逻辑同样直接JSON.parse后访问效果。第97次已修图普通/事务读面吞坏JSON与null效果，并证明两域外部require在解析脱敏收据前拒绝冻结历史；旧角色saved保留严格String/JSON读取。生成绑定查询、恢复候选、角色提案payload等其余JSON读面仍需继续核对，不把静态扫描或入口拒绝回归算成所有完整证明链验收。
-
-## 沿用的已完成任务与历史GUI范围
-
-- #25–29登记完成；图plan/event/plot真实确认、行内应用/选区漂移拒绝、新租约图/行内恢复、完整审修四频道开放均沿用第91次证据（非本轮新测）。
-- 复杂头像/审修原生归档曾验证19正文、2稿、5修订、12报告、6周期、7finding与头像SHA一致，恢复副本UI可读；新冻结范围与新归档中和值尚未做新版GUI复验。
-- #30仍进行中，#31最终验收未开始。测试通过不等于全部便携读面、所有交错或多平台已认证。
-
-## 第95次同日决策保留
-
-- 上游787提交（至f1d0bdb8）通过临时分支合并为051c8c83，仅.gitignore冲突；Tauri树不变。根typecheck 30.3秒、lint 64.5秒实际在本地合并后、推送前执行（纠正旧摘要“合并前”措辞）。
-- 4ac2dd4e加入新增上游贡献者提交豁免，e6d03172修复该修改的YAML缩进；历史失败不能记为成功。
-- 不剥离master，不保留常驻同步分支；本机.pi/tmp/sparse.ps1 on|off|status切换可见树，保留完整Electron参照；不删除target。操作见[项目参考](../agents/project-reference.md)。
-- cargo-nextest不作为默认验证；libtest/CI证据契约不变。Rust环境使用D盘会话脚本cargo-fast.ps1。
-
-## 证据与下轮断点
-
-- 本轮证据：.pi/tmp/review-receipt-{red,review_revision,portable,generation_owner}.log；云端.pi/tmp/recovery/ci-1cf260b4/；原包D:/Temp/lorekeeper-ci-1cf260b4/evidence.zip。
-- 第99次证据：.pi/tmp/character-import-*.log、legacy-nonce-*.log；云端.pi/tmp/recovery/ci-7360f4f6/。
-- 第98次证据：.pi/tmp/agent-registration-*.log；云端.pi/tmp/recovery/ci-e093d7d4/。
-- 第97次证据：.pi/tmp/graph-receipt-red.log（UTF-16）、read-proof-{graph_generation,portable,legacy_roster,main_generation_owner}.log；云端.pi/tmp/recovery/ci-39c1c885/。
-- 前片证据：.pi/tmp/recovery/ci-{51f3e89f,6b8108dc,d709125a,561e91d0}/；old-handle-*.log、blank-deps-red.log、typed-deps-final-*.log；均不入库。
-- 活动事实源：.pi/tmp/pipeline-state.md；GUI历史位于background-1792229720030，PID仅历史，不视为当前运行。
-- 下一步：① 定稿后处理效果读面仍未获授权，其他审修parent/confirmation全库效果查找继续有界回归；② 新归档规则与恢复后创作的后台GUI验收；③ #30有界收口后再做#31，不能把后端全量当成GUI验收。
-- 当前没有新GUI/mock/Vite或子代理运行；没有新原生文件授权操作。真实模型、外部MCP、业务云、发布、自动定稿仍未授权；macOS/Linux未认证。
+- 本机证据：.pi/tmp/finalization-read-{red,finalization,portable,generation_owner}.log、review-parent-{red,review_revision,portable,generation_owner}.log；云端.pi/tmp/recovery/ci-{58994666,b5850fbe}/。
+- GUI：.pi/tmp/recovery/current-rules-gui-1792303725757/内archive-service.log、gui-edited.json、gui-reopened.json、gui-app-restarted.json、gui-win32.json、guard-verify.log等；会话登记.pi/tmp/current-rules-gui-session.json已closed，PID仅历史。
+- 隐藏二进制SHA256=95d471d5bd8f3075fd560e63b4f6cb83b0416f3bb585d4e51eecc9e37593e205；验收后已恢复默认构建，不把当前默认exe当隐藏指纹。
+- 当前活动事实源.pi/tmp/pipeline-state.md；上述辅助源码、构建、归档、合成正文和日志均不入库。
