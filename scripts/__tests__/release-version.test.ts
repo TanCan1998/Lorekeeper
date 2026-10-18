@@ -63,8 +63,11 @@ describe('release metadata', () => {
       'not notarized',
     ]) expect(notes).toContain(expected)
 
-    expect(chineseReadme).toContain('> ## 1.2.0-Preview')
-    expect(englishReadme).toContain('> ## 1.2.0-Preview')
+    expect(chineseReadme).toContain('> ## 1.3.0 更新')
+    expect(englishReadme).toContain("> ## What's new in 1.3.0")
+    for (const readme of [chineseReadme, englishReadme]) {
+      expect(readme).toContain('https://github.com/EthanYoQ/AI-Novel-Writer/releases/tag/v1.3.0)')
+    }
 
     const zhRetained = previousNotes
       .slice(0, previousNotes.indexOf('## 安装提示'))
@@ -89,7 +92,7 @@ describe('release metadata', () => {
         'Windows x64',
         'Apple Silicon',
         'Intel',
-        '1.2.0-Preview',
+        '1.3.0',
         'https://github.com/EthanYoQ/AI-Novel-Writer/releases/latest)',
       ]) expect(readme).toContain(expected)
 

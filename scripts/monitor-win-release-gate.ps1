@@ -1380,6 +1380,7 @@ function Test-AiNovelGateSameBoundSystemExecutablePath {
     $allowedRelativeExecutablePaths = @(
       'cmd.exe',
       'find.exe',
+      'findstr.exe',
       'WindowsPowerShell\v1.0\powershell.exe'
     )
     foreach ($relativeExecutablePath in $allowedRelativeExecutablePaths) {
@@ -1443,7 +1444,7 @@ function Get-AiNovelGateBoundCommandArguments {
 function Test-AiNovelGateSystemUtilityImage {
   param(
     [AllowEmptyString()][string]$ImagePath,
-    [Parameter(Mandatory = $true)][ValidateSet('cmd.exe', 'find.exe')][string]$FileName
+    [Parameter(Mandatory = $true)][ValidateSet('cmd.exe', 'find.exe', 'findstr.exe')][string]$FileName
   )
 
   if ([string]::IsNullOrWhiteSpace($ImagePath) -or $ImagePath -notmatch '^[A-Za-z]:\\') {
@@ -1467,7 +1468,30 @@ function Test-AiNovelGateSystemUtilityImage {
   }
 }
 
-function Test-AiNovelGateKnownNsisCmdProcessCheckCommand {
+function Get-AiNovelGateNsisCmdProcessCheckVariants {
+  # The per-user FIND_PROCESS fallback of electron-builder's NSIS template
+  # (perMachine is false). Older templates pipe tasklist into find.exe; 26.15
+  # adds /NH and pipes into an anchored findstr.exe. FilterArguments is the
+  # child command line exactly as cmd.exe rebuilds it after argv[0].
+  return @(
+    [pscustomobject]@{
+      FilterFileName = 'find.exe'
+      CmdPrefix = ' /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq AI小说作家.exe" /FO CSV | "'
+      CmdSuffix = '" "AI小说作家.exe"'
+      FilterArguments = '  "AI小说作家.exe"'
+      Classification = 'expected-nsis-find-no-match'
+    },
+    [pscustomobject]@{
+      FilterFileName = 'findstr.exe'
+      CmdPrefix = ' /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq AI小说作家.exe" /FO CSV /NH | "'
+      CmdSuffix = '" /B /I /C:"\"AI小说作家.exe\""'
+      FilterArguments = '  /B /I /C:"\"AI小说作家.exe\""'
+      Classification = 'expected-nsis-findstr-no-match'
+    }
+  )
+}
+
+function Get-AiNovelGateNsisCmdProcessCheckVariant {
   param(
     [AllowEmptyString()][string]$CommandLine,
     [AllowEmptyString()][string]$CmdImagePath
@@ -1477,27 +1501,72 @@ function Test-AiNovelGateKnownNsisCmdProcessCheckCommand {
     -CommandLine $CommandLine `
     -ImagePath $CmdImagePath
   if ($null -eq $arguments) {
-    return $false
+    return $null
   }
   try {
-    $expectedFindPath = Join-Path ([System.IO.Path]::GetDirectoryName($CmdImagePath)) 'find.exe'
-    $prefix = ' /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq AI小说作家.exe" /FO CSV | "'
-    $suffix = '" "AI小说作家.exe"'
-    if (
-      -not $arguments.StartsWith($prefix, [System.StringComparison]::Ordinal) -or
-      -not $arguments.EndsWith($suffix, [System.StringComparison]::Ordinal)
-    ) {
-      return $false
+    $cmdDirectory = [System.IO.Path]::GetDirectoryName($CmdImagePath)
+    foreach ($variant in Get-AiNovelGateNsisCmdProcessCheckVariants) {
+      if (
+        -not $arguments.StartsWith($variant.CmdPrefix, [System.StringComparison]::Ordinal) -or
+        -not $arguments.EndsWith($variant.CmdSuffix, [System.StringComparison]::Ordinal)
+      ) {
+        continue
+      }
+      $filterPathLength = $arguments.Length - $variant.CmdPrefix.Length - $variant.CmdSuffix.Length
+      if ($filterPathLength -le 0) {
+        continue
+      }
+      $filterPath = $arguments.Substring($variant.CmdPrefix.Length, $filterPathLength)
+      if (Test-AiNovelGateSameBoundSystemExecutablePath `
+        -Left $filterPath `
+        -Right (Join-Path $cmdDirectory $variant.FilterFileName)) {
+        return $variant
+      }
     }
-    $findPathLength = $arguments.Length - $prefix.Length - $suffix.Length
-    if ($findPathLength -le 0) {
-      return $false
-    }
-    $findPath = $arguments.Substring($prefix.Length, $findPathLength)
-    return Test-AiNovelGateSameBoundSystemExecutablePath -Left $findPath -Right $expectedFindPath
+    return $null
   }
   catch {
-    return $false
+    return $null
+  }
+}
+
+function Test-AiNovelGateKnownNsisCmdProcessCheckCommand {
+  param(
+    [AllowEmptyString()][string]$CommandLine,
+    [AllowEmptyString()][string]$CmdImagePath
+  )
+
+  return $null -ne (Get-AiNovelGateNsisCmdProcessCheckVariant `
+    -CommandLine $CommandLine `
+    -CmdImagePath $CmdImagePath)
+}
+
+function Get-AiNovelGateNsisFilterNoMatchVariant {
+  param(
+    [AllowEmptyString()][string]$CommandLine,
+    [AllowEmptyString()][string]$FilterImagePath
+  )
+
+  $arguments = Get-AiNovelGateBoundCommandArguments `
+    -CommandLine $CommandLine `
+    -ImagePath $FilterImagePath
+  if ($null -eq $arguments) {
+    return $null
+  }
+  try {
+    $filterFileName = [System.IO.Path]::GetFileName($FilterImagePath)
+    foreach ($variant in Get-AiNovelGateNsisCmdProcessCheckVariants) {
+      if (
+        [string]::Equals($filterFileName, $variant.FilterFileName, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($arguments, $variant.FilterArguments, [System.StringComparison]::Ordinal)
+      ) {
+        return $variant
+      }
+    }
+    return $null
+  }
+  catch {
+    return $null
   }
 }
 
@@ -1507,13 +1576,9 @@ function Test-AiNovelGateKnownNsisFindNoMatchCommand {
     [AllowEmptyString()][string]$FindImagePath
   )
 
-  $arguments = Get-AiNovelGateBoundCommandArguments `
+  return $null -ne (Get-AiNovelGateNsisFilterNoMatchVariant `
     -CommandLine $CommandLine `
-    -ImagePath $FindImagePath
-  return (
-    $null -ne $arguments -and
-    [string]::Equals($arguments, '  "AI小说作家.exe"', [System.StringComparison]::Ordinal)
-  )
+    -FilterImagePath $FindImagePath)
 }
 
 function Test-AiNovelGateExpectedExitOne {
@@ -2020,7 +2085,7 @@ function Test-AiNovelGateDeferredNsisCmdExitFailureReady {
   )
 }
 
-function Test-AiNovelGateExpectedNsisFindNoMatchExit {
+function Get-AiNovelGateExpectedNsisFilterNoMatchClassification {
   param(
     [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Step,
     [Parameter(Mandatory = $true)]$Event,
@@ -2034,40 +2099,66 @@ function Test-AiNovelGateExpectedNsisFindNoMatchExit {
   )
 
   if (-not (Test-AiNovelGateExpectedExitOne -Step $Step -Event $Event)) {
-    return $false
+    return $null
   }
   if (
     $null -eq $ProcessIdentity -or
     -not [bool]$ProcessIdentity.identityCaptured -or
     -not [bool]$ProcessIdentity.commandLineCaptured -or
+    $null -eq $ParentIdentity -or
+    -not [bool]$ParentIdentity.commandLineCaptured
+  ) {
+    return $null
+  }
+  $filterVariant = Get-AiNovelGateNsisFilterNoMatchVariant `
+    -CommandLine ([string]$ProcessIdentity.commandLine) `
+    -FilterImagePath ([string]$ProcessIdentity.executablePath)
+  $cmdVariant = Get-AiNovelGateNsisCmdProcessCheckVariant `
+    -CommandLine ([string]$ParentIdentity.commandLine) `
+    -CmdImagePath ([string]$ParentIdentity.executablePath)
+  # The filter child must be the one its own cmd.exe parent named, so a
+  # find.exe child never borrows a findstr.exe template or the reverse.
+  if (
+    $null -eq $filterVariant -or
+    $null -eq $cmdVariant -or
+    -not [string]::Equals($filterVariant.FilterFileName, $cmdVariant.FilterFileName, [System.StringComparison]::Ordinal) -or
     -not (Test-AiNovelGateSystemUtilityImage `
       -ImagePath ([string]$ProcessIdentity.executablePath) `
-      -FileName 'find.exe') -or
-    -not (Test-AiNovelGateKnownNsisFindNoMatchCommand `
-      -CommandLine ([string]$ProcessIdentity.commandLine) `
-      -FindImagePath ([string]$ProcessIdentity.executablePath)) -or
+      -FileName $filterVariant.FilterFileName) -or
     -not (Test-AiNovelGateCapturedParentIdentity `
       -ChildIdentity $ProcessIdentity `
       -ParentIdentity $ParentIdentity) -or
-    $null -eq $ParentIdentity -or
-    -not [bool]$ParentIdentity.commandLineCaptured -or
     -not (Test-AiNovelGateSystemUtilityImage `
       -ImagePath ([string]$ParentIdentity.executablePath) `
       -FileName 'cmd.exe') -or
-    -not (Test-AiNovelGateKnownNsisCmdProcessCheckCommand `
-      -CommandLine ([string]$ParentIdentity.commandLine) `
-      -CmdImagePath ([string]$ParentIdentity.executablePath))
+    -not (Test-AiNovelGateCapturedNsisProbeParent `
+      -Step $Step `
+      -ChildIdentity $ParentIdentity `
+      -ParentIdentity $GrandParentIdentity `
+      -GrandParentIdentity $GreatGrandParentIdentity `
+      -LegacyBridge $LegacyBridge `
+      -ArmedRootIdentity $ArmedRootIdentity `
+      -TrackedProcessIdentities $TrackedProcessIdentities)
   ) {
-    return $false
+    return $null
   }
-  return Test-AiNovelGateCapturedNsisProbeParent `
-    -Step $Step `
-    -ChildIdentity $ParentIdentity `
-    -ParentIdentity $GrandParentIdentity `
-    -GrandParentIdentity $GreatGrandParentIdentity `
-    -LegacyBridge $LegacyBridge `
-    -ArmedRootIdentity $ArmedRootIdentity `
-    -TrackedProcessIdentities $TrackedProcessIdentities
+  return [string]$filterVariant.Classification
+}
+
+function Test-AiNovelGateExpectedNsisFindNoMatchExit {
+  param(
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Step,
+    [Parameter(Mandatory = $true)]$Event,
+    [AllowNull()]$ProcessIdentity,
+    [AllowNull()]$ParentIdentity,
+    [AllowNull()]$GrandParentIdentity,
+    [AllowNull()]$GreatGrandParentIdentity,
+    [AllowNull()]$LegacyBridge,
+    [AllowNull()]$ArmedRootIdentity,
+    [AllowNull()]$TrackedProcessIdentities
+  )
+
+  return $null -ne (Get-AiNovelGateExpectedNsisFilterNoMatchClassification @PSBoundParameters)
 }
 
 function ConvertTo-AiNovelGateProcessEvidenceIdentity {
@@ -3477,7 +3568,7 @@ try {
           -TrackedProcessIdentities $trackedProcessIdentities) {
           $exitClassification = 'expected-nsis-powershell-probe'
         }
-        elseif (Test-AiNovelGateExpectedNsisFindNoMatchExit `
+        elseif ($null -ne ($filterNoMatchClassification = Get-AiNovelGateExpectedNsisFilterNoMatchClassification `
           -Step $activeStep `
           -Event $processEvent `
           -ProcessIdentity $processIdentity `
@@ -3486,7 +3577,7 @@ try {
           -GreatGrandParentIdentity $greatGrandParentIdentity `
           -LegacyBridge $legacyBridge `
           -ArmedRootIdentity $armedRootIdentity `
-          -TrackedProcessIdentities $trackedProcessIdentities) {
+          -TrackedProcessIdentities $trackedProcessIdentities)) {
           $parentProcessIdentityKey = Get-AiNovelGateProcessIdentityKey -ProcessIdentity $parentIdentity
           if ($null -eq $parentProcessIdentityKey) {
             $exitClassification = 'failure'
@@ -3498,7 +3589,7 @@ try {
             [void](Resolve-AiNovelGateDeferredNsisCmdExitFailure `
               -State $deferredNsisCmdExitFailure `
               -ProcessIdentityKey $parentProcessIdentityKey)
-            $exitClassification = 'expected-nsis-find-no-match'
+            $exitClassification = $filterNoMatchClassification
           }
         }
         elseif (Test-AiNovelGateExpectedNsisCmdProcessCheckExit `
@@ -3577,6 +3668,7 @@ try {
           'expected-nsis-powershell-probe',
           'expected-nsis-cmd-process-check',
           'expected-nsis-find-no-match',
+          'expected-nsis-findstr-no-match',
           'pending-nsis-cmd-process-check',
           'legacy-bridge-terminated',
           'legacy-bridge-old-application-breakpoint',

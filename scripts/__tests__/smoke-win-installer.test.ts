@@ -2773,6 +2773,136 @@ $verifiedFindParentKeys = [System.Collections.Generic.HashSet[string]]::new([Sys
     })
   })
 
+  windowsPowerShellIt('exempts only the exact electron-builder 26.15 cmd, tasklist, and findstr no-process chain from the official v1.1.0 installer', () => {
+    const output = runReleaseMonitorLibrary(`
+$system32Cmd = Join-Path $env:SystemRoot 'System32\\cmd.exe'
+$sysWow64Cmd = Join-Path $env:SystemRoot 'SysWOW64\\cmd.exe'
+$system32Findstr = Join-Path $env:SystemRoot 'System32\\findstr.exe'
+$sysWow64Findstr = Join-Path $env:SystemRoot 'SysWOW64\\findstr.exe'
+$system32Find = Join-Path $env:SystemRoot 'System32\\find.exe'
+$sysWow64Find = Join-Path $env:SystemRoot 'SysWOW64\\find.exe'
+$step = 'windows-in-app-update-e2e'
+$installerPath = 'D:\\a\\_temp\\ai-novel-windows-in-app-update-e2e-39109174811\\official-assets\\v1.1.0\\ai-novel-writer-setup-1.1.0.exe'
+$installerStart = '639279068899332431'
+$cmdStart = '639279068996769297'
+$installer = [pscustomobject]@{ processId = 7912; startTimeTicks = $installerStart; executablePath = $installerPath; identityCaptured = $true }
+$unrelatedParent = [pscustomobject]@{ processId = 7912; startTimeTicks = $installerStart; executablePath = 'D:\\a\\_temp\\unrelated.exe'; identityCaptured = $true }
+$cmdEvent = [pscustomobject]@{ ProcessId = 5360; ExitCode = 1; ExitCodeCaptured = $true; JobMessage = 7 }
+$findstrEvent = [pscustomobject]@{ ProcessId = 3012; ExitCode = 1; ExitCodeCaptured = $true; JobMessage = 7 }
+$findstrExitTwo = [pscustomobject]@{ ProcessId = 3012; ExitCode = 2; ExitCodeCaptured = $true; JobMessage = 7 }
+$cmdExitTwo = [pscustomobject]@{ ProcessId = 5360; ExitCode = 2; ExitCodeCaptured = $true; JobMessage = 7 }
+$findstrCmdArguments = ' /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq AI小说作家.exe" /FO CSV /NH | "' + $system32Findstr + '" /B /I /C:"\\"AI小说作家.exe\\""'
+$findstrCmdCommand = '"' + $system32Cmd + '"' + $findstrCmdArguments
+$findCmdCommand = '"' + $system32Cmd + '" /C tasklist /FI "USERNAME eq %USERNAME%" /FI "IMAGENAME eq AI小说作家.exe" /FO CSV | "' + $system32Find + '" "AI小说作家.exe"'
+$findstrArguments = '  /B /I /C:"\\"AI小说作家.exe\\""'
+$findstrCommand = '"' + $system32Findstr + '"' + $findstrArguments
+$findCommand = '"' + $system32Find + '"  "AI小说作家.exe"'
+
+function New-CmdIdentity {
+  param(
+    [string]$CommandLine = $findstrCmdCommand,
+    [string]$ExecutablePath = $sysWow64Cmd,
+    [string]$ParentPath = $installerPath
+  )
+  return [pscustomobject]@{
+    processId = 5360
+    startTimeTicks = $cmdStart
+    processName = 'cmd'
+    executablePath = $ExecutablePath
+    commandLine = $CommandLine
+    commandLineCaptured = $true
+    identityCaptured = $true
+    parentProcessId = 7912
+    parentProcessStartTimeTicks = $installerStart
+    parentExecutablePath = $ParentPath
+  }
+}
+
+function New-FilterIdentity {
+  param(
+    [string]$CommandLine = $findstrCommand,
+    [string]$ExecutablePath = $sysWow64Findstr,
+    [string]$ParentStart = $cmdStart
+  )
+  return [pscustomobject]@{
+    processId = 3012
+    startTimeTicks = '639279068997498829'
+    processName = [System.IO.Path]::GetFileNameWithoutExtension($ExecutablePath)
+    executablePath = $ExecutablePath
+    commandLine = $CommandLine
+    commandLineCaptured = $true
+    identityCaptured = $true
+    parentProcessId = 5360
+    parentProcessStartTimeTicks = $ParentStart
+    parentExecutablePath = $sysWow64Cmd
+  }
+}
+
+function Get-FilterClassification {
+  param($Event = $findstrEvent, $Filter = (New-FilterIdentity), $Cmd = (New-CmdIdentity), $Parent = $installer)
+  $classification = Get-AiNovelGateExpectedNsisFilterNoMatchClassification -Step $step -Event $Event -ProcessIdentity $Filter -ParentIdentity $Cmd -GrandParentIdentity $Parent
+  if ($null -eq $classification) { return 'rejected' }
+  return $classification
+}
+
+$cmd = New-CmdIdentity
+$unverified = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$verified = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+[void]$verified.Add((Get-AiNovelGateProcessIdentityKey -ProcessIdentity $cmd))
+$outsideSystemFindstr = 'D:\\a\\_temp\\findstr.exe'
+[pscustomobject]@{
+  FindstrExact = Get-FilterClassification
+  FindExactUnderOldTemplate = Get-FilterClassification -Filter (New-FilterIdentity -CommandLine $findCommand -ExecutablePath $sysWow64Find) -Cmd (New-CmdIdentity -CommandLine $findCmdCommand)
+  CmdCandidate = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity $cmd -ParentIdentity $installer
+  CmdWithoutVerifiedFindstr = Test-AiNovelGateExpectedNsisCmdProcessCheckExit -Step $step -Event $cmdEvent -ProcessIdentity $cmd -ParentIdentity $installer -VerifiedFindParentKeys $unverified
+  CmdAfterVerifiedFindstr = Test-AiNovelGateExpectedNsisCmdProcessCheckExit -Step $step -Event $cmdEvent -ProcessIdentity $cmd -ParentIdentity $installer -VerifiedFindParentKeys $verified
+  CmdUnquotedArgvZero = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity (New-CmdIdentity -CommandLine ($system32Cmd + $findstrCmdArguments)) -ParentIdentity $installer
+  CmdExtraCommand = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity (New-CmdIdentity -CommandLine ($findstrCmdCommand + ' & exit 1')) -ParentIdentity $installer
+  CmdMissingNoHeader = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity (New-CmdIdentity -CommandLine $findstrCmdCommand.Replace(' /NH', '')) -ParentIdentity $installer
+  CmdPerMachineTemplate = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity (New-CmdIdentity -CommandLine $findstrCmdCommand.Replace('/FI "USERNAME eq %USERNAME%" ', '')) -ParentIdentity $installer
+  CmdWrongProduct = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity (New-CmdIdentity -CommandLine $findstrCmdCommand.Replace('AI小说作家.exe', 'other.exe')) -ParentIdentity $installer
+  CmdNamesFindstrOutsideSystem = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity (New-CmdIdentity -CommandLine $findstrCmdCommand.Replace($system32Findstr, $outsideSystemFindstr)) -ParentIdentity $installer
+  CmdExitTwo = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdExitTwo -ProcessIdentity $cmd -ParentIdentity $installer
+  CmdNotInstallerChild = Test-AiNovelGateNsisCmdProcessCheckCandidate -Step $step -Event $cmdEvent -ProcessIdentity (New-CmdIdentity -ParentPath $unrelatedParent.executablePath) -ParentIdentity $unrelatedParent
+  FindstrExtraArgument = Get-FilterClassification -Filter (New-FilterIdentity -CommandLine ($findstrCommand + ' /V'))
+  FindstrOutsideSystemDirectory = Get-FilterClassification -Filter (New-FilterIdentity -CommandLine ('"' + $outsideSystemFindstr + '"' + $findstrArguments) -ExecutablePath $outsideSystemFindstr)
+  FindstrExitTwo = Get-FilterClassification -Event $findstrExitTwo
+  FindstrReusedCmdParent = Get-FilterClassification -Filter (New-FilterIdentity -ParentStart '639279068996769296')
+  FindstrUnderNonInstallerCmd = Get-FilterClassification -Cmd (New-CmdIdentity -ParentPath $unrelatedParent.executablePath) -Parent $unrelatedParent
+  FindstrWithFindArguments = Get-FilterClassification -Filter (New-FilterIdentity -CommandLine ('"' + $system32Findstr + '"  "AI小说作家.exe"'))
+  FindChildUnderFindstrTemplate = Get-FilterClassification -Filter (New-FilterIdentity -CommandLine $findCommand -ExecutablePath $sysWow64Find)
+  FindstrChildUnderFindTemplate = Get-FilterClassification -Cmd (New-CmdIdentity -CommandLine $findCmdCommand)
+  OtherStep = $null -eq (Get-AiNovelGateExpectedNsisFilterNoMatchClassification -Step 'other-step' -Event $findstrEvent -ProcessIdentity (New-FilterIdentity) -ParentIdentity $cmd -GrandParentIdentity $installer)
+} | ConvertTo-Json -Compress
+`)
+    const result = parseLastJsonLine(output)
+
+    expect(result).toEqual({
+      FindstrExact: 'expected-nsis-findstr-no-match',
+      FindExactUnderOldTemplate: 'expected-nsis-find-no-match',
+      CmdCandidate: true,
+      CmdWithoutVerifiedFindstr: false,
+      CmdAfterVerifiedFindstr: true,
+      CmdUnquotedArgvZero: true,
+      CmdExtraCommand: false,
+      CmdMissingNoHeader: false,
+      CmdPerMachineTemplate: false,
+      CmdWrongProduct: false,
+      CmdNamesFindstrOutsideSystem: false,
+      CmdExitTwo: false,
+      CmdNotInstallerChild: false,
+      FindstrExtraArgument: 'rejected',
+      FindstrOutsideSystemDirectory: 'rejected',
+      FindstrExitTwo: 'rejected',
+      FindstrReusedCmdParent: 'rejected',
+      FindstrUnderNonInstallerCmd: 'rejected',
+      FindstrWithFindArguments: 'rejected',
+      FindChildUnderFindstrTemplate: 'rejected',
+      FindstrChildUnderFindTemplate: 'rejected',
+      OtherStep: true,
+    })
+  })
+
   windowsPowerShellIt('defers a NSIS cmd exit until the matching find no-match event is verified', () => {
     const output = runReleaseMonitorLibrary(`
 $cmdPath = Join-Path $env:SystemRoot 'System32\\cmd.exe'

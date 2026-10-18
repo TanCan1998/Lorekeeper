@@ -131,8 +131,22 @@ export function createLegacyUpdateBridgePlan(plan, { localAppData = process.env.
   }
 }
 
-function githubHeaders() {
-  const token = process.env.GITHUB_TOKEN?.trim()
+const CREDENTIAL_ENVIRONMENT_NAME = /TOKEN|SECRET|KEY|PASSWORD/i
+
+/**
+ * Every child, down to the installed app under test, gets this environment:
+ * the app must check for updates anonymously like a real user and never see
+ * the workflow token that authenticates this script's own API requests.
+ */
+export function childProcessEnvironment(additions = {}, environment = process.env) {
+  const scrubbed = Object.fromEntries(
+    Object.entries(environment).filter(([name]) => !CREDENTIAL_ENVIRONMENT_NAME.test(name)),
+  )
+  return { ...scrubbed, ...additions }
+}
+
+function githubHeaders(githubToken) {
+  const token = githubToken?.trim()
   return {
     Accept: 'application/vnd.github+json',
     'User-Agent': 'AI-Novel-Writer-windows-in-app-update-e2e',
@@ -140,9 +154,13 @@ function githubHeaders() {
   }
 }
 
-async function fetchJson(fetcher, url, label) {
-  const response = await fetcher(url, { headers: githubHeaders() })
-  assert(response?.ok, `${label} request failed${response ? ` (${response.status})` : ''}`)
+async function fetchJson(fetcher, url, label, githubToken) {
+  const response = await fetcher(url, { headers: githubHeaders(githubToken) })
+  if (!response?.ok) {
+    const remaining = response?.headers?.get?.('x-ratelimit-remaining')
+    const rateLimit = remaining == null ? '' : `; x-ratelimit-remaining=${remaining}`
+    throw new Error(`${label} request failed${response ? ` (${response.status})` : ''}${rateLimit}`)
+  }
   return await response.json()
 }
 
@@ -284,6 +302,7 @@ export async function createOfficialUpdatePlan({
   expectedTag,
   evidenceRoot,
   fetcher = globalThis.fetch,
+  githubToken = process.env.GITHUB_TOKEN,
 }) {
   assert(typeof fetcher === 'function', 'A fetch implementation is required for official Release verification')
   const normalizedFromTag = normalizeFinalReleaseTag(fromTag, 'from_tag')
@@ -301,6 +320,7 @@ export async function createOfficialUpdatePlan({
       fetcher,
       `${apiBaseUrl}/repos/${OFFICIAL_UPDATE_REPOSITORY.owner}/${OFFICIAL_UPDATE_REPOSITORY.repo}/releases/latest`,
       'GitHub latest Release metadata',
+      githubToken,
     ),
     'GitHub latest Release metadata',
   )
@@ -314,8 +334,8 @@ export async function createOfficialUpdatePlan({
   assertFormalRelease(latestRelease, normalizedExpectedTag, 'GitHub latest Release')
 
   const [fromRelease, expectedRelease] = await Promise.all([
-    fetchJson(fetcher, officialReleaseApiPath(normalizedFromTag), 'GitHub from_tag Release metadata'),
-    fetchJson(fetcher, officialReleaseApiPath(normalizedExpectedTag), 'GitHub expected_tag Release metadata'),
+    fetchJson(fetcher, officialReleaseApiPath(normalizedFromTag), 'GitHub from_tag Release metadata', githubToken),
+    fetchJson(fetcher, officialReleaseApiPath(normalizedExpectedTag), 'GitHub expected_tag Release metadata', githubToken),
   ])
   const from = await verifyOfficialRelease({
     tag: normalizedFromTag,
@@ -443,7 +463,7 @@ function getWindowsProcessStartTimeTicks(processId) {
       '-Command',
       `[System.Diagnostics.Process]::GetProcessById(${processId}).StartTime.ToUniversalTime().Ticks`,
     ],
-    { encoding: 'utf8', windowsHide: true },
+    { encoding: 'utf8', env: childProcessEnvironment(), windowsHide: true },
   )
   if (result.error) throw result.error
   const output = String(result.stdout ?? '').trim()
@@ -473,6 +493,7 @@ function terminateProcessTree(processId) {
   if (!Number.isInteger(processId) || processId <= 0) return
   const result = spawnSync('taskkill.exe', ['/PID', String(processId), '/T', '/F'], {
     encoding: 'utf8',
+    env: childProcessEnvironment(),
     windowsHide: true,
   })
   if (result.error && result.error.code !== 'ESRCH') throw result.error
@@ -523,7 +544,7 @@ async function runWindowsInAppUpdateE2e(plan, evidenceRoot) {
     '-EvidencePath', monitorEvidencePath,
   ], {
     cwd: repositoryRoot,
-    env: { ...process.env, AI_NOVEL_UPDATE_E2E_EVIDENCE_ROOT: resolvedEvidenceRoot },
+    env: childProcessEnvironment({ AI_NOVEL_UPDATE_E2E_EVIDENCE_ROOT: resolvedEvidenceRoot }),
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
@@ -557,7 +578,7 @@ async function runWindowsInAppUpdateE2e(plan, evidenceRoot) {
       '-MonitorStatusPath', statusPath,
     ], {
       cwd: repositoryRoot,
-      env: { ...process.env, AI_NOVEL_RELEASE_GATE: 'windows-in-app-update-e2e' },
+      env: childProcessEnvironment({ AI_NOVEL_RELEASE_GATE: 'windows-in-app-update-e2e' }),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
