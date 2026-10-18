@@ -1,11 +1,11 @@
 # 当前交接入口
 
-- 最新：[第106次：Lorekeeper 1.0.0-beta已发布与历史引用清理](./2026-10-18-tauri-beta-release.md)。前序：[第105次RD-10迁移](./2026-10-18-tauri-rd10-stage.md)。
-- 用户明确授权GitHub打包并发布、独立受限发布作业；指定 **1.0.0-beta / lorekeeper-v1.0.0-beta / 预发布非最新版**。
-- [公开预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)，ID416413071，源码3bce0445；打包发布run39122558975三平台及发布全部成功。四安装包+五校验清单共9资产，大小/摘要/标签SHA与跨清单已核验。
-- 对应源码Rust CI39122557567独立1680/0及all-targets通过，artifact38901字节/摘要、SHA/锁/两退出0已核验，累计清零。CommitCI39122557568/Gitleaks39122557573成功。
-- 本机18项发布门禁测试；前端222文件2748通过/1跳过，typecheck/lint/build及产物体检通过。本轮无前端产品语义改动，最近完整浏览器仍第105次76文件922通过，不冒充本轮复跑。
-- 根Electron及根锁/配置未改，无新依赖；Tauri三版本及Cargo.lock项目版本变为1.0.0-beta，WiX数字版本1.0.0.0。
-- 已获“同意完整清理”后，备份并清除origin51历史分支/26旧标签、本地1临时分支/31旧标签。独立离线恢复/fsck通过，备份详情见交接。现在仅master及唯一Lorekeeper发布标签；upstream未动，同步须--no-tags。
-- 发布协议：[Tauri手动打包与预发布](../agents/tauri-release.md)。默认publish=false仍只打包；显式publish才写Release，拒绝覆盖已有版本。
-- Windows无证书，macOS未开发者签名/公证；新包未真机安装/首次启动验收。真实模型/MCP/业务云及前台GUI仍未授权；无子代理。旧原生验收证据不等于本次安装包认证。
+- 最新：[第107次：Actions最短保留与历史制品清理](./2026-10-18-actions-storage.md)。产品发布见[第106次](./2026-10-18-tauri-beta-release.md)。
+- 用户明确同意全仓库默认制品/新日志及全部上传步骤 **1天**；仓库API days=1已生效，8工作流11上传步骤显式1天，使用平台原生自动过期，不增定时任务/权限。
+- 已授权的历史快照 **281制品 / 431,516,412字节（411.53MiB）全部清理，0跳过**；逐项核run completed，Release九资产/标签不变，未删除cache/run/现存日志。新CI制品实际到期等于run创建时间+1天；用量面板可能延迟。
+- 策略a5418614：Node策略2/0、根相关3文件34/0、根typecheck/lint/YAML/diff通过；CommitCI39125354248/Gitleaks39125354263成功。
+- 对应Rust CI39125354221独立1680/0及all-targets成功；31,526字节artifact与SHA/锁/两退出0/state核验，本机证据已及时保存，累计0。本轮没有产品运行时语义变化或GUI复验。
+- [公开预发布Lorekeeper1.0.0-beta](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)，tag/源码3bce0445，打包发布39122558975，四包+五清单；下载表格直达链接已同步，未因本次清理改变。Windows无证书/macOS未公证，新包未真机安装。
+- 已清理旧分支/标签，当前仅master及Lorekeeper发布标签；upstream未动，同步须--no-tags。完整Git备份与恢复核验见第106次。
+- [存储策略](../agents/actions-storage.md) / [发布协议](../agents/tauri-release.md)。重要Rust证据须在1天内下载；跨run资格/打包依赖过期则完整重跑，不伪造回执。
+- 无子代理、前台GUI、真实模型/MCP/业务云授权；本次没有新增依赖或修改根package/lock/config、Electron/根src/docs产品源码。

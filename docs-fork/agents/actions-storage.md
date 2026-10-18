@@ -6,7 +6,7 @@
 
 - 仓库设置 `actions/permissions/artifact-and-log-retention` 的 `days=1`，已API写入并读回。
 - 当前8条含上传步骤的工作流、共11个 `actions/upload-artifact` 步骤均显式 `retention-days: 1`，包括Tauri打包/Rust证据与遗留Electron资格/诊断/推广/Gitleaks制品。
-- 1天是GitHub原生制品保留的最短天数；使用平台自动过期，不增加定时删除工作流或扩大GITHUB_TOKEN权限。
+- 1天是GitHub原生制品保留的最短天数；使用平台自动过期，不增加定时删除工作流或扩大GITHUB_TOKEN权限。实际API到期时间以所属run创建时间加1天计算，上传发生在其后，因此不保证上传后仍有完整24小时。
 - 默认设置同时影响今后运行日志；用户已确认。更改保留期不追溯既有制品，因此历史存量另行清理。
 - 若从旧引用运行旧工作流，须重新核查保留期；日常按master当前策略执行，不能假设旧标签文件已被改写。
 
