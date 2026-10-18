@@ -521,6 +521,210 @@ fn sanitized_cycle_without_freeze_keys_is_still_rejected_test() {
     std::fs::remove_dir_all(base).unwrap();
 }
 
+/// 恢复副本上的混存：认证冻结的老周期与同一连接新建的当前周期。
+/// 新周期必须能真实建立并可操作，且逐行豁免不得放宽新周期自身的执行链校验。
+#[test]
+fn restored_copy_builds_strict_current_cycle_beside_frozen_history_test() {
+    use crate::repositories::generation_run_repository::OpenGenerationRunRequest;
+    use crate::services::portable_project_guard;
+    use crate::services::portable_project_history;
+    use crate::services::portable_runtime_freeze;
+
+    let (f, frozen_cycle) = mixed_merged_fixture();
+    let (base, conn) = sanitize_chain(&f, "mixed-current");
+    let frozen_review_id: i64 = conn
+        .query_row(
+            "SELECT review_id FROM review_cycles WHERE cycle_id=?1",
+            [&frozen_cycle],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let document = portable_project_history::freeze_document(
+        &conn,
+        "123e4567-e89b-12d3-a456-426614174000",
+        "gen-review-current",
+    )
+    .unwrap();
+    let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+        &serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
+
+    // 在恢复副本连接上走真实读稿→审稿→提交链，复用同一 service 与 scope。
+    let draft =
+        crate::repositories::draft_repository::get_full(&conn, f.prepared.context.source.id)
+            .unwrap()
+            .unwrap();
+    let prepared = f
+        .service
+        .prepare(
+            &conn,
+            &PrepareReviewRevisionRequest {
+                operation: ReviewRevisionOperation::ReviewChapter,
+                draft_id: draft.meta.id,
+                expected_draft: ExpectedDraftRef {
+                    chapter_number: draft.meta.chapter_number,
+                    version: draft.meta.version,
+                    status: draft.meta.status.clone(),
+                    content_hash: text_hash(&draft.content),
+                },
+                review_source_id: None,
+                confirmed_review_content: None,
+                review_cycle_id: None,
+                expected_merged_hash: None,
+                author_inputs: vec![],
+                ui_locale: "zh-CN".into(),
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    let _registered = TestPreparedContexts(vec![prepared.context_id.clone()]);
+    let context = serde_json::to_value(&prepared.context).unwrap();
+    let request: OpenGenerationRunRequest = serde_json::from_value(json!({
+        "projectId":"test-project","epoch":"test-lease",
+        "fingerprint":{"chapterBriefHash":"a".repeat(64),"authorGuidanceHash":"b".repeat(64),
+          "dependencyHash":"c".repeat(64),"contextSnapshotHash":"d".repeat(64),
+          "templateHash":"e".repeat(64),"skillSnapshotHash":"f".repeat(64),
+          "modelLeaseRevision":"0".repeat(64),"policyHash":"1".repeat(64),
+          "outputContractHash":"2".repeat(64)},
+        "contextSnapshotId": crate::project_access::random_uuid_v4(),
+        "sourceManifest":{"operation":prepared.context.operation.as_str(),
+          "outputContract":"visible-text","reviewRevisionContext":context,
+          "reviewRevisionContextHash":ReviewRevisionGeneration::context_hash(&prepared.context),
+          "authorInputs":[{"id":"review-revision-context",
+            "text":serde_json::to_string(&prepared.context).unwrap()}],
+          "modelReceipt":{"modelId":"synthetic-model"}},
+        "sourceRefs":[],"operation":prepared.context.operation.as_str(),
+        "uiActionNonce": crate::project_access::random_uuid_v4(),
+        "frozenInputHash":"a".repeat(64),
+        "budget":{"maxPhysicalRequests":4,"maxTokenLiability":10000,
+          "maxOutputPerRequest":4096,"maxActiveElapsedMs":60000}
+    }))
+    .unwrap();
+    let run = f.service.runs.open(&conn, &request).unwrap();
+    let attempt = f
+        .service
+        .runs
+        .reserve(
+            &conn,
+            &run.run_id,
+            &crate::project_access::random_uuid_v4(),
+            &"b".repeat(64),
+            100,
+            100,
+            None,
+            Some(prepared.context.operation.as_str()),
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .attempt
+        .attempt_id;
+    f.service.runs.mark_dispatched(&conn, &attempt).unwrap();
+    let text = json!({"summary":"合成新审稿",
+        "items":[{"category":"剧情连贯性","severity":"pass","description":"未发现矛盾"}]})
+    .to_string();
+    let artifact = f.service.runs.snapshot(&conn, &attempt, 0, &text).unwrap();
+    f.service
+        .runs
+        .settle(&conn, &attempt, None, Some("stop".into()), None, None)
+        .unwrap();
+    let receipt = f
+        .service
+        .commit_review(
+            &conn,
+            &ReviewGenerationCommitRequest {
+                context_id: prepared.context_id.clone(),
+                handle: ReviewRevisionGeneration::handle_of(&run),
+                artifact: ReviewArtifactRef {
+                    artifact_id: artifact.artifact_id.clone(),
+                    revision: artifact.revision,
+                    text_hash: artifact.text_hash.clone(),
+                },
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    let current_review_id = receipt.id;
+    assert_ne!(current_review_id, frozen_review_id);
+
+    // 混存：新周期可操作并自证，冻结历史仍不发布可操作投影。
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
+    assert!(review_cycle::get_by_review_id(current_review_id, &conn)
+        .unwrap()
+        .is_some());
+    assert!(review_cycle::get_by_review_id(frozen_review_id, &conn)
+        .unwrap()
+        .is_none());
+
+    // 新周期自身仍严格：破坏其执行链收据后全局校验必须失败（豁免只覆盖冻结行）。
+    let current_root: String = conn
+        .query_row(
+            "SELECT root_action_id FROM review_cycles WHERE review_id=?1",
+            [current_review_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE generation_attempts SET usage_receipt_json='' WHERE root_action_id=?1",
+        [&current_root],
+    )
+    .unwrap();
+    assert!(!review_cycle::verify_m03_review_cycle(&conn));
+    // 对照：同一副本上**非冻结**的新草稿若依赖台账损坏，仍按原规则拒绝，
+    // 说明上面的容忍只覆盖认证冻结的中和历史。
+    conn.execute("INSERT INTO contents(body) VALUES ('合成第二章正文')", [])
+        .unwrap();
+    let second_content = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO drafts(chapter_number,version,source,content_id,word_count,source_dependencies)
+         VALUES (2,1,'write',?1,0,'not-json')",
+        [second_content],
+    )
+    .unwrap();
+    let second_draft = conn.last_insert_rowid();
+    let error = f
+        .service
+        .prepare(
+            &conn,
+            &PrepareReviewRevisionRequest {
+                operation: ReviewRevisionOperation::ReviewChapter,
+                draft_id: second_draft,
+                expected_draft: ExpectedDraftRef {
+                    chapter_number: 2,
+                    version: 1,
+                    status: "draft".into(),
+                    content_hash: text_hash("合成第二章正文"),
+                },
+                review_source_id: None,
+                confirmed_review_content: None,
+                review_cycle_id: None,
+                expected_merged_hash: None,
+                author_inputs: vec![],
+                ui_locale: "zh-CN".into(),
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("GENERATION_REVIEW_HISTORY_CHANGED"),
+        "实际：{error}"
+    );
+
+    // 冻结历史不受影响，仍拒写。
+    let error = conn
+        .execute(
+            "UPDATE review_cycles SET merged_hash='0' WHERE cycle_id=?1",
+            [&frozen_cycle],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("PORTABLE_RUNTIME_FROZEN"));
+    drop(conn);
+    std::fs::remove_dir_all(base).unwrap();
+}
 /// 把内存链库脱敏成便携副本并打开：`VACUUM INTO` + 正式 `sanitizePortableDatabase`。
 fn sanitize_chain(f: &Fixture, label: &str) -> (std::path::PathBuf, Connection) {
     use crate::services::portable_project_sanitize::{

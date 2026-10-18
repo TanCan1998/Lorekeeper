@@ -1018,8 +1018,23 @@ pub fn capture_review_revision_context(
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
-    let dependencies: Value = serde_json::from_str(&dependencies_json)
-        .map_err(|_| "GENERATION_REVIEW_HISTORY_CHANGED".to_string())?;
+    let dependencies: Value = match serde_json::from_str(&dependencies_json) {
+        Ok(value) => value,
+        // 便携脱敏副本按 R 策略中和本列：认证冻结的历史草稿不再携带依赖台账，
+        // 按「无已记录依赖」继续，不猜测前驱、不伪造材料；
+        // 非冻结行仍按损坏拒绝，当前坏数据不放行。
+        Err(_) => {
+            if crate::services::portable_project_guard::frozen_row(
+                conn,
+                "drafts",
+                &source.id.to_string(),
+            ) {
+                Value::Array(Vec::new())
+            } else {
+                return Err("GENERATION_REVIEW_HISTORY_CHANGED".to_string());
+            }
+        }
+    };
     let Some(dependencies) = dependencies.as_array() else {
         return Err("GENERATION_REVIEW_HISTORY_CHANGED".to_string());
     };
