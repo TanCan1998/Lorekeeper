@@ -31,6 +31,52 @@ pub(crate) fn frozen_row(conn: &Connection, table: &str, id: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// 便携副本按 R 策略中和的 JSON 列不能再交给 SQL 的 `json_extract`（空串抛
+/// malformed JSON，整条查询失败）。读面改为逐行判定：认证冻结行跳过，
+/// 非冻结行仍严格解析——坏 JSON 照原样报错，不静默忽略当前数据问题。
+///
+/// `pointer` 是 RFC 6901 风格的 JSON 指针（如 `/sourceManifest/agentSession/key`），
+/// 仅匹配字符串值；`expected` 为可接受的等值集合。返回按 `rowid` 顺序的主键列表。
+pub(crate) fn frozen_aware_json_pointer_rows(
+    conn: &Connection,
+    table: &str,
+    id_column: &str,
+    json_column: &str,
+    pointer: &str,
+    expected: &[&str],
+) -> Result<Vec<String>, String> {
+    let sql = format!(
+        "SELECT {},{} FROM {} ORDER BY rowid",
+        quote(id_column),
+        quote(json_column),
+        quote(table)
+    );
+    let mut statement = conn.prepare(&sql).map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut matched = Vec::new();
+    for (id, raw) in rows {
+        if frozen_row(conn, table, &id) {
+            continue;
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        if value
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|actual| expected.contains(&actual))
+        {
+            matched.push(id);
+        }
+    }
+    Ok(matched)
+}
+
 /// 由项目连接打开入口调用。普通项目不装触发器；恢复项目先验证目标身份及转移历史。
 pub fn admit_connection(conn: &Connection, project_root: &Path) -> Result<(), String> {
     let root = project_root.to_string_lossy();

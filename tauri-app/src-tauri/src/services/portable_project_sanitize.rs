@@ -732,6 +732,160 @@ mod tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 
+    /// 便携副本按 R 策略中和 JSON 列后，读面不能再走 SQL §json_extract§：
+    /// 空串会抛 malformed JSON，把恢复副本上的写作读面整条打死。
+    #[test]
+    fn sanitized_json_columns_are_read_row_wise_and_fail_closed_when_unfrozen_test() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_runtime_freeze,
+        };
+
+        let (base, source, target) = temp_paths("json-read");
+        seed(&source);
+        {
+            let conn = Connection::open(&source).unwrap();
+            conn.execute_batch(
+                "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+                 VALUES ('root-1','key-1','{}','{}');
+                 INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+                 VALUES ('run-1','root-1','{}','completed',0,'open-1');
+                 INSERT INTO generation_attempts VALUES
+                 ('attempt-1','reservation-1','run-1','root-1','{}','{}','nonce-1');",
+            )
+            .unwrap();
+        }
+        sanitize_portable_database(&SanitizePortableDatabaseInput {
+            source_database_path: &source,
+            target_database_path: &target,
+            limits: None,
+        })
+        .unwrap();
+        let conn = Connection::open(&target).unwrap();
+        // 修复前形态：SQL 直接 json_extract 中和列会失败，正是恢复副本读面被打死的原因。
+        assert!(conn
+            .query_row(
+                "SELECT json_extract(binding_json,'$.status') FROM generation_runs",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .is_err());
+
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "gen-json-read",
+        )
+        .unwrap();
+        // 对照：没有认证冻结键时，中和列仍按损坏拒绝（fail closed）。
+        let empty = serde_json::json!({
+            "version": 1,
+            "originProjectId": "123e4567-e89b-12d3-a456-426614174000",
+            "snapshotGeneration": "gen-json-empty",
+            "nonReplayable": true,
+            "requiresRuntimeFreezeGuard": true,
+            "records": [],
+            "avatarReferenceProjections": [],
+        });
+        let unguarded = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&empty).unwrap(),
+        )
+        .unwrap();
+        // 守卫按连接安装（TEMP 触发器），对照在独立连接上做。
+        let unguarded_conn = Connection::open(&target).unwrap();
+        portable_project_guard::install_guard_for_test(&unguarded_conn, unguarded).unwrap();
+        assert!(portable_project_guard::frozen_aware_json_pointer_rows(
+            &unguarded_conn,
+            "generation_attempts",
+            "attempt_id",
+            "attempt_json",
+            "/status",
+            &["reserved", "dispatch-marked"],
+        )
+        .is_err());
+        drop(unguarded_conn);
+
+        // 认证冻结后：历史行被跳过，读面不再报错，也不把历史当在途/当前归属。
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        assert!(guard.is_frozen_record("generation_attempts", "attempt-1"));
+        assert!(guard.is_frozen_record("generation_runs", "run-1"));
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        assert_eq!(
+            portable_project_guard::frozen_aware_json_pointer_rows(
+                &conn,
+                "generation_attempts",
+                "attempt_id",
+                "attempt_json",
+                "/status",
+                &["reserved", "dispatch-marked"],
+            )
+            .unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            portable_project_guard::frozen_aware_json_pointer_rows(
+                &conn,
+                "generation_runs",
+                "run_id",
+                "binding_json",
+                "/sourceManifest/agentSession/key",
+                &["session-1"],
+            )
+            .unwrap(),
+            Vec::<String>::new()
+        );
+
+        // 同一连接上的新身份仍可被读到，过滤只作用于认证冻结行。
+        // 新 attempt 必须挂在新根/新运行上：借冻结父账本续写由守卫拒绝。
+        conn.execute_batch(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+             VALUES ('root-2','key-2','{}','{}');
+             INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+             VALUES ('run-2','root-2','{}','running',0,'open-2');
+             INSERT INTO generation_attempts VALUES
+             ('attempt-2','reservation-2','run-2','root-2','{\"status\":\"reserved\"}','{}','nonce-2');",
+        )
+        .unwrap();
+        assert_eq!(
+            portable_project_guard::frozen_aware_json_pointer_rows(
+                &conn,
+                "generation_attempts",
+                "attempt_id",
+                "attempt_json",
+                "/status",
+                &["reserved", "dispatch-marked"],
+            )
+            .unwrap(),
+            vec!["attempt-2".to_string()]
+        );
+        // 非冻结行的坏 JSON 仍报错，不用跳过历史掩盖当前数据问题。
+        conn.execute(
+            "UPDATE generation_attempts SET attempt_json='' WHERE attempt_id='attempt-2'",
+            [],
+        )
+        .unwrap();
+        assert!(portable_project_guard::frozen_aware_json_pointer_rows(
+            &conn,
+            "generation_attempts",
+            "attempt_id",
+            "attempt_json",
+            "/status",
+            &["reserved", "dispatch-marked"],
+        )
+        .is_err());
+
+        drop(conn);
+        let source_conn = Connection::open(&source).unwrap();
+        assert_eq!(
+            read_column_value(&source_conn, "generation_runs", "binding_json", 1).unwrap(),
+            Some(Value::Text("{}".into()))
+        );
+        drop(source_conn);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn sanitized_recovery_candidate_keeps_visible_integrity_without_replaying_source_test() {
         use crate::repositories::{

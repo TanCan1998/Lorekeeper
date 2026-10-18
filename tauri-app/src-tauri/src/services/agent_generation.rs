@@ -756,16 +756,18 @@ impl<'a> AgentGeneration<'a> {
     /// `json_extract(binding_json,'$.sourceManifest.agentSession.key')=?`
     /// 全表扫 generation_runs，按 projectId 过滤、按 roundIndex 排序。
     fn session_runs(&self, key: &str) -> Result<Vec<DurableGenerationRun>, String> {
-        let rows: Vec<String> = self
-            .conn
-            .prepare(
-                "SELECT run_id FROM generation_runs WHERE json_extract(binding_json,'$.sourceManifest.agentSession.key')=? ORDER BY rowid",
-            )
-            .map_err(|error| error.to_string())?
-            .query_map([key], |row| row.get(0))
-            .map_err(|error| error.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|error| error.to_string())?;
+        // 便携副本按 R 策略中和 binding_json，SQL 的 json_extract 会抛 malformed
+        // JSON。共用读面逐行判定：认证冻结的历史 run 不参与会话登记，
+        // 非冻结行仍严格解析（坏绑定照原样报错）。
+        let rows: Vec<String> =
+            crate::services::portable_project_guard::frozen_aware_json_pointer_rows(
+                self.conn,
+                "generation_runs",
+                "run_id",
+                "binding_json",
+                "/sourceManifest/agentSession/key",
+                &[key],
+            )?;
         // 基线 `.map(row => this.runs.get(row.run_id))`——缺失 run 抛
         // `GENERATION_RUN_MISSING`（原样传播）；navigation 在排序键提取时
         // 同样传播（基线在比较器内抛错）。

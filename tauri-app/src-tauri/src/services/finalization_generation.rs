@@ -66,22 +66,28 @@ pub fn find_finalization_run(
     slot: &FinalizationGenerationSlot,
 ) -> Result<Option<DurableGenerationRun>, String> {
     let key = finalization_slot_key(slot)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT run_id, json_extract(json_extract(open_key,'$[0]'),'$[2]') AS ui_action_nonce              FROM generation_runs              WHERE json_extract(binding_json,'$.sourceManifest.finalizationGenerationSlotKey')=?              ORDER BY rowid",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let rows = stmt
-        .query_map([&key], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    // 便携副本按 R 策略中和 binding_json，SQL 的 json_extract 会抛 malformed JSON。
+    // 共用读面逐行判定：认证冻结的历史槽位不参与当前查找，非冻结行仍严格解析；
+    // open_key 属保留列，仍可安全走 SQL。
+    let run_ids = crate::services::portable_project_guard::frozen_aware_json_pointer_rows(
+        conn,
+        "generation_runs",
+        "run_id",
+        "binding_json",
+        "/sourceManifest/finalizationGenerationSlotKey",
+        &[key.as_str()],
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut previous: Option<DurableGenerationRun> = None;
-    for (run_id, ui_action_nonce) in rows {
+    for run_id in run_ids {
+        let ui_action_nonce: Option<String> = conn
+            .query_row(
+                "SELECT json_extract(json_extract(open_key,'$[0]'),'$[2]') FROM generation_runs WHERE run_id=?1",
+                [&run_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
         let run = repository.get(conn, &run_id).map_err(|e| e.to_string())?;
         let context = read_finalization_generation_context(&run)?;
         if run.binding.project_id != project_id || context.slot != *slot {

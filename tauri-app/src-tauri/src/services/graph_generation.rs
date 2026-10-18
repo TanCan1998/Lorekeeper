@@ -1229,18 +1229,18 @@ pub fn proven_graph_own_event_ids(
         return Ok(Vec::new());
     }
     let key = context.key();
-    let mut statement = conn
-        .prepare(
-            "SELECT run_id FROM generation_runs WHERE json_extract(binding_json, '$.sourceManifest.graphGenerationContext.key') = ?1",
-        )
-        .map_err(|_| GENERATION_GRAPH_CONTEXT_INVALID.to_string())?;
-    let rows = statement
-        .query_map([key], |row| row.get::<_, String>("run_id"))
-        .map_err(|_| GENERATION_GRAPH_CONTEXT_INVALID.to_string())?;
-    let mut run_ids = Vec::new();
-    for row in rows {
-        run_ids.push(row.map_err(|_| GENERATION_GRAPH_CONTEXT_INVALID.to_string())?);
-    }
+    // 便携副本按 R 策略中和 binding_json，SQL 的 json_extract 会抛 malformed JSON。
+    // 共用读面逐行判定：认证冻结的历史 run 不参与当前上下文归属，
+    // 非冻结行仍严格解析（坏绑定照原样报错）。
+    let run_ids = crate::services::portable_project_guard::frozen_aware_json_pointer_rows(
+        conn,
+        "generation_runs",
+        "run_id",
+        "binding_json",
+        "/sourceManifest/graphGenerationContext/key",
+        &[key],
+    )
+    .map_err(|_| GENERATION_GRAPH_CONTEXT_INVALID.to_string())?;
     if run_ids.len() > 1 {
         return Err(GENERATION_GRAPH_CONTEXT_AMBIGUOUS.to_string());
     }

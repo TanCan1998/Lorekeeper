@@ -1430,14 +1430,19 @@ fn attempt_status(usage: &str) -> Option<String> {
 /// `pending.size > 0`（执行面在途映射）——执行面尚未迁移，
 /// 恒空，此处以 SQL 判别等价。
 fn project_generation_in_flight(conn: &Connection) -> Result<bool, String> {
-    conn.query_row(
-        "SELECT 1 FROM generation_attempts WHERE json_extract(attempt_json,'$.status') IN ('reserved','dispatch-marked') LIMIT 1",
-        [],
-        |row| row.get::<_, i64>(0),
+    // 便携副本按 R 策略中和 attempt_json（空串），SQL 的 json_extract 会抛
+    // malformed JSON，恢复副本上的写作读面因此整条失败。按共用读面逐行判定：
+    // 认证冻结的历史不参与在途判定，非冻结行仍要求合法 JSON（坏数据照原样拒绝）。
+    let matched = crate::services::portable_project_guard::frozen_aware_json_pointer_rows(
+        conn,
+        "generation_attempts",
+        "attempt_id",
+        "attempt_json",
+        "/status",
+        &["reserved", "dispatch-marked"],
     )
-    .optional()
-    .map(|row| row.is_some())
-    .map_err(|error| mutating_error(map_generation_error(&error.to_string())))
+    .map_err(|error| mutating_error(map_generation_error(&error)))?;
+    Ok(!matched.is_empty())
 }
 
 /// 基线 `tokenLiability`（src/shared/generation-contract.ts:66-68，
