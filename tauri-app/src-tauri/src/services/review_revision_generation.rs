@@ -677,6 +677,43 @@ impl ReviewRevisionGeneration {
         }))
     }
 
+    /// 血缘查找只略过认证冻结历史，当前坏JSON不能静默变成无关效果。
+    fn review_effect_attempts(
+        &self,
+        conn: &Connection,
+        review_id: i64,
+    ) -> Result<Vec<AttemptRow>, String> {
+        let mut matching = Vec::new();
+        for row in self.attempts(conn, None)? {
+            if crate::services::portable_project_guard::frozen_row(
+                conn,
+                "generation_attempts",
+                &row.attempt_id,
+            ) || crate::services::portable_project_guard::frozen_row(
+                conn,
+                "generation_runs",
+                &row.run_id,
+            ) {
+                continue;
+            }
+            let usage: Value = serde_json::from_str(&row.usage_receipt_json)
+                .map_err(|_| mutating_error("GENERATION_REVIEW_LINEAGE_UNPROVEN"))?;
+            let effect = usage.get("reviewRevisionEffect");
+            if effect
+                .and_then(|value| value.get("kind"))
+                .and_then(Value::as_str)
+                == Some("review")
+                && effect
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_i64)
+                    == Some(review_id)
+            {
+                matching.push(row);
+            }
+        }
+        Ok(matching)
+    }
+
     /// 基线 `parent(context)`
     fn parent(
         &self,
@@ -730,18 +767,7 @@ impl ReviewRevisionGeneration {
             {
                 return Err(mutating_error("GENERATION_REVIEW_LINEAGE_UNPROVEN"));
             }
-            let matching = self
-                .attempts(conn, None)?
-                .into_iter()
-                .filter(|row| {
-                    serde_json::from_str::<Value>(&row.usage_receipt_json)
-                        .ok()
-                        .and_then(|usage| usage.get("reviewRevisionEffect").cloned())
-                        .and_then(|value| serde_json::from_value::<Effect>(value).ok())
-                        .map(|effect| effect.kind == "review" && effect.id == plan.review_id)
-                        .unwrap_or(false)
-                })
-                .collect::<Vec<_>>();
+            let matching = self.review_effect_attempts(conn, plan.review_id)?;
             if matching.len() != 1 {
                 return Err(mutating_error("GENERATION_REVIEW_LINEAGE_UNPROVEN"));
             }
@@ -770,21 +796,7 @@ impl ReviewRevisionGeneration {
         let Some(confirmation) = &context.confirmation else {
             return Ok(Lineage::default());
         };
-        let matching = self
-            .attempts(conn, None)?
-            .into_iter()
-            .filter(|row| {
-                serde_json::from_str::<Value>(&row.usage_receipt_json)
-                    .ok()
-                    .and_then(|usage| usage.get("reviewRevisionEffect").cloned())
-                    .and_then(|value| serde_json::from_value::<Effect>(value).ok())
-                    .map(|effect| {
-                        effect.kind == "review"
-                            && effect.id == confirmation.snapshot.source_review_id
-                    })
-                    .unwrap_or(false)
-            })
-            .collect::<Vec<_>>();
+        let matching = self.review_effect_attempts(conn, confirmation.snapshot.source_review_id)?;
         if matching.len() != 1 {
             return Err(mutating_error("GENERATION_REVIEW_LINEAGE_UNPROVEN"));
         }

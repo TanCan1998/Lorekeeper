@@ -381,6 +381,108 @@ fn rechecked_fixture(model_resolved: Option<bool>) -> (Fixture, String, MainGene
 }
 
 #[test]
+fn parent_lineage_rejects_unrelated_current_bad_receipts_for_confirmation_and_recheck() {
+    let (f, cycle) = merged_fixture();
+    let source =
+        crate::repositories::draft_repository::get_full(&f.conn, f.prepared.context.source.id)
+            .unwrap()
+            .unwrap();
+    let source = ExpectedDraftSource {
+        id: source.meta.id,
+        chapter_number: source.meta.chapter_number,
+        version: source.meta.version,
+        status: source.meta.status,
+        content: source.content,
+    };
+    let recheck = prepare(
+        &f,
+        &source,
+        ReviewRevisionOperation::ReviewChapter,
+        None,
+        Some(&cycle),
+    );
+    let revision_id: String = f
+        .conn
+        .query_row(
+            "SELECT run_id FROM generation_runs
+         WHERE json_extract(binding_json,'$.sourceManifest.operation')='refine-from-review'
+         ORDER BY rowid LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let revision = f.service.runs.get(&f.conn, &revision_id).unwrap();
+    let confirmation = f.service.context_of(&revision).unwrap();
+    assert!(confirmation.confirmation.is_some());
+    let contexts = [confirmation, recheck.context];
+    for context in &contexts {
+        assert!(f.service.parent(&f.conn, context).is_ok());
+    }
+    // 使用独立根的完整仓储账本，避免无关夹具先被预算或身份门禁拒绝。
+    let request: OpenGenerationRunRequest = serde_json::from_value(json!({
+        "projectId":f.run.binding.project_id,"epoch":f.run.binding.epoch,
+        "fingerprint":f.run.binding.fingerprint,"contextSnapshotId":"unrelated-snapshot",
+        "sourceManifest":{"operation":"brainstorm"},"sourceRefs":[],"operation":"brainstorm",
+        "uiActionNonce":"unrelated-lineage-probe","frozenInputHash":"c".repeat(64),
+        "budget":{"maxPhysicalRequests":4,"maxTokenLiability":10000,
+            "maxOutputPerRequest":4096,"maxActiveElapsedMs":60000}
+    }))
+    .unwrap();
+    let unrelated = f.service.runs.open(&f.conn, &request).unwrap();
+    let reserved = f
+        .service
+        .runs
+        .reserve(
+            &f.conn,
+            &unrelated.run_id,
+            "unrelated-attempt",
+            &"d".repeat(64),
+            100,
+            100,
+            None,
+            Some("brainstorm"),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    for raw in ["not-json", "", " "] {
+        f.conn
+            .execute(
+                "UPDATE generation_attempts SET usage_receipt_json=?1 WHERE attempt_id=?2",
+                rusqlite::params![raw, reserved.attempt.attempt_id],
+            )
+            .unwrap();
+        for context in &contexts {
+            let changes = f.conn.total_changes();
+            let expected = if context.recheck.is_some() {
+                // 复核计划既有完整性检查会先拒绝坏JSON，保留原错误优先级。
+                "Error: REVIEW_CYCLE_CONFLICT"
+            } else {
+                "Error: GENERATION_REVIEW_LINEAGE_UNPROVEN"
+            };
+            assert_eq!(
+                f.service.parent(&f.conn, context).err().as_deref(),
+                Some(expected)
+            );
+            assert_eq!(f.conn.total_changes(), changes);
+        }
+    }
+    f.conn
+        .execute(
+            "UPDATE generation_attempts SET usage_receipt_json=NULL WHERE attempt_id=?1",
+            [&reserved.attempt.attempt_id],
+        )
+        .unwrap();
+    for context in &contexts {
+        assert!(
+            f.service.parent(&f.conn, context).is_ok(),
+            "NULL无回执不得声明血缘效果"
+        );
+    }
+}
+
+#[test]
 fn real_sqlite_chain_commits_recheck_and_preserves_author_material() {
     rechecked_fixture(Some(false));
 }
