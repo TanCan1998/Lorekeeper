@@ -517,6 +517,144 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_import_character_proof_skips_frozen_payloads_but_checks_current_receipts_test() {
+        use crate::repositories::generation_run_repository::GenerationRunRepository;
+        use crate::services::{
+            character_proposal::prove_character_proposal, portable_project_guard,
+            portable_project_history, portable_runtime_freeze,
+        };
+        use serde_json::json;
+        use sha2::{Digest, Sha256};
+
+        fn hash(text: &str) -> String {
+            format!("{:x}", Sha256::digest(text.as_bytes()))
+        }
+        fn insert_receipt(conn: &Connection, id: &str, payload: &str) {
+            conn.execute(
+                "INSERT INTO import_runs (id,root_run_id,effect_namespace,source_fingerprint,
+                 manifest_fingerprint,locale,total_chapters,manifest_chapter_count)
+                 VALUES (?1,?1,?1,'h','h','zh-CN',1,1)",
+                [id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO import_run_receipts (run_id,effect_namespace,effect_key,
+                 stage,batch_id,kind,payload_json,payload_hash,state)
+                 VALUES (?1,?1,?1,'global','done','project-global-facts',?2,?3,'committed')",
+                rusqlite::params![id, payload, hash(payload)],
+            )
+            .unwrap();
+        }
+        let (base, source, target) = temp_paths("import-character-proof");
+        seed(&source);
+        {
+            let conn = Connection::open(&source).unwrap();
+            insert_receipt(&conn, "old-import", r#"{"operationId":"old-operation"}"#);
+        }
+        let original = std::fs::read(&source).unwrap();
+        sanitize_portable_database(&SanitizePortableDatabaseInput {
+            source_database_path: &source,
+            target_database_path: &target,
+            limits: None,
+        })
+        .unwrap();
+        let conn = Connection::open(&target).unwrap();
+        // 当前作者导入操作可独立于冻结执行历史存在，不伪造生成来源。
+        let entries = json!([{"name":"合成角色","relationships":[]}]);
+        let proposal_source = json!({"characterEntries":entries});
+        let payload_hash = hash(&proposal_source.to_string());
+        let receipt = json!({"operationId":"current-operation", "payloadHash":payload_hash,
+            "proposalSource":proposal_source});
+        conn.execute(
+            "INSERT INTO import_global_fact_operations (operation_id,payload_hash,receipt_json)
+            VALUES ('current-operation',?1,?2)",
+            rusqlite::params![payload_hash, receipt.to_string()],
+        )
+        .unwrap();
+        let proof = || {
+            prove_character_proposal(
+                &conn,
+                &GenerationRunRepository::default(),
+                "project-1",
+                &json!({"kind":"import","operationId":"current-operation"}),
+                false,
+                |_, _| panic!("无生成句柄的读面不得调用来源写入确认"),
+                1,
+            )
+        };
+        assert!(proof().is_err(), "无守卫的中和值仍是损坏数据");
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "import-character-proof",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        let changes = conn.total_changes();
+        let result = proof().unwrap();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0]["fields"]["name"], "合成角色");
+        assert!(result.provenance.is_none());
+        assert_eq!(conn.total_changes(), changes);
+
+        let current_payload =
+            json!({"operationId":"current-operation","characterEntries":entries}).to_string();
+        insert_receipt(&conn, "current-import", &current_payload);
+        assert!(
+            proof().unwrap().provenance.is_none(),
+            "缺生成句柄不能编造生成来源"
+        );
+        conn.execute(
+            "UPDATE import_run_receipts SET payload_hash='bad' WHERE run_id='current-import'",
+            [],
+        )
+        .unwrap();
+        assert!(proof().is_err(), "当前匹配收据哈希损坏仍拒绝");
+        conn.execute(
+            "UPDATE import_run_receipts SET payload_hash=?1 WHERE run_id='current-import'",
+            [hash(&current_payload)],
+        )
+        .unwrap();
+        assert!(proof().is_ok());
+        // 当前无关坏JSON同样不能静默略过；认证冻结只豁免旧身份。
+        insert_receipt(&conn, "broken-current", "");
+        assert!(proof().is_err());
+        conn.execute(
+            "UPDATE import_run_receipts SET payload_json='{}' WHERE run_id='broken-current'",
+            [],
+        )
+        .unwrap();
+        assert!(proof().is_ok());
+        // 匹配多个效果仍按既有合同降为无生成来源，不擅自挑选某条。
+        insert_receipt(&conn, "duplicate-current", &current_payload);
+        assert!(proof().unwrap().provenance.is_none());
+        assert_eq!(
+            conn.query_row(
+                "SELECT payload_json FROM import_run_receipts WHERE run_id='old-import'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            ""
+        );
+        assert!(conn
+            .execute(
+                "UPDATE import_run_receipts SET payload_json='{}' WHERE run_id='old-import'",
+                []
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        drop(conn);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn sanitized_graph_and_legacy_handles_reject_before_receipt_proof_test() {
         use crate::repositories::generation_run_repository::GenerationRunRepository;
         use crate::services::{

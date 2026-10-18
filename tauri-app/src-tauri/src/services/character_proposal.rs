@@ -1478,12 +1478,11 @@ pub fn prove_character_proposal(
                 let mut statement = conn
                     .prepare(
                         "SELECT run_id,batch_id,state,payload_json,payload_hash FROM import_run_receipts \
-                         WHERE stage='global' AND kind='project-global-facts' \
-                           AND json_extract(payload_json,'$.operationId')=?",
+                         WHERE stage='global' AND kind='project-global-facts' ORDER BY rowid",
                     )
                     .map_err(|error| error.to_string())?;
                 let rows = statement
-                    .query_map([operation_id], |row| {
+                    .query_map([], |row| {
                         Ok(json!({
                             "run_id": row.get::<_, String>(0)?,
                             "batch_id": row.get::<_, String>(1)?,
@@ -1493,8 +1492,33 @@ pub fn prove_character_proposal(
                         }))
                     })
                     .map_err(|error| error.to_string())?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| error.to_string())?
+                let rows = rows
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                let mut effects = Vec::new();
+                for effect in rows {
+                    let run_id = effect["run_id"].as_str().unwrap_or_default();
+                    let batch_id = effect["batch_id"].as_str().unwrap_or_default();
+                    // 中和payload只对认证冻结历史豁免，当前无关坏JSON也不能略过。
+                    if crate::services::portable_project_guard::frozen_row(
+                        conn,
+                        "import_runs",
+                        run_id,
+                    ) || crate::services::portable_project_guard::frozen_row(
+                        conn,
+                        "import_run_receipts",
+                        &format!("{run_id}:global:{batch_id}"),
+                    ) {
+                        continue;
+                    }
+                    let payload: Value =
+                        serde_json::from_str(effect["payload_json"].as_str().unwrap_or_default())
+                            .map_err(|error| error.to_string())?;
+                    if payload.get("operationId").and_then(Value::as_str) == Some(operation_id) {
+                        effects.push(effect);
+                    }
+                }
+                effects
             };
             if effects.len() != 1 {
                 return Ok(CharacterProposalProof {
