@@ -1,6 +1,14 @@
-# Tauri 首版证明与本机验收审计（第98次）
+# Tauri 首版证明与本机验收审计（第99次）
 
-当前全量验证代码：`e093d7d4533df2a24607224b7e8896835b531cbd` / 39096912662，1685/0，库265.84秒，all-targets42.05秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+当前全量验证代码：`7360f4f67f2c80e47839521199470367ecc6ca2c` / 39098085472，1687/0，库175.47秒，all-targets31.08秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+
+## 第99次：角色提案与旧名册读面
+
+- 已连续推送a9f28824、7360f4f6，前片云端39097717930被新提交取消，不计独立通过；最新39098085472成功1687/0、check31.08秒无告警。产物31554字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验；累计0。代码SHA提交规范39098085516、秘密扫描39098085462成功。
+- 角色提案import证明逐行跳过认证冻结run/receipt，不解析已中和payload；当前坏JSON、匹配哈希损坏仍拒绝，缺句柄/重复效果不编造生成来源。真实sanitizer合成SQLite回归覆盖源库不变、历史拒写，不冒充完整导入生成链。
+- 旧名册nonce扫描先排冻结根/run、严格解析当前动作与绑定；null上下文不匹配、有效重复仍冲突。回归先复现吞坏绑定误报nonce冲突后通过；未调整错误映射或执行准入。
+- 本机前片character_proposal12/0、portable90/0、generation_owner212/0；当前legacy_roster28/0、portable90/0、generation_owner213/0；格式/diff通过。无新GUI/前端变化。
+- 下一静态发现涉及定稿后处理read_finalization_effect吞坏回执/效果；尚未改动，需具体确认。持续推进不放宽原具体确认边界。
 
 ## 第98次：代理工作流登记冻结过滤
 
