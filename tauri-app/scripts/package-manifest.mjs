@@ -10,6 +10,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const args = process.argv.slice(2)
 const outIndex = args.indexOf('--out')
@@ -42,11 +43,16 @@ if (packages.length === 0) {
 packages.sort((a, b) => a.name.localeCompare(b.name))
 
 const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version
+const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+if (process.env.PACKAGE_SOURCE_SHA && process.env.PACKAGE_SOURCE_SHA !== commit) {
+  throw new Error('打包检出SHA与准备作业不一致')
+}
 const manifest = {
   schemaVersion: 1,
   productName: 'Lorekeeper',
   version,
-  commit: process.env.GITHUB_SHA || '',
+  commit,
+  workflowCommit: process.env.GITHUB_SHA || '',
   runId: process.env.GITHUB_RUN_ID || '',
   runAttempt: process.env.GITHUB_RUN_ATTEMPT || '',
   runnerOs: process.env.RUNNER_OS || '',
