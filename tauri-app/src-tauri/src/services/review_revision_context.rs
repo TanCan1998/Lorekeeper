@@ -1020,13 +1020,15 @@ pub fn capture_review_revision_context(
         .map_err(|error| error.to_string())?;
     let dependencies: Value = match serde_json::from_str(&dependencies_json) {
         Ok(value) => value,
-        // 便携脱敏副本按 R 策略中和本列（空串）：按「无已记录依赖」继续，
-        // 不猜测前驱、不伪造材料。判据是「空白值 + 该连接是认证恢复副本」——
-        // 作者内容行本身已不再冻结（见 portable_project_history::AUTHOR_CONTENT_TABLES），
-        // 所以不能再靠 frozen_row 判断；普通项目里的空值或坏值仍按损坏拒绝。
+        // 新归档把作者草稿依赖中和为合法空数组；旧档的空串仅在该行有认证
+        // 冻结键时兼容。不能仅凭连接是恢复副本就放行当前空值/坏值。
         Err(_)
             if dependencies_json.trim().is_empty()
-                && crate::services::portable_project_guard::is_restored_copy(conn) =>
+                && crate::services::portable_project_guard::frozen_row(
+                    conn,
+                    "drafts",
+                    &source.id.to_string(),
+                ) =>
         {
             Value::Array(Vec::new())
         }

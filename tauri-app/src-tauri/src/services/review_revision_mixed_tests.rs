@@ -985,31 +985,58 @@ fn restored_copy_completes_merge_and_recheck_with_author_content_writable_test()
     std::fs::remove_dir_all(base).unwrap();
 }
 
-/// 空依赖的放行条件必须同时满足「空白值 + 认证恢复副本」：
-/// 普通项目里的空值/坏值仍按损坏拒绝，恢复副本里的坏值同样拒绝。
+/// 作者依赖中和为合法空数组；当前行不能借恢复副本身份豁免空值或坏 JSON。
 #[test]
-fn blank_source_dependencies_are_only_tolerated_in_admitted_restored_copies_test() {
+fn sanitized_dependencies_are_empty_arrays_and_current_corruption_is_rejected_test() {
     use crate::services::{
         portable_project_guard, portable_project_history, portable_runtime_freeze,
     };
-
     let f = Fixture::with_report(
         ReviewRevisionOperation::ReviewChapter,
         Some(("调整合成目标", "甲\r\n乙")),
         None,
     );
     let draft_id = f.prepared.context.source.id;
+    let source_dependencies: String = f
+        .conn
+        .query_row(
+            "SELECT source_dependencies FROM drafts WHERE id=?1",
+            [draft_id],
+            |r| r.get(0),
+        )
+        .unwrap();
     let (base, conn) = sanitize_chain(&f, "blank-deps");
-
-    // (i) 未准入（无守卫）：空值仍按损坏拒绝
-    assert!(!portable_project_guard::is_restored_copy(&conn));
-    let error = capture_context_error(&f, &conn, draft_id);
-    assert!(
-        error.contains("GENERATION_REVIEW_HISTORY_CHANGED"),
-        "实际：{error}"
+    let neutral: String = conn
+        .query_row(
+            "SELECT source_dependencies FROM drafts WHERE id=?1",
+            [draft_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(neutral, "[]");
+    assert_eq!(
+        source_dependencies,
+        f.conn
+            .query_row(
+                "SELECT source_dependencies FROM drafts WHERE id=?1",
+                [draft_id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "脱敏不得改写源库"
     );
 
-    // (ii) 认证恢复副本 + 空值：放行（脱敏列，不伪造前驱）
+    // 普通项目里的空白和坏值仍拒绝。
+    for bad in ["", " ", "not-json"] {
+        f.conn
+            .execute(
+                "UPDATE drafts SET source_dependencies=?1 WHERE id=?2",
+                rusqlite::params![bad, draft_id],
+            )
+            .unwrap();
+        assert!(capture_context_error(&f, &f.conn, draft_id)
+            .contains("GENERATION_REVIEW_HISTORY_CHANGED"));
+    }
     let document = portable_project_history::freeze_document(
         &conn,
         "123e4567-e89b-12d3-a456-426614174000",
@@ -1021,7 +1048,6 @@ fn blank_source_dependencies_are_only_tolerated_in_admitted_restored_copies_test
     )
     .unwrap();
     portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
-    assert!(portable_project_guard::is_restored_copy(&conn));
     prepare_on(
         &conn,
         &f,
@@ -1031,18 +1057,90 @@ fn blank_source_dependencies_are_only_tolerated_in_admitted_restored_copies_test
         None,
     );
 
-    // (iii) 认证恢复副本 + 坏值：仍拒绝（不因为放行空值就放过坏数据）
+    // 认证恢复副本的可变草稿被改坏，同样必须拒绝，不允许按连接身份豁免。
+    for bad in ["", " ", "not-json"] {
+        conn.execute(
+            "UPDATE drafts SET source_dependencies=?1 WHERE id=?2",
+            rusqlite::params![bad, draft_id],
+        )
+        .unwrap();
+        assert!(capture_context_error(&f, &conn, draft_id)
+            .contains("GENERATION_REVIEW_HISTORY_CHANGED"));
+    }
     conn.execute(
-        "UPDATE drafts SET source_dependencies='not-json' WHERE id=?1",
+        "INSERT INTO drafts(chapter_number,version,status,content_id,word_count,source_dependencies)
+         SELECT chapter_number,version+1,status,content_id,word_count,'[]' FROM drafts WHERE id=?1",
+        [draft_id],
+    ).unwrap();
+    let fresh_id = conn.last_insert_rowid();
+    for bad in ["", " ", "not-json"] {
+        conn.execute(
+            "UPDATE drafts SET source_dependencies=?1 WHERE id=?2",
+            rusqlite::params![bad, fresh_id],
+        )
+        .unwrap();
+        assert!(capture_context_error(&f, &conn, fresh_id)
+            .contains("GENERATION_REVIEW_HISTORY_CHANGED"));
+    }
+
+    drop(conn);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// 旧档的空串兼容只依赖行级认证键；不把此单元守卫缝当成旧归档安装验收。
+#[test]
+fn legacy_blank_dependencies_require_an_authenticated_frozen_draft_key_test() {
+    use crate::services::{
+        portable_project_guard, portable_project_history, portable_runtime_freeze,
+    };
+    let f = Fixture::with_report(
+        ReviewRevisionOperation::ReviewChapter,
+        Some(("调整合成目标", "甲\r\n乙")),
+        None,
+    );
+    let draft_id = f.prepared.context.source.id;
+    let (base, conn) = sanitize_chain(&f, "legacy-blank-deps");
+    conn.execute(
+        "UPDATE drafts SET source_dependencies='' WHERE id=?1",
         [draft_id],
     )
     .unwrap();
-    let error = capture_context_error(&f, &conn, draft_id);
     assert!(
-        error.contains("GENERATION_REVIEW_HISTORY_CHANGED"),
-        "实际：{error}"
+        capture_context_error(&f, &conn, draft_id).contains("GENERATION_REVIEW_HISTORY_CHANGED")
     );
-
+    let mut document = portable_project_history::freeze_document(
+        &conn,
+        "123e4567-e89b-12d3-a456-426614174000",
+        "gen-legacy-deps",
+    )
+    .unwrap();
+    document["records"].as_array_mut().unwrap().push(json!({
+        "projectionId":format!("history:drafts:{draft_id}"), "table":"drafts",
+        "recordId":draft_id.to_string(), "terminalState":"draft",
+        "projection":{}, "projectionHash":text_hash("{}"),
+        "excludedFields":["source_dependencies"], "nonReplayable":true,
+        "originalReceiptVerified":false
+    }));
+    let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+        &serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+    prepare_on(
+        &conn,
+        &f,
+        &restored_draft_source(&conn, draft_id),
+        ReviewRevisionOperation::ReviewChapter,
+        None,
+        None,
+    );
+    let error = conn
+        .execute(
+            "UPDATE drafts SET word_count=word_count+1 WHERE id=?1",
+            [draft_id],
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("PORTABLE_RUNTIME_FROZEN"));
     drop(conn);
     std::fs::remove_dir_all(base).unwrap();
 }

@@ -315,7 +315,13 @@ pub fn sanitize_portable_database(
         let identity = row_identity_expression(&columns);
         for (column, _) in &updates {
             let quoted_column = quote_identifier(&column.name);
-            let neutral = neutral_value(column);
+            // 作者草稿恢复后仍可编辑；依赖中和为合法空集合，避免读面按整库身份
+            // 豁免空串而误放过恢复后新增/损坏的当前行。不保留旧依赖或其摘要。
+            let neutral = if table == "drafts" && column.name == "source_dependencies" {
+                Value::Text("[]".to_string())
+            } else {
+                neutral_value(column)
+            };
             let unique_text_column = matches!(neutral, Value::Text(_))
                 && unique_groups
                     .iter()
