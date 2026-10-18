@@ -54,13 +54,13 @@ jobs:
           ref: ${{ inputs.expected_sha || github.sha }}
           persist-credentials: false
 
+      # 版本只取自 tauri-app/package.json 的 packageManager：
+      # 根 package.json 属 Electron 基线（仍固定 11.11.0），若再写 version，
+      # action 会因“Multiple versions of pnpm specified”直接失败。
       - name: Set up pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
-          # 与 tauri-app/package.json 的 packageManager 一致。
-          # pnpm 12 会把该钉定版本写入 lock 的 packageManagerDependencies，
-          # --frozen-lockfile 会校验，故两处必须同步升级。
-          version: 12.14.0
+          package_json_file: tauri-app/package.json
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
