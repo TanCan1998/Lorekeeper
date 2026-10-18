@@ -1,10 +1,12 @@
 # 当前交接入口
 
-- 最新：[2026-10-18-tauri-migration-status.md](./2026-10-18-tauri-migration-status.md)，第 **102** 次。
-- 代码 **0f0880d2**，master，已推送；文档不改变Rust代码指纹。
-- 最新已核验全量：**0f0880d2 / 39105179211，1692/0，库223.16秒，all-targets36.80秒无告警**；前片b5850fbe/39102768655独立1690/0。产物expectedSha/testedSha、两退出0、lock哈希、state=passed与日志均核对，语义切片累计0。
-- **#30可登记关闭**：真实导出→原生保存对话框→原生文件夹选择→正式恢复新身份→副本真实编辑保存→项目/应用重开→旧lease拒绝、定稿不变、头像渲染全部通过；导出2231534字节SHA256匹配，源项目与lease未变，33/33历史run冻结。前台授权仅限本次验收，已失效。
-- **#31首版范围可声明**：290契约频道全部有处置（289功能迁移 + 1明确不支持 `project:import-legacy-copy`），未迁移0，事件7，版本三处1.1.0。
-- 本轮按rust-lib-ux审查198个Rust文件；仅A1/A2两项建议修改并已落地：UpdateService、McpManager改内部Arc内核+共享Clone，AppState与命令层去掉Arc包装，新增两条克隆句柄回归。B类技术债与C类契约例外已记录，未改IPC/schema/依赖/权限。
-- 不能推出真实模型/MCP/业务云/发布就绪；macOS/Linux未认证；未穷尽所有JSON消费者与交错。`update:download`/`quit-and-install`仍诚实返回NOT_READY。
-- 不派子代理、不删target、不改双栈保护目录与根配置。
+- 最新：[2026-10-18-tauri-migration-status.md](./2026-10-18-tauri-migration-status.md)，第 **103** 次。
+- 代码 **495f5632**，master，已推送；Rust 指纹仍为 0f0880d2（1692/0）。
+- **Tauri 三平台打包流水线可用**：`.github/workflows/tauri-release-package.yml` 手动 dispatch，Windows x64 / macOS ARM64 / macOS Intel 并行，只出 artifacts 不发布。run 39110738571 三平台全 success，墙钟 21 分 12 秒。
+- 产物：setup.exe 47.7MB、msi 51.6MB、aarch64.dmg 53MB、x64.dmg 53.3MB；四个 SHA256 与各自 manifest 逐项核对一致；均未签名、未发布、未做真机安装验证。
+- **字体瘦身**：Tauri 复用根 `public/fonts`，TTF 91.1MB→WOFF2 34.8MB，dist 96→39.2MB。界面旧品牌统一为设定司/Lorekeeper，`tauri-app/public` 上游残留已删，打包前有 `assert-package-contents` 拦截上游标识与 TTF。
+- **工具链**：pnpm 12.14.0（本机与 tauri-app，根树仍 11.11.0）、Node 24.22.0、checkout v7.0.1 / setup-node v7.1.0 / upload-artifact v7.0.2 / pnpm-action v6.1.0。
+- 本轮三次 CI 失败均已定位修复（tsc 跨目录解析、pnpm 版本冲突）；pnpm 升级后曾见 1 例测试失败，连续 5 次未复现。
+- #30 可登记关闭；#31 首版范围 290 频道全部有处置（289 迁移 + 1 明确不支持）、事件 7、版本 1.1.0。
+- 不能推出真实模型/MCP/业务云/发布就绪；macOS/Linux 未认证，签名与真机安装未验证。
+- 不派子代理、不删 target、不改双栈保护目录与根配置。

@@ -1,24 +1,56 @@
 # Tauri迁移交接快照（2026-10-18）
 
-> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。第 **102** 次交接；同日第101次见 f387a5b0，上一日为[第94次](./2026-10-17-tauri-migration-status.md)。
+> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。第 **103** 次交接；同日第101次见 f387a5b0，上一日为[第94次](./2026-10-17-tauri-migration-status.md)。
 
 ## 当前代码与已验证状态
 
-代码 **0f0880d27b29d5ef0546fa78a664afe0317833d6**，master，已推送。本文件不改变Rust代码指纹；本轮为一次Rust架构规范重构、一次原生归档整链验收与首版范围清点，没有真实模型/MCP/业务云调用或发布。
+代码 **495f5632e5a0f85c89d583419fcebdb71d64aec1**（打包流水线修定；Rust 指纹仍为 0f0880d2 / 1692 通过），master，已推送。本轮新增 Tauri 三平台打包流水线、字体 WOFF2 瘦身与工具链升级，没有真实模型/MCP/业务云调用，也没有发布（产物只作 artifacts）。
 
 | 验证 | 结果 | 版本/证据 |
 |---|---|---|
 | 最新云端全量 | **1692通过/0失败**，库223.16秒；all-targets36.80秒无告警 | 0f0880d2 / [39105179211](https://github.com/TanCan1998/Lorekeeper/actions/runs/39105179211)，2026-10-18 06:52 UTC完成 |
 | 前片云端全量 | 1690/0，库196.58秒；all-targets35.54秒无告警 | b5850fbe / [39102768655](https://github.com/TanCan1998/Lorekeeper/actions/runs/39102768655) |
 | 本机定向（本轮） | update30/0、mcp35/0、克隆句柄回归3/0；all-targets52.50秒 | 0f0880d2 提交前；定向rustfmt与diff检查通过 |
+| Tauri 打包（三平台） | 全部 success，墙钟21分12秒；4个安装包SHA256与manifest逐项一致 | 495f5632 / [39110738571](https://github.com/TanCan1998/Lorekeeper/actions/runs/39110738571) |
 | 原生归档整链 | 真实导出/原生保存选择/原生文件夹选择/正式恢复/副本编辑保存/项目与应用重开全部通过 | native-final-1792304552720/acceptance-evidence.json |
 | 前端 | 本轮未改，未重跑；沿用190文件2121通过/1跳过、typecheck/lint/build通过 | 第101次原生验收内记录 |
-| 代码规范/秘密扫描 | commit message与gitleaks均success | 0f0880d2：[39105179120](https://github.com/TanCan1998/Lorekeeper/actions/runs/39105179120)/[39105179174](https://github.com/TanCan1998/Lorekeeper/actions/runs/39105179174) |
+| 代码规范/秘密扫描 | 各片commit message与gitleaks均success | 0f0880d2、e21d95d7、fd232e5d、495f5632 对应 run 均成功 |
 | 双栈隔离 | electron、根src/docs、根配置与lock无差异 | 改动仅5个 tauri-app/src-tauri 文件 |
 
 云端产物已下载核对：expectedSha与testedSha同为0f0880d2、runAttempt=1、runnerOs=Windows、toolchain1.99.0、testExitCode与checkExitCode均0、cargoLockSha256=7b6c5b1c…、state=passed，两日志无 error/warning。测试数由1690升至1692，增量正是本轮两条克隆句柄回归。Rust语义切片累计 **0**。
 
-## 本轮：Rust UX 规范审查与 A1/A2 落地
+## 打包流水线与字体瘦身（第103次）
+
+新增 `.github/workflows/tauri-release-package.yml`：**只打包、不发布**。手动 `workflow_dispatch`，Windows x64 / macOS ARM64 / macOS Intel 三平台并行，产物仅作本 run artifacts（保留 14 天），不创建 Release、不打 tag、不写仓库。平台组合对齐上游 Electron 资格流的三个路径。
+
+**管道步骤**：checkout（可选 expected_sha）→ pnpm（版本取自 `tauri-app/package.json` 的 packageManager）→ Node 24.22.0 → Rust 1.99.0 → `pnpm install --frozen-lockfile` → `pnpm build` → `assert-package-contents` 体检 → `pnpm tauri build --bundles …` → `package-manifest` 记录 SHA256 → upload-artifact。
+
+**字体**：Tauri 侧不再单独存一份 92 MB TTF，改为引用仓库根 `public/fonts`（与 Electron 共用来源），分发格式改为 WOFF2。TTF 91.1 MB → WOFF2 34.8 MB（38%，字形轮廓、度量、字体名不变）；`dist` 由 96 MB 降至 39.2 MB；Windows NSIS 安装包 47.7 MB。转换用 fontTools + brotli，OFL 许可文本保留，`THIRD_PARTY_NOTICES` 更新为实际分发文件与 SHA256。dev 需 `server.fs.allow: ['..']` 才能读取项目根以外的字体。
+
+**打包内容边界**：界面旧品牌 `AI小说作家` / `AI Novel Writer` 统一为 `设定司` / `Lorekeeper`（取自 `shared/brand.ts`）；删除 `tauri-app/public` 下零引用的上游脚手架残留（`electron-vite*.svg`、`vite.svg`、`release-homepage-smoke.html`）；新增 `assert-package-contents.mjs` 在打包前拦截 `EthanYoQ`/`AI-Novel-Writer`/`electron-vite`/`contextBridge`/`ipcMain`/`better-sqlite3` 与 TTF 回归。`localStorage` 键 `ai-novel-writer-*` 属数据兼容，保留不动。
+
+**工具链**：本机与 `tauri-app` 的 pnpm 升到 **12.14.0**，Node **24.22.0**，checkout v7.0.1 / setup-node v7.1.0 / upload-artifact v7.0.2 / pnpm-action-setup v6.1.0。pnpm 12 会把钉定版本写入 lock 的 `packageManagerDependencies`（+158 行），`--frozen-lockfile` 会校验该块，故 `packageManager`、lock、CI 三处必须同版；同时关闭 `manage-package-manager-versions` 避免主版本静默接管。根 `package.json` 与根 lock 未动，Electron 树仍为 pnpm 11.11.0。
+
+**三次失败与修复**（均先在本地复现再改）：
+
+1. 首轮三平台都在 `tsc` 失败：`@baseline` 把 `electron/` 及其反向引用的根 `src/` 拉进编译，而 CI 只装 `tauri-app` 依赖树，`react` 等裸模块解析到不存在的根 `node_modules`。修法：`tsconfig` 增加 `paths` 兜底（先 `@types` 再包本体；TS 6 起 `paths` 相对 tsconfig 解析，`baseUrl` 已弃用）。已用「临时隐藏根 `node_modules` 后 typecheck 仍为 0」证明等价 CI 环境。
+2. 第二轮三平台都在 Set up pnpm 失败：`with.version` 与根 `packageManager` 同时被读到，报 “Multiple versions of pnpm specified”。修法：改用 `package_json_file: tauri-app/package.json`，不再写 `version`。
+3. 升级 pnpm 12 后首个测试 run 出现 1 例失败，随后连续 5 次均为 190 文件 2121 通过/1 跳过，未能复现，未定位到与 pnpm 12 的因果关系。
+
+**成功证据**：run [39110738571](https://github.com/TanCan1998/Lorekeeper/actions/runs/39110738571)，SHA `495f5632`，**三平台全部 success**，墙钟 **21 分 12 秒**（比预估的 40–55 分钟快，字体瘦身与热缓存生效）。
+
+| 平台 | 产物 | 字节 | SHA256 |
+|---|---|---|---|
+| Windows x64 | `Lorekeeper_1.1.0_x64-setup.exe` | 50,020,922 | `c7c73ded…9357fa` |
+| Windows x64 | `Lorekeeper_1.1.0_x64_en-US.msi` | 54,095,872 | `16ce009f…5a49047` |
+| macOS ARM64 | `Lorekeeper_1.1.0_aarch64.dmg` | 55,550,862 | `46c0ddb4…7bd9b90e` |
+| macOS Intel | `Lorekeeper_1.1.0_x64.dmg` | 55,873,703 | `4dd1dff0…f23376e0c` |
+
+四个安装包下载后本地 SHA256 与各自 `manifest.json` 逐项一致；manifest 记录 `version=1.1.0`、`commit=495f5632`、`signed=false`、`published=false`。
+
+**边界**：macOS 为 ad-hoc 签名（未配置开发者证书），Windows 未签名，均未做真机安装/首次启动验证；这不构成发布就绪、代码签名或 macOS/Linux 认证。
+
+## 上一轮：Rust UX 规范审查与 A1/A2 落地
 
 用户要求在 #31 首版范围最终检查前，先按 `rust-lib-ux`（Microsoft Libraries/UX 14 条）审查本项目Rust代码。审查只读完成后再执行获准的两项改动。
 
