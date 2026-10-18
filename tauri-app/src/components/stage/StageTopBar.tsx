@@ -7,11 +7,11 @@ import { useLocaleStore } from '../../stores/locale-store'
 import { navigate } from '../../stores/navigation/navigation-intents'
 import { useStageStore } from '../../stores/navigation/stage-store'
 import { useProjectStore } from '../../stores/project-store'
+import { AppIcon } from '../ui/AppIcon'
 import { Button } from '../ui/Button'
 import { Menu, type MenuGroupSpec } from '../ui/Menu'
 import RunCapsule from './RunCapsule'
 import { commandLabel } from './shortcut-keys'
-import { BRAND_MARK } from './stage-text'
 
 
 interface StageTopBarProps {
@@ -66,7 +66,7 @@ export default function StageTopBar({ crumbs, library, focus, focusTitle, workMe
 
   return (
     <header className="stage-topbar" data-tauri-drag-region>
-      <span className="stage-brand" data-tauri-drag-region aria-hidden="true">{BRAND_MARK}</span>
+      <span className="stage-brand" data-tauri-drag-region aria-hidden="true"><AppIcon size={22} /></span>
       {library || !projectName
         ? <span className="stage-work-title">{text(APP_BRAND.zhName, APP_BRAND.enName)}</span>
         : (

@@ -58,6 +58,13 @@
   white-space: nowrap;
 }
 
+/* 字标不参与拖放或命中测试，保留顶栏父容器的窗口拖动行为。 */
+.stage-app-icon {
+  display: block;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ================= 对话框 ================= */
 .stage-dialog-error {
   margin: 0;

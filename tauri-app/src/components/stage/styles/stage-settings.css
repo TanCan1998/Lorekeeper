@@ -433,9 +433,6 @@
   display: grid;
   place-items: center;
   border-radius: var(--radius-panel);
-  background: var(--ink);
-  color: var(--frame);
-  font: 600 var(--fs-24)/1 var(--font-display);
 }
 
 .stage-set-about-name {
