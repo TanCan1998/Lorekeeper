@@ -1344,6 +1344,106 @@ mod tests {
     }
 
     #[test]
+    fn finalization_effect_read_rejects_corrupt_receipts_without_rewriting_facts_test() {
+        use crate::repositories::generation_run_repository::GenerationRunRepository;
+        use crate::services::finalization_generation::{
+            assert_finalization_mutable, read_finalization_effect,
+            GENERATION_FINALIZATION_EFFECT_INVALID,
+        };
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+             VALUES ('root-1','key-1','{}','{}');
+             INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+             VALUES ('run-1','root-1','{}','running',0,'open-1');
+             INSERT INTO generation_attempts VALUES
+             ('attempt-1','reservation-1','run-1','root-1','{}','{}','nonce-1');"
+        ).unwrap();
+        let repository = GenerationRunRepository::default();
+        for step in [
+            FinalizationGenerationStep::ChapterNotes,
+            FinalizationGenerationStep::CharacterCards,
+        ] {
+            let mut context = test_generation_context(test_template());
+            context.slot.step_key = step;
+            context.slot.source.content_hash = text_hash(&context.identity.content);
+            context.identity.source = context.slot.source.clone();
+            let value = serde_json::to_value(&context).unwrap();
+            let run: DurableGenerationRun = serde_json::from_value(json!({
+                "runId":"run-1","rootActionId":"root-1","status":"running",
+                "binding":{
+                    "projectId":TEST_PROJECT_ID,"epoch":TEST_EPOCH,"contextSnapshotId":"snapshot-1",
+                    "fingerprint":{"chapterBriefHash":"","authorGuidanceHash":"","dependencyHash":"",
+                        "contextSnapshotHash":"","templateHash":"","skillSnapshotHash":"",
+                        "modelLeaseRevision":"","policyHash":"","outputContractHash":""},
+                    "sourceManifest":{
+                        "operation":if step == FinalizationGenerationStep::ChapterNotes {
+                            "finalized-chapter-notes"
+                        } else { "finalized-character-state" },
+                        "finalizationGenerationContext":value,
+                        "finalizationGenerationContextHash":text_hash(&value.to_string()),
+                        "finalizationGenerationSlotKey":finalization_slot_key(&context.slot).unwrap(),
+                        "finalizationGenerationOriginEpoch":TEST_EPOCH
+                    },"sourceRefs":[]
+                }
+            })).unwrap();
+            read_finalization_generation_context(&run).unwrap();
+            for raw in [
+                "",
+                " ",
+                "not-json",
+                "null",
+                r#"{"finalizationEffect":{}}"#,
+                r#"{"finalizationEffect":[]}"#,
+                r#"{"finalizationEffect":true}"#,
+                r#"{"finalizationEffect":"bad"}"#,
+            ] {
+                conn.execute(
+                    "UPDATE generation_attempts SET usage_receipt_json=?1",
+                    [raw],
+                )
+                .unwrap();
+                let changes = conn.total_changes();
+                assert_eq!(
+                    read_finalization_effect(&conn, &repository, TEST_PROJECT_ID, &run),
+                    Err(GENERATION_FINALIZATION_EFFECT_INVALID.to_string()),
+                    "{step:?}: {raw}"
+                );
+                assert_eq!(
+                    assert_finalization_mutable(&conn, &repository, TEST_PROJECT_ID, &run),
+                    Err(GENERATION_FINALIZATION_EFFECT_INVALID.to_string())
+                );
+                assert_eq!(
+                    conn.total_changes(),
+                    changes,
+                    "读面与可变性判定不得改写事实或账本"
+                );
+            }
+            // 沿用可空列的无回执合同；基线JSON假值不声明效果。
+            for raw in [
+                None,
+                Some("{}"),
+                Some(r#"{"finalizationEffect":null}"#),
+                Some(r#"{"finalizationEffect":false}"#),
+                Some(r#"{"finalizationEffect":0}"#),
+                Some(r#"{"finalizationEffect":""}"#),
+            ] {
+                conn.execute(
+                    "UPDATE generation_attempts SET usage_receipt_json=?1",
+                    [raw],
+                )
+                .unwrap();
+                assert_eq!(
+                    read_finalization_effect(&conn, &repository, TEST_PROJECT_ID, &run),
+                    Ok(None),
+                    "{step:?}: {raw:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn capture_and_read_round_trip_test() {
         let (conn, draft_id, content_hash) = setup_legacy_db();
         let slot = test_slot(draft_id, "fin-1", &content_hash);

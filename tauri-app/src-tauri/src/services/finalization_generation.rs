@@ -256,17 +256,29 @@ pub fn read_finalization_effect(
 
     let mut effects = Vec::new();
     for (attempt_id, usage_json) in rows {
-        if let Some(usage_str) = usage_json {
-            if let Ok(val) = serde_json::from_str::<Value>(&usage_str) {
-                if let Some(effect_val) = val.get("finalizationEffect") {
-                    if !effect_val.is_null() {
-                        if let Ok(saved) = serde_json::from_value::<SavedEffect>(effect_val.clone())
-                        {
-                            effects.push((attempt_id, saved));
-                        }
-                    }
-                }
-            }
+        let Some(usage_str) = usage_json else {
+            continue;
+        };
+        // 当前损坏回执不能被降格为「尚无效果」，否则可变性判定会被误放行。
+        let usage: Value = serde_json::from_str(&usage_str)
+            .map_err(|_| GENERATION_FINALIZATION_EFFECT_INVALID.to_string())?;
+        if usage.is_null() {
+            return Err(GENERATION_FINALIZATION_EFFECT_INVALID.to_string());
+        }
+        let Some(effect) = usage.get("finalizationEffect") else {
+            continue;
+        };
+        // 对齐基线filter的JSON假值；已声明的效果必须完成解码及后续证明。
+        let has_claim = match effect {
+            Value::Null | Value::Bool(false) => false,
+            Value::Number(number) => number.as_f64() != Some(0.0),
+            Value::String(text) => !text.is_empty(),
+            _ => true,
+        };
+        if has_claim {
+            let saved = serde_json::from_value::<SavedEffect>(effect.clone())
+                .map_err(|_| GENERATION_FINALIZATION_EFFECT_INVALID.to_string())?;
+            effects.push((attempt_id, saved));
         }
     }
 
