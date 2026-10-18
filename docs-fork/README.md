@@ -4,25 +4,21 @@
 > 上游 `docs/` 保持与 `upstream/master` 逐字节一致，不含任何 fork 内容；
 > 因此 fork 的规则、快照与调研**只在这里**。
 
-## 迁移总进度（收口时更新）
+## 迁移进度入口
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-```text
-功能迁移覆盖      🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨  289/290 ≈99.7%
-生产前端频道开放  🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨  285/290 ≈98.3%
-```
+第82次历史统计为功能迁移289/290、生产前端开放285/290（2026-10-17口径，不是本轮重新盘点值）。四审修频道已于8ecfc0fb开放；不再把第82次的关闭状态或覆盖数字当作当前结论。
 
-> 2026-10-17第82次：旧库不可用边界与Windows SSE夹具已提交推送；729cda50首次云端全量1614通过/0失败，all-targets无告警。本机真实Tauri完成新建/配置保存、本地归档导出/恢复新副本及重启重开。见[当前交接](handoffs/CURRENT.md)和[审计矩阵](plans/2026-10-17-tauri-proof-audit.md)。
-> **注意**：比例不是产品完成率，拒绝桩不计功能覆盖、290分母不变。注册291个命令/290契约频道，包含1项首版不支持边界；四审稿频道仍关闭。完整审修复核/冻结历史GUI与剩余证明审计未收口；真实模型/MCP/业务云验收未授权。后续真实窗口必须后台、不抢焦点。
-> 口径：当前已合并上游（@ `21d67211`，2026-10-10）为全集，**上游新提交不计入**；权威实测值见 [当前交接入口](handoffs/CURRENT.md) 指标表，频道明细见 [频道盘点](plans/tauri-migration-channel-inventory.md)。
+> 2026-10-18第96次：恢复副本完整审修SQLite集成链通过，旧handle精确拒绝冻结历史，当前空依赖/坏JSON仍拒绝。最新验证、剩余读面与后台GUI边界见[当前交接](handoffs/CURRENT.md)和[审计矩阵](plans/2026-10-17-tauri-proof-audit.md)。
+> 比例不是产品完成率。#30读面收口进行中，#31最终验收待办；真实模型/MCP/业务云/发布未授权。真实窗口必须后台、不抢焦点；历史指标不推算上游合并后的新契约数量，频道明细见[盘点](plans/tauri-migration-channel-inventory.md)。
 
 
 ## 接续工作从这里开始
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第82次快照（2026-10-17）](handoffs/2026-10-17-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第96次快照（2026-10-18）](handoffs/2026-10-18-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |

@@ -1,6 +1,17 @@
-# Tauri 首版证明与本机验收审计（第95次）
+# Tauri 首版证明与本机验收审计（第96次）
 
-当前全量验证代码：`72b91745a230f22627cc8237074ab1fd308a8f81`（Rust 代码指纹；master 现为 e6d03172，含上游合并与 CI 修复，`tauri-app/` 零变更）。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+当前全量验证代码：`561e91d092bfda67c3f1050fda13a499598cc70c` / 39094795752，1682/0，库255.35秒，all-targets36.92秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+
+## 第96次：恢复后完整审修与精确历史拒绝
+
+- 51f3e89f修审修可空usage_receipt_json读取；6b8108dc按用户明确选择，drafts/character_relationships只中和R列、不再冻结作者内容行，执行账本仍冻结。
+- 恢复副本经实际sanitizer/连接守卫，在SQLite合成集成回归完成审稿→作者确认→修稿→合并→定向复核，recheck_count=1且严格验证通过；历史不发布候选、拒写。不扩大为新版GUI验收。
+- d709125a先失败回归后在get/budget解码前检查认证冻结键；旧read_run/resume/read_recovery精确返回Error: PORTABLE_RUNTIME_FROZEN。未认证中和值仍按坏JSON拒绝，缺失身份仍保留missing错误，owner不扩大整个PORTABLE前缀透传。
+- 561e91d0修复6b8108dc的整库空依赖豁免：新档中和为[]，仅认证冻结旧草稿兼容空串；普通项目、恢复副本旧可变稿和新稿的空白/坏JSON均拒绝。源库不变；旧档守卫缝不等于完整安装兼容性验收。
+- 已独立核验：51f3e89f/39092294785（1680/0，check42.05秒）；6b8108dc/39092830893（1681/0，check38.63秒）；d709125a/39093896169（1681/0，check32.06秒）；561e91d0/39094795752（1682/0，库255.35秒，check36.92秒）。四组均完整SHA/lock匹配、两个退出0、state=passed，两日志无告警，不混用SHA。
+- 最新本机review_revision70/0、portable87/0，格式/diff通过；可空R列扫描13列，图stored_effects与旧角色saved的严格String读点仍须按证明阶段逐域核对，不统一吞NULL或坏JSON。
+- 旧快照累计4属于历史；按最近核验全量口径当前累计0（561e91d0全量已核验）。#30尚未最终收口，#31待办；无新GUI、真实模型或发布授权。
+
 
 ## 第95次：上游同步与分支结构决策（无Rust语义切片）
 

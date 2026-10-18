@@ -1,11 +1,10 @@
 # 当前交接入口
 
-- 最新：[2026-10-18-tauri-migration-status.md](./2026-10-18-tauri-migration-status.md)，第 **95** 次。
-- 当前代码 **e6d03172**（含上游合并 051c8c83），master，已推送。
-- **Rust 基线未变**：本轮把上游 787 个提交并入 master，但 `tauri-app/`、`docs-fork/` 零变更，Rust 全量证据仍绑定 72b91745 / [39088431086](https://github.com/TanCan1998/Lorekeeper/actions/runs/39088431086)（1679/0，all-targets 38.37 秒无告警），不重复跑。
-- 合并后 CI：提交规范 [39090445181](https://github.com/TanCan1998/Lorekeeper/actions/runs/39090445181)、Gitleaks 39090445076 均绿。
-- 六项计划：图真实确认、行内应用保护、跨会话恢复、完整审修闭环已验；复杂资产/审修原生归档核心链已验；#30 进行中，#31 待最终收口。
-- 本轮上游同步：落后 787 提交，试合并仅 1 个冲突（`.gitignore`）；`electron/`26、`src/`411 改动作后续平移的行为参照更新。连带修两处 CI（新增上游贡献者邮箱加入豁免名单；该改动首次缩进越界导致工作流失效，已修复）。
-- **分支结构决策**：不剥离 master（剥离会在每次上游合并产生 modify/delete 冲突、丢平移参照、违反双栈隔离）；改用 `.pi\tmp\sparse.ps1 on|off|status` 稀疏检出满足「只看产品树」。
-- 本机定向：合并前根再合并 TS 自检 typecheck 30.3 秒、lint 64.5 秒通过；Rust 本轮未改。
-- 下一步见快照：恢复副本新审修链的合并/复核段实跑、继续扫 R 列 JSON 读面、旧 handle 泛化错误规范化、按更新后的上游实现平移相关频道。
+- 最新：[2026-10-18-tauri-migration-status.md](./2026-10-18-tauri-migration-status.md)，第 **96** 次。
+- 代码 **561e91d0**，master，已推送；当前文档不改变Rust代码指纹。
+- 最新核验云端全量：**561e91d0 / 39094795752，1682/0，all-targets 36.92秒无告警**；完整SHA、独立退出码、lock及state=passed已核对，Rust语义切片累计0。
+- 恢复副本作者内容可继续编辑；审稿→作者确认→修稿→合并→复核已跑通合成SQLite集成链。执行历史仍冻结、无可继续候选；未新增GUI验收。
+- 旧handle读/恢复精确拒绝PORTABLE_RUNTIME_FROZEN；草稿依赖中和为[]，普通项目和恢复副本的当前空值/坏JSON仍拒绝。
+- 最新定向：review_revision 70/0、portable 87/0，格式/diff通过。可空R列扫描已记录，不代表全部JSON消费路径验收。
+- #25–29完成，#30读面收口进行中，#31最终验收待办；下一步见快照。
+- 保留完整master与双栈参照，按需使用本机稀疏检出开关；不派子代理、不删除target、不扩展真实业务/发布授权。
