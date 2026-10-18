@@ -1,6 +1,13 @@
-# Tauri 首版证明与本机验收审计（第97次）
+# Tauri 首版证明与本机验收审计（第98次）
 
-当前全量验证代码：`39c1c885605bae966a07b8a1e061f5fc3fe8c5fa` / 39095854001，1684/0，库269.87秒，all-targets35.45秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+当前全量验证代码：`e093d7d4533df2a24607224b7e8896835b531cbd` / 39096912662，1685/0，库265.84秒，all-targets42.05秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+
+## 第98次：代理工作流登记冻结过滤
+
+- e093d7d4已推送，云端39096912662成功1685/0、all-targets42.05秒无告警；产物31573字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验。语义切片累计0，同SHA提交规范39096912657、Gitleaks39096912651成功。
+- 真实脱敏SQLite回归先复现workflow_registration整库JSON1扫描malformed JSON；复用逐行冻结过滤，保持当前坏绑定严格拒绝，不更改登记身份/唯一性/子代来源准入。
+- 恢复连接上的历史不发布登记（MISSING），同库新父轮/子代仍可读登记并with_child_effect写当前transition；历史中和值不变、拒写、源文件不变。使用合成TestHost，不扩大为完整生产工作流/GUI证明。
+- 本机agent_generation57/0、portable89/0、generation_owner212/0，定向格式/diff通过；无前端变化，无新schema/权限/会话准入/CI配置。
 
 ## 第97次：图效果收据与冻结专用入口
 
