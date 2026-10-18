@@ -15,6 +15,26 @@ fn generate_with_finish(
     text: &str,
     finish_reason: &str,
 ) -> (DurableGenerationRun, VisibleArtifact) {
+    generate_with_finish_on(
+        &f.conn,
+        f,
+        prepared,
+        Some(&f.run.root_action_id),
+        text,
+        finish_reason,
+    )
+}
+
+/// 在指定连接上开运行并落一件可视产物：供恢复副本等「连接与 fixture 不同」的回归使用。
+/// budget_root 必须是该连接上可写的根（恢复副本里 fixture 的根是冻结历史）。
+fn generate_with_finish_on(
+    conn: &Connection,
+    f: &Fixture,
+    prepared: &PreparedReviewRevisionContext,
+    budget_root: Option<&str>,
+    text: &str,
+    finish_reason: &str,
+) -> (DurableGenerationRun, VisibleArtifact) {
     f.prepared_contexts
         .borrow_mut()
         .0
@@ -36,11 +56,20 @@ fn generate_with_finish(
         operation: prepared.context.operation.as_str().into(),
         ui_action_nonce: random_uuid_v4(),
         frozen_input_hash: "a".repeat(64),
-        budget: f.service.runs.budget(&f.conn, &f.run.root_action_id).unwrap().policy,
+        // `parent_root_action_id` 为空时基线用请求自带的预算；恢复副本里 fixture 的根\u662f冻结历史，读不了预算。
+        budget: match budget_root {
+            Some(root) => f.service.runs.budget(conn, root).unwrap().policy,
+            None => crate::repositories::generation_run_repository::RootBudget {
+                max_physical_requests: 4,
+                max_token_liability: 10_000,
+                max_output_per_request: 4096,
+                max_active_elapsed_ms: 60_000,
+            },
+        },
         parent_root_action_id: prepared.parent_root_action_id.clone(),
     };
-    let run = f.service.runs.open(&f.conn, &request).unwrap();
-    let artifact = append_artifact(f, &run, text, finish_reason);
+    let run = f.service.runs.open(conn, &request).unwrap();
+    let artifact = append_artifact_on(conn, f, &run, text, finish_reason);
     (run, artifact)
 }
 
@@ -50,11 +79,21 @@ fn append_artifact(
     text: &str,
     finish_reason: &str,
 ) -> VisibleArtifact {
+    append_artifact_on(&f.conn, f, run, text, finish_reason)
+}
+
+fn append_artifact_on(
+    conn: &Connection,
+    f: &Fixture,
+    run: &DurableGenerationRun,
+    text: &str,
+    finish_reason: &str,
+) -> VisibleArtifact {
     let attempt = f
         .service
         .runs
         .reserve(
-            &f.conn,
+            conn,
             &run.run_id,
             &random_uuid_v4(),
             &"b".repeat(64),
@@ -69,18 +108,11 @@ fn append_artifact(
         .unwrap()
         .attempt
         .attempt_id;
-    f.service.runs.mark_dispatched(&f.conn, &attempt).unwrap();
-    let artifact = f.service.runs.snapshot(&f.conn, &attempt, 0, text).unwrap();
+    f.service.runs.mark_dispatched(conn, &attempt).unwrap();
+    let artifact = f.service.runs.snapshot(conn, &attempt, 0, text).unwrap();
     f.service
         .runs
-        .settle(
-            &f.conn,
-            &attempt,
-            None,
-            Some(finish_reason.into()),
-            None,
-            None,
-        )
+        .settle(conn, &attempt, None, Some(finish_reason.into()), None, None)
         .unwrap();
     artifact
 }
@@ -92,9 +124,20 @@ fn prepare(
     confirmation: Option<(i64, String)>,
     recheck: Option<&str>,
 ) -> PreparedReviewRevisionContext {
+    prepare_on(&f.conn, f, source, operation, confirmation, recheck)
+}
+
+fn prepare_on(
+    conn: &Connection,
+    f: &Fixture,
+    source: &ExpectedDraftSource,
+    operation: ReviewRevisionOperation,
+    confirmation: Option<(i64, String)>,
+    recheck: Option<&str>,
+) -> PreparedReviewRevisionContext {
     f.service
         .prepare(
-            &f.conn,
+            conn,
             &PrepareReviewRevisionRequest {
                 operation,
                 draft_id: source.id,

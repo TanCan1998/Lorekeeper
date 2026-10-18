@@ -725,6 +725,129 @@ fn restored_copy_builds_strict_current_cycle_beside_frozen_history_test() {
     drop(conn);
     std::fs::remove_dir_all(base).unwrap();
 }
+/// 恢复副本上的边界实测：审稿链（读历史草稿 + 写新周期）可用，
+/// 但脱敏前的草稿行属冻结历史 ⇒ 恢复副本不能改写作者正文、不能合并修稿。
+/// 冻结范围是否应收窄到「执行权威表」，见交接断点（待决策，未擅自改）。
+#[test]
+fn restored_copy_review_cycle_works_but_frozen_drafts_stay_read_only_test() {
+    use crate::repositories::generation_run_repository::GenerationRunRepository;
+    use crate::services::{
+        portable_project_guard, portable_project_history, portable_runtime_freeze,
+    };
+
+    let report = json!({
+        "items":[{"category":"文风","severity":"warning","description":"合成文风建议","quote":"e\u{301}"}],
+        "goalReviews":[
+            {"id":"ch1:keyEvents:1","status":"unmet","description":"合成目标待调整","evidence":[{"quote":"甲\r\n乙"}]},
+            {"id":"ch1:mustShow:1","status":"unknown","description":"原稿未展示","evidence":[]}
+        ]
+    });
+    let f = Fixture::with_report(
+        ReviewRevisionOperation::ReviewChapter,
+        Some(("调整合成目标", "甲\r\n乙")),
+        Some(json!({
+            "worldSetting":"【第1章必现】合成信号灯亮起",
+            "items":report["items"].clone(),
+            "goalReviews":report["goalReviews"].clone()
+        })),
+    );
+    let frozen_run = f.run.run_id.clone();
+    let (base, conn) = sanitize_chain(&f, "mixed-boundary");
+    let document = portable_project_history::freeze_document(
+        &conn,
+        "123e4567-e89b-12d3-a456-426614174000",
+        "gen-review-boundary",
+    )
+    .unwrap();
+    let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+        &serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+
+    // 1) 审稿链可用：读脱敏后的历史草稿，建立新周期并发布其投影。
+    let review_text = json!({
+        "summary":"合成审稿",
+        "items":report["items"].clone(),
+        "goalReviews":report["goalReviews"].clone(),
+    })
+    .to_string();
+    let reviewed = review_on(&f, &conn, &review_text);
+    let cycle: String = conn
+        .query_row("SELECT cycle_id FROM review_cycles", [], |r| r.get(0))
+        .unwrap();
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
+    assert!(review_cycle::get_by_review_id(reviewed.id, &conn)
+        .unwrap()
+        .is_some());
+    assert_eq!(cycle.is_empty(), false);
+
+    // 2) 边界：作者内容行仍冻结（现状精确拒绝，不是泛化错误）
+    let error = conn
+        .execute("UPDATE drafts SET word_count = word_count + 1", [])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("PORTABLE_RUNTIME_FROZEN"), "实际：{error}");
+
+    // 3) 冻结执行历史不发布为候选、不可改写
+    assert!(GenerationRunRepository::default()
+        .list_candidates(&conn, Some(&frozen_run))
+        .unwrap()
+        .is_empty());
+    let error = conn
+        .execute("UPDATE generation_attempts SET usage_receipt_json='{}'", [])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("PORTABLE_RUNTIME_FROZEN"));
+
+    drop(conn);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// 在给定连接上跑完整「读稿→审稿→提交」，返回审稿回执。
+fn review_on(f: &Fixture, conn: &Connection, report_text: &str) -> ReviewRevisionCommitReceipt {
+    let draft = crate::repositories::draft_repository::get_full(conn, f.prepared.context.source.id)
+        .unwrap()
+        .unwrap();
+    let source = ExpectedDraftSource {
+        id: draft.meta.id,
+        chapter_number: draft.meta.chapter_number,
+        version: draft.meta.version,
+        status: draft.meta.status,
+        content: draft.content,
+    };
+    let prepared = prepare_on(
+        conn,
+        f,
+        &source,
+        ReviewRevisionOperation::ReviewChapter,
+        None,
+        None,
+    );
+    let (run, artifact) = generate_with_finish_on(
+        conn,
+        f,
+        &prepared,
+        prepared.parent_root_action_id.as_deref(),
+        report_text,
+        "stop",
+    );
+    f.service
+        .commit_review(
+            conn,
+            &ReviewGenerationCommitRequest {
+                context_id: prepared.context_id,
+                handle: ReviewRevisionGeneration::handle_of(&run),
+                artifact: ReviewArtifactRef {
+                    artifact_id: artifact.artifact_id,
+                    revision: artifact.revision,
+                    text_hash: artifact.text_hash,
+                },
+            },
+            |_| Ok(()),
+        )
+        .unwrap()
+}
 /// 把内存链库脱敏成便携副本并打开：`VACUUM INTO` + 正式 `sanitizePortableDatabase`。
 fn sanitize_chain(f: &Fixture, label: &str) -> (std::path::PathBuf, Connection) {
     use crate::services::portable_project_sanitize::{

@@ -326,7 +326,12 @@ impl ReviewRevisionGeneration {
                     Ok(AttemptRow {
                         attempt_id: row.get("attempt_id")?,
                         run_id: row.get("run_id")?,
-                        usage_receipt_json: row.get("usage_receipt_json")?,
+                        // `usage_receipt_json` 可空：基线里表示「尚无回执」，便携脱敏后表示
+                        // 「历史已被中和」。两者都按空回执处理（后续 from_str 自然判为无声明），
+                        // 不把 NULL 当成列类型错误——否则恢复副本上的审稿/修稿准备整条失败。
+                        usage_receipt_json: row
+                            .get::<_, Option<String>>("usage_receipt_json")?
+                            .unwrap_or_default(),
                     })
                 },
             )
