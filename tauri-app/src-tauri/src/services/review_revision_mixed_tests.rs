@@ -725,11 +725,10 @@ fn restored_copy_builds_strict_current_cycle_beside_frozen_history_test() {
     drop(conn);
     std::fs::remove_dir_all(base).unwrap();
 }
-/// 恢复副本上的边界实测：审稿链（读历史草稿 + 写新周期）可用，
-/// 但脱敏前的草稿行属冻结历史 ⇒ 恢复副本不能改写作者正文、不能合并修稿。
-/// 冻结范围是否应收窄到「执行权威表」，见交接断点（待决策，未擅自改）。
+/// 恢复副本上跑完整审修链：审稿 → 作者确认 → 修稿 → 合并 → 复核。
+/// 作者内容表（drafts）不再冻结，恢复归档后可继续创作；执行历史仍冻结只读。
 #[test]
-fn restored_copy_review_cycle_works_but_frozen_drafts_stay_read_only_test() {
+fn restored_copy_completes_merge_and_recheck_with_author_content_writable_test() {
     use crate::repositories::generation_run_repository::GenerationRunRepository;
     use crate::services::{
         portable_project_guard, portable_project_history, portable_runtime_freeze,
@@ -752,20 +751,40 @@ fn restored_copy_review_cycle_works_but_frozen_drafts_stay_read_only_test() {
         })),
     );
     let frozen_run = f.run.run_id.clone();
-    let (base, conn) = sanitize_chain(&f, "mixed-boundary");
+    let draft_id = f.prepared.context.source.id;
+    let (base, conn) = sanitize_chain(&f, "mixed-chain");
     let document = portable_project_history::freeze_document(
         &conn,
         "123e4567-e89b-12d3-a456-426614174000",
-        "gen-review-boundary",
+        "gen-review-chain",
     )
     .unwrap();
+    // 作者内容表不进冻结键集；执行历史表进。
+    assert!(!document["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["table"] == "drafts" || record["table"] == "character_relationships"));
+    assert!(document["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|record| record["table"] == "generation_runs"));
     let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
         &serde_json::to_vec(&document).unwrap(),
     )
     .unwrap();
     portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
 
-    // 1) 审稿链可用：读脱敏后的历史草稿，建立新周期并发布其投影。
+    // 作者正文可继续编辑（恢复归档后仍能写）
+    conn.execute(
+        "UPDATE drafts SET word_count = word_count + 1 WHERE id=?1",
+        [draft_id],
+    )
+    .expect("作者内容行不应冻结");
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
+
+    // 1) 审稿：恢复副本上建立新周期
     let review_text = json!({
         "summary":"合成审稿",
         "items":report["items"].clone(),
@@ -777,19 +796,169 @@ fn restored_copy_review_cycle_works_but_frozen_drafts_stay_read_only_test() {
         .query_row("SELECT cycle_id FROM review_cycles", [], |r| r.get(0))
         .unwrap();
     assert!(review_cycle::verify_m03_review_cycle(&conn));
-    assert!(review_cycle::get_by_review_id(reviewed.id, &conn)
+
+    // 2) 作者确认：文风豁免、目标应用
+    let saved_report: Value = serde_json::from_str(&reviewed.content).unwrap();
+    let items: Vec<Value> = saved_report["items"]
+        .as_array()
         .unwrap()
-        .is_some());
-    assert_eq!(cycle.is_empty(), false);
+        .iter()
+        .filter(|item| item["severity"] != "pass")
+        .map(|item| {
+            let finding: String = conn
+                .query_row(
+                    "SELECT finding_id FROM review_findings WHERE problem_text=?1",
+                    [item["description"].as_str().unwrap()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut chosen = item.clone();
+            chosen["origin"] = json!("ai");
+            chosen["decision"] = json!(if item["category"] == "文风" {
+                "waive"
+            } else {
+                "apply"
+            });
+            chosen["findingId"] = json!(finding);
+            chosen
+        })
+        .collect();
+    let value = json!({
+        "kind":"human-confirmed-review","schemaVersion":2,"cycleId":cycle,
+        "sourceReviewId":reviewed.id,"sourceDraft":reviewed.source,"goalReview":saved_report["goalReview"],
+        "summary":"作者确认合成目标并豁免文风建议","authorGuidance":"保留文风，只调整目标",
+        "items":items
+    });
+    let snapshot: crate::services::review_revision_context::HumanConfirmedReviewSnapshot =
+        serde_json::from_value(value).unwrap();
+    let confirmation = serde_json::to_string_pretty(&snapshot).unwrap();
+    let confirmed = review_repo::create(
+        &conn,
+        &ReviewCreateParams {
+            base_draft_id: reviewed.source.id,
+            review_index: None,
+            content: confirmation.clone(),
+            expected_source: Some(reviewed.source.clone()),
+        },
+    )
+    .unwrap();
 
-    // 2) 边界：作者内容行仍冻结（现状精确拒绝，不是泛化错误）
-    let error = conn
-        .execute("UPDATE drafts SET word_count = word_count + 1", [])
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("PORTABLE_RUNTIME_FROZEN"), "实际：{error}");
+    // 3) 修稿 + 合并
+    let prepared = prepare_on(
+        &conn,
+        &f,
+        &reviewed.source,
+        ReviewRevisionOperation::RefineFromReview,
+        Some((confirmed.id, confirmation)),
+        None,
+    );
+    let revised =
+        "🔑开场。甲与乙完成合成修订。合成信号灯亮起，两人继续核对合成材料。e\u{301}尾声。";
+    let (run, artifact) = generate_with_finish_on(
+        &conn,
+        &f,
+        &prepared,
+        prepared.parent_root_action_id.as_deref(),
+        revised,
+        "stop",
+    );
+    let composition = f
+        .service
+        .runs
+        .compose_visible(
+            &conn,
+            &run.run_id,
+            &[artifact.artifact_id],
+            None,
+            "visible-append-v1",
+        )
+        .unwrap();
+    let saved = f
+        .service
+        .commit_revision(
+            &conn,
+            &RevisionGenerationCommitRequest {
+                context_id: prepared.context_id,
+                handle: ReviewRevisionGeneration::handle_of(&run),
+                expected_composition_hash: composition.text_hash,
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    revision_repo::merge_into_draft(
+        &conn,
+        &revision_repo::MergeRevisionRequest {
+            revision_id: saved.id,
+            target_draft_id: reviewed.source.id,
+            expected_draft_content: reviewed.source.content,
+            merged_content: revised.into(),
+            word_count: count_draft_units(revised),
+        },
+    )
+    .unwrap();
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
 
-    // 3) 冻结执行历史不发布为候选、不可改写
+    // 4) 复核：定向复验同样落在恢复副本上
+    let plan = review_cycle::plan_recheck(&cycle, &conn).unwrap();
+    let context = plan.context.unwrap();
+    assert_eq!(context.findings.len(), 2, "作者豁免不能再次进入复核");
+    let row = crate::repositories::draft_repository::get_full(&conn, draft_id)
+        .unwrap()
+        .unwrap();
+    let source = ExpectedDraftSource {
+        id: row.meta.id,
+        chapter_number: row.meta.chapter_number,
+        version: row.meta.version,
+        status: row.meta.status,
+        content: row.content,
+    };
+    let prepared = prepare_on(
+        &conn,
+        &f,
+        &source,
+        ReviewRevisionOperation::ReviewChapter,
+        None,
+        Some(&cycle),
+    );
+    let recheck_items: Vec<Value> = context
+        .findings
+        .iter()
+        .map(|finding| {
+            json!({
+                "findingId":finding.finding_id,"targetId":finding.target_id,"resolved":false,
+                "evidenceQuote": if finding.must_show == Some(true) { "合成信号灯亮起" } else { "甲与乙完成合成修订" },
+                "reason":"合成复核仍需作者核实"
+            })
+        })
+        .collect();
+    let (run, artifact) = generate_with_finish_on(
+        &conn,
+        &f,
+        &prepared,
+        prepared.parent_root_action_id.as_deref(),
+        &json!({"summary":"合成混合复核","items":recheck_items}).to_string(),
+        "stop",
+    );
+    let receipt = f
+        .service
+        .commit_review(
+            &conn,
+            &ReviewGenerationCommitRequest {
+                context_id: prepared.context_id,
+                handle: ReviewRevisionGeneration::handle_of(&run),
+                artifact: ReviewArtifactRef {
+                    artifact_id: artifact.artifact_id,
+                    revision: artifact.revision,
+                    text_hash: artifact.text_hash,
+                },
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(receipt.review_cycle.unwrap().recheck_count, 1);
+    assert!(review_cycle::verify_m03_review_cycle(&conn));
+
+    // 5) 执行历史仍冻结：不发布候选、不可改写
     assert!(GenerationRunRepository::default()
         .list_candidates(&conn, Some(&frozen_run))
         .unwrap()
@@ -802,6 +971,104 @@ fn restored_copy_review_cycle_works_but_frozen_drafts_stay_read_only_test() {
 
     drop(conn);
     std::fs::remove_dir_all(base).unwrap();
+}
+
+/// 空依赖的放行条件必须同时满足「空白值 + 认证恢复副本」：
+/// 普通项目里的空值/坏值仍按损坏拒绝，恢复副本里的坏值同样拒绝。
+#[test]
+fn blank_source_dependencies_are_only_tolerated_in_admitted_restored_copies_test() {
+    use crate::services::{
+        portable_project_guard, portable_project_history, portable_runtime_freeze,
+    };
+
+    let f = Fixture::with_report(
+        ReviewRevisionOperation::ReviewChapter,
+        Some(("调整合成目标", "甲\r\n乙")),
+        None,
+    );
+    let draft_id = f.prepared.context.source.id;
+    let (base, conn) = sanitize_chain(&f, "blank-deps");
+
+    // (i) 未准入（无守卫）：空值仍按损坏拒绝
+    assert!(!portable_project_guard::is_restored_copy(&conn));
+    let error = capture_context_error(&f, &conn, draft_id);
+    assert!(
+        error.contains("GENERATION_REVIEW_HISTORY_CHANGED"),
+        "实际：{error}"
+    );
+
+    // (ii) 认证恢复副本 + 空值：放行（脱敏列，不伪造前驱）
+    let document = portable_project_history::freeze_document(
+        &conn,
+        "123e4567-e89b-12d3-a456-426614174000",
+        "gen-blank-deps",
+    )
+    .unwrap();
+    let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+        &serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+    assert!(portable_project_guard::is_restored_copy(&conn));
+    prepare_on(
+        &conn,
+        &f,
+        &restored_draft_source(&conn, draft_id),
+        ReviewRevisionOperation::ReviewChapter,
+        None,
+        None,
+    );
+
+    // (iii) 认证恢复副本 + 坏值：仍拒绝（不因为放行空值就放过坏数据）
+    conn.execute(
+        "UPDATE drafts SET source_dependencies='not-json' WHERE id=?1",
+        [draft_id],
+    )
+    .unwrap();
+    let error = capture_context_error(&f, &conn, draft_id);
+    assert!(
+        error.contains("GENERATION_REVIEW_HISTORY_CHANGED"),
+        "实际：{error}"
+    );
+
+    drop(conn);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// 恢复副本上取草稿的当前来源描述。
+fn restored_draft_source(conn: &Connection, draft_id: i64) -> ExpectedDraftSource {
+    let row = crate::repositories::draft_repository::get_full(conn, draft_id)
+        .unwrap()
+        .unwrap();
+    ExpectedDraftSource {
+        id: row.meta.id,
+        chapter_number: row.meta.chapter_number,
+        version: row.meta.version,
+        status: row.meta.status,
+        content: row.content,
+    }
+}
+
+/// 恢复副本上发起审稿准备并返回错误文本（用于断言拒绝口径）。
+fn capture_context_error(f: &Fixture, conn: &Connection, draft_id: i64) -> String {
+    let source = restored_draft_source(conn, draft_id);
+    let request = PrepareReviewRevisionRequest {
+        operation: ReviewRevisionOperation::ReviewChapter,
+        draft_id,
+        expected_draft: ExpectedDraftRef {
+            chapter_number: source.chapter_number,
+            version: source.version,
+            status: source.status.clone(),
+            content_hash: text_hash(&source.content),
+        },
+        review_source_id: None,
+        confirmed_review_content: None,
+        review_cycle_id: None,
+        expected_merged_hash: None,
+        author_inputs: vec![],
+        ui_locale: "zh-CN".into(),
+    };
+    f.service.prepare(conn, &request, || Ok(())).unwrap_err()
 }
 
 /// 在给定连接上跑完整「读稿→审稿→提交」，返回审稿回执。

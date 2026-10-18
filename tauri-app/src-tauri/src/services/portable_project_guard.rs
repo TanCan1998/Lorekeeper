@@ -77,6 +77,19 @@ pub(crate) fn frozen_aware_json_pointer_rows(
     Ok(matched)
 }
 
+/// 该连接是否已被准入为**便携恢复副本**（守卫函数已安装）。
+///
+/// 用于区分「R 列被中和成空串」与「当前项目里的坏数据」：只有恢复副本里的空串
+/// 才代表「该列已脱敏」，普通项目里的空串仍按损坏拒绝。
+pub(crate) fn is_restored_copy(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT _lorekeeper_history_frozen(?1, ?2)",
+        rusqlite::params!["", ""],
+        |row| row.get::<_, i64>(0),
+    )
+    .is_ok()
+}
+
 /// 由项目连接打开入口调用。普通项目不装触发器；恢复项目先验证目标身份及转移历史。
 pub fn admit_connection(conn: &Connection, project_root: &Path) -> Result<(), String> {
     let root = project_root.to_string_lossy();

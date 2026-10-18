@@ -15,6 +15,14 @@ use crate::services::portable_runtime_freeze::{
 
 pub const FREEZE_ENTRY: &str = "portable-runtime-freeze.json";
 
+/// 作者内容表：这些表整行**不进入**冻结键集，恢复副本里作者可继续编辑。
+///
+/// 它们含 R 列（`drafts.source_dependencies` / `character_relationships.provenance_json`），
+/// 列值照旧中和（隐私不变），但行级冻结会把「作者正文/角色关系」也变成只读，
+/// 恢复归档后无法继续创作——而冻结的用意是「历史执行收据不可重放」，不是「作者内容只读」。
+/// 上游基线同样只冻结执行类行（生成/导入/恢复候选/定稿出箱/章节删除等）。
+const AUTHOR_CONTENT_TABLES: [&str; 2] = ["drafts", "character_relationships"];
+
 fn invalid() -> String {
     "PORTABLE_UNSAFE_PROJECTION".into()
 }
@@ -52,6 +60,9 @@ pub fn freeze_document(
             }
         }
         if excluded.is_empty() && !historical {
+            continue;
+        }
+        if AUTHOR_CONTENT_TABLES.contains(&table.as_str()) {
             continue;
         }
         let mut keys: Vec<_> = columns.iter().filter(|(_, pk)| *pk > 0).collect();
