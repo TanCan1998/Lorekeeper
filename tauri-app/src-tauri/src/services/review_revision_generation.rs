@@ -327,11 +327,11 @@ impl ReviewRevisionGeneration {
                         attempt_id: row.get("attempt_id")?,
                         run_id: row.get("run_id")?,
                         // `usage_receipt_json` 可空：基线里表示「尚无回执」，便携脱敏后表示
-                        // 「历史已被中和」。两者都按空回执处理（后续 from_str 自然判为无声明），
-                        // 不把 NULL 当成列类型错误——否则恢复副本上的审稿/修稿准备整条失败。
+                        // 「历史已被中和」。内部保留为合法JSON null，表示无回执声明，
+                        // 不能折叠为空串，否则严格读面无法区分NULL与当前损坏的空白回执。
                         usage_receipt_json: row
                             .get::<_, Option<String>>("usage_receipt_json")?
-                            .unwrap_or_default(),
+                            .unwrap_or_else(|| "null".to_string()),
                     })
                 },
             )
@@ -491,16 +491,25 @@ impl ReviewRevisionGeneration {
         conn: &Connection,
         run: &DurableGenerationRun,
     ) -> Result<Option<SavedEffect>, String> {
-        let rows = self
-            .attempts(conn, Some(&run.run_id))?
-            .into_iter()
-            .filter(|row| {
-                serde_json::from_str::<Value>(&row.usage_receipt_json)
-                    .ok()
-                    .and_then(|usage| usage.get("reviewRevisionEffect").cloned())
-                    .is_some()
-            })
-            .collect::<Vec<_>>();
+        let mut rows = Vec::new();
+        for row in self.attempts(conn, Some(&run.run_id))? {
+            // 基线JSON.parse失败不能被降格成「尚无效果」，否则恢复视图会误判可继续。
+            let usage: Value = serde_json::from_str(&row.usage_receipt_json)
+                .map_err(|_| mutating_error("GENERATION_REVIEW_RECEIPT_INVALID"))?;
+            let Some(effect) = usage.get("reviewRevisionEffect") else {
+                continue;
+            };
+            // 对齐基线filter的JSON假值；对象/数组等声明仍交给完整效果证明校验。
+            let has_claim = match effect {
+                Value::Null | Value::Bool(false) => false,
+                Value::Number(number) => number.as_f64() != Some(0.0),
+                Value::String(text) => !text.is_empty(),
+                _ => true,
+            };
+            if has_claim {
+                rows.push(row);
+            }
+        }
         if rows.len() > 1 {
             return Err(mutating_error("GENERATION_REVIEW_RECEIPT_INVALID"));
         }

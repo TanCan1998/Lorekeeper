@@ -222,6 +222,88 @@ impl Fixture {
     }
 }
 #[test]
+fn saved_review_rejects_malformed_receipts_without_inventing_effects() {
+    let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
+    let original: String = f
+        .conn
+        .query_row(
+            "SELECT usage_receipt_json FROM generation_attempts",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for raw in [Some("not-json"), Some(""), Some(" "), Some("{")] {
+        f.conn
+            .execute(
+                "UPDATE generation_attempts SET usage_receipt_json=?1",
+                [raw],
+            )
+            .unwrap();
+        let changes = f.conn.total_changes();
+        assert_eq!(
+            f.service.saved(&f.conn, &f.run).err().as_deref(),
+            Some("Error: GENERATION_REVIEW_RECEIPT_INVALID"),
+            "{raw:?}"
+        );
+        assert_eq!(
+            f.service
+                .read_recovery(
+                    &f.conn,
+                    &ReviewRevisionGeneration::handle_of(&f.run),
+                    |_| panic!("坏回执不得进入来源回调"),
+                    |_| panic!("坏回执不得发布恢复候选"),
+                )
+                .err()
+                .as_deref(),
+            Some("Error: GENERATION_REVIEW_RECEIPT_INVALID"),
+        );
+        assert_eq!(f.conn.total_changes(), changes);
+    }
+    // SQL NULL尚无回执；JSON null及基线假值不产生效果声明，不伪造收据。
+    for raw in [
+        None,
+        Some("null"),
+        Some("{}"),
+        Some(r#"{"reviewRevisionEffect":null}"#),
+        Some(r#"{"reviewRevisionEffect":false}"#),
+        Some(r#"{"reviewRevisionEffect":0}"#),
+        Some(r#"{"reviewRevisionEffect":""}"#),
+    ] {
+        f.conn
+            .execute(
+                "UPDATE generation_attempts SET usage_receipt_json=?1",
+                [raw],
+            )
+            .unwrap();
+        assert!(
+            f.service.saved(&f.conn, &f.run).unwrap().is_none(),
+            "{raw:?}"
+        );
+    }
+    f.conn
+        .execute(
+            "UPDATE generation_attempts SET usage_receipt_json=?1",
+            [r#"{"reviewRevisionEffect":{}}"#],
+        )
+        .unwrap();
+    assert_eq!(
+        f.service.saved(&f.conn, &f.run).err().as_deref(),
+        Some("Error: GENERATION_REVIEW_RECEIPT_INVALID")
+    );
+    // 恢复真实账本收据后，仍能正常提交并重读完整报告效果。
+    f.conn
+        .execute(
+            "UPDATE generation_attempts SET usage_receipt_json=?1",
+            [original],
+        )
+        .unwrap();
+    let expected = f.review().unwrap();
+    let saved = f.service.saved(&f.conn, &f.run).unwrap().unwrap();
+    assert_eq!(saved.receipt.id, expected.id);
+    assert_eq!(saved.receipt.content_hash, expected.content_hash);
+}
+
+#[test]
 fn review_cycle_verification_requires_exactly_one_report_effect() {
     let f = Fixture::new(ReviewRevisionOperation::ReviewChapter);
     f.review().unwrap();
