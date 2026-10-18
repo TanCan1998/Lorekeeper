@@ -1,47 +1,48 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **109** 次：上游同步与定稿图标接入。不是迁移或新版发布完成报告。验证截至2026-10-19 00:13 +08:00。
+> [当前入口](./CURRENT.md) · 第 **110** 次：中文安全卸载与预览最新版发布准备。**不是进程归组修复或新版发布完成报告。**
 
 ## 已验证状态
 
-- 分支 `master`；上游合并提交 `460fcd77` 已推送，Commit message CI **39143162149**、Gitleaks **39143162141** 均成功。
-- 图标代码提交 **e31c42d11a506e828758db1c33f57d6f17d2ae40**；后续交接文档提交与最终推送/CI状态由本机 `.pi/tmp/pipeline-state.md` 记录。
-- 上游 `upstream/master` 为 **d21207c856b6d70b1f54215d39f8ae423bb17273**，19个新增提交已合入。用户随后要求同步最新中英文README，已再次 `fetch --no-tags` 确认远端无新增；`README_en.md` 与上游逐字节一致，`README.md` 仅额外保留顶部 fork 目的说明。
-- 本轮根 `package.json`、`pnpm-lock.yaml`、`vite.config.ts`、`.npmrc` 未改；`docs/` 与上游一致；Tauri依赖、数据库、权限、版本及安装配置未改。
+- 代码 **44259fa3fff24134fe548ed72bf35dfe1b8b705b** 已提交推送 `origin/master`。名称改为 LoreKeeper，应用版本为 1.0.0-beta.1；标识、数据根、既有MSI UpgradeCode保持不变。
+- 本轮未修改根 `package.json`、`pnpm-lock.yaml`、`vite.config.ts`、`.npmrc`、`electron/`、根 `src/` 或上游镜像 `docs/`；无新依赖、schema或渲染层IPC权限。
+- 上轮上游同步仍有效：合入 `d21207c8` 的19提交，合并 `460fcd77`；英文README与上游一致，中文仅保留顶部fork说明。图标代码 `e31c42d1` 已接入，详见[图标登记](../design/branding.md)。
 
-| 验证范围 | 本轮结果 | 版本与本机证据 |
+| 验证范围 | 本轮结果 | 版本与证据 |
 |---|---|---|
-| 根 typecheck / lint | 均exit 0 | 合并树460fcd77；`.pi/tmp/upstream-followup/` |
-| 上游相关契约 | 4文件38通过，涵盖README本地化、发布版本、打包契约、更新E2E脚本 | 同上 `contracts.log` |
-| 新增NSIS识别回归 | 1通过、73未选中 | 同上 `nsis.log`，仅模拟进程识别，不运行真实安装 |
-| 真实8.3路径辅助进程链 | 32项全部跳过，没有有效通过项 | 同上 `nsis-chain.log`；不算本轮验收 |
-| Tauri typecheck / lint / build | 均exit 0 | 图标代码e31c42d1；`.pi/tmp/branding-adoption/` |
-| 图标及品牌单元测试 | 4文件17通过 | 同上 `tests.log` |
-| 图标无头浏览器 | 3通过，实际SVG加载、22/52像素尺寸、实时亮暗切换、拖动命中保护 | 同上 `browser.log` |
-| 外壳无头浏览器 | 2文件17通过，stage-root与stage-shell-settings | 同上 `shell-browser.log`；日志含act警告与IPC异常输出，退出码0，不等于真实桌面验收 |
-| 原生打包 / GUI / 安装卸载 | 本轮未执行 | 不把前端构建与无头浏览器当成原生包认证 |
-| Rust全量 / all-targets | 本轮未运行，无Rust源码变化 | 最近全量仍a5418614/run39125354221：1680通过0失败及all-targets成功，非本轮结果；累计Rust语义切片0 |
-
-前端构建有大chunk提示，不改打包配置。所有测试均未启动前台应用/安装器，未调用真实模型、MCP或业务云。
+| Rust 清理守卫 | 9通过，覆盖默认保留、根/主目录/全局根、嵌套项目、Vela、junction、大小写、确认期间目录/清单替换 | 44259fa3；本机 `.pi/tmp/installer-validation/rust-cleanup.log` |
+| Rust 项目访问回归 | 9通过 | 同上 `project-access.log` |
+| Node 发布与安装合同 | 19+6通过；含真实NSIS编译器语法验证，仅编译不运行 | 同上 `contracts.log` |
+| Tauri 前端 | 品牌/图标/设置14通过；typecheck、lint、build成功，构建有大chunk提示 | 同上 `icon-test.log`、`typecheck.log`、`lint.log`、`build.log` |
+| 格式与双栈卫生 | 定向rustfmt、diff检查通过；保护目录无变更 | 同上 `format-check.log`、`diff.log` |
+| Rust 云端全量 / all-targets | **1689通过、0失败，all-targets成功** | [44259fa3 / 39148045359](https://github.com/TanCan1998/Lorekeeper/actions/runs/39148045359)，2026-10-19 01:15 +08:00；本机 `.pi/tmp/installer-validation/cloud-full.log`，累计Rust语义切片清零 |
+| 提交与秘密扫描CI | Commit message CI39148045247、Gitleaks39148045288均success | 同一代码44259fa3，不替代原生验收 |
+| 原生安装/卸载/删除/注册表 | **未执行** | 无前台GUI、真实文件删除或系统配置修改 |
+| 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
 ## 本次更新
 
-### 上游同步
+### 中文安装与安全清理
 
-用户明确授权这批上游改动及其一处CI配置变更：向Electron更新E2E脚本传入 `github.token`，同时纳入子进程环境凭据隔离。只读试合并发现README和更新测试两处冲突，正式合并时保留fork说明、1天制品保留策略及上游新增权限/令牌断言；未改其他工作流。上游新品牌“书童 Pagekin”只留在上游镜像文档/资源，不替换Tauri LoreKeeper身份。
+- NSIS固定当前用户、SimpChinese，安装/卸载图标采用定稿资源。MSI采用zh-CN，数字版本从1.0.0.0递增至1.0.1.0，固定UpgradeCode `ed3e3199-4ddc-501a-a745-179a185e8dfb`。
+- EXE卸载默认保留项目。勾选“清理所选项目”后启动独立 `--cleanup-project` 模式，原生选择一个有效LoreKeeper项目目录，并两次明确选择删除才执行清理。保留、取消、关闭与未知返回均不能授权删除。
+- 清理模式不启动WebView/业务服务、不读最近项目、不接收目录参数、不开放IPC。确认后重验目录身份和清单；拒绝系统/程序/主目录/全局数据根、链接、嵌套项目及Vela数据，不扫盘。
+- 接管模板原AppData勾选框，禁止模板随后按AppData路径递归删除。本应用安装位置/语言注册键与“保留项目”解耦；共享厂商键仅在空时移除。模板继续清理卸载项与AppUserModelId，不删除共享WebView2。
+- 静默、被动、升级与 `_?=` 安装器维护调用均不启动项目清理。MSI与macOS拖拽卸载默认保留，卸载前可运行手动清理入口；macOS应用包附中文说明。系统拖拽流程不是自定义中文卸载向导。
+- 以上是代码与本机守卫验证，不是实际安装/卸载或删除验收。
 
-### 定稿图标
+### 预览版Latest选项
 
-- 采用已确认的单颗彩色四芒星“司”字，默认亮色、保留暗色；正式源图在 `tauri-app/public/branding/`，原始摘要验证通过。
-- Tauri CLI从亮色源图生成七份桌面PNG/ICO/ICNS，沿用既有资源路径；启动页、顶栏、关于页复用SVG，应用内跟随亮暗主题切换。
-- 只提交选中资源，不上传旧候选、用户参考图、第三方官方图、字体包或临时移动端图标。生成与摘要说明见[图标登记](../design/branding.md)。
-- 当前productName仍 `Lorekeeper`、版本仍 `1.0.0-beta`，未擅自修改大小写或升级身份。已成功查询旧WiX UpgradeCode：`ed3e3199-4ddc-501a-a745-179a185e8dfb`；后续改名须固定此值。
+- 工作流新增独立 `make_latest`，默认false；禁止预发布+Latest组合。
+- beta名称允许普通Release，但说明须明确预览和非正式版、标题带预览标签。草稿始终不设Latest，公开时才应用选项，选择Latest后核对远端指针。
+- 四包精确核验采用LoreKeeper名称与zh-CN MSI，保留同一SHA云端全量、三平台、大小/摘要和不覆盖旧标签等门禁。
+- [beta.1说明](../releases/1.0.0-beta.1.md)已准备，仍未公开。详见[发布协议](../agents/tauri-release.md)。
 
 ## 尚未完成与下一步
 
-1. **子进程归组**：Windows WebView2与macOS WebKit正常归组尚无已验证修复。继续核查宿主创建机制和已登记上游问题；改图标不算归组修复。研究材料 `.pi/tmp/process-group-research/`。
-2. **中文安装卸载/安全清理**：方案已有用户确认，但未实现。默认保留项目，删除必须显式选目录并二次确认，只清本应用注册键；不碰Vela/系统/共享WebView2。不运行真实数据删除或抢焦点原生测试。
-3. **1.0.0-beta.1**：未改版本、未打新包、未发布。保留beta名，以普通GitHub Release（prerelease=false）+Latest发布，正文明确预览；发布脚本旧门禁仍待按已确认方案调整。不得覆盖旧标签/资产。
-4. 原生包图标、升级身份与中文安装生命周期仍须后续本机后台验证，macOS须对应平台验证；无法后台完成的对话框继续标待验收。
+1. **进程归组未修复**：本轮再次核查[Tauri #15567](https://github.com/tauri-apps/tauri/issues/15567)与[WebView2 #5628](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5628)，均open且无解决方案。AppUserModelID、名称和图标不能冒充归组修复。macOS WebKit源码会传宿主名/bundle-id，但活动监视器显示未真机验证。研究材料 `.pi/tmp/installer-research/`。
+2. **是否先公开仍待确认**：询问用户是否接受归组限制先发布beta.1，提问未收到选择而取消。因此本轮只提交保存，不触发打包/发布；不把此前普通Release+Latest方案授权扩大成接受未完成归组的交付。
+3. **原生验收待授权**：中文EXE/MSI、升级身份、默认保留、目录选择/二次确认、真实项目清理与注册表清理、macOS生命周期及图标均需原生验收。无法后台完成的原生对话框不得切前台。
+4. 44259fa3对应云端全量已成功；完整活动run与最终HEAD由 `.pi/tmp/pipeline-state.md` 单写维护。
 
-无在飞子代理、GUI、Vite或下载任务。禁止子代理、不抢焦点、其他先确认边界不变。上轮设计与具体授权历史仍见 `.pi/tmp/branding-install-state.md` 和[第108次](./2026-10-18-tauri-migration-status.md)。公开版本仍为[旧1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)，旧九资产不变。
+公开仍为[旧1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)，旧标签与九资产不覆盖。禁止子代理、不抢焦点；真实模型/MCP/业务云、签名公证与新包真机安装尚未认证。具体历史授权见本机 `.pi/tmp/branding-install-state.md`。

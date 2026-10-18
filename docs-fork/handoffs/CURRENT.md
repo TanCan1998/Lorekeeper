@@ -1,10 +1,10 @@
 # 当前交接入口
 
-- 最新：[第109次：上游同步与定稿图标接入](./2026-10-19-tauri-migration-status.md)。**不是迁移/发布完成报告**。
-- 上游已合入至 `d21207c8`（19个新增提交），合并提交 `460fcd77` 已推送且两项CI成功。再次fetch确认中英文README均为上游最新；中文版仅保留顶部fork说明，英文版与上游一致。
-- 单颗彩色四芒星“司”字图标已接入：默认亮色、保留暗色，启动页/顶栏/关于页及七份桌面资源。代码 `e31c42d1`；17项单测、20项无头浏览器通过，typecheck/lint/build成功。详见[图标登记](../design/branding.md)。原生包图标仍待打包验收。
-- 未完成：WebView2/WebKit子进程归组、中文安装卸载与安全项目清理、1.0.0-beta.1重新发布；不能用改名或图标冒充归组解决。
-- 卸载默认保留项目，删除需显式目录与二次确认；只清本应用注册键。新版保留beta名，普通Release（prerelease=false）+Latest，正文明确预览，旧版不覆盖。
-- 名称/版本/安装配置本轮未改。旧WiX UpgradeCode已取得，后续改productName大小写须保持升级身份。完整授权历史见本机 `.pi/tmp/branding-install-state.md`，活动状态见 `.pi/tmp/pipeline-state.md`。
-- 禁止子代理、不抢焦点；真实模型/MCP/业务云及新包真机安装仍未认证。Rust本轮未重跑，最近全量仍a5418614/run39125354221/1680项通过，不能记作新代码验收。
-- 公开仍[旧1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)，beta.1未发布。Actions证据保留1天，不重跑旧清理脚本。
+- 最新：[第110次：中文安全卸载与预览发布准备](./2026-10-19-tauri-migration-status.md)。**不是归组修复或新版发布完成报告**。
+- 代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1，中文NSIS/MSI、安全清理入口与显式Latest选项已实现；标识/数据根/MSI UpgradeCode保持不变。
+- 本机Rust清理9+访问9、Node发布19+安装6（含NSIS真实编译）、前端14均通过，typecheck/lint/build与定向格式/diff成功。没有运行安装卸载、真实删除或注册表修改。
+- 44259fa3的Rust云端运行39148045359已success：1689项通过、all-targets成功，Rust语义切片累计清零；提交消息与Gitleaks同SHA均成功。
+- **Windows WebView2归组未修复**：Tauri15567/WebView2Feedback5628仍open；macOS活动监视器归属待真机验证。不能以改名/图标冒充归组。
+- 是否接受归组限制先公开beta.1的提问未收到选择，故没有触发新版打包/发布，也没有新标签/Latest。公开仍[旧1.0.0-beta](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)。
+- 卸载默认保留，删除须显式目录+两次确认；只清本应用注册键，不碰共享WebView2、Vela或全局配置。原生权限/删除/恢复生命周期仍待验收。
+- 上游d21207c8与定稿单星图标e31c42d1已接入；禁止子代理、不抢焦点，其他未授权边界不变。活动状态见 `.pi/tmp/pipeline-state.md`。
