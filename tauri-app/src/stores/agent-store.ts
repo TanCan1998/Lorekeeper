@@ -6,6 +6,7 @@ import {
   type LLMMessage,
   type ToolConfirmationDecision,
 } from '../services/agent/agent-engine'
+import { APP_BRAND } from '../shared/brand'
 import { registerBuiltinTools } from '../services/agent/tools'
 import { skillRegistry, type LoadedSkill } from '../services/agent/skill-registry'
 import {
@@ -155,7 +156,7 @@ const generateHelpText = (locale: Locale): string => {
   const skillCount = skillRegistry.listAll().length
   const commands = getAllSlashCommands(locale)
   const lines: string[] = [
-    text('## AI小说作家 AI 助手 — 帮助', '## AI Novel Writer Assistant — Help'),
+    text(`## ${APP_BRAND.zhName} AI 助手 — 帮助`, `## ${APP_BRAND.enName} Assistant — Help`),
     '',
     text('### 可用命令', '### Available commands'),
     ...commands

@@ -30,6 +30,11 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5190,
     strictPort: true,
+    // 字体源文件在仓库根 public/fonts/（与 Electron 共用一份，避免重复 92 MB）。
+    // dev 时 Vite 默认只允许项目根，需显式放行上一级目录。
+    fs: {
+      allow: ['..'],
+    },
     watch: {
       ignored: ['**/docs/**'],
     },

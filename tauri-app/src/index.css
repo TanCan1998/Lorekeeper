@@ -13,12 +13,15 @@
  * 否则无层样式会覆盖 Tailwind 工具类，导致 px-3/py-1 等全部失效。
  * ======================================================================== */
 
-/* ===== 本地内置字体（无需网络，所有字体文件均放置于 public/fonts/） ===== */
+/* ===== 本地内置字体（无需网络，字体源文件在仓库根 public/fonts/） =====
+   与 Electron 基线共用同一份字体来源，避免两栈各存一份 92 MB TTF。
+   WOFF2（Brotli）比 TTF 小约 62%，WebView2/WKWebView 均原生支持；
+   Vite 会在 build 时把这些文件从项目根外复制为带哈希的 assets。 */
 
 /* Inter — 可变字体，支持 100-900 所有字重，现代 UI 首选 */
 @font-face {
   font-family: 'Inter';
-  src: url('/fonts/Inter-VariableFont_opsz,wght.ttf') format('truetype');
+  src: url('../../public/fonts/Inter-VariableFont_opsz,wght.woff2') format('woff2');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -27,18 +30,18 @@
 /* Inter 斜体 */
 @font-face {
   font-family: 'Inter';
-  src: url('/fonts/Inter-Italic-VariableFont_opsz,wght.ttf') format('truetype');
+  src: url('../../public/fonts/Inter-Italic-VariableFont_opsz,wght.woff2') format('woff2');
   font-weight: 100 900;
   font-style: italic;
   font-display: swap;
 }
 
-/* ===== 本地内置中文写作字体（无需网络，放置于 public/fonts/） ===== */
+/* ===== 本地内置中文写作字体（无需网络，源文件在仓库根 public/fonts/） ===== */
 
 /* 霞鹜文楷 Regular — 楷体，温润典雅，适合小说写作 */
 @font-face {
   font-family: 'LXGW WenKai';
-  src: url('/fonts/LXGWWenKai-Regular.ttf') format('truetype');
+  src: url('../../public/fonts/LXGWWenKai-Regular.woff2') format('woff2');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -47,7 +50,7 @@
 /* 霞鹜文楷 Medium — 较粗字重，阅读舒适感更强 */
 @font-face {
   font-family: 'LXGW WenKai';
-  src: url('/fonts/LXGWWenKai-Medium.ttf') format('truetype');
+  src: url('../../public/fonts/LXGWWenKai-Medium.woff2') format('woff2');
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -56,7 +59,7 @@
 /* 思源宋体 — 可变字体，支持 100-900 所有字重，印刷感强 */
 @font-face {
   font-family: 'Noto Serif SC';
-  src: url('/fonts/NotoSerifSC-VariableFont_wght.ttf') format('truetype');
+  src: url('../../public/fonts/NotoSerifSC-VariableFont_wght.woff2') format('woff2');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -65,7 +68,7 @@
 /* 思源黑体 — 可变字体，支持 100-900 所有字重，现代简洁 */
 @font-face {
   font-family: 'Noto Sans SC';
-  src: url('/fonts/NotoSansSC-VariableFont_wght.ttf') format('truetype');
+  src: url('../../public/fonts/NotoSansSC-VariableFont_wght.woff2') format('woff2');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
