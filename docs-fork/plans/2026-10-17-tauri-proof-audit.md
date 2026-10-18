@@ -1,6 +1,16 @@
-# Tauri 首版证明与本机验收审计（第101次）
+# Tauri 首版证明与本机验收审计（第102次）
 
-当前全量验证代码：`b5850fbed96495e0a1e36ada51c4de9ba449765f` / 39102768655，1690/0，库196.58秒，all-targets35.54秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+当前全量验证代码：`0f0880d27b29d5ef0546fa78a664afe0317833d6` / 39105179211，1692/0，库223.16秒，all-targets36.80秒无告警；完整expected/tested SHA、lock哈希、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+
+## 第102次：Rust UX 审查、共享Clone重构与原生归档整链
+
+- 按 rust-lib-ux 14条审查198个Rust源文件（1315 pub fn/609 struct/124 enum/6 trait）：pub fn参数无智能指针、无prelude、无返回impl Future、无对外自定义集合、Pin<Box<dyn Future>>仅在trait、DI为「deps结构+泛型默认具体类型」。
+- 仅A1/A2建议修改并落地：UpdateService与McpManager改内部Arc内核+共享Clone，AppState与命令层去掉Arc二次包装（M-SERVICES-CLONE/M-AVOID-WRAPPERS）。新增两条回归断言克隆体写入必须对原句柄可见，误写深拷贝即失败。IPC契约/schema/依赖/权限/定稿语义零改动。
+- B类技术债记录不改：GenerationRunService无共享Clone（3495行直接字段访问）、GenerationRunServiceDependencies的pub Arc<dyn>字段、AgentHost以Value传视图、两个6参构造。
+- C类契约例外明确不改：Result<_,String> 1585处与2340处map_err服从Tauri错误信封与Error:前缀；lib.rs全pub mod是应用crate避免dead_code；43处pub fn get_*为基线仓储1:1平移。
+- 0f0880d2/39105179211独立1692/0、库223.16秒、check36.80秒无告警；测试数增量恰为本轮两条克隆回归。本机update30/0、mcp35/0、cloned3/0、all-targets52.50秒。规范39105179120与秘密扫描39105179174成功。累计0。
+- 用户本次明确解除前台限制（仅限#30/#31），实测原生归档整链：真实导出→原生保存对话框→2231534字节SHA256匹配→原生文件夹选择→正式恢复新身份4aa04e1d→副本真实CodeMirror编辑保存(bodyLength2900)→项目关闭重开→应用退出重启→旧lease拒绝、定稿不变、头像实际渲染；源项目0a3b457b与lease未变；33/33历史run冻结、1可变稿、历史拒写无变化。据此#30可关闭。
+- #31首版范围以源码重算：契约invoke290、注册命令291→覆盖290、功能迁移289/290+1明确不支持(project:import-legacy-copy)、未迁移0、事件7、版本三处1.1.0。可声明每个频道都有处置；不能推出真实模型/MCP/业务云/发布就绪、macOS/Linux认证或穷尽所有消费者。前台授权已失效，恢复默认不抢焦点。
 
 ## 第101次：定稿后处理、血缘查找与新规则恢复GUI
 

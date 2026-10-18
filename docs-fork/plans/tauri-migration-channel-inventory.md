@@ -62,6 +62,8 @@ Rust命令已注册不等于生产前端可调用。第82次代码729cda50注册
 审稿消费测试的模拟权威后端不能作为生产开放依据；仍须审查真实准入、提交与恢复门禁。
 2026-10-17已决策首版不支持旧库转换；15ed11f4落实禁用入口和适配器/原生命令blocked结果，不读取旧库、不创建副本、不消耗授权。范围清单unsupported-channels.json用于生成器排除该项；保持原290分母，见[首版决策](./2026-10-17-tauri-completion-decisions.md)。
 
+**第102次以源码重算（0f0880d2）**：`pnpm run check:channels` 输出契约invoke **290**、事件 **7**、已注册命令 **291**→注册契约频道 **290**、功能迁移 **289/290**、首版明确不支持 **1**（`project:import-legacy-copy`）、**未迁移0**、命令名与契约一一对应、生成物未过期。即每个invoke频道都有明确处置，无悬空项；事件频道为 `update:state`、`window:close-requested`、`llm:stream-chunk/done/error`、`generation:snapshot`、`generation:reasoning`。旧文中「四审修频道仍在DEFERRED关闭」「前端285/290」是第91次之前的历史口径，不反向覆盖当前源码。
+
 ## 批量生成实际接线缺口（第87次）
 
 **第88次已在具体授权范围内修复草稿待审路径**。第87次SHA43a00848真实后台实测启动立即GENERATION_REQUEST_FAILED，原因是begin_internal遗留通用分支无条件拒绝batchIntent/batchId；该失败记录保留，不以频道注册数冒充业务完成。
