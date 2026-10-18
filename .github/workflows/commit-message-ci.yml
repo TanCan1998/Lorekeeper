@@ -108,7 +108,9 @@ jobs:
 
           # Upstream history is deliberately exempt (see the header comment); this list is applied to
           # every event, and the workflow_dispatch input is appended on top of it.
-          UPSTREAM_IGNORE_AUTHORS="257484394+EthanYoQ@users.noreply.github.com"
+          # 逐次维护：每次合并 upstream/master 后，若上游新增了贡献者邮箱导致 push 变红，
+# 就把它追加到下面一行（逗号分隔）。本轮 2026-10-18 同步时上游范围内只出现两个邮箱。
+UPSTREAM_IGNORE_AUTHORS="257484394+EthanYoQ@users.noreply.github.com,cheng274771204@gmail.com"
 
           node_args=(scripts/check-commit-msg.mjs --range "${range}")
           combined_authors="${UPSTREAM_IGNORE_AUTHORS},${DISPATCH_IGNORE_AUTHORS}"
