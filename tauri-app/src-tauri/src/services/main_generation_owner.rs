@@ -4426,13 +4426,11 @@ impl MainGenerationOwner {
             return Err(mutating_error("GENERATION_LEGACY_REQUEST_INVALID"));
         }
         // 基线 :971-972 幂等查询（projectId + uiActionNonce + legacyRosterContext）。
-        // ⚠️ JSON1 扩展（`json_extract`）在 rusqlite bundled 下可用性未验证，
-        // 改用 Rust 端解析 action_json / binding_json 过滤（语义逐字对齐，
-        // legacy roster 运行数量少，全量扫描无性能顾虑）。
-        let candidates: Vec<(String, String, String)> = conn
+        // 逐行先排除认证冻结历史，再严格解析当前JSON；不把坏数据吞成无匹配。
+        let candidates: Vec<(String, String, String, String)> = conn
             .prepare(
-                "SELECT r.run_id, g.action_json, r.binding_json FROM generation_runs r \
-                 JOIN generation_roots g ON g.root_action_id = r.root_action_id",
+                "SELECT r.run_id, g.action_json, r.binding_json, r.root_action_id FROM generation_runs r \
+                 JOIN generation_roots g ON g.root_action_id = r.root_action_id ORDER BY r.rowid",
             )
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?
             .query_map([], |row| {
@@ -4440,22 +4438,34 @@ impl MainGenerationOwner {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?
-            .collect::<Result<Vec<(String, String, String)>, _>>()
+            .collect::<Result<Vec<(String, String, String, String)>, _>>()
             .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
         let mut matched: Vec<String> = Vec::new();
-        for (run_id, action_json, binding_json) in candidates {
-            let action = serde_json::from_str::<Value>(&action_json).unwrap_or(Value::Null);
-            let binding = serde_json::from_str::<Value>(&binding_json).unwrap_or(Value::Null);
+        for (run_id, action_json, binding_json, root_action_id) in candidates {
+            if crate::services::portable_project_guard::frozen_row(conn, "generation_runs", &run_id)
+                || crate::services::portable_project_guard::frozen_row(
+                    conn,
+                    "generation_roots",
+                    &root_action_id,
+                )
+            {
+                continue;
+            }
+            let action: Value = serde_json::from_str(&action_json)
+                .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
+            let binding: Value = serde_json::from_str(&binding_json)
+                .map_err(|error| mutating_error(map_generation_error(&error.to_string())))?;
             if action.get("projectId").and_then(Value::as_str)
                 == Some(self.session.project_id.as_str())
                 && action.get("uiActionNonce").and_then(Value::as_str) == Some(ui_action_nonce)
                 && binding
                     .get("sourceManifest")
                     .and_then(|manifest| manifest.get("legacyRosterContext"))
-                    .is_some()
+                    .is_some_and(|context| !context.is_null())
             {
                 matched.push(run_id);
             }
@@ -17126,6 +17136,149 @@ data: [DONE]
             !error.contains("GENERATION_LEGACY_ROSTER_EXECUTE_UNMIGRATED"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn legacy_roster_nonce_scan_rejects_current_corruption_without_blocking_frozen_history_test() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_project_sanitize,
+            portable_runtime_freeze,
+        };
+        let (_temp, source_conn, owner, _) = source_owner_fixture();
+        source_conn.execute_batch(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+             VALUES ('old-root','old-key','{}','{}');
+             INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+             VALUES ('old-run','old-root','{}','completed',0,'old-open');"
+        ).unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "lorekeeper-legacy-nonce-{}",
+            crate::project_access::random_uuid_v4()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let source = base.join("source.db");
+        let target = base.join("portable.db");
+        source_conn
+            .execute("VACUUM INTO ?1", [source.to_str().unwrap()])
+            .unwrap();
+        let original = std::fs::read(&source).unwrap();
+        portable_project_sanitize::sanitize_portable_database(
+            &portable_project_sanitize::SanitizePortableDatabaseInput {
+                source_database_path: &source,
+                target_database_path: &target,
+                limits: None,
+            },
+        )
+        .unwrap();
+        let conn = Connection::open(&target).unwrap();
+        let request = json!({"modelId":"missing-model","uiActionNonce":"legacy:probe"});
+        let baseline = owner
+            .begin_legacy_roster_generation(&source_conn, &request)
+            .unwrap_err();
+        assert_ne!(baseline, mutating_error("GENERATION_NONCE_CONFLICT"));
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "legacy-nonce",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        // 跳过旧冻结中和值后仍走到原模型门禁，不误报nonce冲突或放开执行。
+        assert_eq!(
+            owner
+                .begin_legacy_roster_generation(&conn, &request)
+                .unwrap_err(),
+            baseline
+        );
+        conn.execute_batch(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+             VALUES ('current-root','current-key','{}','{}');
+             INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+             VALUES ('current-run','current-root','{}','running',0,'current-open');"
+        ).unwrap();
+        conn.execute(
+            "UPDATE generation_roots SET action_json=?1 WHERE root_action_id='current-root'",
+            [json!({"projectId":"project-1","uiActionNonce":"legacy:probe"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE generation_runs SET binding_json=?1 WHERE run_id='current-run'",
+            [json!({"sourceManifest":{"legacyRosterContext":{}}}).to_string()],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+            SELECT 'duplicate-run',root_action_id,binding_json,status,created_at_ms,'duplicate-open'
+            FROM generation_runs WHERE run_id='current-run'", []).unwrap();
+        conn.execute_batch(
+            "INSERT INTO generation_roots (root_action_id,idempotency_key,action_json,budget_json)
+             VALUES ('probe-root','probe-key','{}','{}');
+             INSERT INTO generation_runs (run_id,root_action_id,binding_json,status,created_at_ms,open_key)
+             VALUES ('probe-run','probe-root','{}','running',0,'probe-open');"
+        ).unwrap();
+        // 无关的当前坏JSON也须拒绝，不得吞成无匹配而误报重复候选。
+        for column in ["binding_json", "action_json"] {
+            let (table, key) = if column == "binding_json" {
+                ("generation_runs", "run_id='probe-run'")
+            } else {
+                ("generation_roots", "root_action_id='probe-root'")
+            };
+            conn.execute(&format!("UPDATE {table} SET {column}='' WHERE {key}"), [])
+                .unwrap();
+            let changes = conn.total_changes();
+            let error = owner
+                .begin_legacy_roster_generation(&conn, &request)
+                .unwrap_err();
+            assert_eq!(
+                error,
+                mutating_error("GENERATION_REQUEST_FAILED"),
+                "当前坏{column}不能被吞掉后误报nonce冲突"
+            );
+            assert_eq!(conn.total_changes(), changes, "拒绝路径不能创建账本");
+            conn.execute(
+                &format!("UPDATE {table} SET {column}='{{}}' WHERE {key}"),
+                [],
+            )
+            .unwrap();
+        }
+        // JSON null与缺省等价，不算已存在上下文；匹配多个非空上下文仍冲突。
+        conn.execute(
+            "UPDATE generation_runs SET binding_json=?1 WHERE root_action_id='current-root'",
+            [json!({"sourceManifest":{"legacyRosterContext":null}}).to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            owner
+                .begin_legacy_roster_generation(&conn, &request)
+                .unwrap_err(),
+            baseline
+        );
+        conn.execute(
+            "UPDATE generation_runs SET binding_json=?1 WHERE root_action_id='current-root'",
+            [json!({"sourceManifest":{"legacyRosterContext":{}}}).to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            owner
+                .begin_legacy_roster_generation(&conn, &request)
+                .unwrap_err(),
+            mutating_error("GENERATION_NONCE_CONFLICT")
+        );
+        assert!(conn
+            .execute(
+                "UPDATE generation_runs SET status='running' WHERE run_id='old-run'",
+                []
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        drop(conn);
+        drop(source_conn);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     // ===== B106: legacy-roster 创建活化 =====
