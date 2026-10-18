@@ -45,9 +45,7 @@ import unsupportedChannels from '../shared/unsupported-channels.json'
  */
 const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'config:set': ['config'],
-  'skin:execute': ['command'],
   // B7 启动态子集：启动门禁（startup:get-state 无参不登记）
-  'startup:skin-snapshot': ['ready'],
   'startup:appearance-ack': ['ack'],
   'window:resolve-close': ['requestId', 'decision'],
   'model-provider-resource:open': ['resource'],
@@ -587,21 +585,22 @@ export const ipc = {
     return isTauri()
   },
 
-  /** 设置窗口缩放级别（阶段 3 迁移项：Tauri webview zoom 绑定待接） */
+  /** 兼容原调用面的指数级别，实际使用渲染层整页缩放，不扩大原生权限。 */
   setZoomLevel: (level: number) => {
-    void level
-    console.warn('[ipc-client] setZoomLevel 尚未在 Tauri 侧实现（阶段 3 迁移项）')
+    if (!Number.isFinite(level)) return
+    const factor = Math.min(1.5, Math.max(0.7, Math.pow(1.2, level)))
+    if (typeof document !== 'undefined') document.documentElement.style.zoom = String(factor)
   },
 
-  /** 设置绝对缩放比例（阶段 3 迁移项） */
+  /** 纸墨外观的70%～150%整页缩放；拒绝损坏或越界值。 */
   setZoomFactor: (factor: number) => {
-    void factor
-    console.warn('[ipc-client] setZoomFactor 尚未在 Tauri 侧实现（阶段 3 迁移项）')
+    if (!Number.isFinite(factor) || factor < 0.7 || factor > 1.5) return
+    if (typeof document !== 'undefined') document.documentElement.style.zoom = String(factor)
   },
 
-  /** 获取当前缩放级别（阶段 3 迁移项） */
+  /** 只读当前渲染层比例，不声称读回WebView原生浏览器缩放。 */
   getZoomLevel: () => {
-    console.warn('[ipc-client] getZoomLevel 尚未在 Tauri 侧实现（阶段 3 迁移项）')
-    return 0
+    const factor = typeof document === 'undefined' ? 1 : Number(document.documentElement.style.zoom) || 1
+    return Math.log(factor) / Math.log(1.2)
   }
 }

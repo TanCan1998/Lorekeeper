@@ -52,3 +52,13 @@ Official source: [Google Fonts download manifest](https://fonts.google.com/downl
 
 - `NotoSerifSC-VariableFont_wght.woff2` — SHA-256 `58e7c38bdd33d908ab579edba323de99e9dc2cb85b44f405a82999d40c715603`
 - License: [`licenses/NotoSerifSC-OFL-1.1.txt`](licenses/NotoSerifSC-OFL-1.1.txt)
+
+## Instrument Serif（Google Fonts v5）
+
+Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif)。
+
+随上游纸墨外壳分发的 Fontsource `@fontsource/instrument-serif` 5.3.0 拉丁字形 WOFF2，用于章节及阶段数字。文件仅重命名，未做额外裁剪或转换，不替代写作所需的完整中文字体。
+
+- `InstrumentSerif-Latin-Regular.woff2` — SHA-256 `5eb09b5ac0e28b67c2f041c8ba6d244604ca0c0980d65912ab2d47fed84ddc31`
+- `InstrumentSerif-Latin-Italic.woff2` — SHA-256 `5a51946dfffa82972bc98745359c46761515641fda557c25116459a9f83da4a7`
+- 许可证：[`licenses/InstrumentSerif-OFL-1.1.txt`](licenses/InstrumentSerif-OFL-1.1.txt)

@@ -1,0 +1,231 @@
+/* ================= 外框与流程脊 ================= */
+.stage-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.stage-spine {
+  width: 276px;
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px 14px;
+}
+
+.stage-spine-label {
+  padding: 4px 10px 8px;
+  font-size: 11px;
+  letter-spacing: .16em;
+  color: var(--ink-3);
+}
+
+.stage-spine-label--resources {
+  margin-top: 18px;
+  padding-bottom: 6px;
+}
+
+.stage-stages,
+.stage-resources,
+.stage-chapters {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stage-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.stage-row:hover {
+  background: var(--sunken);
+}
+
+.stage-row[aria-current='page'] {
+  background: var(--paper);
+  box-shadow: 0 1px 2px var(--rule), 0 0 0 1px var(--rule);
+}
+
+.stage-row[aria-current='page']:focus-visible {
+  box-shadow: var(--focus-ring), 0 1px 2px var(--rule);
+}
+
+.stage-row-name {
+  font: 500 14.5px/1.55 var(--font-display);
+}
+
+.stage-row-meta {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.stage-row[aria-current='page'] .stage-row-name {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.stage-row[aria-current='page'] .stage-row-meta {
+  color: var(--ink-2);
+}
+
+/* 未开始的阶段整行退后；名称是正文类文字，取 ink-2 保证 4.5:1（画板的 ink-3 在外框上只有 3.16:1） */
+.stage-row[data-state='todo'] {
+  color: var(--ink-2);
+}
+
+/* 说明放到名称下一行：未开始时说明较长，设定进行中时写「还差 N 项」，与设定画板一致 */
+.stage-row:is([data-state='todo'], [data-stage='setup'][data-state='active']) .stage-row-meta {
+  grid-column: 2 / 4;
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.stage-mark {
+  justify-self: center;
+}
+
+.stage-mark--done {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ok);
+  color: var(--paper);
+}
+
+.stage-mark--todo {
+  color: var(--rule-strong);
+}
+
+.stage-ring {
+  flex: none;
+  fill: none;
+}
+
+.stage-ring-track {
+  stroke: var(--accent-track);
+}
+
+.stage-ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  transition: stroke-dasharray var(--dur) var(--ease);
+}
+
+.stage-row-icon {
+  justify-self: center;
+}
+
+.stage-resources .stage-row,
+.stage-spine-foot .stage-row {
+  color: color-mix(in srgb, var(--ink) 62%, var(--ink-2));
+}
+
+.stage-spine-foot .stage-row {
+  color: var(--ink-2);
+}
+
+.stage-resources .stage-row[aria-current='page'] {
+  color: var(--accent);
+}
+
+.stage-spine-foot {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.stage-chapters {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 6px 0 0 21px;
+  padding-left: 12px;
+  border-left: 1px solid var(--track);
+  gap: 1px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.stage-chapter {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--ink) 62%, var(--ink-2));
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stage-chapter:hover {
+  background: var(--sunken);
+}
+
+.stage-chapter[data-phase='todo'] {
+  color: var(--ink-3);
+}
+
+.stage-chapter[aria-current='page'] {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.stage-chapter-no {
+  font: italic 14px/1 var(--font-num);
+  color: var(--ink-3);
+}
+
+.stage-chapter[aria-current='page'] .stage-chapter-no {
+  color: var(--accent);
+}
+
+.stage-chapter-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-chapter-status {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.stage-chapter-status[data-tone='accent'],
+.stage-chapter[aria-current='page'] .stage-chapter-status {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.stage-chapter-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}

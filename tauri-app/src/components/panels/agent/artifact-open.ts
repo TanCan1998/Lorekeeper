@@ -1,8 +1,8 @@
+import { navigate } from '../../../stores/navigation/navigation-intents'
 import type { ToolArtifact } from '../../../services/agent/tool-registry'
 import { appErrorMessage } from '../../../i18n/app-errors'
 import { ipc } from '../../../services/ipc-client'
 import { useEditorStore } from '../../../stores/editor-store'
-import { useLayoutStore } from '../../../stores/layout-store'
 import { useLocaleStore } from '../../../stores/locale-store'
 import { useProjectStore } from '../../../stores/project-store'
 import {
@@ -76,7 +76,7 @@ export async function openArtifactInEditor(artifact: ToolArtifact): Promise<bool
 
   if (type === 'workflow_started') {
     // 点击只导航到持久候选和任务输出；恢复与继续生成仍需用户另行确认。
-    useLayoutStore.getState().openRightPanel('ai-output')
+    navigate({ kind: 'run', facet: 'output' })
     return true
   }
   if (!path) return false

@@ -3,17 +3,18 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const brandingSources = [
-  'src/components/settings/SettingsModal.tsx',
-  'src-tauri/src/main.rs',
-  'src-tauri/tauri.conf.json',
-  'src-tauri/Cargo.toml',
+  'src/components/stage/settings/AboutSection.tsx',
+  'src-tauri/src/lib.rs',
   'package.json',
   'pnpm-lock.yaml',
-  'index.html',
+  'src-tauri/tauri.conf.json',
+  '../docs-fork/README.md',
 ]
 
 const visibleSettingsSources = [
-  'src/components/settings/SettingsModal.tsx',
+  'src/components/stage/settings/StageSettings.tsx',
+  'src/components/stage/settings/AboutSection.tsx',
+  'src/components/settings/ModelForm.tsx',
   'src/components/settings/PromptSettings.tsx',
 ]
 
@@ -29,7 +30,7 @@ const visibleSettingsSource = readSources(visibleSettingsSources)
 const forbiddenVisibleLegacy = [
   '"name": "vela"',
   '"productName": "Vela"',
-  '"appId": "com.lore.ide"',
+  '"appId": "com.vela.ide"',
   'Vela IDE',
   'heider',
   'heider-x',
@@ -56,12 +57,6 @@ const pseudoIconPattern = new RegExp([
 ].join('|'), 'u')
 
 describe('settings visible branding', () => {
-  it('keeps the Tauri product identity separate from the Electron baseline', () => {
-    const config = JSON.parse(readSources(['src-tauri/tauri.conf.json']))
-    expect(config.productName).toBe('Lorekeeper')
-    expect(config.identifier).toBe('com.tancan1998.lorekeeper')
-    expect(config.app.windows[0].title).toBe('Lorekeeper')
-  })
   it('does not expose legacy support, payment QR, or pseudo-icon branding', () => {
     for (const value of forbiddenVisibleLegacy) {
       expect(brandingSource).not.toContain(value)

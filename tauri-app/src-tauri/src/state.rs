@@ -36,7 +36,6 @@ pub struct AppState {
     /// 启动时间戳（毫秒）。阶段 0 用于健康检查命令验证状态注入链路。
     pub(crate) started_at_ms: u64,
     /// 批次 A：皮肤命令存储
-    pub(crate) skin: Mutex<crate::commands::SkinCommandStore>,
 
     /// B7 启动态子集：启动门禁（全局外观门禁状态；`lib.rs` 的 `setup` 装载）
     pub(crate) startup_gate: Mutex<crate::services::startup_gate::StartupGate>,
@@ -93,7 +92,6 @@ impl AppState {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
-            skin: Mutex::new(crate::commands::SkinCommandStore::new()),
 
             startup_gate: Mutex::new(crate::services::startup_gate::StartupGate::new()),
             window_close_guard: Mutex::new(crate::commands::WindowCloseGuard::default()),

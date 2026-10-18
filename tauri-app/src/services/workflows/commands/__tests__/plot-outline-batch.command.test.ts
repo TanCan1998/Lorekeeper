@@ -1,6 +1,6 @@
+import { installTauriChannelFixture } from '../../../../../test/helpers/channel-fixture'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ipc } from '../../../ipc-client'
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import type { StepCallbacks, WorkflowContext } from '../../../../stores/workflow-store'
@@ -8,12 +8,13 @@ import {
   GeneratePlotArchitectureCommand,
   PLOT_OUTLINE_RESUME_ERROR_CODE,
   PlotOutlineResumeAvailableError,
-  synopsisFactsFingerprint,
 } from '../architecture.command'
+import { synopsisFactsFingerprint } from '../../../../shared/plot-outline-checkpoint'
 import { createWorkflowRuntimeDependencies } from './workflow-generation-runtime.fixture'
 import { clearProjectCustomPrompts, getBuiltinPromptTemplate } from '../../../prompt-templates'
 import { composeVisibleContinuation } from '../../../../shared/visible-continuation'
 import type { GenerationRecoveryContext, VisibleCompositionReceipt } from '../../../../shared/generation-owner-contract'
+import { PLOT_OUTLINE_CONTENT, PLOT_OUTLINE_PROTOCOL, type PlotOutlineProgress } from '../../../../shared/plot-outline-contract'
 
 /**
  * 情节大纲批次状态机：
@@ -186,16 +187,17 @@ function harnessWith(
   const synopsisCommits: Array<Record<string, unknown>> = []
   let storedCheckpoint = { ...checkpoint }
   let storedDbSynopsis = dbSynopsis
-  const invoke = vi.fn(async (channel: string, args: Record<string, unknown>) => {
-    if (channel === 'prompt_load_global') return { templates: [], diagnostics: [] }
-    if (channel === 'fs_check_exists') return false
-    if (channel === 'db_project_core_get') return storedDbSynopsis ? { ...coreSeed, synopsis: storedDbSynopsis } : { ...coreSeed }
-    if (channel === 'db_project_core_update') {
-      coreUpdates.push(args.data as Record<string, unknown>)
+  const invoke = vi.fn(async (_channel: string, ...rest: unknown[]) => {
+    const channel = String(_channel)
+    if (channel === 'prompt:load-global') return { templates: [], diagnostics: [] }
+    if (channel === 'fs:check-exists') return false
+    if (channel === 'db:project-core-get') return storedDbSynopsis ? { ...coreSeed, synopsis: storedDbSynopsis } : { ...coreSeed }
+    if (channel === 'db:project-core-update') {
+      coreUpdates.push(rest[0] as Record<string, unknown>)
       return { success: true }
     }
-    if (channel === 'db_project_core_synopsis_commit') {
-      const request = args.request as Record<string, unknown> & { synopsis: string }
+    if (channel === 'db:project-core-synopsis-commit') {
+      const request = rest[0] as Record<string, unknown> & { synopsis: string }
       synopsisCommits.push(request)
       if (options.concurrentPartialUpdate) {
         storedCheckpoint = { ...storedCheckpoint, ...options.concurrentPartialUpdate }
@@ -207,18 +209,23 @@ function harnessWith(
       }
       return result
     }
-    if (channel === 'fs_read_json') return { success: true, data: storedCheckpoint }
-    if (channel === 'fs_write_json') {
-      storedCheckpoint = { ...(args.data as CheckpointSnapshot) }
+    if (channel === 'fs:read-json') return { success: true, data: storedCheckpoint }
+    if (channel === 'fs:write-json') {
+      storedCheckpoint = { ...(rest[1] as CheckpointSnapshot) }
       partialWrites.push(storedCheckpoint)
       const concurrentUpdate = options.afterPartialWrite?.(storedCheckpoint, partialWrites.length)
       if (concurrentUpdate) storedCheckpoint = { ...storedCheckpoint, ...concurrentUpdate }
       return { success: true }
     }
-    if (channel === 'fs_write_file') return { success: true }
+    if (channel === 'fs:write-file') return { success: true }
     throw new Error(`Unexpected IPC channel: ${channel}`)
   })
-  vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke } })
+  installTauriChannelFixture( {
+    aiNovelAPI: {
+      invoke, on: vi.fn(() => () => {}), once: vi.fn(), send: vi.fn(),
+      setZoomLevel: vi.fn(), setZoomFactor: vi.fn(), getZoomLevel: vi.fn(),
+    },
+  })
   return { invoke, coreUpdates, partialWrites, synopsisCommits }
 }
 
@@ -235,8 +242,8 @@ function makeCommand(options?: { resumeSynopsis?: boolean; synopsisRange?: { fro
   )
 }
 
-function mainOwnedResponses(harness: IpcHarness, output: string | Error) {
-  const original = harness.invoke.getMockImplementation()! as (channel: string, args: Record<string, unknown>) => Promise<unknown>
+function mainOwnedResponses(harness: IpcHarness, output: string | Error, plotOutline?: PlotOutlineProgress) {
+  const original = harness.invoke.getMockImplementation()! as (channel: string, ...args: unknown[]) => Promise<unknown>
   const handle = { projectId: 'main', epoch: 'lease-main', rootActionId: '合成恢复根', runId: '合成恢复运行' }
   const view = { handle, status: 'running', nonReplayable: false, artifacts: [], budget: { maxAttempts: 32, maxRequestedOutputTokens: 2097152, maxRequestedOutputTokensPerAttempt: 32768, deadlineAt: 9999999999999 } }
   const hash = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), byte => byte.toString(16).padStart(2, '0')).join('')
@@ -245,26 +252,26 @@ function mainOwnedResponses(harness: IpcHarness, output: string | Error) {
     if (output instanceof Error) throw output
     return { run: view, outcome: { status: 'completed', content: output, finishReason: 'stop', receipt: { finishReason: 'stop', visibleArtifact: { artifactId: '本批响应', attemptId: '本批尝试', revision: 1, textHash: await hash(output) } } } }
   })
-  harness.invoke.mockImplementation(async (channel: string, args: Record<string, unknown>) => {
-    if (channel.startsWith('generation_')) expect(args.projectSession).toEqual(context.projectSession)
-    if (channel === 'generation_begin' || channel === 'generation_read') return view
-    if (channel === 'generation_read_context') return {
+  harness.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+    if (channel === 'generation:begin' || channel === 'generation:read') return view
+    if (channel === 'generation:read-context') return {
       modelId: 'model-1', handle, operation: 'generate-plot-outline',
-      authorInputs: [], selectedDraftIds: [], selectedFinalizedDraftIds: [], selectedBlueprintChapterNumbers: [],
+      authorInputs: plotOutline ? [{ id: 'architecture:author-config', text: JSON.stringify(novelConfig) }] : [], selectedDraftIds: [], selectedFinalizedDraftIds: [], selectedBlueprintChapterNumbers: [],
       composition, lastCompositionFinishReason: null, attemptedPurposes: [], draftSave: { kind: 'absent' },
+      ...(plotOutline ? { plotOutline } : {}),
     } satisfies GenerationRecoveryContext
-    if (channel === 'generation_read_visible_composition') return composition
-    if (channel === 'generation_execute') return execute()
-    if (channel === 'generation_compose_visible') {
+    if (channel === 'generation:read-visible-composition') return composition
+    if (channel === 'generation:execute') return execute()
+    if (channel === 'generation:compose-visible') {
       const text = composeVisibleContinuation(composition?.text ?? '', output instanceof Error ? '' : output)
-      expect(args.expectedTextHash).toBe(await hash(text))
+      expect(args[2]).toBe(await hash(text))
       composition = {
-        algorithm: 'visible-append-v1', text, textHash: await hash(text), artifactIds: args.artifactIds as string[],
+        algorithm: 'visible-append-v1', text, textHash: await hash(text), artifactIds: args[1] as string[],
         sources: [...(composition?.sources ?? []), { artifactId: '本批响应', revision: 1, textHash: await hash(output instanceof Error ? '' : output) }],
       }
       return composition
     }
-    return original(channel, args)
+    return original(channel, ...args)
   })
   return { execute, setComposition: async (text: string) => {
     const textHash = await hash(text)
@@ -279,7 +286,6 @@ function bodyOf(persisted: string): string {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.spyOn(ipc, 'on').mockReturnValue(() => {})
   context.data = {}
   context.uiLocale = 'zh-CN'
   context.writingLanguage = 'zh-CN'
@@ -578,7 +584,7 @@ describe('GeneratePlotArchitectureCommand 批次状态机', () => {
 
     const result = await makeCommand({ synopsisRange: { from: 21, to: 100 } }, true).execute({ step: {}, context, callbacks })
 
-    const request = harness.invoke.mock.calls.find(([channel]) => channel === 'generation_execute')?.[1]?.request as { task: { messages: Array<{ content: string }> } }
+    const request = harness.invoke.mock.calls.find(([channel]) => channel === 'generation:execute')?.[1] as { task: { messages: Array<{ content: string }> } }
     expect(request.task.messages.map(message => message.content).join('\n')).toContain(`【已完成大纲前缀】\n${prefixBody}`)
     expect(generation.execute).toHaveBeenCalledTimes(1)
     expect(generation.getComposition()?.text).toBe(nextSegment)
@@ -664,6 +670,50 @@ describe('GeneratePlotArchitectureCommand 批次状态机', () => {
     expect(harness.synopsisCommits).toHaveLength(0)
   })
 
+  it('升级前以乱序大纲开跑、来源无效的逐章大纲任务续写时给出与恢复入口一致的说明，不露内部原因码', async () => {
+    useLLMStore.setState({ defaultModelId: '合成模型' })
+    const harness = harnessWith()
+    const synopsis = `# 情节大纲\n\n${[1, 5, 2, 3, 4].map(n => `## 第${n}章：第${n}夜\n这一夜的事。`).join('\n\n')}`
+    const generation = mainOwnedResponses(harness, '不会发送', {
+      protocol: PLOT_OUTLINE_PROTOCOL, range: { from: 3, to: 5 }, content: PLOT_OUTLINE_CONTENT, targetUnits: 600,
+      cursor: { kind: 'stopped', chapterNumber: 4, reason: 'source-invalid' }, confirmedPrefix: null, composition: null,
+      sourceExpected: { synopsis, premise, charactersArch, worldbuilding, genre: novelConfig.genre, totalChapters: 5, wordsPerChapter: 3000,
+        writingLanguage: 'zh-CN', plotStructure: 'three_act', narrativePov: 'third_limited', globalGuidance: novelConfig.globalGuidance },
+    })
+
+    const failure = await makeCommand({ resumeSynopsis: true }, true).execute({ step: {}, context, callbacks }).catch((error: Error) => error)
+
+    expect((failure as Error).message).toBe('这次生成开跑时，大纲的章节没有按章号顺序排列，不能接着生成，恢复稿也不能保存。可以复制已生成的章节，把大纲排好后重新生成。')
+    expect(generation.execute).not.toHaveBeenCalled()
+    expect(harness.synopsisCommits).toHaveLength(0)
+  })
+
+  it('暂停的来源无效大纲任务点「断点续写」：主进程拒绝续写时说明与恢复入口一致，不露内部错误码', async () => {
+    useLLMStore.setState({ defaultModelId: '合成模型' })
+    const harness = harnessWith()
+    const synopsis = `# 情节大纲\n\n${[1, 5, 2, 3, 4].map(n => `## 第${n}章：第${n}夜\n这一夜的事。`).join('\n\n')}`
+    const plotOutline: PlotOutlineProgress = {
+      protocol: PLOT_OUTLINE_PROTOCOL, range: { from: 3, to: 5 }, content: PLOT_OUTLINE_CONTENT, targetUnits: 600,
+      cursor: { kind: 'stopped', chapterNumber: 3, reason: 'source-invalid' }, confirmedPrefix: null, composition: null,
+      sourceExpected: { synopsis, premise, charactersArch, worldbuilding, genre: novelConfig.genre, totalChapters: 5, wordsPerChapter: 3000,
+        writingLanguage: 'zh-CN', plotStructure: 'three_act', narrativePov: 'third_limited', globalGuidance: novelConfig.globalGuidance },
+    }
+    const generation = mainOwnedResponses(harness, '不会发送', plotOutline)
+    const original = harness.invoke.getMockImplementation()! as (channel: string, ...args: unknown[]) => Promise<unknown>
+    harness.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read') return { ...(await original(channel, ...args) as object), status: 'paused', nonReplayable: true, plotOutline }
+      if (channel === 'generation:resume') throw new Error("Error invoking remote method 'generation:resume': Error: GENERATION_PLOT_OUTLINE_PREFIX_INVALID")
+      return original(channel, ...args)
+    })
+
+    const failure = await makeCommand({ resumeSynopsis: true }, true).execute({ step: {}, context, callbacks }).catch((error: Error) => error)
+
+    expect((failure as Error).message).toBe('这次生成开跑时，大纲的章节没有按章号顺序排列，不能接着生成，恢复稿也不能保存。可以复制已生成的章节，把大纲排好后重新生成。')
+    expect(harness.invoke.mock.calls.some(([channel]) => channel === 'generation:resume')).toBe(true)
+    expect(generation.execute).not.toHaveBeenCalled()
+    expect(harness.synopsisCommits).toHaveLength(0)
+  })
+
   it('主进程恢复仍拒绝同 run 合成正文在读取后变化', async () => {
     useLLMStore.setState({ defaultModelId: '合成模型' })
     const prefixBody = `第1–20章：已确认前缀\n${'林舟依据税册追查并守住家人，行动和后果按章节连续。'.repeat(5)}`
@@ -671,11 +721,11 @@ describe('GeneratePlotArchitectureCommand 批次状态机', () => {
     const harness = harnessWith({ synopsis_incomplete: true, synopsis_covered_to: 20, synopsis_range: { from: 21, to: 100 }, synopsis_facts_fingerprint: currentFingerprint({ from: 21, to: 100 }), synopsis_db_hash: dbHashOf(dbOutline), synopsis_step_guidance: '' }, dbOutline)
     const generation = mainOwnedResponses(harness, '不会发送')
     await generation.setComposition('第21章：新线索\n林舟在旧仓库发现账册。')
-    const original = harness.invoke.getMockImplementation()! as (channel: string, args: Record<string, unknown>) => Promise<unknown>
+    const original = harness.invoke.getMockImplementation()! as (channel: string, ...args: unknown[]) => Promise<unknown>
     let reads = 0
-    harness.invoke.mockImplementation(async (channel: string, args: Record<string, unknown>) => {
-      if (channel === 'generation_read_visible_composition' && ++reads === 2) return { text: '并发替换的候选', textHash: '', artifactIds: [] }
-      return original(channel, args)
+    harness.invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'generation:read-visible-composition' && ++reads === 2) return { text: '并发替换的候选', textHash: '', artifactIds: [] }
+      return original(channel, ...args)
     })
 
     await expect(makeCommand({ resumeSynopsis: true }, true).execute({ step: {}, context, callbacks })).rejects.toThrow('GENERATION_COMPOSITION_SEED_MISMATCH')

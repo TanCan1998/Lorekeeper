@@ -6,6 +6,8 @@ import type { StepCallbacks, WorkflowContext } from '../../../../stores/workflow
 import { installTauriInternals, type TauriInternalsHandle } from '../../../../../test/helpers/tauri-internals'
 import { GenerateFieldCommand as RuntimeGenerateFieldCommand } from '../generate-field.command'
 import { workflowRuntimeDependencies } from './workflow-generation-runtime.fixture'
+import { PromptCatalog, ipcPromptPersistence } from '../../../prompt-catalog'
+import { BUILTIN_PROMPTS } from '../../../builtin-prompt-templates'
 
 class GenerateFieldCommand extends RuntimeGenerateFieldCommand {
   constructor(...args: ConstructorParameters<typeof RuntimeGenerateFieldCommand>) {
@@ -69,6 +71,68 @@ afterEach(() => {
 })
 
 describe('GenerateFieldCommand project identity', () => {
+  describe.each([
+    { writingLanguage: 'zh-CN', title: '星港归途', label: '作者指定书名（沿用，不另拟书名）' },
+    { writingLanguage: 'en-US', title: 'Harbor of Stars', label: 'Author-provided title (keep this title; do not invent another)' },
+  ] as const)('author title in $writingLanguage', ({ writingLanguage, title, label }) => {
+    it.each(['coreOutline', 'worldSetting', 'globalGuidance'] as const)(
+      'includes the captured title in %s provider messages after asynchronous admission',
+      async fieldKey => {
+        const initialProject = useProjectStore.getState().currentProject!
+        const novelConfig = {
+          ...initialProject.novelConfig,
+          writingLanguage,
+          coreOutline: '',
+          worldSetting: '',
+          goldenFinger: '',
+          protagonistProfile: '',
+          globalGuidance: '',
+          writingStyle: '',
+        }
+        useProjectStore.setState({
+          currentProject: { ...initialProject, name: title, novelConfig },
+          saveProject: vi.fn(async () => true),
+        })
+        const observedPrompts: string[] = []
+        useLLMStore.setState({
+          defaultModelId: 'model-1',
+          generateStream: vi.fn<typeof originalGenerateStream>(async (messages, streamCallbacks) => {
+            observedPrompts.push(messages.map(message => message.content).join('\n'))
+            streamCallbacks.onDone?.([
+              'Keep character motives consistent.',
+              'Advance conflict through action.',
+              'Preserve established facts.',
+              'End scenes with a meaningful change.',
+            ].join('\n'), undefined, 'stop')
+            return 'field-request'
+          }),
+        })
+        const command = new RuntimeGenerateFieldCommand(fieldKey, {
+          createRuntime: async (options, main) => {
+            expect(main?.selection.authorInputs).toEqual([
+              { id: 'field:author-config', text: JSON.stringify(novelConfig) },
+            ])
+            await Promise.resolve()
+            useProjectStore.setState({
+              currentProject: { ...initialProject, name: 'Later synthetic title', novelConfig },
+            })
+            return workflowRuntimeDependencies.createRuntime(options, main)
+          },
+        })
+
+        await command.execute({
+          step: {},
+          context: { ...context, writingLanguage, uiLocale: writingLanguage },
+          callbacks,
+        })
+
+        expect(observedPrompts).toHaveLength(1)
+        expect(observedPrompts[0]).toContain(`${label}: ${title}`)
+        expect(observedPrompts[0]).not.toContain('Later synthetic title')
+      },
+    )
+  })
+
   it('expands a populated field without deleting the author text', async () => {
     const authorText = 'The academy bell rings only when a student disappears.'
     const addition = 'Its mechanism is tied to the sealed observatory beneath the library.'
@@ -103,6 +167,9 @@ describe('GenerateFieldCommand project identity', () => {
     expect(useProjectStore.getState().currentProject?.novelConfig.worldSetting)
       .toBe(`${authorText}\n\n${addition}`)
 
+    // 同一测试文件先前用例可能已暖启动目录；独立冷目录明确核验真实传输。
+    const coldCatalog = new PromptCatalog(BUILTIN_PROMPTS, ipcPromptPersistence, () => context.projectSession)
+    await coldCatalog.resolve('generate_novel_config_field', context.projectSession, 'en-US')
     // 提示词水合走真实 IPC 接缝：全局提示词 + 项目提示词目录探测，
     // 均带自动注入的 projectSession 尾参（命令名 + 命名参数契约）。
     expect(tauriInternals.invoke).toHaveBeenCalledWith('prompt_load_global', {}, undefined)

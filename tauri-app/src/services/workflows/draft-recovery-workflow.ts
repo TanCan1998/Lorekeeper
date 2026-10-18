@@ -59,7 +59,7 @@ export async function createDraftRecoveryWorkflow(
   const command = new GenerateDraftCommand({ ...info, projectPath: session.projectPath, wordsTarget: target } as ChapterInfo,
     { resumeHandle: handle, selectedCandidateDrafts })
   return {
-    type: 'chapter_creation', title: `继续第${info.chapterNumber}章正文`, projectPath: session.projectPath,
+    type: 'chapter_creation', title: `第 ${info.chapterNumber} 章 · 继续正文`, projectPath: session.projectPath,
     projectSession: session, generationModelId: recovery.modelId, chapterWordsTarget: target,
     resourceKeys: [workflowResourceKey('chapter', info.chapterNumber)],
     steps: [{ name: '继续已选正文', description: '沿原候选和原预算继续，保存前重新检查来源。',

@@ -58,12 +58,6 @@ import type {
   UpdateState,
 } from './update-types'
 import type {
-  SkinCommand,
-  SkinExecuteResponse,
-  SkinReadCustomAssetResponse,
-  SkinState,
-} from './skin-types'
-import type {
   ChapterDeletionOperation,
   ChapterDeletionResult,
   DeleteFinalizedChapterRequest,
@@ -131,20 +125,6 @@ export interface UpdateStateEvents {
 }
 
 // ===== 图片皮肤 =====
-export interface SkinChannels {
-  'skin:get-state': {
-    args: []
-    return: SkinState
-  }
-  'skin:execute': {
-    args: [command: SkinCommand]
-    return: SkinExecuteResponse
-  }
-  'skin:read-custom-asset': {
-    args: []
-    return: SkinReadCustomAssetResponse
-  }
-}
 
 // ===== 窗口控制 =====
 export interface WindowChannels {
@@ -1361,7 +1341,7 @@ export interface FinalizationChannels {
   }
 }
 
-export type AllInvokeChannels = LegacyRosterGenerationChannels & CharacterAvatarChannels & CloudBackupChannels & GraphGenerationChannels & FinalizationGenerationChannels & EditorInlineGenerationChannels & ImportGenerationChannels & AgentGenerationChannels & ReviewRevisionGenerationInvokeChannels & FinalizedCharacterGenerationChannels & CharacterProposalChannels & GenerationOwnerChannels & StartupChannels & WindowChannels & OfficialHomepageChannels & ModelProviderResourceChannels & ConfigChannels & UpdateChannels & SkinChannels & ProjectChannels & FileChannels & AppDataChannels & LLMChannels & DatabaseChannels & KnowledgeBaseChannels & ChapterLifecycleChannels & FinalizationChannels & ImportChannels & MCPChannels
+export type AllInvokeChannels = LegacyRosterGenerationChannels & CharacterAvatarChannels & CloudBackupChannels & GraphGenerationChannels & FinalizationGenerationChannels & EditorInlineGenerationChannels & ImportGenerationChannels & AgentGenerationChannels & ReviewRevisionGenerationInvokeChannels & FinalizedCharacterGenerationChannels & CharacterProposalChannels & GenerationOwnerChannels & StartupChannels & WindowChannels & OfficialHomepageChannels & ModelProviderResourceChannels & ConfigChannels & UpdateChannels & ProjectChannels & FileChannels & AppDataChannels & LLMChannels & DatabaseChannels & KnowledgeBaseChannels & ChapterLifecycleChannels & FinalizationChannels & ImportChannels & MCPChannels
 export type AllEventChannels = GenerationOwnerEvents & LLMStreamEvents & UpdateStateEvents & WindowEvents
 
 /** 提取 invoke 频道名 */

@@ -39,7 +39,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   project.sessionLease = `lease-${++testLease}`
   invoke = vi.fn().mockResolvedValue(null)
-  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
+  Object.defineProperty(window, 'aiNovelAPI', { configurable: true, value: { invoke, on: vi.fn(() => () => {}), once: vi.fn(), send: vi.fn() } })
   start = vi.fn<ReturnType<typeof useWorkflowStore.getState>['startWorkflow']>().mockResolvedValue('failed-run')
   useLocaleStore.setState({ locale: 'zh-CN', initialized: true })
   useProjectStore.setState({ currentProject: project })
@@ -56,7 +56,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
-  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  Reflect.deleteProperty(window, 'aiNovelAPI')
   setActiveProjectSessionContext(null)
   useProjectStore.setState(originals.project)
   useLocaleStore.setState(originals.locale)
@@ -66,11 +66,11 @@ afterEach(async () => {
 })
 
 describe('角色卡导入入口', () => {
-  it('发送前需同意，取消同意后保留全文且不启动工作流', async () => {
+  it('发送前需同意，返回后保留全文且不启动工作流', async () => {
     await paste('姓名：林舟\n背景：旧港调查员')
     await click('AI 提取并预览')
     expect(document.body.textContent).toContain(model.baseUrl)
-    await click('取消')
+    await click('返回')
     expect(start).not.toHaveBeenCalled()
     expect(document.querySelector('textarea')?.value).toContain('旧港调查员')
   })
@@ -96,15 +96,14 @@ describe('角色卡导入入口', () => {
     expect(document.querySelector('textarea')?.value).toBe('姓名：林舟')
   })
 
-  it('导航离开后确认取消，仍恢复粘贴内容和已选文件', async () => {
-    invoke.mockImplementation((channel: string) => Promise.resolve(channel === 'dialog_select_knowledge_files'
+  it('确认外发时导航离开，回来后仍恢复粘贴内容和已选文件', async () => {
+    invoke.mockImplementation((channel: string) => Promise.resolve(channel === 'dialog:select-knowledge-files'
       ? [{ grantId: 'grant', displayName: '角色.txt' }]
       : { success: true, content: '姓名：林舟' }))
     await paste('姓名：江澜')
     await click('选择文件')
     await click('AI 提取并预览')
     await act(async () => root.unmount())
-    await click('取消')
     root = createRoot(container)
     await act(async () => root.render(<CharacterCardImportButton projectKey={project.path} />))
     await click('粘贴 / 导入角色卡')
@@ -115,7 +114,7 @@ describe('角色卡导入入口', () => {
   it('文件读取期间同路径项目重新打开，不将旧文件带入新会话', async () => {
     let resolve!: (result: { success: true; content: string }) => void
     const reopenedLease = `${project.sessionLease}-reopened`
-    invoke.mockImplementation((channel: string) => channel === 'dialog_select_knowledge_files'
+    invoke.mockImplementation((channel: string) => channel === 'dialog:select-knowledge-files'
       ? Promise.resolve([{ grantId: 'grant', displayName: '旧项目私有角色.txt' }])
       : new Promise(done => { resolve = done }))
     await paste('姓名：旧项目角色')
@@ -132,7 +131,7 @@ describe('角色卡导入入口', () => {
   })
 
   it('文件选择只读取授权文件，不自动发送；提取成功后清空临时输入', async () => {
-    invoke.mockImplementation((channel: string) => Promise.resolve(channel === 'dialog_select_knowledge_files'
+    invoke.mockImplementation((channel: string) => Promise.resolve(channel === 'dialog:select-knowledge-files'
       ? [{ grantId: 'grant', displayName: '角色.txt' }]
       : { success: true, content: '姓名：林舟' }))
     await paste('姓名：林舟')
@@ -175,7 +174,7 @@ describe('角色卡导入入口', () => {
   it('旧任务完成时不会清空重挂载后编辑的新草稿', async () => {
     let resolveRun!: (runId: string) => void
     start.mockImplementation(() => new Promise(resolve => { resolveRun = resolve }))
-    invoke.mockImplementation((channel: string) => Promise.resolve(channel === 'dialog_select_knowledge_files'
+    invoke.mockImplementation((channel: string) => Promise.resolve(channel === 'dialog:select-knowledge-files'
       ? [{ grantId: 'grant', displayName: '新角色.txt' }]
       : { success: true, content: '姓名：林舟' }))
     await paste('姓名：旧角色')

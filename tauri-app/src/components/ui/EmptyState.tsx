@@ -1,21 +1,20 @@
-import React from 'react'
+import type { ReactNode } from 'react'
 
-interface Props extends React.HTMLAttributes<HTMLDivElement> {
-  icon?: React.ReactNode
-  message: string
-  opacity?: number
+/** 纸墨空状态：衬线标题、一句说明、一个动作。 */
+interface EmptyStateProps {
+  heading: string
+  description?: string
+  action: ReactNode
+  icon?: ReactNode
 }
 
-export function EmptyState({ icon, message, opacity = 0.3, className, style, children, ...props }: Props) {
+export function EmptyState({ heading, description, action, icon }: EmptyStateProps) {
   return (
-    <div 
-      className={`flex flex-col items-center justify-center h-full gap-3 ${className || ''}`}
-      {...props}
-      style={{ opacity, ...style }}
-    >
+    <div className="pi-empty">
       {icon}
-      <span className="text-sm">{message}</span>
-      {children}
+      <h3 className="pi-empty-title">{heading}</h3>
+      {description && <p className="pi-empty-text">{description}</p>}
+      {action}
     </div>
   )
 }

@@ -7,7 +7,7 @@ import type { ModelProfile } from '../../../shared/ipc-channels'
 import { useLayoutStore } from '../../../stores/layout-store'
 import { useLLMStore } from '../../../stores/llm-store'
 import { useLocaleStore } from '../../../stores/locale-store'
-import SettingsModal from '../SettingsModal'
+import StageSettings from '../../stage/settings/StageSettings'
 
 import {
   installTauriInternals,
@@ -49,7 +49,7 @@ async function renderEmbeddingSettings(models: ModelProfile[]) {
   root = createRoot(container)
 
   await act(async () => {
-    root?.render(<SettingsModal open onClose={() => {}} />)
+    root?.render(<StageSettings library={false} />)
   })
 }
 
@@ -73,14 +73,14 @@ describe('embedding registration entry', () => {
 
     await renderEmbeddingSettings(models)
 
-    await expect.element(page.getByRole('button', { name: '免费模型注册链接', exact: true })).toBeVisible()
+    await expect.element(page.getByRole('button', { name: '去注册', exact: true })).toBeVisible()
   })
 
   it('opens the fixed SiliconFlow registration resource through IPC', async () => {
 
     await renderEmbeddingSettings([])
     await act(async () => {
-      await page.getByRole('button', { name: '免费模型注册链接', exact: true }).click()
+      await page.getByRole('button', { name: '去注册', exact: true }).click()
     })
 
     await vi.waitFor(() => {
@@ -96,10 +96,10 @@ describe('embedding registration entry', () => {
 
     await renderEmbeddingSettings([])
     await act(async () => {
-      await page.getByRole('button', { name: '添加向量模型', exact: true }).click()
+      await page.getByRole('button', { name: '添加检索模型', exact: true }).click()
     })
 
     await expect.element(page.getByText('向量化高级参数', { exact: true })).toBeVisible()
-    expect(document.body.textContent).not.toContain('免费模型注册链接')
+    expect(document.body.textContent).not.toContain('免费的检索模型')
   })
 })

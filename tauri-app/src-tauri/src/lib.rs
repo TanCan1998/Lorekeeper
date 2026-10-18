@@ -126,12 +126,8 @@ pub fn run() {
             commands::window_close,
             commands::window_resolve_close,
             // 批次 A：皮肤管理
-            commands::skin_get_state,
-            commands::skin_execute,
-            commands::skin_read_custom_asset,
             // B7 启动态子集：启动门禁（startup:* 3 频道）
             commands::startup_get_state,
-            commands::startup_skin_snapshot,
             commands::startup_appearance_ack,
             // 批次 A：官方主页
             commands::official_homepage_open,

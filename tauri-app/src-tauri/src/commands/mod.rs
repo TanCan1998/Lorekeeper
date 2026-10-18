@@ -36,7 +36,6 @@ mod official_homepage; // 批次 A：官方主页
 pub mod project; // 批次 B：项目生命周期
 pub mod project_archive; // 批次 B109：便携项目归档选择（dialog:select-project-archive* 3 频道）
 pub mod review_revision; // 批次 G4-3b：审稿修稿服务层（review-revision:* 4 频道）
-mod skin; // 批次 A：皮肤管理
 
 pub mod startup; // B7 启动态子集：启动门禁（startup:* 3 频道）
 pub mod update; // 批次 H（H3）：应用更新（update:* 6 频道 + update:state 事件）
@@ -68,7 +67,6 @@ pub use official_homepage::*;
 pub use project::*;
 pub use project_archive::*;
 pub use review_revision::*;
-pub use skin::*;
 
 pub use startup::*;
 pub use update::*;

@@ -1,0 +1,471 @@
+/*
+ * 角色名单。Claude Design 没有角色专属画板，结构取 prototype/characters.html，外观按 design-system.md 与外壳已有的做法外推。
+ * 只引用纸墨令牌。
+ */
+.cast-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ================= 角色建议提示条 ================= */
+.cast-suggestions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-5) var(--s-3);
+  border-bottom: 1px solid var(--rule);
+  max-height: 45%;
+  overflow: auto;
+}
+
+.cast-suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 0 0 var(--s-6);
+  list-style: none;
+}
+
+.cast-suggestion {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 8px 8px 8px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--rule);
+}
+
+.cast-suggestion-open {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.cast-suggestion-kind {
+  flex: none;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-suggestion-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cast-suggestion-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--ink-2);
+}
+
+.cast-suggestion-compare strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.cast-suggestion-decide {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+
+.cast-suggestion-error .cast-suggestion-text {
+  color: var(--warn);
+  white-space: normal;
+}
+
+/* ================= 名单与档案 ================= */
+.cast-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 272px minmax(0, 1fr);
+}
+
+.cast-roster {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--rule);
+}
+
+.cast-roster-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-3) var(--s-2);
+}
+
+.cast-search {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 34px;
+  padding: 0 var(--s-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  background: var(--sunken);
+  color: var(--ink-3);
+}
+
+/* 与 .pi-input 相同的焦点环：描边转强调色，外加柔和光圈。 */
+.cast-search:has(.cast-search-input:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.cast-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: 400 var(--fs-13)/1 var(--font-ui);
+}
+
+.cast-search-input::placeholder {
+  color: var(--ink-3);
+}
+
+.cast-roster-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+/* 中文两个按钮并排；英文的「Paste / import character cards」放不下时换到下一行，不再挤出按钮。 */
+.cast-roster-actions .pi-btn {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+
+.cast-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: var(--s-1) var(--s-3) var(--s-3);
+  list-style: none;
+}
+
+.cast-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--ink-2);
+  font: 400 var(--fs-13)/1.3 var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cast-row:hover {
+  background: var(--surface-2);
+}
+
+.cast-row[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.cast-avatar {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 1px var(--rule);
+  color: var(--ink-2);
+  font: 500 var(--fs-12)/1 var(--font-display);
+}
+
+.cast-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.cast-row-role {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-list-empty {
+  padding: var(--s-6) var(--s-3);
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.cast-roster-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: var(--s-2) var(--s-3);
+  border-top: 1px solid var(--rule);
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-roster-foot > span {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cast-profile {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.cast-profile-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--s-5);
+  padding: 28px 40px 16px;
+}
+
+.cast-profile-head-empty {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.cast-profile-avatar {
+  width: 72px;
+  height: 72px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--rule-strong);
+  color: var(--ink-2);
+  font: 500 var(--fs-30)/1 var(--font-display);
+}
+
+.cast-profile-heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cast-profile-titleline {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.cast-profile-name {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font: 600 var(--fs-30)/1.2 var(--font-display);
+}
+
+.cast-role-badge {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 500 var(--fs-11)/1.5 var(--font-ui);
+}
+
+.cast-profile-sub,
+.cast-profile-note {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-profile-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-12);
+}
+
+.cast-avatar-actions {
+  display: flex;
+  gap: var(--s-1);
+  margin-left: calc(-1 * var(--s-2));
+}
+
+.cast-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.cast-save-state {
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-view-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin: 0 40px;
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.cast-view-note {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-profile-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--s-5) 40px 40px;
+}
+
+.cast-graph {
+  flex: 1;
+  min-height: 420px;
+  display: flex;
+  border-radius: 12px;
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--rule);
+  overflow: hidden;
+}
+
+.cast-graph > * {
+  flex: 1;
+  min-width: 0;
+}
+
+.cast-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-5) var(--s-6);
+}
+
+.cast-row-fields {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: var(--s-4);
+}
+
+.cast-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cast-field-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+  color: var(--ink-2);
+  font: 500 var(--fs-12)/1.3 var(--font-ui);
+}
+
+.cast-field-label > label {
+  flex: none;
+}
+
+.cast-field-hint {
+  min-width: 0;
+  color: var(--ink-3);
+  font-weight: 400;
+  text-align: right;
+}
+
+.cast-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.cast-textarea {
+  height: auto;
+  padding: 10px 12px;
+  resize: vertical;
+  font: 400 var(--fs-14)/1.75 var(--font-prose);
+}
+
+.cast-select {
+  cursor: pointer;
+}
+
+.cast-select option {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.cast-input:disabled {
+  color: var(--ink-3);
+}
+
+.cast-field-history {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+}
+
+.cast-import-source {
+  width: 100%;
+  height: auto;
+  padding: 10px 12px;
+  resize: vertical;
+  font: var(--fs-13)/1.7 var(--font-ui);
+}
+
+.cast-import-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+
+.cast-import-names {
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+  word-break: break-all;
+}
+
+.cast-import-consent {
+  white-space: pre-line;
+}

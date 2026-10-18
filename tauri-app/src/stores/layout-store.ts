@@ -1,79 +1,38 @@
 import { create } from 'zustand'
 
-/** 左侧活动栏的视图类型 */
-export type SidebarView = 'home' | 'project' | 'knowledge' | 'characters' | 'settings'
+/** 书房（home）或作品（project）。 */
+export type SidebarView = 'home' | 'project'
 
-/** 下方工具窗口 Tab */
-export type BottomTab = 'tasks' | 'log' | 'models'
+/** 设置页的分区。 */
+export type SettingsSection = 'appearance' | 'llm' | 'embedding' | 'proxy' | 'prompts' | 'skills' | 'backup' | 'about'
 
-/** 右侧面板视图类型 */
-export type RightView = 'agent' | 'ai-output'
+/** 写作此章的参数（取自蓝图），章号由 chapter 意图给出。 */
+export type ChapterWritePrefill = {
+  title: string
+  role: string
+  purpose: string
+  keyEvents: string
+  characters: string
+  userGuidance: string
+}
 
-/** 左侧主导航当前视觉激活项 */
-export type LeftRailItem = SidebarView | 'blueprint' | 'world' | 'plot-tree' | BottomTab
-
-/** 设置弹窗分类 */
-export type SettingsSection = 'llm' | 'embedding' | 'proxy' | 'editor' | 'prompts' | 'skills' | 'backup' | 'about'
-
-/** 章节创建对话框的预填参数 */
-export type ChapterCreationPrefill = Record<string, unknown> | null
-
-interface LayoutState {
-  // ===== 侧边栏 =====
-  sidebarOpen: boolean
+/** 布局字段：书房与作品之间的切换（sidebarView）、设置页与全局对话框的开关。 */
+export interface LayoutFields {
   sidebarView: SidebarView
-  sidebarWidth: number
-  activeRailItem: LeftRailItem
-
-  // ===== AI 对话面板 =====
-  aiPanelOpen: boolean
-  aiPanelWidth: number
-  /** 右侧面板当前视图：Agent 对话 / AI 输出 */
-  rightView: RightView
-
-  // ===== 底部面板 =====
-  bottomPanelOpen: boolean
-  bottomTab: BottomTab
-  bottomPanelHeight: number
-
-  /** 沉浸前面板状态只在当前窗口保留。 */
-  immersive: boolean
-  preImmersivePanels: { sidebarOpen: boolean; aiPanelOpen: boolean; bottomPanelOpen: boolean } | null
-
-  // ===== 全局弹窗状态（替代 window.dispatchEvent 事件总线）=====
-  /** 设置弹窗是否打开 */
+  /** 设置页是否打开 */
   settingsOpen: boolean
-  /** 设置弹窗打开时默认定位的分类 */
+  /** 设置页当前的分区：打开时由入口指定，作者点左侧分区时更新。 */
   settingsSection: SettingsSection
-  /** 新建项目对话框是否打开 */
+  /** 新建作品对话框是否打开 */
   newProjectOpen: boolean
   /** 导出对话框是否打开 */
   exportOpen: boolean
   /** 导入小说对话框是否打开 */
   importNovelOpen: boolean
-  /** 章节创建对话框是否打开 */
-  chapterCreationOpen: boolean
-  /** 章节创建对话框的预填参数 */
-  chapterCreationPrefill: ChapterCreationPrefill
+}
 
-  // ===== Actions =====
-  toggleSidebar: () => void
-  setSidebarView: (view: SidebarView, activeRailItem?: LeftRailItem) => void
-  setSidebarWidth: (width: number) => void
-  toggleAIPanel: () => void
-  setAIPanelOpen: (open: boolean) => void
-  setAIPanelWidth: (width: number) => void
-  setRightView: (view: RightView) => void
-  /** 打开右侧面板并切换到指定视图 */
-  openRightPanel: (view: RightView) => void
-  toggleBottomPanel: () => void
-  setBottomTab: (tab: BottomTab) => void
-  setBottomPanelHeight: (height: number) => void
-  openBottomTab: (tab: BottomTab) => void
-  toggleImmersion: () => void
-
-  // ===== 全局弹窗 Actions =====
-  openSettings: (section?: SettingsSection, activeRailItem?: LeftRailItem) => void
+interface LayoutState extends LayoutFields {
+  setSidebarView: (view: SidebarView) => void
   closeSettings: () => void
   openNewProject: () => void
   closeNewProject: () => void
@@ -81,103 +40,17 @@ interface LayoutState {
   closeExport: () => void
   openImportNovel: () => void
   closeImportNovel: () => void
-  openChapterCreation: (prefill?: ChapterCreationPrefill) => void
-  closeChapterCreation: () => void
 }
 
-export const useLayoutStore = create<LayoutState>()((set, get) => ({
-  // 默认值
-  sidebarOpen: true,
+export const useLayoutStore = create<LayoutState>()((set) => ({
   sidebarView: 'project',
-  sidebarWidth: 260,
-  activeRailItem: 'project',
-
-  aiPanelOpen: true,
-  aiPanelWidth: 320,
-  rightView: 'agent',
-
-  bottomPanelOpen: true,
-  bottomTab: 'tasks',
-  bottomPanelHeight: 200,
-  immersive: false,
-  preImmersivePanels: null,
-
-  // 全局弹窗默认关闭
   settingsOpen: false,
   settingsSection: 'llm',
   newProjectOpen: false,
   exportOpen: false,
   importNovelOpen: false,
-  chapterCreationOpen: false,
-  chapterCreationPrefill: null,
 
-  // Actions
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen, immersive: false, preImmersivePanels: null })),
-  setSidebarView: (view, activeRailItem) =>
-    set((s) => {
-      const nextRailItem = activeRailItem ?? view
-      const sameButton = s.sidebarView === view && s.activeRailItem === nextRailItem
-      return {
-        sidebarView: view,
-        activeRailItem: nextRailItem,
-        sidebarOpen: sameButton ? !s.sidebarOpen : true,
-        immersive: false,
-        preImmersivePanels: null,
-      }
-    }),
-  setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(500, width)) }),
-
-  toggleAIPanel: () => {
-    if (get().sidebarView === 'home') {
-      get().openRightPanel(get().rightView)
-      return
-    }
-    set((s) => ({ aiPanelOpen: !s.aiPanelOpen, immersive: false, preImmersivePanels: null }))
-  },
-  setAIPanelOpen: (open) => set({ aiPanelOpen: open, ...(open ? { immersive: false, preImmersivePanels: null } : {}) }),
-  setAIPanelWidth: (width) => set({ aiPanelWidth: Math.max(260, Math.min(600, width)) }),
-  setRightView: (view) => set({ rightView: view }),
-  openRightPanel: (view) => {
-    if (get().sidebarView === 'home') get().setSidebarView('project')
-    set({ aiPanelOpen: true, rightView: view, immersive: false, preImmersivePanels: null })
-  },
-
-  toggleBottomPanel: () => set((s) => ({ bottomPanelOpen: !s.bottomPanelOpen, immersive: false, preImmersivePanels: null })),
-  setBottomTab: (tab) => {
-    if (get().sidebarView === 'home') get().setSidebarView('project')
-    set((s) => {
-      const sameButton = s.bottomTab === tab && s.activeRailItem === tab
-      return {
-        bottomTab: tab,
-        activeRailItem: tab,
-        bottomPanelOpen: sameButton ? !s.bottomPanelOpen : true,
-        immersive: false,
-        preImmersivePanels: null,
-      }
-    })
-  },
-  setBottomPanelHeight: (height) => set({ bottomPanelHeight: Math.max(100, Math.min(500, height)) }),
-  openBottomTab: (tab) => {
-    if (get().sidebarView === 'home') get().setSidebarView('project')
-    set({ bottomPanelOpen: true, bottomTab: tab, activeRailItem: tab, immersive: false, preImmersivePanels: null })
-  },
-  toggleImmersion: () => set((s) => s.immersive
-    ? { ...s.preImmersivePanels, immersive: false, preImmersivePanels: null }
-    : {
-      immersive: true,
-      preImmersivePanels: {
-        sidebarOpen: s.sidebarOpen,
-        aiPanelOpen: s.aiPanelOpen,
-        bottomPanelOpen: s.bottomPanelOpen,
-      },
-      sidebarOpen: false,
-      aiPanelOpen: false,
-      bottomPanelOpen: false,
-    }),
-
-  // 全局弹窗 Actions
-  openSettings: (section = 'llm', activeRailItem = 'settings') =>
-    set({ settingsOpen: true, settingsSection: section, activeRailItem }),
+  setSidebarView: (view) => set({ sidebarView: view }),
   closeSettings: () => set({ settingsOpen: false }),
   openNewProject: () => set({ newProjectOpen: true }),
   closeNewProject: () => set({ newProjectOpen: false }),
@@ -185,6 +58,4 @@ export const useLayoutStore = create<LayoutState>()((set, get) => ({
   closeExport: () => set({ exportOpen: false }),
   openImportNovel: () => set({ importNovelOpen: true }),
   closeImportNovel: () => set({ importNovelOpen: false }),
-  openChapterCreation: (prefill = null) => set({ chapterCreationOpen: true, chapterCreationPrefill: prefill }),
-  closeChapterCreation: () => set({ chapterCreationOpen: false, chapterCreationPrefill: null }),
 }))

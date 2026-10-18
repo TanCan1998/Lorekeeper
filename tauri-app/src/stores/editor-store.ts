@@ -25,11 +25,34 @@ export type PlanningRecoverySaveSnapshot = EditorTabSaveSnapshot & {
   }
 }[PlanningSaveChannel]
 
+/** 知识库读到的一份资料的项目副本。 */
+export interface KnowledgeDocumentCopy {
+  available: boolean
+  content?: string
+  contentHash?: string
+  edited?: boolean
+  indexStatus: 'current' | 'stale' | 'unavailable'
+}
+
+/** 知识库里所选的资料、读到的项目副本与正在改的文字。 */
+export interface KnowledgeDraft {
+  docId: string | null
+  copy: KnowledgeDocumentCopy | null
+  content: string
+  /** 保存或更新检索在途。放在标签上，页面切走再切回也认得出。 */
+  busy?: boolean
+}
+
+export function knowledgeDraftDirty(draft: KnowledgeDraft): boolean {
+  return Boolean(draft.copy?.available && draft.content !== draft.copy.content)
+}
+
 /** 编辑器 Tab 数据 */
 export interface EditorTab {
   id: string
   name: string
-  type: 'chapter' | 'outline' | 'character' | 'config' | 'diff' | 'chapter-card' | 'world-building' | 'arch-file' | 'version-history' | 'review-report' | 'narrative-thread'
+  /** 知识库页的标签。 */
+  type: 'chapter' | 'outline' | 'character' | 'config' | 'diff' | 'chapter-card' | 'world-building' | 'arch-file' | 'version-history' | 'review-report' | 'narrative-thread' | 'knowledge'
   filePath?: string
   content?: string
   /** 架构文档已持久化的基准内容，用于跨 Tab/项目切换后恢复脏状态。 */
@@ -74,7 +97,11 @@ export interface EditorTab {
   narrativeThreadView?: 'plot-tree' | 'plans'
   /** 重复打开同一叙事线 Tab 时递增，确保本次视图请求生效。 */
   narrativeThreadViewRequest?: number
+  /** 章节蓝图页按 chapterNumber 选中一章的请求次数；只有带章号打开时才递增，重复打开同一章也会重新选中。 */
+  chapterSelectRequest?: number
   planningRecovery?: GenerationRecoveryContext
+  /** 知识库标签的所选资料与未保存的改动；页面随标签切换卸载后靠它留住。 */
+  knowledgeDraft?: KnowledgeDraft
   planningSaveOperationId?: string
   planningSaveEnd?: string
   planningSaveSnapshot?: PlanningRecoverySaveSnapshot
@@ -124,6 +151,8 @@ interface EditorState {
     projectKey: string,
     dirty: boolean,
   ) => void
+  /** 写入知识库标签的所选资料与改动，并按改动同步未保存标记。 */
+  setKnowledgeDraft: (tabId: string, draft: KnowledgeDraft) => void
   /** 关闭 Tab */
   closeTab: (tabId: string) => void
   /** 激活 Tab */
@@ -173,6 +202,7 @@ const PROJECT_SCOPED_BUILTIN_TYPES = new Set<EditorTab['type']>([
   'version-history',
   'diff',
   'narrative-thread',
+  'knowledge',
 ])
 
 export interface EditorExitSaveHandler {
@@ -209,6 +239,13 @@ function removeEditorExitSaveHandlers(tab: EditorTab): void {
   if (tab.projectKey && !tab.planningRecovery && BACKGROUND_LEDGER_BY_EDITOR_TYPE[tab.type]) {
     exitSaveHandlers.delete(exitSaveTypeKey(tab.type, tab.projectKey))
   }
+}
+
+/** 标签自身的保存入口：与退出前保存共用各编辑器注册的处理器；编辑器没有注册时为 null。 */
+export function editorSaveHandler(tab: Pick<EditorTab, 'id' | 'type' | 'projectKey'>): (() => Promise<void>) | null {
+  const handler = exitSaveHandlers.get(`tab:${tab.id}`)
+    ?? (tab.projectKey ? exitSaveHandlers.get(exitSaveTypeKey(tab.type, tab.projectKey)) : undefined)
+  return handler ? handler.save : null
 }
 
 export function createProjectScopedEditorTabId(
@@ -302,6 +339,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
                 ...(tabWithDraftState.chapterNumber === undefined
                   ? {}
                   : { chapterNumber: tabWithDraftState.chapterNumber }),
+                ...(tabWithDraftState.type === 'chapter-card' && tabWithDraftState.chapterNumber !== undefined
+                  ? { chapterSelectRequest: (t.chapterSelectRequest ?? 0) + 1 }
+                  : {}),
                 ...(tabWithDraftState.draftStatus === undefined
                   ? {}
                   : { draftStatus: tabWithDraftState.draftStatus }),
@@ -324,7 +364,9 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           tabWithDraftState.type === 'narrative-thread'
             && tabWithDraftState.narrativeThreadView !== undefined
             ? { ...tabWithDraftState, narrativeThreadViewRequest: 1 }
-            : tabWithDraftState,
+            : tabWithDraftState.type === 'chapter-card' && tabWithDraftState.chapterNumber !== undefined
+              ? { ...tabWithDraftState, chapterSelectRequest: 1 }
+              : tabWithDraftState,
         ],
         activeTabId: tabWithDraftState.id,
       }))
@@ -347,6 +389,12 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
           ? { ...tab, dirty }
           : tab
       )),
+    }))
+  },
+
+  setKnowledgeDraft: (tabId, draft) => {
+    set(state => ({
+      tabs: state.tabs.map(tab => tab.id === tabId ? { ...tab, knowledgeDraft: draft, dirty: knowledgeDraftDirty(draft) } : tab),
     }))
   },
 

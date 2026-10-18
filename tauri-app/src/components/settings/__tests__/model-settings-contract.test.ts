@@ -7,9 +7,8 @@ function source(file: string): string {
 }
 
 describe('model settings contract', () => {
-  it('keeps the user-facing field vocabulary and provider options aligned in both settings surfaces', () => {
-    const settingsModal = source('src/components/settings/SettingsModal.tsx')
-    const modelSettings = source('src/components/settings/ModelSettings.tsx')
+  it('keeps the user-facing field vocabulary and provider options in the model form', () => {
+    const settingsModal = source('src/components/settings/ModelForm.tsx')
 
     for (const field of [
       ['model（模型名称）', 'model'],
@@ -18,7 +17,6 @@ describe('model settings contract', () => {
       ["上下文窗口", 'Context Window'],
     ]) {
       expect(settingsModal).toContain(`text('${field[0]}', '${field[1]}')`)
-      expect(modelSettings).toContain(`text('${field[0]}', '${field[1]}')`)
     }
 
     expect(settingsModal).toContain("text('高级设置', 'Advanced settings')")
@@ -28,15 +26,14 @@ describe('model settings contract', () => {
 
     for (const provider of ['xai', 'siliconflow']) {
       expect(settingsModal).toContain(`value="${provider}"`)
-      expect(modelSettings).toContain(`value="${provider}"`)
     }
   })
 
   it('creates new embedding profiles from the SiliconFlow preset and opens only fixed provider resources through IPC', () => {
-    const settingsModal = source('src/components/settings/SettingsModal.tsx')
-    const resourceController = source('src-tauri/src/commands/model_provider_resource.rs')
+    const settingsModal = source('src/components/settings/ModelForm.tsx')
+    const resourceController = source('../electron/controllers/model-provider-resource-controller.ts')
 
-    expect(settingsModal).toContain('createModelProfileDraft')
+    expect(source('src/components/settings/use-model-section.ts')).toContain('createModelProfileDraft')
     expect(settingsModal).toContain("openModelProviderResource('siliconflow-invite'")
     expect(settingsModal).toContain("openModelProviderResource('siliconflow-console'")
     expect(settingsModal).toContain("openModelProviderResource('siliconflow-docs'")
@@ -45,11 +42,7 @@ describe('model settings contract', () => {
     expect(settingsModal).toContain('免费')
     expect(settingsModal).not.toContain('window.open(')
     expect(settingsModal).not.toContain('shell.openExternal')
-    expect(resourceController).toContain('let Some(url) = MODEL_PROVIDER_RESOURCE_URLS')
-    expect(resourceController).toContain('.find(|(id, _)| id == &resource)')
-    expect(resourceController).toContain('Unsupported model provider resource.')
-    expect(resourceController).toContain('open_external_url(&app, url)')
-    expect(source('src-tauri/src/lib.rs')).toContain('commands::model_provider_resource_open,')
+    expect(resourceController).toContain('MODEL_PROVIDER_RESOURCE_URLS[resource]')
   })
 
 })

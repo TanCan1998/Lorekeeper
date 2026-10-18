@@ -2,25 +2,13 @@
  * architecture-service — 架构文件状态检查服务
  *
  * 全量 DB 化后，这里直接查 project_core 和 blueprints 表，不再读取文件。
- * 使用场景：Sidebar、WorldBuildingEditor
+ * 使用场景：Sidebar、流程脊
  */
 
 import type { ProjectSessionContext } from '../shared/ipc-channels'
+import { CANONICAL_PROJECT_DIRECTORY } from '../shared/project-format'
+import { outlineProgress } from '../shared/plot-outline-checkpoint'
 import { ipc } from './ipc-client'
-
-export type ArchStepKey = 'premise' | 'characters' | 'worldbuilding' | 'synopsis'
-
-export const ARCH_FILES: Array<{
-  key: ArchStepKey
-  label: string
-  emoji: string
-  desc: string
-}> = [
-    { key: 'premise', label: '故事前提', emoji: '🎯', desc: 'Logline · 核心冲突链 · 金手指定位 · 悬念骨架' },
-    { key: 'characters', label: '角色图谱', emoji: '👥', desc: '角色弧光 · 关系网络 · 矛盾交织' },
-    { key: 'worldbuilding', label: '世界观', emoji: '🌍', desc: '核心规则 · 阶层断层 · 深层危机' },
-    { key: 'synopsis', label: '情节大纲', emoji: '🗺️', desc: '三幕结构 · 拐点节奏 · 伏笔闭环' },
-  ]
 
 /**
  * 检查所有架构块的生成状态
@@ -60,42 +48,28 @@ export async function checkArchStatus(
 }
 
 /**
- * 检查架构状态（包含字数统计）
+ * 流程脊的架构四节是否已确认：与架构页徽标同一判定。前提、世界观有内容即确认，角色名单要结构化名单就绪，
+ * 情节大纲还要分批检查点表明全书写完、没有中断的批次（outlineProgress）。
  */
-export async function checkArchStatusWithWordCount(projectSession: ProjectSessionContext): Promise<{
-  status: Record<string, boolean>
-  wordCounts: Record<string, number>
-}> {
-  const status: Record<string, boolean> = { premise: false, characters: false, worldbuilding: false, synopsis: false }
-  const wordCounts: Record<string, number> = { premise: 0, characters: 0, worldbuilding: 0, synopsis: 0 }
-
-  const [core, roster] = await Promise.all([
-    ipc.invokeWithProjectSession(
-      projectSession,
-      'db:project-core-get',
-      projectSession.projectPath,
-    ),
-    ipc.invokeWithProjectSession(
-      projectSession,
-      'db:character-roster-read',
-      projectSession.projectPath,
-    ),
+export async function checkArchConfirmed(
+  projectSession: ProjectSessionContext,
+): Promise<Record<string, boolean>> {
+  const { projectPath } = projectSession
+  const [core, roster, partial] = await Promise.all([
+    ipc.invokeWithProjectSession(projectSession, 'db:project-core-get', projectPath),
+    ipc.invokeWithProjectSession(projectSession, 'db:character-roster-read', projectPath),
+    ipc.invokeWithProjectSession(projectSession, 'fs:read-json', `${projectPath}/${CANONICAL_PROJECT_DIRECTORY}/partial_arch.json`, projectPath)
+      .catch(() => null),
   ])
-  if (!core) return { status, wordCounts }
-
-  const check = (key: ArchStepKey, content: string | undefined | null) => {
-    const len = content?.length ?? 0
-    const hasContent = len > 50
-    status[key] = hasContent
-    wordCounts[key] = hasContent ? len : 0
+  if (!core) return { premise: false, characters: false, worldbuilding: false, synopsis: false }
+  const checkpoint = partial?.success === true ? (partial as { data?: unknown }).data : undefined
+  const progress = outlineProgress(core.synopsis ?? '', checkpoint, core.writingLanguage === 'en-US' ? 'en-US' : 'zh-CN', Number(core.totalChapters) || 0)
+  return {
+    premise: (core.premise?.length ?? 0) > 50,
+    characters: roster.status === 'ready',
+    worldbuilding: (core.worldbuilding?.length ?? 0) > 50,
+    synopsis: progress.kind === 'complete',
   }
-
-  check('premise', core.premise)
-  check('characters', roster.status === 'ready' ? roster.renderedMarkdown : '')
-  check('worldbuilding', core.worldbuilding)
-  check('synopsis', core.synopsis)
-
-  return { status, wordCounts }
 }
 
 /**
@@ -111,45 +85,5 @@ export async function getBlueprintCount(projectSession: ProjectSessionContext): 
     return blueprints.length
   } catch {
     return 0
-  }
-}
-
-/**
- * 获取具体架构块的内容
- */
-export async function readArchFile(
-  key: ArchStepKey,
-  projectSession: ProjectSessionContext,
-): Promise<{ success: boolean; content: string }> {
-  try {
-    if (key === 'characters') {
-      const roster = await ipc.invokeWithProjectSession(
-        projectSession,
-        'db:character-roster-read',
-        projectSession.projectPath,
-      )
-      return {
-        success: true,
-        content: roster.status === 'ready'
-          ? roster.renderedMarkdown
-          : roster.legacyMarkdown ?? '',
-      }
-    }
-    const core = await ipc.invokeWithProjectSession(
-      projectSession,
-      'db:project-core-get',
-      projectSession.projectPath,
-    )
-    if (!core) return { success: false, content: '' }
-
-    let content = ''
-    switch (key) {
-      case 'premise': content = core.premise; break
-      case 'worldbuilding': content = core.worldbuilding; break
-      case 'synopsis': content = core.synopsis; break
-    }
-    return { success: true, content: content ?? '' }
-  } catch {
-    return { success: false, content: '' }
   }
 }

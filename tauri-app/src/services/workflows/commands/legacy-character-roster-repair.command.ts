@@ -33,7 +33,7 @@ function assertLegacyRepairSessionCurrent(projectSession: CommandExecuteParams['
     projectSession,
     projectSessionContextFromProject(useProjectStore.getState().currentProject),
   )) {
-    throw new Error('当前项目已切换，旧角色图谱修复已停止以避免写入错误项目')
+    throw new Error('当前项目已切换，旧版角色名单修复已停止以避免写入错误项目')
   }
 }
 
@@ -45,10 +45,10 @@ function assertRepairRequired(snapshot: CharacterRosterSnapshot): asserts snapsh
     throw new Error('角色名单状态不一致，未改动任何角色数据。请保留项目后联系支持。')
   }
   if (snapshot.status !== 'legacy_repair_required' || !snapshot.legacyMarkdown?.trim()) {
-    throw new Error('当前项目不需要旧角色图谱修复；已有角色卡会被保留，不会从 Markdown 覆盖。')
+    throw new Error('当前项目不需要旧版角色名单修复；已有角色卡会被保留，不会从 Markdown 覆盖。')
   }
   if (snapshot.entries.length !== 0) {
-    throw new Error('已有角色卡会被保留，旧角色图谱修复已拒绝覆盖。')
+    throw new Error('已有角色卡会被保留，旧版角色名单修复已拒绝覆盖。')
   }
 }
 
@@ -77,7 +77,7 @@ function assertCommittedRosterReadable(
     || !snapshot.renderedMarkdown.trim()
     || snapshot.legacyMarkdown !== expectedLegacyMarkdown
   ) {
-    throw new Error('旧角色图谱修复提交后未能回读角色卡和角色图谱，未将本步骤标记为成功')
+    throw new Error('旧版角色名单修复提交后未能回读角色卡和角色名单全文，未将本步骤标记为成功')
   }
   if (!Array.isArray(candidateEntries)) return
   const candidateNames = candidateEntries
@@ -89,7 +89,7 @@ function assertCommittedRosterReadable(
     .filter(Boolean)
   const committedNames = new Set(snapshot.entries.map(entry => entry.name.trim()).filter(Boolean))
   if (candidateNames.length === 0 || candidateNames.some(name => !committedNames.has(name))) {
-    throw new Error('旧角色图谱修复回读不完整，未将本步骤标记为成功')
+    throw new Error('旧版角色名单修复回读不完整，未将本步骤标记为成功')
   }
 }
 
@@ -154,7 +154,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
   ): Promise<string> {
     const { expectedProjectPath } = this.input
     assertExistingCardsAdoptionRequired(sourceSnapshot)
-    callbacks.log('正在校验既有角色卡并重建只读角色图谱...')
+    callbacks.log('正在校验既有角色卡并重建只读的角色名单全文...')
     this.assertNotCancelled(context)
     assertLegacyRepairSessionCurrent(projectSession)
 
@@ -167,7 +167,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
     assertLegacyRepairSessionCurrent(projectSession)
     assertExistingCardsAdoptionRequired(currentSnapshot)
     if (currentSnapshot.legacyMarkdown !== sourceSnapshot.legacyMarkdown) {
-      throw new Error('旧角色图谱已变更，未使用过期快照重建图谱')
+      throw new Error('旧版角色名单已变更，未使用过期快照重建角色名单全文')
     }
 
     const commitResult = await ipc.invokeWithProjectSession(
@@ -206,7 +206,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
       projectSession,
       runId: context.runId,
     })
-    callbacks.log(`已采用 ${snapshot.entries.length} 张既有角色卡并重建只读角色图谱；旧原文已保留`)
+    callbacks.log(`已采用 ${snapshot.entries.length} 张既有角色卡并重建只读的角色名单全文；旧原文已保留`)
     return snapshot.renderedMarkdown
   }
 
@@ -241,7 +241,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
       this.assertNotCancelled(context)
       assertLegacyRepairSessionCurrent(session)
       handle = runs.find(run => run.operation === 'legacy-character-roster-repair')?.handle
-      if (handle) throw new Error('已有旧角色修复运行，请明确查看或恢复；重新开始须单独选择。')
+      if (handle) throw new Error('已有旧版角色名单修复运行，请明确查看或恢复；重新开始须单独选择。')
     }
     const client = createLegacyRosterGeneration(session, () => { this.assertNotCancelled(context); assertLegacyRepairSessionCurrent(session) })
     const timer = setInterval(() => { if (context.cancelled) void client.cancel().catch(() => {}) }, 50)
@@ -286,7 +286,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
     assertRepairRequired(sourceSnapshot)
     const legacyMarkdown = sourceSnapshot.legacyMarkdown
 
-    callbacks.log('正在将旧角色图谱转换为结构化角色名单...')
+    callbacks.log('正在将旧版角色名单转换为结构化角色名单...')
     const task = buildLegacyRosterTask({ legacyMarkdown, genre })
     const rosterJson = await this.callLLMWithBoundedCompletion(
       task.messages[1]!.content,
@@ -300,7 +300,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
       },
       context,
     )
-    if (!rosterJson.trim()) throw new Error('旧角色图谱修复失败，AI 返回空内容，未保存任何角色数据')
+    if (!rosterJson.trim()) throw new Error('旧版角色名单修复失败，AI 返回空内容，未保存任何角色数据')
 
     const candidate = await this.parseResponse(rosterJson, callbacks, context)
     this.assertNotCancelled(context)
@@ -317,7 +317,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
     assertLegacyRepairSessionCurrent(projectSession)
     assertRepairRequired(currentSnapshot)
     if (currentSnapshot.legacyMarkdown !== legacyMarkdown) {
-      throw new Error('旧角色图谱已变更，未保存过期修复结果')
+      throw new Error('旧版角色名单已变更，未保存过期修复结果')
     }
 
     const commitResult = await ipc.invokeWithProjectSession(
@@ -334,7 +334,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
       expectedProjectPath,
     )
     if (!commitResult.success) {
-      throw new Error(commitResult.error || '旧角色图谱修复失败，未保存任何角色数据')
+      throw new Error(commitResult.error || '旧版角色名单修复失败，未保存任何角色数据')
     }
     assertCommittedRosterReadable(commitResult.receipt, candidate.entries, legacyMarkdown)
 
@@ -348,7 +348,7 @@ export class RepairLegacyCharacterRosterCommand extends BaseWorkflowCommand<stri
       projectSession,
       runId: context.runId,
     })
-    callbacks.log(`旧角色图谱已安全修复为 ${snapshot.entries.length} 张角色卡；原文已保留`)
+    callbacks.log(`旧版角色名单已安全修复为 ${snapshot.entries.length} 张角色卡；原文已保留`)
     return snapshot.renderedMarkdown
   }
 }

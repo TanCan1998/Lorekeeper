@@ -1,0 +1,68 @@
+/*
+ * 随安装包内置的全部字体声明，不联网加载。
+ * 界面用 Noto Sans SC，标题与正文用 Noto Serif SC；数字字体只含拉丁子集。
+ * Inter 与霞鹜文楷供外观设置里的界面字体与写作字体选择。
+ */
+@font-face {
+  font-family: 'Inter';
+  src: url('../../../../public/fonts/Inter-VariableFont_opsz,wght.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../../../../public/fonts/Inter-Italic-VariableFont_opsz,wght.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'LXGW WenKai';
+  src: url('../../../../public/fonts/LXGWWenKai-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'LXGW WenKai';
+  src: url('../../../../public/fonts/LXGWWenKai-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  src: url('../../../../public/fonts/NotoSansSC-VariableFont_wght.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Noto Serif SC';
+  src: url('../../../../public/fonts/NotoSerifSC-VariableFont_wght.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Instrument Serif';
+  src: url('../../../../public/fonts/InstrumentSerif-Latin-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Instrument Serif';
+  src: url('../../../../public/fonts/InstrumentSerif-Latin-Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}

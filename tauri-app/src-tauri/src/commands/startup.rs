@@ -1,10 +1,9 @@
-//! 启动门禁命令（B7 启动态子集：`startup:*` 3 频道）。
+//! 启动门禁命令（RD-10 启动态子集：`startup:*` 两频道）。
 //!
 //! 对齐 `electron/controllers/startup-controller.ts`：
 //! - 信任发送方：只有主窗口的原始渲染文档可以读回/确认自己的存储；
 //! - `startup:get-state` 恒以状态对象返回（阻塞态也返回对象，不 reject）；
-//! - `startup:skin-snapshot` 对阻塞或快照漂移以错误拒绝；`startup:appearance-ack`
-//!   对非法读回回 `false`。
+//! - `startup:appearance-ack` 对非法外观 v3 读回返回 `false`，不恢复旧皮肤快照。
 //!
 //! **发送方等价物（刻意偏离）**：基线比较 `event.sender` 与主窗口 webContents 及其
 //! mainFrame URL；Tauri 侧校验 (1) 调用来自标签为 `main` 的窗口，(2) 该窗口当前 URL
@@ -16,7 +15,6 @@ use serde_json::Value;
 use tauri::{State, WebviewWindow};
 use url::Url;
 
-use crate::services::startup_gate::AppearanceSkinSnapshot;
 use crate::state::AppState;
 
 /// 主窗口标签（与 `commands/window.rs` 的 `MAIN_WINDOW_LABEL` 一致）。
@@ -33,10 +31,7 @@ pub fn install_startup_gate(app: &tauri::AppHandle) {
     gate.prepare_at(&crate::app_paths::lorekeeper_home());
     match gate.blocked_code() {
         Some(code) => eprintln!("[Lorekeeper] 启动门禁阻塞：{}", code.as_str()),
-        None => eprintln!(
-            "[Lorekeeper] 启动门禁就绪：skinRevision={}",
-            gate.skin_revision().unwrap_or(0)
-        ),
+        None => eprintln!("[Lorekeeper] 启动门禁就绪：等待外观v3读回确认"),
     }
 }
 
@@ -74,19 +69,6 @@ pub fn startup_get_state(webview: WebviewWindow, state: State<'_, AppState>) -> 
         return gate.blocked_for_untrusted_sender().to_json();
     }
     gate.startup_state().to_json()
-}
-
-/// `startup:skin-snapshot`
-#[tauri::command]
-pub fn startup_skin_snapshot(
-    webview: WebviewWindow,
-    ready: Value,
-    state: State<'_, AppState>,
-) -> Result<AppearanceSkinSnapshot, String> {
-    if !is_trusted_startup_sender(&webview) {
-        return Err("启动快照访问被拒绝".to_string());
-    }
-    state.startup_gate.lock().unwrap().skin_snapshot(&ready)
 }
 
 /// `startup:appearance-ack`

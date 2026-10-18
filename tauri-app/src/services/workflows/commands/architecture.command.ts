@@ -5,7 +5,9 @@ import type { CharacterProposalBatch } from '../../../shared/character-proposal'
 import { defaultCharacterProposalRelationships, defaultCharacterProposalSelections, formatCharacterProposalPreview } from '../character-proposal-preview'
 import type { MainGenerationRunHandle } from '../../generation/generation-runtime'
 import type { ArchitecturePlanningIntent, GenerationRecoveryContext } from '../../../shared/generation-owner-contract'
-import { PLOT_OUTLINE_PROTOCOL, plotOutlinePurpose, plotOutlineRequestContract, joinPlotOutlineEntries, renderPlotOutlineRange, type PlotOutlineProgress } from '../../../shared/plot-outline-contract'
+import { PLOT_OUTLINE_PROTOCOL, plotOutlinePurpose, plotOutlineRequestContract, plotOutlineSourceInvalidText, joinPlotOutlineEntries, renderPlotOutlineRange, type PlotOutlineProgress } from '../../../shared/plot-outline-contract'
+import { CANONICAL_PROJECT_DIRECTORY } from '../../../shared/project-format'
+import { assertCheckpointDbMirrorCurrent, MIN_SYNOPSIS_PARTIAL_PERSIST_CHARS, renderSynopsisDbText, synopsisFactsFingerprint, type SynopsisCheckpoint } from '../../../shared/plot-outline-checkpoint'
 import {
   BaseWorkflowCommand,
   injectWritingSkillIntoSession,
@@ -24,6 +26,7 @@ import { requireIpcSuccess } from '../../ipc-result'
 import { projectSessionContextFromProject, sameProjectSessionContext } from '../../../shared/project-session-context'
 import {
   requireWorkflowProjectSession,
+  workflowUiLocale,
   workflowUiText,
   workflowWritingLanguage,
 } from '../workflow-project-session'
@@ -60,10 +63,8 @@ function stepAuthorInputs(context: WorkflowContext, key: 'premise' | 'characters
     ...(typeof value === 'string' ? [{ id: `architecture:step-guidance:${key}`, text: value }] : [])]
 }
 
-interface PartialArchData {
-  synopsis_protocol?: typeof PLOT_OUTLINE_PROTOCOL
+interface PartialArchData extends SynopsisCheckpoint {
   world_building_generation_handle?: MainGenerationRunHandle
-  synopsis_generation_handle?: MainGenerationRunHandle
   premise_result?: string
   character_dynamics_result?: string
   character_state_result?: string
@@ -77,20 +78,8 @@ interface PartialArchData {
   world_building_db_hash?: string
   /** 候选实际使用的作者步骤指导；恢复时沿用，不读取新输入。 */
   world_building_step_guidance?: string
-  /** 情节大纲：已确认覆盖至 synopsis_covered_to 的纯正文（不含批次进度行）。 */
-  synopsis_result?: string
-  /** 上一次生成在本批范围内被输出长度中断；synopsis_result 为已完成部分。 */
-  synopsis_incomplete?: boolean
-  /** 最近一次成功批次的结束章（== totalChapters 时全书大纲完成）。 */
-  synopsis_covered_to?: number
-  /** 当前/上次生成批次的范围；断点续写恢复时沿用。 */
-  synopsis_range?: { from: number; to: number }
   /** 大纲赖以生成的源事实指纹；源事实变化后禁止续写旧检查点。 */
   synopsis_facts_fingerprint?: string
-  /** 上次写入 DB 的大纲全文指纹；用于检测大纲是否被手动编辑（防续批覆盖用户修改）。 */
-  synopsis_db_hash?: string
-  /** 与 synopsis_result 精确绑定；旧检查点缺失时由 DB 逐字等价校验兼容。 */
-  synopsis_body_hash?: string
   /** 本批实际使用的作者步骤指导；恢复必须沿用，不读取新输入。 */
   synopsis_step_guidance?: string
 }
@@ -171,23 +160,6 @@ export function recoverableWorldBuildingCandidate(value: unknown): string {
     : ''
 }
 
-/** 少于该字符数视为无保存价值的零碎输出，不落盘、不提供续写。 */
-const MIN_SYNOPSIS_PARTIAL_PERSIST_CHARS = 120
-
-/** 落库时追加在未完成大纲末尾的可见标记（帮助用户识别与编辑器提示）。 */
-const SYNOPSIS_INCOMPLETE_MARKER_ZH = [
-  '',
-  '> ⚠️ **本大纲未完成**：生成被输出长度中断，以上为已自动保存的已完成部分。',
-  '> 可在「AI 输出」提示处点击「继续生成情节大纲」，从断点续写补齐本批章节。',
-  '',
-].join('\n')
-
-const SYNOPSIS_INCOMPLETE_MARKER_EN = [
-  '',
-  '> ⚠ **This outline is incomplete**: generation stopped at the output length limit; the completed part above was saved automatically.',
-  '> Click “Continue plot outline” in the AI output notice to resume this batch.',
-  '',
-].join('\n')
 
 /**
  * 批次进度行的双语模板，仅辅助定位本批范围。完整覆盖本批后可附上该行；
@@ -370,41 +342,7 @@ function assertPlotOutlineTitleCoverage(
   }
 }
 
-/** 轻量确定性指纹：绑定大纲赖以生成的源事实，防止旧检查点被续到新上下文。 */
-export function synopsisFactsFingerprint(facts: readonly string[]): string {
-  const joined = facts.join('\u0001')
-  let hash = 5381
-  for (let index = 0; index < joined.length; index += 1) {
-    hash = ((hash << 5) + hash + joined.charCodeAt(index)) | 0
-  }
-  return (hash >>> 0).toString(36)
-}
 
-function renderSynopsisDbText(
-  body: string,
-  writingLanguage: WritingLanguage,
-  totalChapters: number,
-  checkpoint: Pick<PartialArchData, 'synopsis_incomplete' | 'synopsis_covered_to'>,
-): string {
-  const heading = promptLanguageText(writingLanguage, '情节大纲', 'Plot Outline')
-  if (checkpoint.synopsis_incomplete === true) {
-    const marker = promptLanguageText(
-      writingLanguage,
-      SYNOPSIS_INCOMPLETE_MARKER_ZH,
-      SYNOPSIS_INCOMPLETE_MARKER_EN,
-    )
-    return `# ${heading}\n\n${body}\n${marker}`.trim()
-  }
-  const coveredTo = checkpoint.synopsis_covered_to ?? totalChapters
-  const visibleBody = coveredTo < totalChapters
-    ? `${body}\n\n${promptLanguageText(
-        writingLanguage,
-        `> 本大纲已覆盖至第 ${coveredTo} 章（全书 ${totalChapters} 章），其余章节将在后续批次继续生成。`,
-        `> This outline covers chapters 1-${coveredTo} of ${totalChapters}; the remaining chapters will be generated in later batches.`,
-      )}`
-    : body
-  return `# ${heading}\n\n${visibleBody}`.trim()
-}
 
 function synopsisInputsFingerprint(
   expected: ProjectCoreSynopsisExpected,
@@ -498,111 +436,6 @@ function assertPlotOutlineBatchComplete(
   }
 }
 
-/**
- * 续批/恢复前校验 DB 中的大纲是否仍是上次生成写入的内容。用户可能直接在
- * 编辑器手动修改大纲（保存只更新 DB）：此时若按检查点前缀拼接会覆盖用户的
- * 修改，必须 fail-closed 并引导显式重新生成。
- */
-function assertCheckpointDbMirrorCurrent(
-  partial: PartialArchData,
-  dbOutlineText: string,
-  writingLanguage: WritingLanguage,
-  totalChapters: number,
-  uiText: UiText,
-): string {
-  const range = partial.synopsis_range
-  const coveredTo = partial.synopsis_covered_to ?? 0
-  if (!range
-    || !Number.isSafeInteger(range.from) || !Number.isSafeInteger(range.to)
-    || range.from < 1 || range.from > range.to || range.to > totalChapters
-    || !Number.isSafeInteger(coveredTo) || coveredTo < 0 || coveredTo > totalChapters
-    || (partial.synopsis_incomplete !== true && coveredTo !== range.to)
-    || (partial.synopsis_incomplete === true && coveredTo >= range.to)
-  ) {
-    throw new Error(uiText(
-      '情节大纲检查点的章节范围或进度已损坏，无法安全续写。请从第 1 章重新生成。',
-      'The plot-outline checkpoint has a damaged range or progress value and cannot be continued safely. Regenerate from chapter 1.',
-    ))
-  }
-  const checkpointBody = typeof partial.synopsis_result === 'string'
-    ? partial.synopsis_result.trim()
-    : ''
-  if (!checkpointBody) {
-    throw new Error(uiText(
-      '情节大纲检查点缺少正文，无法安全续写。请从第 1 章重新生成。',
-      'The plot-outline checkpoint has no body and cannot be continued safely. Regenerate from chapter 1.',
-    ))
-  }
-  const dbOutlineHash = synopsisFactsFingerprint([dbOutlineText])
-  const recordedHash = partial.synopsis_db_hash
-  if (recordedHash === undefined) {
-    throw new Error(uiText(
-      '续批检查点没有数据库镜像指纹，无法确认大纲未被手动修改。请从「AI 生成故事架构」从第 1 章重新生成大纲。',
-      'The continuation checkpoint has no database-mirror fingerprint, so we cannot confirm the outline was not edited by hand. Regenerate the outline from chapter 1 in “Generate story architecture”.',
-    ))
-  }
-  if (recordedHash !== dbOutlineHash) {
-    throw new Error(uiText(
-      '情节大纲正文在上次生成后已被手动修改，续批会覆盖这些修改，已拒绝。'
-        + '如需保留修改，请基于修改后的正文从第 1 章重新生成；若该修改有误，请先撤销后再续批。',
-      'The outline body was manually edited after the last generation; continuing would overwrite those edits, so it was rejected. '
-        + 'To keep the edits, regenerate from chapter 1 on top of them; if the edit was a mistake, revert it before continuing.',
-    ))
-  }
-  if (renderSynopsisDbText(checkpointBody, writingLanguage, totalChapters, partial) !== dbOutlineText
-    || (partial.synopsis_body_hash !== undefined
-      && partial.synopsis_body_hash !== synopsisFactsFingerprint([checkpointBody]))
-  ) {
-    throw new Error(uiText(
-      '情节大纲检查点正文与数据库原文不一致，无法安全续写。数据库正文未被覆盖。',
-      'The plot-outline checkpoint body does not exactly match the database source. The database outline was not overwritten.',
-    ))
-  }
-  return checkpointBody
-}
-
-export function hasVisibleIncompleteSynopsisMarker(dbOutlineText: string): boolean {
-  return dbOutlineText.includes('本大纲未完成')
-    || dbOutlineText.includes('This outline is incomplete')
-}
-
-export function hasVisiblePartialSynopsisMarker(dbOutlineText: string): boolean {
-  return hasVisibleIncompleteSynopsisMarker(dbOutlineText)
-    || dbOutlineText.includes('本大纲已覆盖至第')
-    || dbOutlineText.includes('This outline covers chapters')
-}
-
-export function isUsableSynopsisCheckpoint(
-  value: unknown,
-  dbOutlineText: string,
-  writingLanguage: WritingLanguage,
-  totalChapters: number,
-): boolean {
-  if (!value || typeof value !== 'object') return false
-  const partial = value as PartialArchData
-  if (partial.synopsis_protocol === PLOT_OUTLINE_PROTOCOL && partial.synopsis_incomplete && partial.synopsis_generation_handle) return true
-  try {
-    return assertCheckpointDbMirrorCurrent(
-      partial,
-      dbOutlineText,
-      writingLanguage,
-      totalChapters,
-      (zhCNText) => zhCNText,
-    ).length >= MIN_SYNOPSIS_PARTIAL_PERSIST_CHARS
-  } catch {
-    return false
-  }
-}
-
-export function isRecoverableSynopsisCheckpoint(
-  value: unknown,
-  dbOutlineText: string,
-  writingLanguage: WritingLanguage,
-  totalChapters: number,
-): boolean {
-  return Boolean((value as PartialArchData | null)?.synopsis_incomplete)
-    && isUsableSynopsisCheckpoint(value, dbOutlineText, writingLanguage, totalChapters)
-}
 const PLOT_STRUCTURES = new Set<NovelConfig['plotStructure']>([
   'three_act',
   'heros_journey',
@@ -761,7 +594,7 @@ async function loadPartialData(
   const result = await ipc.invokeWithProjectSession(
     projectSession,
     'fs:read-json',
-    `${projectPath}/.lore/partial_arch.json`,
+    `${projectPath}/${CANONICAL_PROJECT_DIRECTORY}/partial_arch.json`,
     projectPath,
   )
   if (result.success && result.data) return result.data as PartialArchData
@@ -778,7 +611,7 @@ export async function savePartialData(
   const result = await ipc.invokeWithProjectSession(
     projectSession,
     'fs:write-json',
-    `${projectPath}/.lore/partial_arch.json`,
+    `${projectPath}/${CANONICAL_PROJECT_DIRECTORY}/partial_arch.json`,
     data,
     projectPath,
   )
@@ -1154,7 +987,7 @@ export class GenerateCharactersCommand extends BaseWorkflowCommand<string> {
       ))
     }
 
-    callbacks.log(text('生成角色图谱...', 'Generating character graph...'))
+    callbacks.log(text('生成角色名单...', 'Generating the cast...'))
 
     const missingValue = promptLanguageText(writingLanguage, '（未填写）', '(not provided)')
     const manifestContext = {
@@ -1779,8 +1612,8 @@ export class GeneratePlotArchitectureCommand extends BaseWorkflowCommand<string>
       'The story premise has not been generated.',
     ))
     if (!char_dyn || char_dyn.includes('待生成')) throw new Error(text(
-      '角色图谱未生成',
-      'The character graph has not been generated.',
+      '角色名单未生成',
+      'The cast has not been generated.',
     ))
     if (!world_b || world_b.includes('待生成')) throw new Error(text(
       '世界观未生成',
@@ -2233,7 +2066,7 @@ export class GeneratePlotArchitectureCommand extends BaseWorkflowCommand<string>
         await ipc.invokeWithProjectSession(
           projectSession,
           'fs:write-file',
-          `${expectedProjectPath}/.lore/partial_arch.json`,
+          `${expectedProjectPath}/${CANONICAL_PROJECT_DIRECTORY}/partial_arch.json`,
           '{}',
           expectedProjectPath,
         ),
@@ -2268,7 +2101,7 @@ export class GeneratePlotArchitectureCommand extends BaseWorkflowCommand<string>
     const guidance = recovery.authorInputs.find(input => input.id === 'architecture:step-guidance:synopsis')?.text ?? ''
     const requestedGuidance = (context.data.stepGuidance as Record<string, unknown> | undefined)?.synopsis
     if (this.options.resumeSynopsis && typeof requestedGuidance === 'string' && requestedGuidance !== guidance) throw new Error('GENERATION_PLOT_OUTLINE_GUIDANCE_CHANGED')
-    if (!sourceExpected.premise || !sourceExpected.charactersArch || !sourceExpected.worldbuilding) throw new Error(text('故事前提、角色图谱和世界观必须先完成。', 'Complete the premise, characters and worldbuilding first.'))
+    if (!sourceExpected.premise || !sourceExpected.charactersArch || !sourceExpected.worldbuilding) throw new Error(text('故事前提、角色名单和世界观必须先完成。', 'Complete the premise, characters and worldbuilding first.'))
     const language = sourceExpected.writingLanguage
     const template = await resolvePromptTemplate('synopsis', session, language)
     if (!template) throw new Error(text('模板丢失', 'The plot-outline template is missing.'))
@@ -2297,6 +2130,7 @@ export class GeneratePlotArchitectureCommand extends BaseWorkflowCommand<string>
       partial.synopsis_covered_to = complete ? outline.range.to : outline.range.from - 1
       partial.synopsis_step_guidance = guidance
       partial.synopsis_facts_fingerprint = factsFingerprint
+      if (outline.confirmedPrefix === null) throw new Error('GENERATION_PLOT_OUTLINE_PREFIX_INVALID')
       const body = joinPlotOutlineEntries(outline.confirmedPrefix, outline.composition?.text ?? '')
       partial.synopsis_body_hash = synopsisFactsFingerprint([body])
       partial.synopsis_db_hash = synopsisFactsFingerprint([complete ? renderPlotOutlineRange(outline.composition?.text ?? '', outline.range, sourceExpected) : sourceExpected.synopsis])
@@ -2305,15 +2139,20 @@ export class GeneratePlotArchitectureCommand extends BaseWorkflowCommand<string>
       context.data.partial = partial
       await savePartialData(expectedProjectPath, partial, session, text('保存情节大纲检查点', 'Save plot-outline navigation'))
     }
+    const stopped = (cursor: Extract<PlotOutlineProgress['cursor'], { kind: 'stopped' }>) => cursor.reason === 'source-invalid'
+      ? new Error(plotOutlineSourceInvalidText(sourceExpected.synopsis, workflowUiLocale(context)))
+      : new Error(text(
+        `第 ${cursor.chapterNumber} 章已停止自动生成，原因 ${cursor.reason}。已接受前缀和全部候选已保留，正式大纲未被覆盖。`,
+        `Automatic generation stopped at chapter ${cursor.chapterNumber}: ${cursor.reason}. The accepted prefix and all candidates remain saved; the formal outline was not overwritten.`))
     let outline = initial
+    // 来源无效时没有可写进检查点的前缀，先给与恢复入口相同的说明；其余停止原因照常先写检查点。
+    if (outline.cursor.kind === 'stopped' && outline.cursor.reason === 'source-invalid') throw stopped(outline.cursor)
     await saveNavigation(outline)
     while (outline.cursor.kind !== 'complete') {
       this.assertNotCancelled(context)
       assertArchitectureProjectSessionCurrent(session, context)
       const cursor = outline.cursor
-      if (cursor.kind === 'stopped') throw new Error(text(
-        `第 ${cursor.chapterNumber} 章已停止自动生成，原因 ${cursor.reason}。已接受前缀和全部候选已保留，正式大纲未被覆盖。`,
-        `Automatic generation stopped at chapter ${cursor.chapterNumber}: ${cursor.reason}. The accepted prefix and all candidates remain saved; the formal outline was not overwritten.`))
+      if (cursor.kind === 'stopped') throw stopped(cursor)
       if (cursor.kind === 'accept') {
         const next = joinPlotOutlineEntries(outline.composition?.text ?? '', cursor.text)
         await ipc.invokeWithProjectSession(session, 'generation:compose-visible', handle,
@@ -2353,7 +2192,7 @@ export class GeneratePlotArchitectureCommand extends BaseWorkflowCommand<string>
     const readResult = await ipc.invokeWithProjectSession(
       projectSession,
       'fs:read-json',
-      `${expectedProjectPath}/.lore/partial_arch.json`,
+      `${expectedProjectPath}/${CANONICAL_PROJECT_DIRECTORY}/partial_arch.json`,
       expectedProjectPath,
     )
     if (!readResult.success || !readResult.data) {

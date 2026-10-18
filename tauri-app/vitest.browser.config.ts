@@ -2,6 +2,7 @@
 // tauri-app 渲染层经该别名引用 Electron 基线的纯类型契约）。
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import { playwright } from '@vitest/browser-playwright'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,7 +14,8 @@ const browserApiPort = Number(process.env.AI_NOVEL_VITEST_BROWSER_API_PORT || 63
 const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [tailwindcss(), react()],
+  server: { fs: { allow: ['..'] } },
   resolve: {
     alias: {
       '@baseline': path.resolve(__dirname, '../electron'),
@@ -27,7 +29,7 @@ export default defineConfig({
   },
   test: {
     include: ['src/**/*.browser.tsx'],
-    setupFiles: ['test/setup-locale.ts'],
+    setupFiles: ['test/setup-locale.ts', 'test/setup-paper-ink.ts', 'test/setup-stage-styles.ts', 'test/setup-browser-tauri.ts'],
     browser: {
       enabled: true,
       // 63315 is frequently reserved by Windows/HNS. Keep this overridable

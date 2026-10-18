@@ -1,0 +1,235 @@
+/* ================= 顶栏 ================= */
+.stage-topbar {
+  height: 46px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-left: 16px;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.stage-topbar :where(button, input, a) {
+  -webkit-app-region: no-drag;
+}
+
+.stage-brand {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--frame);
+  font: 600 12px/1 var(--font-display);
+}
+
+.stage-topbar .stage-work-title {
+  height: 28px;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font: 600 13.5px/1 var(--font-ui);
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.stage-topbar span.stage-work-title {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 作品名很长时收成省略号，不把右侧的窗口按钮挤出无边框窗口 */
+.stage-topbar > .pi-anchor {
+  min-width: 0;
+  max-width: 320px;
+  flex: 0 1 auto;
+}
+
+.stage-topbar .pi-anchor > .stage-work-title {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stage-work-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-topbar .stage-work-title:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.stage-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.stage-crumb + .stage-crumb::before {
+  content: '/';
+  margin-right: 8px;
+  color: color-mix(in srgb, var(--ink-4) 62%, var(--frame));
+}
+
+.stage-crumb[aria-current='page'] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--ink) 62%, var(--ink-2));
+}
+
+.stage-topbar-center,
+.stage-topbar-gap {
+  flex: 1;
+  min-width: 0;
+}
+
+.stage-topbar-center {
+  display: flex;
+  justify-content: center;
+}
+
+.stage-search {
+  width: 340px;
+  min-width: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--paper) 55%, transparent);
+  color: var(--ink-3);
+  font: 400 12.5px/1 var(--font-ui);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.stage-search:hover {
+  border-color: var(--rule-strong);
+  color: var(--ink-2);
+}
+
+.stage-search-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-capsule {
+  flex: none;
+  max-width: 320px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  background: var(--paper);
+  color: var(--ink-2);
+  font: 400 12px/1 var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.stage-capsule:hover {
+  border-color: var(--rule-strong);
+}
+
+.stage-capsule[aria-expanded='true'] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.stage-capsule[data-tone='ok'] {
+  padding-left: 10px;
+  color: var(--ok);
+}
+
+.stage-capsule[data-tone='warn'] .stage-ring-fill {
+  stroke: var(--warn);
+}
+
+.stage-capsule-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-capsule-value {
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-capsule .stage-ring-track {
+  stroke: var(--track);
+}
+
+.stage-saved {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.stage-saved[data-dirty] {
+  color: var(--warn);
+}
+
+.stage-window-controls {
+  flex: none;
+  display: flex;
+  align-self: stretch;
+}
+
+.stage-window-controls button {
+  width: 46px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.stage-window-controls button:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.stage-window-controls .stage-window-close:hover {
+  background: var(--danger);
+  color: var(--danger-ink);
+}
+
+.stage-focus-no {
+  flex: none;
+  font: italic 18px/1 var(--font-num);
+  color: var(--accent);
+}
+
+.stage-focus-title {
+  min-width: 0;
+  overflow: hidden;
+  font: 500 13px/1 var(--font-display);
+  color: var(--ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

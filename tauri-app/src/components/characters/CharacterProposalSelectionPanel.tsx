@@ -20,6 +20,11 @@ export function CharacterProposalSelectionPanel({ batch, identities, choices, on
   disabled?: boolean
 }) {
   const text = useLocaleStore(state => state.text)
+  const roleLabel = (role: string | undefined) => {
+    if (!role) return undefined
+    const label = getCharacterRoleLabels(role)
+    return text(label.zhCN, label.enUS)
+  }
   if (choices.proposalBatchId !== batch.proposalBatchId || choices.revision !== batch.revision) return <p role="alert">{text('提议已改变，请重新载入选择。', 'The proposals changed. Reload the choices.')}</p>
   const active = new Set(choices.selections.filter(choice => choice.action !== 'keep-unresolved').map(choice => choice.selectionKey))
   const relations = batch.items.flatMap(item => item.relationships.map(relation => {
@@ -43,7 +48,7 @@ export function CharacterProposalSelectionPanel({ batch, identities, choices, on
         onChange({ ...choices, edits })
       }
       return <div className="block space-y-1" key={item.selectionKey}>
-        <span>{item.fields.name} · {item.fields.role ?? text('角色候选', 'Character candidate')}</span>
+        <span>{item.fields.name} · {roleLabel(item.fields.role) ?? text('角色候选', 'Character candidate')}</span>
         <span className="block text-xs text-[var(--color-text-secondary)]">{item.fields.background || item.sourceId}</span>
         <NativeSelect aria-label={text(`采用方式：${item.fields.name} · ${item.selectionKey}`, `Adoption: ${item.fields.name} · ${item.selectionKey}`)} disabled={disabled || batch.status !== 'pending-approval'}
           value={choice?.action === 'map' ? `map:${choice.characterId}` : choice?.action ?? 'keep-unresolved'}
@@ -60,7 +65,7 @@ export function CharacterProposalSelectionPanel({ batch, identities, choices, on
           }}>
           <option value="keep-unresolved">{text('暂不采用，保留候选', 'Keep unresolved')}</option>
           <option value="create">{text('新建独立角色', 'Create a separate character')}</option>
-          {identities.map(identity => <option key={identity.characterId} value={`map:${identity.characterId}`}>{identity.name} · {identity.role ?? ''} · {identity.characterId.slice(-8)}</option>)}
+          {identities.map(identity => <option key={identity.characterId} value={`map:${identity.characterId}`}>{identity.name} · {roleLabel(identity.role) ?? ''} · {identity.characterId.slice(-8)}</option>)}
         </NativeSelect>
         {editable && choice?.action !== 'keep-unresolved' && <details className="text-xs" onClick={event => event.stopPropagation()}>
           <summary className="cursor-pointer">{text('编辑导入候选', 'Edit imported candidate')}</summary>

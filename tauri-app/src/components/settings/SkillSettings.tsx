@@ -19,6 +19,7 @@ import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { NativeSelect } from '../ui/NativeSelect'
 import { confirm as confirmAction } from '../ui/Confirm'
+import { useUnsavedSettings } from './unsaved-settings'
 
 const STAGE_COPY: Record<WritingSkillStage, readonly [string, string]> = {
   planning: ['设定与规划', 'Planning'],
@@ -106,6 +107,7 @@ export default function SkillSettings() {
   const [inspection, setInspection] = useState<RemoteWritingSkillInspection | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  useUnsavedSettings(sourceUrl.trim() !== '')
 
   const reload = async (session: ProjectSessionContext | null = projectSession) => {
     await skillRegistry.loadAll()

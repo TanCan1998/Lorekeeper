@@ -1,0 +1,133 @@
+/* ================= Ctrl K 搜索与跳转 ================= */
+.stage-palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: color-mix(in srgb, var(--scrim) 55%, transparent);
+  animation: pi-fade var(--dur-fast) var(--ease);
+}
+
+.stage-palette {
+  position: fixed;
+  z-index: var(--z-dialog);
+  top: 14vh;
+  left: 0;
+  right: 0;
+  width: 580px;
+  max-width: calc(100vw - 48px);
+  max-height: 66vh;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  color: var(--ink);
+  overflow: hidden;
+  animation: pi-rise var(--dur-fast) var(--ease);
+}
+
+.stage-palette:focus {
+  outline: none;
+}
+
+.stage-palette-input {
+  height: 52px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-3);
+}
+
+.stage-palette-input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: 400 15px/1 var(--font-ui);
+}
+
+.stage-palette-input input::placeholder {
+  color: var(--ink-4);
+}
+
+.stage-palette-list {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 8px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.stage-palette-group-label {
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  letter-spacing: .16em;
+  color: var(--ink-3);
+}
+
+.stage-palette-option {
+  height: 36px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.stage-palette-option[aria-selected='true'] {
+  background: var(--accent-soft);
+}
+
+.stage-palette-no {
+  font: italic 15px/1 var(--font-num);
+  color: var(--ink-3);
+  text-align: right;
+}
+
+.stage-palette-option[aria-selected='true'] .stage-palette-no {
+  color: var(--accent);
+}
+
+.stage-palette-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-palette-meta {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.stage-palette-empty {
+  margin: 0;
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--ink-3);
+}
+
+.stage-palette-foot {
+  flex: none;
+  display: flex;
+  gap: 18px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--rule);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.stage-palette-foot span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

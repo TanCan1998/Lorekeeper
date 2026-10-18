@@ -1,0 +1,33 @@
+/* ================= 沿用的旧组件在纸墨里的配色 ================= */
+/*
+ * 提示词模板、写作 Skills、项目备份、模型表单、架构文档页、导入导出对话框与助手面板仍按旧颜色变量 --color-* 着色。
+ * 在内容区、书房、运行侧页、设置页的旧组件区与浮层宿主里，把这些变量指向纸墨令牌，旧组件随纸墨的浅色与深色换色。
+ * 旧按钮在强调色底上固定写白字，深色主题的强调色是浅色：深色下取压暗到 55% 的黛蓝，白字对比 4.9:1，作文字色时对纸面仍有 3.4:1。
+ */
+.stage-shell, .pi-overlay-host {
+  --stage-legacy-accent: var(--accent);
+}
+
+.stage-shell[data-theme='dark'], .pi-overlay-host[data-theme='dark'] {
+  --stage-legacy-accent: color-mix(in srgb, var(--accent) 55%, var(--frame));
+}
+
+.stage-shell :where(.stage-content, .stage-library, .stage-sheet-slot, .stage-set-legacy), .pi-overlay-host {
+  --color-bg: var(--surface);
+  --color-sidebar: var(--surface-2);
+  --color-panel: var(--surface-2);
+  --color-hover: var(--sunken);
+  --color-active: var(--accent-soft);
+  --color-text: var(--ink);
+  --color-text-secondary: var(--ink-2);
+  --color-text-muted: var(--ink-3);
+  --color-border: var(--rule-strong);
+  --color-accent: var(--stage-legacy-accent);
+  --color-success-text: var(--ok);
+  --color-warning-text: var(--warn);
+  --color-error-text: var(--danger);
+  --color-editor-bg: var(--paper);
+  --color-editor-caret: var(--accent);
+  --color-badge-bg: var(--accent-soft);
+  --color-badge-text: var(--accent);
+}

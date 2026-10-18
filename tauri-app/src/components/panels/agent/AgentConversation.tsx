@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowDown, Trash2, Workflow } from 'lucide-react'
 import { useAgentStore } from '../../../stores/agent-store'
-import { useLayoutStore } from '../../../stores/layout-store'
+import { navigate } from '../../../stores/navigation/navigation-intents'
 import { APP_BRAND } from '../../../shared/brand'
 import AgentMessage from './AgentMessage'
 import AgentInputBox from './AgentInputBox'
@@ -199,18 +199,17 @@ function ActiveConversation() {
 /**
  * 重构后的工具栏：贴合小说创作场景
  * 左侧：快速引用按钮（架构、角色、蓝图）
- * 右侧：打开 AI 输出面板按钮
+ * 右侧：打开运行侧页的按钮
  */
 function AgentToolbar() {
   const text = useLocaleStore(s => s.text)
-  const openRightPanel = useLayoutStore(s => s.openRightPanel)
 
   return (
     <div className="flex items-center justify-end mb-1.5">
 
-      {/* 右侧：打开 AI 输出面板 */}
+      {/* 右侧：打开运行侧页 */}
       <button
-        onClick={() => openRightPanel('ai-output')}
+        onClick={() => navigate({ kind: 'run', facet: 'output' })}
         className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all select-none"
         style={{
           color: 'var(--color-text-muted)',

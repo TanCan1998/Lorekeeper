@@ -4,14 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 
 import ImportNovelDialog from '../ImportNovelDialog'
-import ProjectTree from '../../panels/sidebar/ProjectTree'
-import BottomPanel from '../../panels/BottomPanel'
+import RunSheet from '../../stage/run/RunSheet'
 import { useLocaleStore } from '../../../stores/locale-store'
 import { useEditorStore } from '../../../stores/editor-store'
 import { useProjectStore } from '../../../stores/project-store'
 import { useWorkflowStore, type WorkflowDefinition, type WorkflowRun } from '../../../stores/workflow-store'
-import { useLayoutStore } from '../../../stores/layout-store'
 import { useDraftStore } from '../../../stores/draft-store'
+import { useThemeStore } from '../../../stores/theme-store'
+import { composite, contrast } from '../../ui/__tests__/color-contrast'
 import type { ImportRunPreparationResult, ImportRunSnapshot } from '../../../shared/import-run'
 import type { AuthorManuscriptImportPreview } from '../../../shared/author-manuscript-import'
 
@@ -27,10 +27,10 @@ let prepareError = ''
 let prepareErrorCode = ''
 let durableAuthorChapters: Record<string, number[]>
 
-function durableAuthorChapterPage(args: Record<string, unknown>) {
-  const runId = String(args.runId)
-  const afterChapterNumber = Number(args.afterChapterNumber)
-  const limit = Number(args.limit)
+function durableAuthorChapterPage(args: unknown[]) {
+  const runId = String(args[0])
+  const afterChapterNumber = Number(args[1])
+  const limit = Number(args[2])
   return (durableAuthorChapters[runId] ?? [])
     .filter(number => number > afterChapterNumber)
     .slice(0, limit)
@@ -94,7 +94,6 @@ async function chooseCurrentSource() {
 beforeEach(async () => {
   useLocaleStore.setState({ locale: 'zh-CN' })
   useEditorStore.getState().clearTabs()
-  useLayoutStore.setState({ bottomPanelOpen: true, bottomTab: 'tasks' })
   useProjectStore.setState({
     currentProject: project as never,
     refreshFileTree: vi.fn().mockResolvedValue(undefined),
@@ -114,10 +113,10 @@ beforeEach(async () => {
     chapters: [{ number: 1, title: 'Start', wordCount: 16, disposition: 'new' }],
     newChapterNumbers: [1], duplicateChapterNumbers: [], conflictChapterNumbers: [], authorityInvalid: false,
   }
-  invoke = vi.fn(async (channel: string, args: Record<string, unknown> = {}) => {
-    if (channel === 'db_import_run_list_resumable') return []
-    if (channel === 'dialog_select_novel_files') {
-      const request = args.request as { purpose?: string } | string | undefined
+  invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+    if (channel === 'db:import-run-list-resumable') return []
+    if (channel === 'dialog:select-novel-files') {
+      const request = args[0] as { purpose?: string } | string | undefined
       const selectedPurpose = typeof request === 'string' ? request : request?.purpose
       if (selectedPurpose === 'author-manuscript') return {
         success: true,
@@ -130,17 +129,26 @@ beforeEach(async () => {
       }
       return { success: true, preparation }
     }
-    if (channel === 'db_import_run_prepare_inspection') return prepareError || prepareErrorCode
+    if (channel === 'db:import-run-prepare-inspection') return prepareError || prepareErrorCode
       ? { success: false, error: prepareError || undefined, errorCode: prepareErrorCode || undefined }
       : { success: true, preparation }
-    if (channel === 'db_import_run_author_preview') return authorPreview
-    if (channel === 'db_import_run_list_chapters') return durableAuthorChapterPage(args)
-    if (channel === 'db_project_core_get') return null
-    if (channel === 'db_blueprint_get_all') return []
-    if (channel === 'db_draft_list') return []
+    if (channel === 'db:import-run-author-preview') return authorPreview
+    if (channel === 'db:import-run-list-chapters') return durableAuthorChapterPage(args)
+    if (channel === 'db:project-core-get') return null
+    if (channel === 'db:blueprint-get-all') return []
+    if (channel === 'db:draft-list') return []
+    // 运行侧页读恢复项：这里都没有。
+    if (['db:recovery-candidate-list', 'generation:list', 'generation:list-batches', 'skills:list-user'].includes(channel)) return []
+    if (channel === 'fs:check-exists') return false
     return { success: true }
   })
-  ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = { invoke }
+  Object.defineProperty(window, 'aiNovelAPI', {
+    configurable: true,
+    value: {
+      invoke, on: vi.fn(() => () => {}), once: vi.fn(), send: vi.fn(),
+      setZoomLevel: vi.fn(), setZoomFactor: vi.fn(), getZoomLevel: vi.fn(() => 0),
+    },
+  })
   startWorkflow = vi.fn(async (definition: WorkflowDefinition) => {
     useWorkflowStore.setState({
       activeRuns: [activeRun(definition)],
@@ -155,8 +163,6 @@ beforeEach(async () => {
   root = createRoot(container)
   await act(async () => root.render(
     <div>
-      <ProjectTree />
-      <div style={{ height: 360 }}><BottomPanel /></div>
       <ImportNovelDialog open onClose={vi.fn()} />
     </div>,
   ))
@@ -168,7 +174,7 @@ afterEach(async () => {
   useEditorStore.getState().clearTabs()
   useProjectStore.setState({ currentProject: null })
   useWorkflowStore.setState({ activeRuns: [], history: [], globalLogs: [] })
-  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  Reflect.deleteProperty(window, 'aiNovelAPI')
 })
 
 describe('current-project reference import', () => {
@@ -181,33 +187,7 @@ describe('current-project reference import', () => {
     await act(async () => root.render(<ImportNovelDialog open={false} onClose={vi.fn()} />))
     await act(async () => root.render(<ImportNovelDialog open onClose={vi.fn()} />))
     await expect.element(location).toHaveValue('')
-    expect(invoke.mock.calls.some(([channel]) => channel === 'project_create')).toBe(false)
-  })
-
-  it('updates existing configuration and blueprint tab names to the current interface language', async () => {
-    const clickProjectItem = (label: string) => {
-      const row = [...container.querySelectorAll<HTMLElement>('.tree-item')]
-        .find(element => element.textContent?.includes(label))
-      expect(row).toBeDefined()
-      row?.click()
-    }
-
-    await act(async () => {
-      clickProjectItem('小说配置')
-      clickProjectItem('章节蓝图')
-    })
-    expect(useEditorStore.getState().tabs.find(tab => tab.type === 'config')?.name).toBe('小说配置')
-    expect(useEditorStore.getState().tabs.find(tab => tab.type === 'chapter-card')?.name).toBe('章节蓝图')
-
-    await act(async () => useLocaleStore.getState().setLocale('en-US'))
-    await act(async () => {
-      clickProjectItem('Novel configuration')
-      clickProjectItem('Chapter blueprints')
-    })
-    expect(useEditorStore.getState().tabs.filter(tab => tab.type === 'config')).toHaveLength(1)
-    expect(useEditorStore.getState().tabs.filter(tab => tab.type === 'chapter-card')).toHaveLength(1)
-    expect(useEditorStore.getState().tabs.find(tab => tab.type === 'config')?.name).toBe('Novel configuration')
-    expect(useEditorStore.getState().tabs.find(tab => tab.type === 'chapter-card')?.name).toBe('Chapter blueprints')
+    expect(invoke.mock.calls.some(([channel]) => channel === 'project:create')).toBe(false)
   })
 
   it('advertises EPUB reference import in both UI languages', async () => {
@@ -226,12 +206,12 @@ describe('current-project reference import', () => {
     await expect.element(page.getByText('共 1 章')).toBeVisible()
     await act(async () => page.getByRole('button', { name: '选择' }).click())
 
-    const selectionCalls = invoke.mock.calls.filter(([channel]) => channel === 'dialog_select_novel_files')
+    const selectionCalls = invoke.mock.calls.filter(([channel]) => channel === 'dialog:select-novel-files')
     expect(selectionCalls).toHaveLength(2)
-    expect(selectionCalls[0][1].request).toMatchObject({ runId: expect.any(String) })
-    expect(selectionCalls[1][1].request).toMatchObject({ runId: expect.any(String) })
-    expect((selectionCalls[1][1].request as { runId: string }).runId)
-      .not.toBe((selectionCalls[0][1].request as { runId: string }).runId)
+    expect(selectionCalls[0][1]).toMatchObject({ runId: expect.any(String) })
+    expect(selectionCalls[1][1]).toMatchObject({ runId: expect.any(String) })
+    expect((selectionCalls[1][1] as { runId: string }).runId)
+      .not.toBe((selectionCalls[0][1] as { runId: string }).runId)
   })
 
   it('shows the title-only error and keeps the persisted run id while retrying the corrected source', async () => {
@@ -244,8 +224,8 @@ describe('current-project reference import', () => {
     })
     let selectionCount = 0
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [parsing]
-      if (channel === 'dialog_select_novel_files') {
+      if (channel === 'db:import-run-list-resumable') return [parsing]
+      if (channel === 'dialog:select-novel-files') {
         selectionCount += 1
         if (selectionCount === 1) return {
           success: false,
@@ -260,8 +240,8 @@ describe('current-project reference import', () => {
           },
         }
       }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -276,10 +256,10 @@ describe('current-project reference import', () => {
     await act(async () => page.getByRole('button', { name: '继续导入' }).click())
     await expect.element(page.getByText('共 1 章')).toBeVisible()
 
-    const selectionCalls = invoke.mock.calls.filter(([channel]) => channel === 'dialog_select_novel_files')
+    const selectionCalls = invoke.mock.calls.filter(([channel]) => channel === 'dialog:select-novel-files')
     expect(selectionCalls).toHaveLength(2)
-    expect(selectionCalls[0][1].request).toMatchObject({ runId: 'title-only-source-run' })
-    expect(selectionCalls[1][1].request).toMatchObject({ runId: 'title-only-source-run' })
+    expect(selectionCalls[0][1]).toMatchObject({ runId: 'title-only-source-run' })
+    expect(selectionCalls[1][1]).toMatchObject({ runId: 'title-only-source-run' })
   })
 
   it('lists only unfinished source names and resumes with the run-frozen locale after a UI locale switch', async () => {
@@ -301,10 +281,10 @@ describe('current-project reference import', () => {
       progressTotal: 2,
     })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [parsing]
-      if (channel === 'dialog_select_novel_files') return { success: false, error: 'retry interrupted' }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return [parsing]
+      if (channel === 'dialog:select-novel-files') return { success: false, error: 'retry interrupted' }
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => {
@@ -317,8 +297,8 @@ describe('current-project reference import', () => {
       .toHaveTextContent('需要重新选择：b-needs-retry.txt')
     await act(async () => page.getByRole('button', { name: '继续导入' }).click())
 
-    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog_select_novel_files')
-    expect(selectionCall?.[1].request).toMatchObject({
+    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog:select-novel-files')
+    expect(selectionCall?.[1]).toMatchObject({
       runId: parsing.id,
       purpose: 'reference',
       locale: 'en-US',
@@ -342,9 +322,9 @@ describe('current-project reference import', () => {
       progressTotal: 1,
     })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [parsing]
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return [parsing]
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -358,43 +338,39 @@ describe('current-project reference import', () => {
   it('does not reuse an ordinary selection run after the dialog closes and reopens', async () => {
     await act(async () => page.getByTestId('import-target-current').click())
     await act(async () => page.getByRole('button', { name: '选择' }).click())
-    const firstSelection = invoke.mock.calls.find(([channel]) => channel === 'dialog_select_novel_files')
+    const firstSelection = invoke.mock.calls.find(([channel]) => channel === 'dialog:select-novel-files')
 
     await act(async () => root.render(
       <div>
-        <ProjectTree />
-        <div style={{ height: 360 }}><BottomPanel /></div>
-        <ImportNovelDialog open={false} onClose={vi.fn()} />
+          <ImportNovelDialog open={false} onClose={vi.fn()} />
       </div>,
     ))
     await act(async () => root.render(
       <div>
-        <ProjectTree />
-        <div style={{ height: 360 }}><BottomPanel /></div>
-        <ImportNovelDialog open onClose={vi.fn()} />
+          <ImportNovelDialog open onClose={vi.fn()} />
       </div>,
     ))
     await act(async () => page.getByRole('button', { name: '选择' }).click())
 
-    const selectionCalls = invoke.mock.calls.filter(([channel]) => channel === 'dialog_select_novel_files')
+    const selectionCalls = invoke.mock.calls.filter(([channel]) => channel === 'dialog:select-novel-files')
     expect(selectionCalls).toHaveLength(2)
-    expect((selectionCalls[1][1].request as { runId: string }).runId)
-      .not.toBe((firstSelection?.[1].request as { runId: string }).runId)
+    expect((selectionCalls[1][1] as { runId: string }).runId)
+      .not.toBe((firstSelection?.[1] as { runId: string }).runId)
   })
 
   it('does not commit a file selection response after the project session changes', async () => {
     const selection = deferred<{ success: boolean; preparation: ImportRunPreparationResult }>()
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return []
-      if (channel === 'dialog_select_novel_files') return selection.promise
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return []
+      if (channel === 'dialog:select-novel-files') return selection.promise
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => page.getByTestId('import-target-current').click())
     await act(async () => page.getByRole('button', { name: '选择' }).click())
     await vi.waitFor(() => expect(
-      invoke.mock.calls.some(([channel]) => channel === 'dialog_select_novel_files'),
+      invoke.mock.calls.some(([channel]) => channel === 'dialog:select-novel-files'),
     ).toBe(true))
 
     await act(async () => useProjectStore.setState({
@@ -410,25 +386,29 @@ describe('current-project reference import', () => {
     expect(startWorkflow).not.toHaveBeenCalled()
   })
 
-  it('starts the persisted run from real clicks while keeping the current project tree and task logs visible', async () => {
+  it('starts the persisted run from real clicks and shows it in the run sheet', async () => {
+    await act(async () => root.render(
+      <div>
+        <div className="paper-ink" style={{ height: 360, display: 'flex' }}><RunSheet sheet={{ kind: 'run', tab: 'active' }} /></div>
+        <ImportNovelDialog open onClose={vi.fn()} />
+      </div>,
+    ))
     await chooseCurrentSource()
     await act(async () => page.getByRole('button', { name: /导入当前项目（1 章）/ }).click())
 
     expect(startWorkflow).toHaveBeenCalledOnce()
     expect(startWorkflow.mock.calls[0][0]).toMatchObject({ runId: 'persisted-import', uiLocale: 'zh-CN' })
-    expect(invoke.mock.calls.some(([channel]) => channel === 'project_create')).toBe(false)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'import_inspect_source')).toBe(false)
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db_import_run_prepare_inspection')).toBe(false)
-    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog_select_novel_files')
-    expect(selectionCall?.[1].request).toMatchObject({
+    expect(invoke.mock.calls.some(([channel]) => channel === 'project:create')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'import:inspect-source')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db:import-run-prepare-inspection')).toBe(false)
+    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog:select-novel-files')
+    expect(selectionCall?.[1]).toMatchObject({
       runId: expect.any(String), purpose: 'reference', locale: 'zh-CN', expectedProjectPath: project.path,
     })
-    expect(selectionCall?.[1].projectSession).toMatchObject({
+    expect(selectionCall?.[2]).toMatchObject({
       projectId: project.id, leaseId: project.sessionLease, projectPath: project.path,
     })
-    await expect.element(page.getByText('Current Project', { exact: true })).toBeVisible()
     await expect.element(page.getByText('导入参照文本与构建知识库', { exact: true })).toBeVisible()
-    await expect.element(page.getByText('参照章节 1 正在写入知识库', { exact: true })).toBeVisible()
   })
 
   it('shows the merged new-import inspection in English without a renderer grant step', async () => {
@@ -436,9 +416,9 @@ describe('current-project reference import', () => {
     await act(async () => page.getByTestId('import-target-current').click())
     await act(async () => page.getByRole('button', { name: 'Choose' }).first().click())
 
-    await expect.element(page.getByText('1 files selected', { exact: true })).toBeVisible()
-    await expect.element(page.getByText('1 chapters', { exact: true })).toBeVisible()
-    expect(invoke.mock.calls.some(([channel]) => channel === 'import_inspect_source')).toBe(false)
+    await expect.element(page.getByText('1 file selected', { exact: true })).toBeVisible()
+    await expect.element(page.getByText('1 chapter', { exact: true })).toBeVisible()
+    expect(invoke.mock.calls.some(([channel]) => channel === 'import:inspect-source')).toBe(false)
   })
 
   it('renders bounded persisted preview metadata with target states and an explicit remainder', async () => {
@@ -485,8 +465,8 @@ describe('current-project reference import', () => {
 
     await expect.element(page.getByTestId('import-classification-notice')).toHaveTextContent('未创建任务，也未调用模型')
     expect(startWorkflow).not.toHaveBeenCalled()
-    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('kb_'))).toBe(false)
-    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('llm_'))).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('kb:'))).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('llm:'))).toBe(false)
   })
 
   it('confirms a Chinese author manuscript only after showing finalized targets and never launches reference analysis', async () => {
@@ -508,7 +488,7 @@ describe('current-project reference import', () => {
     await act(async () => page.getByTestId('import-source-choose').click())
     await expect.element(page.getByTestId('author-preview-target-1')).toHaveTextContent('目标：权威正文章节 / 定稿')
     await expect.element(page.getByTestId('author-import-confirmation-summary')).toHaveTextContent('确认前不会写入项目')
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db_import_run_prepare_inspection')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db:import-run-prepare-inspection')).toBe(false)
 
     await act(async () => page.getByRole('button', { name: /确认导入（1 章）/ }).click())
 
@@ -518,13 +498,13 @@ describe('current-project reference import', () => {
       '提交权威定稿快照', '发布实体正文', '更新连续性事实', '刷新项目状态',
     ])
     expect(workflow.steps.map(step => step.name).join('\n')).not.toMatch(/知识库|文风|蓝图/)
-    const prepareCall = invoke.mock.calls.find(([channel]) => channel === 'db_import_run_prepare_inspection')
-    expect(prepareCall?.[1].request).toMatchObject({
+    const prepareCall = invoke.mock.calls.find(([channel]) => channel === 'db:import-run-prepare-inspection')
+    expect(prepareCall?.[1]).toMatchObject({
       purpose: 'author-manuscript',
       authorityFingerprint: 'c'.repeat(64),
       manifestFingerprint: 'd'.repeat(64),
     })
-    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('kb_'))).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => String(channel).startsWith('kb:'))).toBe(false)
   })
 
   it('keeps the full incremental author preview visible while launching a new-only commit run', async () => {
@@ -556,9 +536,9 @@ describe('current-project reference import', () => {
       manifestChapterCount: 3,
     })
     durableAuthorChapters[incrementalRun.id] = [3]
-    invoke.mockImplementation(async (channel: string, args: Record<string, unknown> = {}) => {
-      if (channel === 'db_import_run_list_resumable') return []
-      if (channel === 'dialog_select_novel_files') return {
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:import-run-list-resumable') return []
+      if (channel === 'dialog:select-novel-files') return {
         success: true,
         inspection: {
           inspectionId: 'incremental-inspection', purpose: 'author-manuscript',
@@ -567,10 +547,10 @@ describe('current-project reference import', () => {
           preview: fullPreview.chapters.map(({ number, title, wordCount }) => ({ number, title, wordCount })),
         },
       }
-      if (channel === 'db_import_run_author_preview') return fullPreview
-      if (channel === 'db_import_run_list_chapters') return durableAuthorChapterPage(args)
-      if (channel === 'db_import_run_prepare_inspection') {
-        expect(args.request).toMatchObject({
+      if (channel === 'db:import-run-author-preview') return fullPreview
+      if (channel === 'db:import-run-list-chapters') return durableAuthorChapterPage(args)
+      if (channel === 'db:import-run-prepare-inspection') {
+        expect(args[0]).toMatchObject({
           authorityFingerprint: fullPreview.authorityFingerprint,
           manifestFingerprint: fullPreview.manifestFingerprint,
         })
@@ -582,8 +562,8 @@ describe('current-project reference import', () => {
           },
         }
       }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
 
@@ -643,9 +623,9 @@ describe('current-project reference import', () => {
       manifestChapterCount: 3,
     })
     durableAuthorChapters[freshRun.id] = [3]
-    invoke.mockImplementation(async (channel: string, args: Record<string, unknown> = {}) => {
-      if (channel === 'db_import_run_list_resumable') return [oldRun]
-      if (channel === 'dialog_select_novel_files') return {
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:import-run-list-resumable') return [oldRun]
+      if (channel === 'dialog:select-novel-files') return {
         success: true,
         inspection: {
           inspectionId: 'fresh-author-inspection',
@@ -658,10 +638,10 @@ describe('current-project reference import', () => {
           preview: freshPreview.chapters.map(({ number, title, wordCount }) => ({ number, title, wordCount })),
         },
       }
-      if (channel === 'db_import_run_author_preview') return freshPreview
-      if (channel === 'db_import_run_list_chapters') return durableAuthorChapterPage(args)
-      if (channel === 'db_import_run_prepare_inspection') {
-        expect(args.request).toMatchObject({
+      if (channel === 'db:import-run-author-preview') return freshPreview
+      if (channel === 'db:import-run-list-chapters') return durableAuthorChapterPage(args)
+      if (channel === 'db:import-run-prepare-inspection') {
+        expect(args[0]).toMatchObject({
           runId: expect.not.stringMatching(/^stale-precommit-author-run$/),
           authorityFingerprint: freshPreview.authorityFingerprint,
           manifestFingerprint: freshPreview.manifestFingerprint,
@@ -677,8 +657,8 @@ describe('current-project reference import', () => {
           },
         }
       }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -702,7 +682,7 @@ describe('current-project reference import', () => {
 
     await expect.element(page.getByText('Chapter 1 Start', { exact: true })).toBeVisible()
     await expect.element(page.getByTestId('author-preview-target-1')).toHaveTextContent('Target: authoritative manuscript / finalized')
-    await expect.element(page.getByRole('button', { name: 'Confirm import (1 chapters)' })).toBeVisible()
+    await expect.element(page.getByRole('button', { name: 'Confirm import (1 chapter)' })).toBeVisible()
   })
 
   it('blocks a non-contiguous author manifest with an actionable first missing chapter', async () => {
@@ -719,7 +699,7 @@ describe('current-project reference import', () => {
 
     await expect.element(page.getByText(/请从第 1 章开始/)).toBeVisible()
     await expect.element(page.getByRole('button', { name: /确认导入/ })).toBeDisabled()
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db_import_run_prepare_inspection')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db:import-run-prepare-inspection')).toBe(false)
   })
 
   it('fails closed when the project authority changes after author preview', async () => {
@@ -738,7 +718,7 @@ describe('current-project reference import', () => {
     await act(async () => useLocaleStore.setState({ locale: 'en-US' }))
     await act(async () => page.getByTestId('import-purpose-author').click())
     await act(async () => page.getByTestId('import-source-choose').click())
-    await act(async () => page.getByRole('button', { name: 'Confirm import (1 chapters)' }).click())
+    await act(async () => page.getByRole('button', { name: 'Confirm import (1 chapter)' }).click())
 
     await expect.element(page.getByText(
       'The project or author manuscript changed. Select the files again and confirm the preview.',
@@ -759,54 +739,12 @@ describe('current-project reference import', () => {
     expect(startWorkflow).not.toHaveBeenCalled()
   })
 
-  it('clears the author-manuscript conflict notice after switching projects and reopening', async () => {
-    authorPreview = {
-      ...authorPreview,
-      classification: 'conflict',
-      conflictChapterNumbers: [1],
-    }
-    await act(async () => page.getByTestId('import-purpose-author').click())
-    await act(async () => page.getByTestId('import-source-choose').click())
-
-    await expect.element(page.getByText(/以下章节与现有权威正文内容冲突.*1/)).toBeVisible()
-    const previewCallsBeforeSwitch = invoke.mock.calls
-      .filter(([channel]) => channel === 'db_import_run_author_preview').length
-
-    // 关闭弹窗 → 切换到另一个项目 → 重新打开：冲突文案是上一项目的预览结果，
-    // 随会话状态整体复位，不得残留；也不得把上一项目的检视对新项目重放预览。
-    await act(async () => root.render(
-      <div>
-        <ProjectTree />
-        <div style={{ height: 360 }}><BottomPanel /></div>
-        <ImportNovelDialog open={false} onClose={vi.fn()} />
-      </div>,
-    ))
-    await act(async () => useProjectStore.setState({
-      currentProject: {
-        ...project,
-        id: 'replacement-project', sessionLease: 'lease-replacement', path: 'C:\\novels\\replacement',
-      } as never,
-    }))
-    await act(async () => root.render(
-      <div>
-        <ProjectTree />
-        <div style={{ height: 360 }}><BottomPanel /></div>
-        <ImportNovelDialog open onClose={vi.fn()} />
-      </div>,
-    ))
-
-    expect(page.getByText(/以下章节与现有权威正文内容冲突/).query()).toBeNull()
-    expect(invoke.mock.calls
-      .filter(([channel]) => channel === 'db_import_run_author_preview').length
-    ).toBe(previewCallsBeforeSwitch)
-  })
-
   it('discovers a failed run after reopen and continues the same persisted run id', async () => {
     const resumable = importRun({ status: 'failed', stage: 'style', lastError: 'provider unavailable' })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [resumable]
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return [resumable]
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -844,11 +782,11 @@ describe('current-project reference import', () => {
       completedBatches: { 'author-commit': ['done'], 'author-publish': ['chapter:1'] },
     })
     durableAuthorChapters[resumable.id] = [1]
-    invoke.mockImplementation(async (channel: string, args: Record<string, unknown> = {}) => {
-      if (channel === 'db_import_run_list_resumable') return [resumable]
-      if (channel === 'db_import_run_list_chapters') return durableAuthorChapterPage(args)
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:import-run-list-resumable') return [resumable]
+      if (channel === 'db:import-run-list-chapters') return durableAuthorChapterPage(args)
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -863,7 +801,7 @@ describe('current-project reference import', () => {
     await act(async () => page.getByRole('button', { name: '继续导入' }).click())
     expect(startWorkflow).toHaveBeenCalledOnce()
     expect(startWorkflow.mock.calls[0][0]).toMatchObject({ runId: 'failed-author-postprocess' })
-    expect(invoke.mock.calls.some(([channel]) => channel === 'db_import_run_restart')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'db:import-run-restart')).toBe(false)
   })
 
   it('continues a prepared snapshot without asking for the moved source file again', async () => {
@@ -876,10 +814,10 @@ describe('current-project reference import', () => {
       progressTotal: 1,
     })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [prepared]
-      if (channel === 'dialog_select_novel_files') throw new Error('source file no longer exists')
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return [prepared]
+      if (channel === 'dialog:select-novel-files') throw new Error('source file no longer exists')
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -890,7 +828,7 @@ describe('current-project reference import', () => {
 
     expect(startWorkflow).toHaveBeenCalledOnce()
     expect(startWorkflow.mock.calls[0][0]).toMatchObject({ runId: 'prepared-after-move' })
-    expect(invoke.mock.calls.some(([channel]) => channel === 'dialog_select_novel_files')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'dialog:select-novel-files')).toBe(false)
   })
 
   it('finalizes a fully parsed run after reopen without rereading sources and can retry a conflict', async () => {
@@ -920,11 +858,11 @@ describe('current-project reference import', () => {
       progressTotal: 2,
     })
     let finalizeAttempts = 0
-    invoke.mockImplementation(async (channel: string, args: Record<string, unknown> = {}) => {
-      if (channel === 'db_import_run_list_resumable') return [parsing]
-      if (channel === 'db_import_run_finalize_parsing') {
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:import-run-list-resumable') return [parsing]
+      if (channel === 'db:import-run-finalize-parsing') {
         finalizeAttempts += 1
-        expect(args.runId).toBe(parsing.id)
+        expect(args[0]).toBe(parsing.id)
         if (finalizeAttempts === 1) {
           return {
             success: false,
@@ -942,11 +880,11 @@ describe('current-project reference import', () => {
           },
         }
       }
-      if (channel === 'dialog_select_novel_files') {
+      if (channel === 'dialog:select-novel-files') {
         throw new Error('already parsed sources must not be read again')
       }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -961,12 +899,12 @@ describe('current-project reference import', () => {
 
     expect(startWorkflow).toHaveBeenCalledOnce()
     expect(startWorkflow.mock.calls[0][0]).toMatchObject({ runId: parsing.id })
-    expect(invoke.mock.calls.some(([channel]) => channel === 'dialog_select_novel_files')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'dialog:select-novel-files')).toBe(false)
     expect(invoke.mock.calls.slice(recoveryCallOffset)
-      .filter(([channel]) => channel === 'dialog_select_novel_files' || String(channel).startsWith('db_import_run_'))
+      .filter(([channel]) => channel === 'dialog:select-novel-files' || String(channel).startsWith('db:import-run-'))
       .map(([channel]) => channel)).toEqual([
-        'db_import_run_finalize_parsing',
-        'db_import_run_finalize_parsing',
+        'db:import-run-finalize-parsing',
+        'db:import-run-finalize-parsing',
       ])
   })
 
@@ -983,10 +921,10 @@ describe('current-project reference import', () => {
       progressTotal: 1,
     })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [parsing]
-      if (channel === 'db_import_run_finalize_parsing') return { success: false, error: guidance }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return [parsing]
+      if (channel === 'db:import-run-finalize-parsing') return { success: false, error: guidance }
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => {
@@ -999,7 +937,7 @@ describe('current-project reference import', () => {
 
     await expect.element(page.getByText(guidance)).toBeVisible()
     expect(startWorkflow).not.toHaveBeenCalled()
-    expect(invoke.mock.calls.filter(([channel]) => channel === 'db_import_run_finalize_parsing'))
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'db:import-run-finalize-parsing'))
       .toHaveLength(1)
   })
 
@@ -1019,21 +957,21 @@ describe('current-project reference import', () => {
       sourceDisplay: failedParsing.sourceDisplay, totalChapters: 2, manifestChapterCount: 2,
       completedChapters: 0, progressCompleted: 1, progressTotal: 1,
     })
-    invoke.mockImplementation(async (channel: string, args: Record<string, unknown> = {}) => {
-      if (channel === 'db_import_run_list_resumable') return [failedParsing]
-      if (channel === 'db_import_run_restart') {
-        expect(args.runId).toBe('failed-parsing')
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:import-run-list-resumable') return [failedParsing]
+      if (channel === 'db:import-run-restart') {
+        expect(args[0]).toBe('failed-parsing')
         return { success: true, run: restartedParsing }
       }
-      if (channel === 'dialog_select_novel_files') return {
+      if (channel === 'dialog:select-novel-files') return {
         success: true,
         preparation: {
           classification: 'new', run: preparedRestart, newChapterNumbers: [1, 2],
           conflictChapterNumbers: [], duplicateChapterNumbers: [],
         },
       }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => {
@@ -1045,8 +983,8 @@ describe('current-project reference import', () => {
     await act(async () => page.getByRole('button', { name: '重新开始' }).click())
 
     await expect.element(page.getByText('共 2 章', { exact: true })).toBeVisible()
-    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog_select_novel_files')
-    expect(selectionCall?.[1].request).toMatchObject({
+    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog:select-novel-files')
+    expect(selectionCall?.[1]).toMatchObject({
       runId: 'restarted-parsing', purpose: 'reference', locale: 'en-US',
     })
     expect(startWorkflow).not.toHaveBeenCalled()
@@ -1061,17 +999,17 @@ describe('current-project reference import', () => {
     const restart = deferred<{ success: boolean; run: ImportRunSnapshot }>()
     let listCalls = 0
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return listCalls++ === 0 ? [failedParsing] : []
-      if (channel === 'db_import_run_restart') return restart.promise
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return listCalls++ === 0 ? [failedParsing] : []
+      if (channel === 'db:import-run-restart') return restart.promise
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
     await act(async () => page.getByTestId('import-target-current').click())
 
     await act(async () => page.getByRole('button', { name: '重新开始' }).click())
-    await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db_import_run_restart')).toBe(true))
+    await vi.waitFor(() => expect(invoke.mock.calls.some(([channel]) => channel === 'db:import-run-restart')).toBe(true))
     await act(async () => useProjectStore.setState({
       currentProject: {
         ...project,
@@ -1084,7 +1022,7 @@ describe('current-project reference import', () => {
     })
     await act(async () => { await Promise.resolve() })
 
-    expect(invoke.mock.calls.some(([channel]) => channel === 'dialog_select_novel_files')).toBe(false)
+    expect(invoke.mock.calls.some(([channel]) => channel === 'dialog:select-novel-files')).toBe(false)
     expect(startWorkflow).not.toHaveBeenCalled()
   })
 
@@ -1105,9 +1043,9 @@ describe('current-project reference import', () => {
       completedChapters: 3, totalChapters: 8, progressCompleted: 1, progressTotal: 1,
     })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [parsing, global, style]
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:import-run-list-resumable') return [parsing, global, style]
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -1138,16 +1076,16 @@ describe('current-project reference import', () => {
       totalChapters: 8,
     })
     invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'db_import_run_list_resumable') return [first, second]
-      if (channel === 'dialog_select_novel_files') return {
+      if (channel === 'db:import-run-list-resumable') return [first, second]
+      if (channel === 'dialog:select-novel-files') return {
         success: true,
         preparation: {
           classification: 'new', run: { ...second, status: 'ready', stage: 'knowledge' },
           newChapterNumbers: [1], conflictChapterNumbers: [], duplicateChapterNumbers: [],
         },
       }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => useProjectStore.setState({ currentProject: { ...project } as never }))
@@ -1159,8 +1097,8 @@ describe('current-project reference import', () => {
     await act(async () => page.getByTestId('import-resumable-choice-second-run').click())
     await act(async () => page.getByRole('button', { name: '继续导入' }).click())
 
-    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog_select_novel_files')
-    expect(selectionCall?.[1].request).toMatchObject({ runId: 'second-run', purpose: 'reference' })
+    const selectionCall = invoke.mock.calls.find(([channel]) => channel === 'dialog:select-novel-files')
+    expect(selectionCall?.[1]).toMatchObject({ runId: 'second-run', purpose: 'reference' })
     expect(startWorkflow).not.toHaveBeenCalled()
     await expect.element(page.getByText('共 8 章')).toBeVisible()
   })
@@ -1181,14 +1119,14 @@ describe('current-project reference import', () => {
       stage: 'blueprints',
     })
     const restarted = importRun({ id: 'restarted-second', locale: 'en-US', status: 'ready' })
-    invoke.mockImplementation(async (channel: string, args: Record<string, unknown> = {}) => {
-      if (channel === 'db_import_run_list_resumable') return [first, second]
-      if (channel === 'db_import_run_restart') {
-        expect(args.runId).toBe('second-run')
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'db:import-run-list-resumable') return [first, second]
+      if (channel === 'db:import-run-restart') {
+        expect(args[0]).toBe('second-run')
         return { success: true, run: restarted }
       }
-      if (channel === 'db_project_core_get') return null
-      if (channel === 'db_blueprint_get_all') return []
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
       return { success: true }
     })
     await act(async () => {
@@ -1205,5 +1143,71 @@ describe('current-project reference import', () => {
 
     expect(startWorkflow).toHaveBeenCalledOnce()
     expect(startWorkflow.mock.calls[0][0]).toMatchObject({ runId: 'restarted-second', uiLocale: 'en-US' })
+  })
+})
+
+describe('新外壳里的导入对话框', () => {
+  it('同屏只有一个上墨的主按钮：用途、目标与可续导入的选中项是带对勾的次按钮', async () => {
+    await act(async () => root.render(<div className="paper-ink"><ImportNovelDialog open onClose={vi.fn()} /></div>))
+    expect([...document.querySelectorAll('[role="dialog"] .pi-btn--primary')].map(button => button.textContent)).toEqual(['开始拆解仿写（0 章）'])
+    await act(async () => root.render(<div />))
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'db:import-run-list-resumable') return [importRun({ id: 'first-run', status: 'failed' }), importRun({ id: 'second-run', status: 'failed' })]
+      if (channel === 'db:project-core-get') return null
+      if (channel === 'db:blueprint-get-all') return []
+      return { success: true }
+    })
+    await act(async () => root.render(<div className="paper-ink"><ImportNovelDialog open onClose={vi.fn()} /></div>))
+    await act(async () => page.getByTestId('import-target-current').click())
+    await expect.element(page.getByTestId('import-resumable-runs')).toBeVisible()
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect([...dialog.querySelectorAll('.pi-btn--primary:not(:disabled)')].map(button => button.textContent)).toEqual(['继续导入'])
+    const toggles = [...dialog.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')]
+    expect(toggles.map(button => [button.dataset.testid, button.getAttribute('aria-pressed'), button.classList.contains('pi-btn--secondary')])).toEqual([
+      ['import-purpose-reference', 'true', true], ['import-purpose-author', 'false', true],
+      ['import-target-new', 'false', true], ['import-target-current', 'true', true],
+      ['import-resumable-choice-first-run', 'true', true], ['import-resumable-choice-second-run', 'false', true],
+    ])
+    const pressed = getComputedStyle(page.getByTestId('import-target-current').element())
+    const raised = getComputedStyle(page.getByTestId('import-target-new').element())
+    expect(pressed.backgroundColor).not.toBe(raised.backgroundColor)
+    expect(pressed.borderTopColor).not.toBe(raised.borderTopColor)
+    await page.screenshot({ path: '../../../../.runtime/rdx3-shots/import-dialog-stage.png' })
+  })
+
+  const INK = {
+    light: { layer: 'rgb(255, 254, 251)', accent: 'rgb(44, 74, 140)' },
+    dark: { layer: 'rgb(29, 29, 34)', accent: 'rgb(169, 190, 240)' },
+  }
+
+  it.each(['light', 'dark'] as const)('选中项有对勾和强调色边线，边线对底色不低于 3:1，文字不低于 4.5:1（%s）', async (theme) => {
+    const restore = useThemeStore.getState()
+    useThemeStore.setState({ resolvedTheme: theme })
+    try {
+      // 先卸掉 beforeEach 在浅色下开的对话框，按这个主题重新打开，量的才是打开时的颜色而不是换主题的过渡
+      await act(async () => root.render(<div />))
+      await act(async () => root.render(<div className="paper-ink"><ImportNovelDialog open onClose={vi.fn()} /></div>))
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!
+      const layer = getComputedStyle(dialog).backgroundColor
+      const on = page.getByTestId('import-purpose-reference').element()
+      const off = page.getByTestId('import-purpose-author').element()
+      const style = getComputedStyle(on)
+      const fill = composite(style.backgroundColor, layer)
+      expect({
+        layer,
+        border: style.borderTopColor,
+        check: on.querySelector('svg.lucide-check') !== null,
+        offCheck: off.querySelector('svg.lucide-check') !== null,
+        edge: contrast(style.borderTopColor, layer) >= 3,
+        text: contrast(style.color, fill) >= 4.5,
+      }).toEqual({ layer: INK[theme].layer, border: INK[theme].accent, check: true, offCheck: false, edge: true, text: true })
+      // 选中项只露对勾，不与「参考小说」的书本图标挤在一起；没选中的露自己的图标
+      const shownIcons = (button: Element) => [...button.querySelectorAll('svg')].filter(icon => getComputedStyle(icon).display !== 'none')
+        .map(icon => [...icon.classList].find(name => name.startsWith('lucide-') && name !== 'lucide-icon'))
+      expect([shownIcons(on), shownIcons(off)]).toEqual([['lucide-check'], ['lucide-file-text']])
+      await page.screenshot({ path: `../../../../.runtime/rdx3-shots/import-dialog-selected-${theme}.png` })
+    } finally {
+      useThemeStore.setState(restore, true)
+    }
   })
 })

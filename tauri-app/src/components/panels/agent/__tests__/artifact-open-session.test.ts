@@ -11,7 +11,7 @@ vi.mock('../../../ui/AlertDialog', () => ({
 import { openArtifactInEditor } from '../artifact-open'
 import { setActiveProjectSessionContext } from '../../../../shared/project-session-context'
 import { useEditorStore } from '../../../../stores/editor-store'
-import { useLayoutStore } from '../../../../stores/layout-store'
+import { useStageStore } from '../../../../stores/navigation/stage-store'
 import { useLocaleStore } from '../../../../stores/locale-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import { installTauriInternals, type TauriInternalsHandle } from '../../../../../test/helpers/tauri-internals'
@@ -33,7 +33,7 @@ function projectWithLease(leaseId: string) {
 let tauriInternals: TauriInternalsHandle
 beforeEach(() => {
   mocks.alertError.mockReset()
-  useLayoutStore.setState({ aiPanelOpen: false, rightView: 'agent' })
+  useStageStore.setState({ sheet: null })
   useLocaleStore.setState({ locale: 'en-US' })
   useEditorStore.getState().clearTabs()
   useProjectStore.setState({ currentProject: projectWithLease('lease-B') })
@@ -107,7 +107,7 @@ describe('agent artifact open session ownership', () => {
       runId: 'synthetic-registration', status: 'waiting', projectPath,
       projectSession: { projectId: 'same-project-id', leaseId: 'lease-B', projectPath },
     })).toBe(true)
-    expect(useLayoutStore.getState()).toMatchObject({ aiPanelOpen: true, rightView: 'ai-output' })
+    expect(useStageStore.getState()).toMatchObject({ sheet: { kind: 'run', tab: 'active' } })
     expect(tauriInternals.invoke).not.toHaveBeenCalled()
     expect(useEditorStore.getState().tabs).toEqual([])
     expect(mocks.alertError).not.toHaveBeenCalled()
@@ -119,7 +119,7 @@ describe('agent artifact open session ownership', () => {
       runId: leaseId ? 'synthetic-registration' : '', status: 'waiting', projectPath,
       projectSession: { projectId: 'same-project-id', leaseId: leaseId || 'lease-B', projectPath },
     })).toBe(false)
-    expect(useLayoutStore.getState()).toMatchObject({ aiPanelOpen: false, rightView: 'agent' })
+    expect(useStageStore.getState()).toMatchObject({ sheet: null })
     expect(tauriInternals.invoke).not.toHaveBeenCalled()
   })
 

@@ -3,6 +3,7 @@ import { ipc } from '../services/ipc-client'
 import type {
   CreateProjectConfig,
   ProjectOpenTarget,
+  ProjectDirectoryGrant,
   ProjectChannels,
   ProjectData,
   ProjectSessionContext,
@@ -402,8 +403,12 @@ interface ProjectState {
   fileTree: FileNode[]
   /** 最近项目列表 */
   recentProjects: ProjectChannels['project:recent-list']['return']
+  /** 这次启动已经读到过一次最近项目；读到之前空列表不代表书架是空的。 */
+  recentProjectsLoaded: boolean
   /** 是否正在加载 */
   loading: boolean
+  legacyImportNotice: string
+  legacyImportBusy: boolean
   /** 每次成功打开项目都递增；同一路径重开也属于新的渲染进程项目会话。 */
   projectSessionEpoch: number
 
@@ -412,6 +417,7 @@ interface ProjectState {
   createProject: (config: CreateProjectConfig) => Promise<boolean>
   /** 打开项目 */
   openProject: (target: ProjectOpenTarget) => Promise<boolean>
+  importLegacyProject: (source?: ProjectDirectoryGrant) => Promise<boolean>
   /** 保存项目 */
   saveProject: (expectedProjectSession?: ProjectSessionContext) => Promise<boolean>
   /** 更新小说配置 */
@@ -448,7 +454,10 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
   currentProject: null,
   fileTree: [],
   recentProjects: [],
+  recentProjectsLoaded: false,
   loading: false,
+  legacyImportNotice: '',
+  legacyImportBusy: false,
   projectSessionEpoch: 0,
 
   createProject: async (config) => {
@@ -711,9 +720,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
           return false
         }
         if (!sameRendererProject(rendererProject, get().currentProject)) return false
-        const { useLayoutStore } = await import('./layout-store')
+        const { navigate } = await import('./navigation/navigation-intents')
         if (!isLatestRequest() || !sameRendererProject(rendererProject, get().currentProject)) return false
-        const layoutBeforeCommit = useLayoutStore.getState()
         if (rendererProjectPath) {
           if (preparedTransition?.decision === 'discard') {
             discardProjectTransitionDrafts(rendererProjectPath)
@@ -726,6 +734,8 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
             ? result.project!.novelConfig : restored.value },
           projectSessionEpoch: state.projectSessionEpoch + 1,
         }))
+        // 默认落点与提交同步落下：之后读文件树、最近项目期间作者的导航（回书房、开运行侧页、换侧栏）都在它之后，不会被改回。
+        navigate({ kind: 'stage' })
         const partialLoadWarnings: string[] = []
         // Opening a project revokes old shelf preview capabilities in main.
         // Refresh the visible shelf handles without turning a successful open into a failure.
@@ -754,16 +764,6 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
         }
         // 此后渲染进程已经提交返回项目；过期状态只影响派生视图，可以安全退出。
         if (!isLatestRequest()) return false
-        // 文件树加载期间的显式导航优先于项目打开时的默认侧栏。
-        useLayoutStore.setState((layout) => ({
-          ...(layout.sidebarView === layoutBeforeCommit.sidebarView
-            && layout.activeRailItem === layoutBeforeCommit.activeRailItem
-            && layout.sidebarOpen === layoutBeforeCommit.sidebarOpen
-            ? { sidebarOpen: true, sidebarView: 'project', activeRailItem: 'project' as const }
-            : {}),
-          immersive: false,
-          preImmersivePanels: null,
-        }))
         // 统一初始化第二层状态仓库（角色卡、草稿等）
         let layer2Warnings: string[] = []
         try {
@@ -810,6 +810,15 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
     } finally {
       if (isLatestRequest()) set({ loading: false })
     }
+  },
+
+  importLegacyProject: async () => {
+    // 首版未迁移旧库导入，程序化入口同样失败关闭，不先弹原生选择器。
+    set({ legacyImportBusy: false, legacyImportNotice: projectText(
+      '首版不支持旧库导入，不会读取或修改旧项目。',
+      'Legacy import is not supported in this release. Existing projects are not read or changed.',
+    ) })
+    return false
   },
 
   saveProject: async (expectedProjectSession) => {
@@ -987,7 +996,14 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
 
   loadRecentProjects: async () => {
     const requestId = ++recentProjectsRequestSequence
-    const list = await ipc.invoke('project:recent-list')
+    let list: ProjectChannels['project:recent-list']['return']
+    try {
+      list = await ipc.invoke('project:recent-list')
+    } catch (error) {
+      // 读不到也算读过：书房据此显示空书房，而不是一直停在等待里。
+      if (requestId === recentProjectsRequestSequence) set({ recentProjectsLoaded: true })
+      throw error
+    }
     if (requestId !== recentProjectsRequestSequence) return
     const seenProjectPaths = new Set<string>()
     const recentProjects = list.filter((project) => {
@@ -996,7 +1012,7 @@ export const useProjectStore = create<ProjectState>()((set, get) => ({
       seenProjectPaths.add(key)
       return true
     })
-    set({ recentProjects })
+    set({ recentProjects, recentProjectsLoaded: true })
   },
 
   removeRecentProject: async (projectPath) => {

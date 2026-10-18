@@ -25,6 +25,7 @@ import {
 } from '../shared/project-session-context'
 import { useProjectStore } from './project-store'
 import { useLocaleStore } from './locale-store'
+import { navigate } from './navigation/navigation-intents'
 import {
   normalizeWorkflowResourceKeys,
   workflowResourceClaimsConflict,
@@ -325,10 +326,6 @@ interface WorkflowState {
   hasActiveRun: () => boolean
   /** 活跃任务数量 */
   activeCount: () => number
-  /** 获取当前正在流式输出的活跃工作流（供 AI 输出面板消费） */
-  getActiveStreamingRun: () => WorkflowRun | null
-  /** 获取当前最活跃任务的步骤信息（供 StatusBar 胶囊显示） */
-  getActiveStepInfo: () => { title: string; stepName: string; progress: number; total: number; completed: number } | null
 
   // ===== Actions =====
   /** 启动一个工作流（可并发），返回 runId */
@@ -404,34 +401,6 @@ export const useWorkflowStore = create<WorkflowState>()((set, get) => ({
   getResourceConflict: (definition) => findResourceConflict(get().activeRuns, definition),
   hasActiveRun: () => get().activeRuns.length > 0,
   activeCount: () => get().activeRuns.length,
-
-  getActiveStreamingRun: () => {
-    const runs = get().activeRuns
-    // 优先返回正在 running 的任务；其次 waiting 的
-    return runs.find(r => r.status === 'running')
-      || runs.find(r => r.status === 'waiting')
-      || runs.find(r => r.status === 'paused')
-      || runs.find(r => r.status === 'cancelling')
-      || null
-  },
-
-  getActiveStepInfo: () => {
-    const run = get().activeRuns.find(r =>
-      r.status === 'running'
-      || r.status === 'waiting'
-      || r.status === 'paused'
-      || r.status === 'cancelling')
-    if (!run) return null
-    const step = run.steps[run.currentStepIndex] || run.steps[0]
-    const completed = run.steps.filter(s => s.status === 'completed').length
-    return {
-      title: run.title,
-      stepName: step?.name || '',
-      progress: step?.progress || 0,
-      total: run.steps.length,
-      completed,
-    }
-  },
 
   setCharacterProposalChoices: (runId, choices) => {
     const run = get().activeRuns.find(candidate => candidate.id === runId)
@@ -668,8 +637,7 @@ export const useWorkflowStore = create<WorkflowState>()((set, get) => ({
       `[Started] Workflow "${definition.title}" started`,
     ), uiLocale)
 
-    // 自动联动：打开右侧面板的 AI 输出视图（非阻塞 import 避免循环依赖）
-    import('./layout-store').then(m => m.useLayoutStore.getState().openRightPanel('ai-output')).catch(() => {})
+    navigate({ kind: 'run', facet: 'output' })
 
     // 创建执行上下文
     const context: WorkflowContext = {
