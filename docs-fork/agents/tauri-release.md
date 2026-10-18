@@ -4,7 +4,7 @@
 
 首版 **1.0.0-beta**、标签 **lorekeeper-v1.0.0-beta** 使用预发布且不设最新版。后续已获准准备 **1.0.0-beta.1**：保留 beta 名称，允许普通 Release + Latest，正文明确预览/非正式版，不覆盖旧版。只修改Tauri版本，不改Electron根版本。
 
-本轮进程归组仍未修复；是否接受这一限制并先公开 beta.1 的确认未收到选择，**尚未公开新版**。配置就绪、提交或打包不代表发布成功。
+进程归组仍未修复；用户最新明确**不接受带此缺陷先公开**，要求继续调研，因此新版发布暂停。配置就绪、提交或打包不代表发布成功，不再以旧方案授权请求缺陷豁免。后续优先按[研究矩阵](../research/webview-process-attribution.md)核验。
 
 工作流 `.github/workflows/tauri-release-package.yml` 只接受 `workflow_dispatch`。默认 `publish=false` 仍仅打包；明确 `publish=true` 才允许独立发布作业写Release/标签。三平台为Windows x64（NSIS/MSI）、macOS ARM64/Intel（DMG），不提供Linux安装包。
 

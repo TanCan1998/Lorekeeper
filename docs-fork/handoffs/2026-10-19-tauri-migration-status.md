@@ -1,14 +1,14 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **110** 次：中文安全卸载与预览最新版发布准备。**不是进程归组修复或新版发布完成报告。**
+> [当前入口](./CURRENT.md) · 第 **111** 次：进程归组深入调研，用户明确拒绝带缺陷发布。本轮只读研究，无产品修改或新代码测试。**不是进程归组修复或新版发布完成报告。**
 
-## 已验证状态
+## 已验证状态（代码验证沿用第110次，不冒充本轮重测）
 
 - 代码 **44259fa3fff24134fe548ed72bf35dfe1b8b705b** 已提交推送 `origin/master`。名称改为 LoreKeeper，应用版本为 1.0.0-beta.1；标识、数据根、既有MSI UpgradeCode保持不变。
 - 本轮未修改根 `package.json`、`pnpm-lock.yaml`、`vite.config.ts`、`.npmrc`、`electron/`、根 `src/` 或上游镜像 `docs/`；无新依赖、schema或渲染层IPC权限。
 - 上轮上游同步仍有效：合入 `d21207c8` 的19提交，合并 `460fcd77`；英文README与上游一致，中文仅保留顶部fork说明。图标代码 `e31c42d1` 已接入，详见[图标登记](../design/branding.md)。
 
-| 验证范围 | 本轮结果 | 版本与证据 |
+| 验证范围 | 最近结果 | 版本与证据 |
 |---|---|---|
 | Rust 清理守卫 | 9通过，覆盖默认保留、根/主目录/全局根、嵌套项目、Vela、junction、大小写、确认期间目录/清单替换 | 44259fa3；本机 `.pi/tmp/installer-validation/rust-cleanup.log` |
 | Rust 项目访问回归 | 9通过 | 同上 `project-access.log` |
@@ -20,7 +20,18 @@
 | 原生安装/卸载/删除/注册表 | **未执行** | 无前台GUI、真实文件删除或系统配置修改 |
 | 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
-## 本次更新
+## 本次更新：归组机制调研
+
+用户明确“不接受，继续搜索调研”，因此归组缺陷解决前保持发布暂停，不再询问是否带此限制先公开。新增[研究结论与验证矩阵](../research/webview-process-attribution.md)：
+
+- 微软官方记录DPI兼容shim可能经shell启动浏览器，发现可证伪的父链假设；相关flag被明确限定为开发诊断，不能直接用于生产。
+- 比对Tauri默认清单和Tao运行时DPI初始化，拟以隔离宿主做默认/诊断/显式manifest的A/B；尚未运行，也不承诺manifest会修复归组。
+- 真包身份不等于AUMID；MSIX/外部位置包是待评估路线，不能未经确认改安装注册或假定能复刻Teams。
+- macOS已追到WebKit XPC宿主标识、LaunchServices内容进程命名源码，以及Apple层级视图文档；命名、宿主关联和视觉归组分别验收，不能混为一谈。
+- 本机仅只读观察Windows26300、WebView2 155.0.4283.45及现有浏览器父链，当时无LoreKeeper实例，不能当本应用归组测试。证据在忽略目录 `.pi/tmp/process-group-research-2/`，无新窗口或系统配置修改。
+- 部分搜索引擎为空/TLS失败/无关结果，不作为证据；Context7本轮可用，关键事实由官方文档与固定源码交叉确认。
+
+## 前一代码切片：已实现，原生验收未完成
 
 ### 中文安装与安全清理
 
@@ -41,7 +52,7 @@
 ## 尚未完成与下一步
 
 1. **进程归组未修复**：本轮再次核查[Tauri #15567](https://github.com/tauri-apps/tauri/issues/15567)与[WebView2 #5628](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5628)，均open且无解决方案。AppUserModelID、名称和图标不能冒充归组修复。macOS WebKit源码会传宿主名/bundle-id，但活动监视器显示未真机验证。研究材料 `.pi/tmp/installer-research/`。
-2. **是否先公开仍待确认**：询问用户是否接受归组限制先发布beta.1，提问未收到选择而取消。因此本轮只提交保存，不触发打包/发布；不把此前普通Release+Latest方案授权扩大成接受未完成归组的交付。
+2. **发布明确暂停**：用户最新明确拒绝归组未修复先公开，并要求继续研究。没有触发新版打包/发布；不得再把此前普通Release+Latest方案授权解释为接受缺陷交付。下一步优先后台隔离父链/DPI实验，而非再次请求豁免。
 3. **原生验收待授权**：中文EXE/MSI、升级身份、默认保留、目录选择/二次确认、真实项目清理与注册表清理、macOS生命周期及图标均需原生验收。无法后台完成的原生对话框不得切前台。
 4. 44259fa3对应云端全量已成功；完整活动run与最终HEAD由 `.pi/tmp/pipeline-state.md` 单写维护。
 

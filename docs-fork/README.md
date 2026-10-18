@@ -8,26 +8,27 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-2026-10-19第110次：[中文安全卸载与预览发布准备](handoffs/2026-10-19-tauri-migration-status.md)。代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理和显式Latest选项已实现；本机Rust18、Node25（含NSIS编译）、前端14通过，typecheck/lint/build成功，同SHA云端Rust全量1689项及all-targets成功。进程归组仍未修复，原生安装卸载/删除待验收，未触发新版打包发布。
+2026-10-19第111次：[进程归组深入调研、发布暂停](handoffs/2026-10-19-tauri-migration-status.md)。代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理和显式Latest选项已实现；沿用第110次验证：本机Rust18、Node25（含NSIS编译）、前端14通过，typecheck/lint/build成功，同SHA云端Rust全量1689项及all-targets成功。进程归组仍未修复，原生安装卸载/删除待验收，未触发新版打包发布。
 
 当前已公开的仍是第106次 **[Lorekeeper 1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，旧版不设为最新版、不覆盖。
 
 Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留独立数据目录与作者/定稿安全边界；频道285项功能迁移、1项旧库导入明确不支持，未迁移0。比例不是产品完成率，旧轮次的290频道口径不代表当前契约。
 
-> #30/#31内部范围验收已收口；真实模型/MCP/业务云、签名公证、新包真机安装/首次启动仍未认证。新版支持保留beta名称、以GitHub普通Release标记Latest，正文须明确预览；是否接受归组限制先公开的确认尚未收到选择，仍未发布，不放宽后台窗口规则或其他安全确认边界。准确源码SHA、CI与发布证据见[当前交接](handoffs/CURRENT.md)，频道明细见[盘点](plans/tauri-migration-channel-inventory.md)。
+> #30/#31内部范围验收已收口；真实模型/MCP/业务云、签名公证、新包真机安装/首次启动仍未认证。新版支持保留beta名称、以GitHub普通Release标记Latest，正文须明确预览；用户明确拒绝归组未修复先公开，继续调研并暂停发布，不放宽后台窗口规则或其他安全确认边界。准确源码SHA、CI与发布证据见[当前交接](handoffs/CURRENT.md)，频道明细见[盘点](plans/tauri-migration-channel-inventory.md)。
 
 
 ## 接续工作从这里开始
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第110次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第111次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
 | 查看本机/云端测试分工 | [Tauri Rust混合验证](agents/tauri-rust-ci.md) |
 | 手动打包与发布 | [Tauri受限发布协议](agents/tauri-release.md) |
 | 管理Actions存储 | [1天保留与历史制品清理](agents/actions-storage.md) |
+| 查看WebView进程归组研究 | [机制证据与后台验证矩阵](research/webview-process-attribution.md) |
 | 查看定稿图标与生成说明 | [图标登记](design/branding.md) |
 | 查看预发布说明 | [旧1.0.0-beta](releases/1.0.0-beta.md) · [未发布beta.1](releases/1.0.0-beta.1.md) |
 | 查 Tauri 迁移调研 | [`research/`](research/) |
