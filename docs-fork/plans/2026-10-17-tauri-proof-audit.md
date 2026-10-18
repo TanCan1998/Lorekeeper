@@ -1,6 +1,15 @@
-# Tauri 首版证明与本机验收审计（第93次）
+# Tauri 首版证明与本机验收审计（第94次）
 
-当前全量验证代码：`c1547e83335b78f4ed10eefc7ab9f6d1a3b28115`。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+当前全量验证代码：`72b91745a230f22627cc8237074ab1fd308a8f81`。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+
+## 第94次：中和JSON列的四处读面改为逐行判定
+
+- 72b91745 / [39088431086](https://github.com/TanCan1998/Lorekeeper/actions/runs/39088431086)：**1679/0**，库267.99秒，all-targets 38.37秒无告警；完整expected/tested SHA一致、两个退出码0、state=passed，artifact与两日志已核对。本轮Rust语义切片累计4。
+- 断点3（扫描读R列JSON的读面）完成首轮并修四处：`project_generation_in_flight`（写作在途判定）、`AgentGeneration::session_runs`（代理会话登记）、`proven_graph_own_event_ids`（图上下文归属）、`find_finalization_run`（定稿槽位查找）此前都走 SQL `json_extract`，而 R 策略把 `binding_json`/`attempt_json` 中和为常量，空串触发 malformed JSON → **恢复副本上写作/代理/图/定稿读面整条失败**。
+- 新增共用读面 `portable_project_guard::frozen_aware_json_pointer_rows`：按 rowid 顺序逐行判定 JSON 指针，认证冻结行跳过，非冻结行仍严格解析（坏 JSON 照原样报错）。`find_finalization_run` 的 `open_key` 属保留列，仍走 SQL。
+- 回归 `sanitized_json_columns_are_read_row_wise_and_fail_closed_when_unfrozen_test` 断言：SQL 形态在中和列上必失败（修复目标）、空冻结集时仍 fail closed、认证冻结后读面返回空、同一连接的新根/新运行/新 attempt 仍可读到、非冻结行坏 JSON 仍报错、源库未被改写。
+- 本机全量 lib **1679/0**（65.99秒）；`cargo fmt --check` 与 git diff 通过。
+- **同类风险仍需继续扫**：其余读 R 列 JSON 的路径（生成绑定子串查询、恢复候选、角色提案 payload、审修 usage 收据的相关读面）应按同一模式逐一核对；不得因本轮四处已修就假设读面全通。
 
 ## 第93次：恢复副本可新建审修周期且冻结历史保持只读
 

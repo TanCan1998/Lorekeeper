@@ -1,21 +1,21 @@
 # Tauri迁移交接快照（2026-10-17）
 
-> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。本次为第 **93** 次交接；当前摘要替换同日旧摘要。
+> [当前入口](./CURRENT.md) · [混合验证](../agents/tauri-rust-ci.md) · [证明审计](../plans/2026-10-17-tauri-proof-audit.md) · [频道清单](../plans/tauri-migration-channel-inventory.md)。本次为第 **94** 次交接；当前摘要替换同日旧摘要。
 
 ## 代码与验证基线
 
-当前代码：**c1547e83335b78f4ed10eefc7ab9f6d1a3b28115**，master，已推送origin。本轮无未提交改动。不把文档SHA冒充Rust测试SHA。
+当前代码：**72b91745a230f22627cc8237074ab1fd308a8f81**，master，已推送origin。本轮无未提交改动。不把文档SHA冒充Rust测试SHA。
 
 | 验证 | 结果 | 绑定证据 |
 |---|---|---|
-| 当前Rust全量 | 1678通过/0失败，库257.70秒 | [39086559979](https://github.com/TanCan1998/Lorekeeper/actions/runs/39086559979)，c1547e83 |
-| 当前all-targets | 37.69秒，成功无告警 | 同上artifact：expectedSha/testedSha为完整c1547e83，test/check退出0、state=passed，两日志已下载核对 |
-| 当前提交规范/秘密扫描 | success | 同SHA c1547e83（push触发） |
-| 本机当前切片定向 | review_revision 67/0、review_cycle 9/0、portable 86/0、draft 77/0、混存新周期1/1、冻结审修2/2 | 本轮 cargo test 输出；cargo fmt --check 与 git diff 通过 |
+| 当前Rust全量 | 1679通过/0失败，库267.99秒 | [39088431086](https://github.com/TanCan1998/Lorekeeper/actions/runs/39088431086)，72b91745 |
+| 当前all-targets | 38.37秒，成功无告警 | 同上artifact：expectedSha/testedSha为完整72b91745，test/check退出0、state=passed，两日志已下载核对 |
+| 当前提交规范/秘密扫描 | success | 同SHA 72b91745（push触发） |
+| 本机当前切片定向 | 全量 lib **1679/0**（65.99秒），另 portable 87/0、agent 56/0、graph 28/0 | 本轮 cargo test 输出；cargo fmt --check 与 git diff 通过 |
 | 前端 | 无源码变化（本轮未改前端） | 上次全量：190文件2121通过/1跳过，typecheck/lint成功（8ecfc0fb） |
 | 上一完整云端 | 2f60163e：1675/0（161.67秒），check 34.60秒 | 39049883469；同SHA冷缓存39049045752为10分45秒 |
 
-本轮Rust语义切片累计 **3**（3607e6c2、f7f5658e、c1547e83）；CI/构建配置与文档切片不计入。全量基线上一次为93b3b27d。
+本轮Rust语义切片累计 **4**（3607e6c2、f7f5658e、c1547e83、72b91745）；CI/构建配置与文档切片不计入。全量基线上一次为93b3b27d。
 
 ### 本轮构建与CI提速（2f60163e / 87da0fab）
 
@@ -25,7 +25,7 @@
 | 本机 rust-lld 对照 | 66.5s（仅快约4.4s，CI不启用） |
 | 云端优化前（39041910917） | 6分32秒 |
 | 云端冷缓存（39049045752） | 10分45秒 |
-| 云端热缓存（39049883469 / 39051391021 / 39086559979） | **5分26秒 / 6分30秒 / 6分29秒** |
+| 云端热缓存（39049883469 / 39051391021 / 39086559979 / 39088431086） | **5分26秒 / 6分30秒 / 6分29秒 / 6分36秒** |
 
 - `[profile.test] debug = 0` + `incremental = false` 已写入 `tauri-app/src-tauri/Cargo.toml`；断点调试用 `CARGO_PROFILE_TEST_DEBUG=1` 覆盖。
 - CI缓存键去掉提交SHA（命中后不再上传GB级target，避免挤占10GB配额）；restore-keys保留v1前缀。证据链仍是 `cargo test --locked` + `cargo check --locked --all-targets`。
@@ -58,7 +58,8 @@
 - 回归含两个对照（无守卫连接仍拒绝、空冻结集仍拒绝），证明豁免来自认证冻结键而非放宽校验。
 - 导入侧（3607e6c2）：认证冻结`import_runs`的effect receipt读面返回None，不再退化为泛化「receipt损坏」；便携脱敏对参与`UNIQUE(...)`的R/X文本列改用`portable-neutral:<行身份>`确定性中和，修复多条`import_run_receipts`恢复撞唯一约束报`PORTABLE_UNSAFE_PROJECTION`。
 - **c1547e83（本轮）**：断点1实测暴露第二处真实缺陷——`drafts.source_dependencies`按R策略中和后，恢复副本里对历史草稿发起新审稿准备即报`GENERATION_REVIEW_HISTORY_CHANGED`。现仅对**认证冻结**的草稿行按「无已记录依赖」继续，非冻结坏依赖仍拒绝。新增混存回归走真实 prepare→open→settle→commit_review：新周期可操作、冻结老周期仍None、破坏新周期执行链后全局校验失败、非冻结坏依赖仍拒绝、冻结行仍拒写。
-- **同类风险待扫**：R策略中和会破坏JSON列的读面解析，本轮已修两处（`drafts.source_dependencies`、`import_run_receipts`唯一列）；其余读R列JSON的读面须逐个核对，不假设已覆盖。
+- **同类风险（本轮已扩扫）**：R策略中和会破坏JSON列读面解析。累计已修五处：`drafts.source_dependencies`（依赖台账）、`import_run_receipts`（唯一列+冻结收据读面）、`verify_m03`整库执行链要求，以及本轮`project_generation_in_flight`／`session_runs`／`proven_graph_own_event_ids`／`find_finalization_run`四处 SQL `json_extract`。新增共用读面`frozen_aware_json_pointer_rows`（逐行指针匹配、冻结行跳过、非冻结行严格）。**其余读R列JSON的路径仍须逐一核对**。
+- **72b91745（本轮）**：四处读面（写作在途、代理会话、图归属、定稿槽位）原走 SQL `json_extract`，在 R 策略中和的空串上抛 malformed JSON，把恢复副本读面整条打死；现统一走 `frozen_aware_json_pointer_rows`。回归断言 SQL 形态必失败、空冻结集 fail closed、冻结后读面为空、新根/新运行/新 attempt 仍可读、非冻结坏 JSON 仍报错、源库未改写。本机全量 lib 1679/0。
 - **不能扩大结论**：恢复副本中新审修链的**合并与复核**段尚未实际执行；旧handle实测resume为GENERATION_REQUEST_FAILED、read-recovery为GENERATION_JSON_PARSE_ERROR，是拒绝但不是精确冻结合同，不得改写为已通过。
 
 ## 本机证据与恢复入口
@@ -81,7 +82,8 @@
 ## 下轮明确断点
 
 1. TODO：#25–29完成；#30进行中（便携/导入读面收口）；#31待最终收口。
-2. 恢复副本中新审修链的**合并与复核**段仍待实跑（新建与周期读面已由c1547e83覆盖）；继续扫描其余读R列JSON的读面，冻结过滤与当前损坏仍须拒绝。
+2. 恢复副本中新审修链的**合并与复核**段仍待实跑（新建与周期读面已由c1547e83覆盖）。
+3. 继续扫描其余读R列JSON的路径（生成绑定子串查询、恢复候选、角色提案 payload、审修 usage 收据读面等），冻结过滤与当前损坏仍须拒绝。
 3. 旧handle泛化拒绝错误如需规范化，添加先失败回归，保留坏当前收据拒绝与非冻结校验，不能冒充历史执行权威。
 4. 补齐其余便携/导入读面（含真实合成import_run来源槽位与生成读面），冻结过滤与当前损坏仍须拒绝。
 5. 完成#30后再做#31最终交接/测试口径收口；交接快照与proof-audit同步为第92次。
