@@ -8,21 +8,24 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-第82次历史统计为功能迁移289/290、生产前端开放285/290（2026-10-17口径，不是本轮重新盘点值）。四审修频道已于8ecfc0fb开放；不再把第82次的关闭状态或覆盖数字当作当前结论。
+2026-10-18第106次：**[Lorekeeper 1.0.0-beta已公开预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，不设为最新版。
 
-> 2026-10-18第96次：恢复副本完整审修SQLite集成链通过，旧handle精确拒绝冻结历史，当前空依赖/坏JSON仍拒绝。最新验证、剩余读面与后台GUI边界见[当前交接](handoffs/CURRENT.md)和[审计矩阵](plans/2026-10-17-tauri-proof-audit.md)。
-> 比例不是产品完成率。#30读面收口进行中，#31最终验收待办；真实模型/MCP/业务云/发布未授权。真实窗口必须后台、不抢焦点；历史指标不推算上游合并后的新契约数量，频道明细见[盘点](plans/tauri-migration-channel-inventory.md)。
+Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留独立数据目录与作者/定稿安全边界；频道285项功能迁移、1项旧库导入明确不支持，未迁移0。比例不是产品完成率，旧轮次的290频道口径不代表当前契约。
+
+> #30/#31内部范围验收已收口；真实模型/MCP/业务云、签名公证、新包真机安装/首次启动仍未认证。当前授权仅手动打包与预发布，不放宽后台窗口规则。准确源码SHA、CI与发布证据见[当前交接](handoffs/CURRENT.md)，频道明细见[盘点](plans/tauri-migration-channel-inventory.md)。
 
 
 ## 接续工作从这里开始
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第96次快照（2026-10-18）](handoffs/2026-10-18-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第106次发布快照](handoffs/2026-10-18-tauri-beta-release.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
 | 查看本机/云端测试分工 | [Tauri Rust混合验证](agents/tauri-rust-ci.md) |
+| 手动打包与发布 | [Tauri受限发布协议](agents/tauri-release.md) |
+| 查看预发布说明 | [1.0.0-beta](releases/1.0.0-beta.md) |
 | 查 Tauri 迁移调研 | [`research/`](research/) |
 | 看 fork 改过上游什么 | [`notes-on-upstream-changes.md`](notes-on-upstream-changes.md) |
 | 查 ADR 索引 | [`adr/README.md`](adr/README.md) |
@@ -36,6 +39,7 @@
 | [`handoffs/`](handoffs/) | 迁移进度快照与快照模板 |
 | [`plans/`](plans/) | 迁移计划与频道盘点 |
 | [`research/`](research/) | Tauri 迁移调研（含 `archive/` 历史归档） |
+| [`releases/`](releases/) | Lorekeeper版本发布说明及验收限制 |
 
 ## 边界（硬规则）
 
