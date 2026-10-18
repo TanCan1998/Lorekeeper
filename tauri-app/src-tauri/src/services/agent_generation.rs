@@ -1824,16 +1824,15 @@ impl<'a> AgentGeneration<'a> {
         if !is_session_key(hex) {
             return Err(GENERATION_AGENT_REGISTRATION_INVALID.to_string());
         }
-        let rows: Vec<String> = self
-            .conn
-            .prepare(
-                "SELECT run_id FROM generation_runs WHERE json_extract(binding_json,'$.sourceManifest.operation')='agent-round'",
-            )
-            .map_err(|error| error.to_string())?
-            .query_map([], |row| row.get(0))
-            .map_err(|error| error.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|error| error.to_string())?;
+        // 与会话登记读面一致：只跳过认证冻结历史，当前坏绑定仍报错。
+        let rows = crate::services::portable_project_guard::frozen_aware_json_pointer_rows(
+            self.conn,
+            "generation_runs",
+            "run_id",
+            "binding_json",
+            "/sourceManifest/operation",
+            &["agent-round"],
+        )?;
         let mut found: Vec<(
             AgentToolAction,
             DurableGenerationRun,
@@ -4158,6 +4157,142 @@ mod tests {
             registration_id,
             registration.child_handles[0].clone(),
         )
+    }
+
+    #[test]
+    fn portable_workflow_registration_skips_frozen_bindings_and_keeps_current_proof_test() {
+        use crate::services::{
+            portable_project_guard, portable_project_history, portable_project_sanitize,
+            portable_runtime_freeze,
+        };
+
+        let base = std::env::temp_dir().join(format!(
+            "lorekeeper-agent-registration-{}",
+            crate::project_access::random_uuid_v4()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let source = base.join("source.db");
+        let target = base.join("portable.db");
+        {
+            let conn = test_connection();
+            seed_agent_run(
+                &conn,
+                "old-root",
+                "old-run",
+                &agent_binding(&test_context(), &text_hash("old-session"), 0, None),
+                Some(AttemptFixture {
+                    attempt_id: "old-attempt".into(),
+                    attempt_status: "settled",
+                    usage_receipt_json: json!({}),
+                    artifact: None,
+                }),
+            );
+            conn.execute("VACUUM INTO ?1", [source.to_str().unwrap()])
+                .unwrap();
+        }
+        let original = std::fs::read(&source).unwrap();
+        portable_project_sanitize::sanitize_portable_database(
+            &portable_project_sanitize::SanitizePortableDatabaseInput {
+                source_database_path: &source,
+                target_database_path: &target,
+                limits: None,
+            },
+        )
+        .unwrap();
+        let conn = Connection::open(&target).unwrap();
+        let registration_id = format!("agent-workflow:{}", text_hash("agent-tool:attempt-0:0"));
+        // 中和列无认证守卫时仍按损坏拒绝，不把整库读取改成容错。
+        let agent = AgentGeneration::without_recovery(
+            &conn,
+            GenerationRunRepository::default(),
+            "project-1",
+            "epoch-1",
+            &assert_current,
+            &TestHost,
+        );
+        let error = agent.workflow_registration(&registration_id).unwrap_err();
+        assert_ne!(error, GENERATION_AGENT_REGISTRATION_MISSING);
+        assert_ne!(error, "PORTABLE_RUNTIME_FROZEN");
+        drop(agent);
+        let document = portable_project_history::freeze_document(
+            &conn,
+            "123e4567-e89b-12d3-a456-426614174000",
+            "agent-registration",
+        )
+        .unwrap();
+        let guard = portable_runtime_freeze::parse_portable_runtime_freeze(
+            &serde_json::to_vec(&document).unwrap(),
+        )
+        .unwrap();
+        portable_project_guard::install_guard_for_test(&conn, guard).unwrap();
+        let agent = agent_generation(&conn);
+        let changes = conn.total_changes();
+        assert_eq!(
+            agent.workflow_registration(&registration_id).unwrap_err(),
+            GENERATION_AGENT_REGISTRATION_MISSING
+        );
+        assert_eq!(conn.total_changes(), changes);
+        drop(agent);
+
+        // 同一恢复连接的新父轮/子代可找到真实登记并捕获效应，旧历史不参与。
+        let (_, current_registration, child) = seed_registered_session(&conn);
+        assert_eq!(current_registration, registration_id);
+        let agent = agent_generation(&conn);
+        let changes = conn.total_changes();
+        let (_, parent, registration) = agent.workflow_registration(&registration_id).unwrap();
+        assert_eq!(parent.run_id, "run-0");
+        assert_eq!(registration.registration_id, registration_id);
+        assert_eq!(conn.total_changes(), changes, "登记查询不能回写");
+        let result = agent
+            .with_child_effect(&serde_json::to_value(&child).unwrap(), |_| {
+                Ok("当前子代效应")
+            })
+            .unwrap();
+        assert_eq!(result, "当前子代效应");
+        let transition: Option<String> = conn
+            .query_row(
+                "SELECT json_extract(usage_receipt_json,'$.agentSourceTransition.actionId')
+             FROM generation_attempts WHERE attempt_id='attempt-0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            transition.as_deref(),
+            Some("agent-tool:attempt-0:0:child-0")
+        );
+        let history: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT r.binding_json,a.attempt_json,a.usage_receipt_json
+             FROM generation_runs r JOIN generation_attempts a USING(run_id)
+             WHERE r.run_id='old-run'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(history, (String::new(), String::new(), None));
+        assert!(conn
+            .execute(
+                "UPDATE generation_runs SET status='running' WHERE run_id='old-run'",
+                []
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("PORTABLE_RUNTIME_FROZEN"));
+
+        // 当前非冻结数据损坏仍须报错，不能用跳过旧历史来掩盖。
+        conn.execute(
+            "UPDATE generation_runs SET binding_json='' WHERE run_id='run-0'",
+            [],
+        )
+        .unwrap();
+        let error = agent.workflow_registration(&registration_id).unwrap_err();
+        assert_ne!(error, GENERATION_AGENT_REGISTRATION_MISSING);
+        assert_ne!(error, "PORTABLE_RUNTIME_FROZEN");
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        drop(agent);
+        drop(conn);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
