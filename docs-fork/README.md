@@ -8,7 +8,7 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-2026-10-18第108次：[任务交接](handoffs/2026-10-18-tauri-migration-status.md)。单颗彩色星芒“司”字图标已定稿，默认亮色、保留亮暗；尚未接入产品。上游新增核查、子Web进程归组、中文安装卸载与1.0.0-beta.1发布均待完成。
+2026-10-19第109次：[上游同步与图标接入](handoffs/2026-10-19-tauri-migration-status.md)。上游19个新增提交及最新中英文README已合入；定稿单星“司”字图标已接入，默认亮色、保留暗色。17项单测与20项无头浏览器通过，typecheck/lint/build成功；原生包图标、子Web进程归组、中文安装卸载与1.0.0-beta.1发布仍待验收或实现。
 
 当前已公开的仍是第106次 **[Lorekeeper 1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，旧版不设为最新版、不覆盖。
 
@@ -21,13 +21,14 @@ Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留�
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第108次未完成任务快照](handoffs/2026-10-18-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第109次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
 | 查看本机/云端测试分工 | [Tauri Rust混合验证](agents/tauri-rust-ci.md) |
 | 手动打包与发布 | [Tauri受限发布协议](agents/tauri-release.md) |
 | 管理Actions存储 | [1天保留与历史制品清理](agents/actions-storage.md) |
+| 查看定稿图标与生成说明 | [图标登记](design/branding.md) |
 | 查看预发布说明 | [1.0.0-beta](releases/1.0.0-beta.md) |
 | 查 Tauri 迁移调研 | [`research/`](research/) |
 | 看 fork 改过上游什么 | [`notes-on-upstream-changes.md`](notes-on-upstream-changes.md) |
