@@ -25,9 +25,17 @@ export function releaseIdentity(root, env) {
   assert.equal(tag, `lorekeeper-v${version}`, '标签必须匹配Lorekeeper版本，禁止复用上游标签')
   assert(['true', 'false'].includes(env.PUBLISH), '发布选项无效')
   assert(['true', 'false'].includes(env.PRERELEASE), '预发布选项无效')
+  assert(['true', 'false'].includes(env.MAKE_LATEST), '最新版选项无效')
   const prerelease = env.PRERELEASE === 'true'
-  if (env.PUBLISH === 'true' && version.includes('-')) assert(prerelease, '先行版本不能伪装成正式版')
-  return { version, sha, tag, prerelease }
+  const makeLatest = env.MAKE_LATEST === 'true'
+  assert(!(prerelease && makeLatest), 'GitHub预发布不能设为最新版')
+  const preview = version.includes('-')
+  // beta名称可以使用普通Release，但发布说明必须明确预览，不能冒充正式验收。
+  if (env.PUBLISH === 'true' && preview) {
+    const notes = fs.readFileSync(path.join(root, `docs-fork/releases/${version}.md`), 'utf8')
+    assert(/^# .*预览/m.test(notes) && /非正式版/.test(notes), '先行版本发布说明必须明确预览及非正式版')
+  }
+  return { version, sha, tag, prerelease, makeLatest, preview }
 }
 
 export function ghJson(args) {
@@ -55,10 +63,10 @@ export function collectReleaseAssets(artifactRoot, identity, runId, runAttempt) 
   const { version, sha } = identity
   const specs = [
     { label: 'windows-x64', os: 'Windows', arch: 'X64', names: [
-      ['nsis', `Lorekeeper_${version}_x64-setup.exe`], ['msi', `Lorekeeper_${version}_x64_en-US.msi`],
+      ['nsis', `LoreKeeper_${version}_x64-setup.exe`], ['msi', `LoreKeeper_${version}_x64_zh-CN.msi`],
     ] },
-    { label: 'macos-arm64', os: 'macOS', arch: 'ARM64', names: [['dmg', `Lorekeeper_${version}_aarch64.dmg`]] },
-    { label: 'macos-x64', os: 'macOS', arch: 'X64', names: [['dmg', `Lorekeeper_${version}_x64.dmg`]] },
+    { label: 'macos-arm64', os: 'macOS', arch: 'ARM64', names: [['dmg', `LoreKeeper_${version}_aarch64.dmg`]] },
+    { label: 'macos-x64', os: 'macOS', arch: 'X64', names: [['dmg', `LoreKeeper_${version}_x64.dmg`]] },
   ]
   const directories = specs.map(s => `tauri-release-${s.label}-${sha}-${runId}-${runAttempt}`)
   assert.deepEqual(fs.readdirSync(artifactRoot).sort(), [...directories].sort(), '必须且只能有本次三平台产物')
@@ -69,7 +77,7 @@ export function collectReleaseAssets(artifactRoot, identity, runId, runAttempt) 
     assert.equal(manifestFiles.length, 1, '平台清单数量错误')
     const manifest = JSON.parse(fs.readFileSync(manifestFiles[0], 'utf8'))
     assert.equal(manifest.schemaVersion, 1)
-    assert.equal(manifest.productName, 'Lorekeeper')
+    assert.equal(manifest.productName, 'LoreKeeper')
     assert.equal(manifest.version, version)
     assert.equal(manifest.commit, sha, '产物SHA与检出不一致')
     assert.equal(manifest.runId, runId)

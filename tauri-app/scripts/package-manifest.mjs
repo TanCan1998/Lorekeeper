@@ -49,7 +49,7 @@ if (process.env.PACKAGE_SOURCE_SHA && process.env.PACKAGE_SOURCE_SHA !== commit)
 }
 const manifest = {
   schemaVersion: 1,
-  productName: 'Lorekeeper',
+  productName: 'LoreKeeper',
   version,
   commit,
   workflowCommit: process.env.GITHUB_SHA || '',

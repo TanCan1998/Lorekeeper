@@ -6,12 +6,12 @@ import { fileURLToPath } from 'node:url'
 import { collectReleaseAssets, digest, releaseIdentity, verifyUploadedAssets } from './release-helpers.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
-const identity = { version: '1.0.0-beta', sha: 'a'.repeat(40), tag: 'lorekeeper-v1.0.0-beta', prerelease: true }
+const identity = { version: '1.0.0-beta.1', sha: 'a'.repeat(40), tag: 'lorekeeper-v1.0.0-beta.1', prerelease: true }
 
 function fixture() {
   const dir = fs.mkdtempSync(path.join(root, '.pi/tmp/release-unit-'))
   const specs = [
-    ['windows-x64', 'Windows', 'X64', [['nsis', 'x64-setup.exe'], ['msi', 'x64_en-US.msi']]],
+    ['windows-x64', 'Windows', 'X64', [['nsis', 'x64-setup.exe'], ['msi', 'x64_zh-CN.msi']]],
     ['macos-arm64', 'macOS', 'ARM64', [['dmg', 'aarch64.dmg']]],
     ['macos-x64', 'macOS', 'X64', [['dmg', 'x64.dmg']]],
   ]
@@ -20,14 +20,14 @@ function fixture() {
     const platform = path.join(dir, `tauri-release-${label}-${identity.sha}-100-1`)
     fs.mkdirSync(platform)
     const items = packages.map(([kind, suffix]) => {
-      const name = `Lorekeeper_${identity.version}_${suffix}`, file = path.join(platform, name)
+      const name = `LoreKeeper_${identity.version}_${suffix}`, file = path.join(platform, name)
       fs.writeFileSync(file, '仅用于验证发布门禁的合成字节：' + name)
       files.push(file)
       return { kind, name, bytes: fs.statSync(file).size, sha256: digest(file) }
     })
     const manifest = path.join(platform, 'manifest.json')
     fs.writeFileSync(manifest, JSON.stringify({
-      schemaVersion: 1, productName: 'Lorekeeper', version: identity.version, commit: identity.sha,
+      schemaVersion: 1, productName: 'LoreKeeper', version: identity.version, commit: identity.sha,
       runId: '100', runAttempt: '1', runnerOs: os, runnerArch: arch,
       signed: false, published: false, packages: items,
     }))
@@ -90,11 +90,24 @@ test('远端必须大小、摘要、状态与完整资产集合全部匹配', ()
   ]) { const r = structuredClone(valid); change(r); assert.throws(() => verifyUploadedAssets(r, expected)) }
 })
 
-test('版本身份仅接受目标fork、新命名空间及预发布属性', () => {
-  const env = { GITHUB_REPOSITORY: 'TanCan1998/Lorekeeper', PUBLISH: 'true', PRERELEASE: 'true' }
+test('版本身份拒绝错误仓库、标签、SHA和无效发布选项', () => {
+  const env = { GITHUB_REPOSITORY: 'TanCan1998/Lorekeeper', PUBLISH: 'true', PRERELEASE: 'true', MAKE_LATEST: 'false' }
   assert.equal(releaseIdentity(root, env).tag, identity.tag)
   for (const patch of [
     { GITHUB_REPOSITORY: 'EthanYoQ/AI-Novel-Writer' }, { RELEASE_TAG: 'v1.0.0' },
-    { EXPECTED_SHA: 'b'.repeat(40) }, { PRERELEASE: 'false' }, { PUBLISH: 'other' },
+    { EXPECTED_SHA: 'b'.repeat(40) }, { PRERELEASE: 'other' }, { PUBLISH: 'other' },
+    { MAKE_LATEST: 'other' }, { MAKE_LATEST: undefined }, { MAKE_LATEST: 'true' },
   ]) assert.throws(() => releaseIdentity(root, { ...env, ...patch }))
+})
+
+test('beta名称可作为普通Release并显式选择Latest，仍保留预览身份', () => {
+  for (const makeLatest of ['true', 'false']) {
+    const result = releaseIdentity(root, {
+      GITHUB_REPOSITORY: 'TanCan1998/Lorekeeper', PUBLISH: 'true', PRERELEASE: 'false', MAKE_LATEST: makeLatest,
+    })
+    assert.equal(result.preview, true)
+    assert.equal(result.prerelease, false)
+    assert.equal(result.makeLatest, makeLatest === 'true')
+    assert.equal(result.version, '1.0.0-beta.1')
+  }
 })

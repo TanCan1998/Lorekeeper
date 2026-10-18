@@ -25,8 +25,9 @@ for (const manifest of manifests) {
 }
 fs.writeFileSync(path.join(output, 'SHA256SUMS.txt'), assets.map(p => `${p.sha256}  ${p.name}`).join('\n') + '\n')
 fs.writeFileSync(path.join(output, 'release-manifest.json'), JSON.stringify({
-  schemaVersion: 1, productName: 'Lorekeeper', version: identity.version, sourceCommit: identity.sha,
-  tag: identity.tag, prerelease: identity.prerelease, runId: process.env.GITHUB_RUN_ID,
+  schemaVersion: 1, productName: 'LoreKeeper', version: identity.version, sourceCommit: identity.sha,
+  tag: identity.tag, prerelease: identity.prerelease, makeLatest: identity.makeLatest,
+  preview: identity.preview, runId: process.env.GITHUB_RUN_ID,
   runAttempt: process.env.GITHUB_RUN_ATTEMPT, rustValidationRunId: String(rustValidation.id),
   certificateSigned: false, notarized: false,
   installationSmokeTested: false, packages: assets.map(({ file: _file, ...item }) => item),
@@ -41,8 +42,8 @@ ghJson(['api', `repos/${RELEASE_REPOSITORY}/git/refs`, '--method', 'POST',
 // 先建立草稿并上传，任何失败都保留草稿，不公开半成品，不覆盖已有版本。
 const created = ghJson(['api', `repos/${RELEASE_REPOSITORY}/releases`, '--method', 'POST',
   '-f', `tag_name=${identity.tag}`, '-f', `target_commitish=${identity.sha}`,
-  '-f', `name=Lorekeeper ${identity.version}`, '-f', `body=${fs.readFileSync(`docs-fork/releases/${identity.version}.md`, 'utf8')}`,
-  '-F', 'draft=true', '-F', `prerelease=${identity.prerelease}`, '-f', `make_latest=${identity.prerelease ? 'false' : 'true'}`])
+  '-f', `name=LoreKeeper ${identity.version}${identity.preview ? '（预览版）' : ''}`, '-f', `body=${fs.readFileSync(`docs-fork/releases/${identity.version}.md`, 'utf8')}`,
+  '-F', 'draft=true', '-F', `prerelease=${identity.prerelease}`, '-f', 'make_latest=false'])
 assert(Number.isSafeInteger(created.id) && created.id > 0)
 run(['release', 'upload', identity.tag, ...repo, ...upload])
 const endpoint = `repos/${RELEASE_REPOSITORY}/releases/${created.id}`
@@ -54,7 +55,7 @@ verifyUploadedAssets(draft, expected)
 const beforePublish = ghJson(['api', `repos/${RELEASE_REPOSITORY}/git/ref/tags/${identity.tag}`])
 assert.equal(beforePublish.object.sha, identity.sha)
 ghJson(['api', endpoint, '--method', 'PATCH', '-F', 'draft=false',
-  '-F', `prerelease=${identity.prerelease}`, '-f', `make_latest=${identity.prerelease ? 'false' : 'true'}`])
+  '-F', `prerelease=${identity.prerelease}`, '-f', `make_latest=${identity.makeLatest}`])
 const published = ghJson(['api', endpoint])
 assert.equal(published.draft, false)
 assert.equal(published.prerelease, identity.prerelease)
@@ -62,5 +63,9 @@ verifyUploadedAssets(published, expected)
 const tag = ghJson(['api', `repos/${RELEASE_REPOSITORY}/git/ref/tags/${identity.tag}`])
 assert.equal(tag.object.type, 'commit')
 assert.equal(tag.object.sha, identity.sha, '发布标签不指向已校验源码')
+if (identity.makeLatest) {
+  const latest = ghJson(['api', `repos/${RELEASE_REPOSITORY}/releases/latest`])
+  assert.equal(latest.id, published.id, '最新版指针未指向本次发布')
+}
 fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## 发布完成\n\n${published.html_url}\n\n源码：\`${identity.sha}\`；安装包4个，全部资产${expected.length}个，大小/SHA256已核验。\n`)
 console.log('发布完成：', published.html_url, '源码：', identity.sha, '资产：', expected.length)

@@ -34,6 +34,7 @@ mod manuscript_publisher;
 // 故以自有插件注册，经插件 store 的 on_navigation 钩子覆盖所有 webview。
 mod navigation_guard;
 mod project_access;
+mod project_cleanup;
 // 批次 G2a/G2b：仓储层公开（与 `pub mod db` 一致）——
 // 各仓储的 `pub fn` 是 crate 的公开 API，命令层在后续批次逐步接入；
 // 若保持私有，尚未被命令层消费的新 API 会触发 dead_code 告警。
@@ -56,6 +57,12 @@ pub mod mcp;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 清理入口只接受固定开关，不接受外部路径；目录授权始终来自原生选择器。
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.len() == 1 && arguments[0] == "--cleanup-project" {
+        project_cleanup::run();
+        return;
+    }
     tauri::Builder::default()
         .manage(state::AppState::new())
         // 批次 B 遗留补齐（2026-10-08）：原生目录/文件选择对话框。

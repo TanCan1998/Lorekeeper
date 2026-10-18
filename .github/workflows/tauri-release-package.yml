@@ -26,6 +26,11 @@ on:
         required: true
         default: true
         type: boolean
+      make_latest:
+        description: '设为最新版（仅允许非预发布；beta名称仍标注预览）'
+        required: true
+        default: false
+        type: boolean
       release_tag:
         description: '新标签（留空=lorekeeper-v版本；已有标签拒绝覆盖）'
         required: false
@@ -68,6 +73,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
           PUBLISH: ${{ inputs.publish }}
           PRERELEASE: ${{ inputs.prerelease }}
+          MAKE_LATEST: ${{ inputs.make_latest }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node tauri-app/scripts/prepare-release.mjs
 
@@ -192,6 +198,7 @@ jobs:
           EXPECTED_SHA: ${{ needs.prepare.outputs.source_sha }}
           PUBLISH: ${{ inputs.publish }}
           PRERELEASE: ${{ inputs.prerelease }}
+          MAKE_LATEST: ${{ inputs.make_latest }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           ARTIFACT_ROOT: ${{ runner.temp }}/release-input
           RELEASE_OUTPUT: ${{ runner.temp }}/validated-release

@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const nativeRoot = path.join(root, 'tauri-app/src-tauri')
+const read = file => fs.readFileSync(path.join(nativeRoot, file), 'utf8')
+const config = JSON.parse(read('tauri.conf.json'))
+const hook = read('installer/hooks.nsh')
+
+test('中文双安装包保留应用标识、安装范围及既有MSI升级身份', () => {
+  assert.equal(config.productName, 'LoreKeeper')
+  assert.equal(config.identifier, 'com.tancan1998.lorekeeper')
+  assert.equal(config.bundle.windows.wix.language, 'zh-CN')
+  assert.equal(config.bundle.windows.wix.upgradeCode, 'ed3e3199-4ddc-501a-a745-179a185e8dfb')
+  // MSI 只比较前三段，不能仅递增第四段。
+  assert.equal(config.bundle.windows.wix.version, '1.0.1.0')
+  const nsis = config.bundle.windows.nsis
+  assert.deepEqual(nsis.languages, ['SimpChinese'])
+  assert.equal(nsis.installMode, 'currentUser')
+  assert.equal(nsis.installerHooks, 'installer/hooks.nsh')
+  assert.equal(nsis.customLanguageFiles.SimpChinese, 'installer/SimpChinese.nsh')
+})
+
+test('卸载默认保留；接管原勾选框而不按AppData目录递归删除', () => {
+  assert.match(read('installer/SimpChinese.nsh'), /清理所选项目（默认保留，须二次确认）/)
+  assert(hook.indexOf('StrCpy $R8 $DeleteAppDataCheckboxState') < hook.indexOf('StrCpy $DeleteAppDataCheckboxState 0'))
+  assert(hook.indexOf('StrCpy $DeleteAppDataCheckboxState 0') < hook.indexOf('ExecWait'))
+  for (const gate of ['$R8 = 1', '$UpdateMode <> 1', '$PassiveMode <> 1', '${Silent}', '"_?="']) assert(hook.includes(gate))
+  assert.equal((hook.match(/ExecWait/g) || []).length, 1)
+  assert.match(hook, /--cleanup-project/)
+  assert.doesNotMatch(hook, /RmDir|WebView2.*Delete|HKLM|Software\\Classes/)
+})
+
+test('注册表清理仅限本应用键，共享厂商键只在空时移除', () => {
+  assert(hook.includes('DeleteRegKey SHCTX "${MANUPRODUCTKEY}"'))
+  assert(hook.includes('DeleteRegKey /ifempty SHCTX "${MANUKEY}"'))
+  assert(hook.includes('DeleteRegKey /ifempty HKCU "${MANUKEY}"'))
+  assert.doesNotMatch(hook, /DeleteRegKey (?:SHCTX|HKCU) "\$\{MANUKEY\}"/)
+})
+
+test('清理入口不接收目录参数、不注册IPC、不加载业务数据', () => {
+  const source = read('src/project_cleanup.rs')
+  assert.doesNotMatch(source, /#\[tauri::command\]|recent_projects|ensure_lorekeeper_home|AppState/)
+  assert(source.includes('context.config_mut().app.windows.clear()'))
+  assert(source.includes('blocking_pick_folder'))
+  assert.equal((source.match(/if !confirm\(/g) || []).length, 2)
+  assert(source.includes('self.revalidate(home, protected)?'))
+  assert(source.includes('same_object(&self.identity, &latest.identity)'))
+})
+
+test('macOS保持拖拽默认保留，提供中文说明及宿主显示名', () => {
+  assert.equal(config.bundle.macOS.bundleName, 'LoreKeeper')
+  assert.match(read('installer/Info.plist'), /CFBundleDisplayName[\s\S]*LoreKeeper/)
+  const guide = read('installer/安装与卸载说明.txt')
+  assert.match(guide, /默认保留/)
+  assert.match(guide, /--cleanup-project/)
+})
+
+const compiler = process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA || '', 'tauri/NSIS/makensis.exe') : ''
+test('真实NSIS编译器验证挂钩语法（仅编译，不执行安装卸载）', {
+  skip: !compiler || !fs.existsSync(compiler),
+}, () => {
+  const dir = fs.mkdtempSync(path.join(root, '.pi/tmp/installer-syntax-'))
+  const source = path.join(dir, 'syntax.nsi')
+  fs.writeFileSync(source, [
+    'Unicode true',
+    '!include LogicLib.nsh',
+    '!include FileFunc.nsh',
+    '!define MAINBINARYNAME "lorekeeper"',
+    '!define PRODUCTNAME "LoreKeeper"',
+    '!define MANUPRODUCTKEY "Software\\LoreKeeperTest\\LoreKeeper"',
+    '!define MANUKEY "Software\\LoreKeeperTest"',
+    'Var DeleteAppDataCheckboxState',
+    'Var UpdateMode',
+    'Var PassiveMode',
+    '!macro CheckIfAppIsRunning binary name',
+    '!macroend',
+    `!include "${path.join(nativeRoot, 'installer/hooks.nsh')}"`,
+    `OutFile "${path.join(dir, 'syntax-only.exe')}"`,
+    'Section',
+    'WriteUninstaller "$TEMP\\lorekeeper-syntax-only-uninstaller.exe"',
+    'SectionEnd',
+    'Section Uninstall',
+    '!insertmacro NSIS_HOOK_PREUNINSTALL',
+    '!insertmacro NSIS_HOOK_POSTUNINSTALL',
+    'SectionEnd',
+  ].join('\n'), 'utf8')
+  const result = spawnSync(compiler, ['/V2', source], { encoding: 'utf8' })
+  assert.equal(result.status, 0, (result.stdout || '') + (result.stderr || ''))
+  assert(fs.statSync(path.join(dir, 'syntax-only.exe')).size > 0)
+})
