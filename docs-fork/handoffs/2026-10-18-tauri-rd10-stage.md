@@ -18,10 +18,10 @@
 ## 本机验证
 
 - Node前端全量：222文件，2748通过、1跳过；typecheck/lint/build退出0。
-- 无头Chromium全量：75文件、920通过；新增缩放浏览器测试1文件2项通过。仍有既有React act提示；不把它们写成产品错误。
+- 最终无头Chromium全量：76文件、922通过（包含新增缩放两项），日志 `stage-browser-complete.log`；仍有既有React act提示，不把它们写成产品错误。
 - 最终产物体检：39.2MiB、181文件、8个WOFF2，无TTF，指定上游标识扫描通过。体检不是完整安全审计或安装包认证。
 - 频道：286 invoke、7事件；287注册命令覆盖286契约频道，功能285/286，明确不支持旧库导入1，未迁移0。
-- Rust定向：startup 6/0（共1680个库测试被枚举）；定向rustfmt、隐藏构建与恢复默认构建成功。本轮全量/all-targets按混合验证授权交由对应提交的Windows CI，提交时尚待核验，不沿用旧1692项结果。
+- Rust定向：startup 6/0；定向rustfmt、隐藏构建与恢复默认构建成功。本轮全量/all-targets按混合验证授权交由对应提交的Windows CI，现已核验1680/0，不沿用旧1692项结果。
 - 根src/electron/docs/package.json/lock/vite/.npmrc未改；没有新增依赖或调整CI/发布配置。
 
 首次浏览器尝试600秒超时：新样式setup未同步、部分上游合成夹具仍绕过Tauri接缝。补齐测试样式/Tailwind与测试桥接后，全量通过；中间20项失败的8个文件经定向87/88再收口。Node全量曾有1项在高负载下等待动态导入超过1秒，保持原断言，将该等待上限改为5秒后全量通过；不声称定位或修复了历史pnpm升级的未复现失败。
@@ -43,4 +43,10 @@
 
 本次不是正式发布，未生成新的三平台安装包、签名、公证或真机安装认证。历史安装包仍属于495f5632/39110738571，不能标为本次新外壳版本。真实模型/MCP/业务云、前台原生对话框与新发布均未授权。
 
-对应代码提交及云端Rust全量/all-targets证据将在CI完成后登记；旧最近全量e21d95d7/39108477718为1692/0，仅作历史基线。
+## 提交与云端验证
+
+- 产品代码：`df0c026aebed28639cebcc5bd9ed79c9b3d1553a`；Rust CI **39119428467**，独立 **1680通过/0失败**，`cargo test --locked` 与 `cargo check --locked --all-targets` 两退出0，`state=passed`。all-targets用时41.32秒，库测试用时见绑定SHA的cargo-test日志。
+- artifact `tauri-rust-ci-df0c026aebed28639cebcc5bd9ed79c9b3d1553a-39119428467-1`：**31,507字节**，SHA256 `66d8d4e5468ced859383e220c9244f56fee160ded32d6fdcb600afcaa23cf4b5`；下载大小/摘要、expected/tested SHA、run、两退出码均核验。Cargo.lock SHA256 `7b6c5b1c04285fc57f265c1a7a99c7420329edc966895144963cf713851f8d1f` 与本机一致。
+- 主提交Commit CI **39119428514**、Gitleaks **39119428542** 成功。
+- 收口曾遗漏拦截200个Vitest自动生成的合成夹具截图（4,447,512字节）并随主提交推送，已向用户说明。随后 `e1b236004b24fefb7f82c5167ce42cb7031a5796` 仅取消跟踪并新增Tauri局部 `.gitignore`，本机文件保留、未改写远端历史；当前tree不含这些附件。清理提交Commit CI **39119481940**、Gitleaks **39119481768** 成功。该提交未改变Rust代码，不把它标成独立全量。
+- 本机证据 `.pi/tmp/recovery/ci-df0c026a/` 不入库。最近全量基线更新为df0c026a，累计Rust代码切片清零；旧e21d95d7/39108477718的1692/0仅作历史基线。
