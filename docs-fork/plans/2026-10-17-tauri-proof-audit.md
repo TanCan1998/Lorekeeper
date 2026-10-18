@@ -1,6 +1,15 @@
-# Tauri 首版证明与本机验收审计（第94次）
+# Tauri 首版证明与本机验收审计（第95次）
 
-当前全量验证代码：`72b91745a230f22627cc8237074ab1fd308a8f81`。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+当前全量验证代码：`72b91745a230f22627cc8237074ab1fd308a8f81`（Rust 代码指纹；master 现为 e6d03172，含上游合并与 CI 修复，`tauri-app/` 零变更）。下文保留183d4886等历史证明的版本与GUI范围，不混用实测。主会话有界源码/合成回归核查，不是独立安全审计，不代表生产审稿开放。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-17-tauri-migration-status.md)。
+
+## 第95次：上游同步与分支结构决策（无Rust语义切片）
+
+- 上游同步：落后 **787** 个提交（含 v1.2.3-Preview）。临时分支 `chore/merge-upstream-20261018` 试合并仅 **1 个冲突**（`.gitignore`，两边都留）；`tauri-app/`、`docs-fork/` **零变更**，fork 的 CI 文件与 `check-commit-msg.mjs` 全保留，根 `pnpm-lock.yaml`/`vite.config.ts`/`.npmrc` 未变，根 `package.json` 仅随上游升版本与脚本。合并前在临时分支跑根 TS 自检（typecheck 30.3 秒、lint 64.5 秒）通过，再 `--ff-only` 合入 master（051c8c83），临时分支已删除。
+- **Rust 基线不变**：因 `tauri-app/` 零变更，全量证据仍为 72b91745 / 39088431086（1679/0，all-targets 38.37 秒无告警），不重复跑、不把合并后的文档 SHA 冒充 Rust 测试 SHA。
+- 连带修复两处 CI（4ac2dd4e、e6d03172）：① 上游新贡献者 `cheng274771204@gmail.com` 不在 `UPSTREAM_IGNORE_AUTHORS`，使 master 的 Commit message CI 变红 → 追加该邮箱；② 首次改动把注释写在该 `run: |` 块的 10 空格缩进之外，GitHub 判为无效工作流并生成日志为空的失败运行 → 恢复缩进、本地 `js-yaml` 解析校验后重推。合并后提交规范 39090445181 与 Gitleaks 39090445076 均绿。
+- 分支结构决策：不剥离 master。理由：剥离后每次上游合并都对每个上游改动文件产生 `modify/delete` 冲突；会丢掉逐频道平移所需的 `electron/`、`src/` 参照；与双栈隔离、`docs/` 上游镜像不可改、根 lock 保持干净且禁删相冲突；剥离不减 `.git`。改以稀疏检出满足「只看产品树」：`.pi\tmp\sparse.ps1 on|off|status`（会话工具，不入库），`on` 时工作区只留 `tauri-app`/`docs-fork`/`.github` 与根文件，`node_modules`/`target`/`.pi/tmp` 不受影响，切换前检查未提交改动；已实测 on/off 往返且 `git status` 干净。
+- 行为参照更新：上游本轮改 `electron/` 26 个、`src/` 411 个文件，后续平移对应频道时以合并后的最新上游实现为准。
+- 本轮无 Rust 语义切片，累计仍为 **4**（3607e6c2、f7f5658e、c1547e83、72b91745）。
 
 ## 第94次：中和JSON列的四处读面改为逐行判定
 

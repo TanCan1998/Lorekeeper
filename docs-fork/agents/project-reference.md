@@ -169,3 +169,43 @@ fn chapter_finalize(chapter_id: String, body: String) -> Result<FinalizedReceipt
 ## 上游同步时核查的 fork 增强
 
 保留 ui/Dialog.tsx 的弹窗 ESC 栈处理、SettingsModal.tsx 的 ESC 处理、TitleBar.tsx 的 data-tauri-drag-region；弹窗动画修复见提交 61ea32ad。commands/window.rs 已实现四个窗口命令及两段式关窗协议。同步上游时结合当前源码核查这些行为。
+
+## 上游同步流程（2026-10-18 固化）
+
+本 fork 是**增量式**分支：自 fork 点起，上游目录（`src/`、`electron/`、`docs/`、`scripts/`、`plugins/` 等）几乎未被改动过。2026-10-18 实测：合并 upstream/master（当时落后 **787** 个提交）只产生 **1 个冲突**（`.gitignore`，两边各加几行），`tauri-app/` 与 `docs-fork/` **零变更**，根 `pnpm-lock.yaml`、`vite.config.ts`、`.npmrc` 未变，根 `package.json` 只随上游升版本与脚本。
+
+标准步骤：
+
+```powershell
+git fetch upstream --tags                       # 先拉取，落后数会远大于本地旧状态
+git checkout -b chore/merge-upstream-<YYYYMMDD>
+git merge upstream/master --no-edit            # 试合并，不改 master
+git diff --name-only --diff-filter=U           # 列出冲突面
+# 冲突处理：本项目口径是「fork 增强保留 + 上游改动并入」两者都留
+pnpm typecheck; pnpm run lint                  # 根 TS 自检（借上游测试面验证合并结果）
+git checkout master; git merge --ff-only chore/merge-upstream-<YYYYMMDD>
+git push origin master
+git push origin --delete chore/merge-upstream-<YYYYMMDD>
+git branch -d chore/merge-upstream-<YYYYMMDD>
+```
+
+**两个必须注意的坑（本轮都踩过）**：
+
+1. **提交消息豁免名单**：`.github/workflows/commit-message-ci.yml` 是 fork 独有文件，其设计是「上游导入的历史在任何事件下都不审计」，靠 `UPSTREAM_IGNORE_AUTHORS` 保证「合并 upstream 不会让 push 变红」。上游一旦出现**新贡献者邮箱**，push 就会变红（本轮：`cheng274771204@gmail.com`）。修法就是把它追加到该变量（逗号分隔），本地可用 `node scripts/check-commit-msg.mjs --range <before>..<after> --ignore-author <email>` 先复现与验证。
+2. **YAML 缩进**：`UPSTREAM_IGNORE_AUTHORS` 位于 `run: |` 块内，注释与赋值都必须保持 **10 空格**缩进；写到缩进之外会让 GitHub 判为无效工作流，直接生成**日志为空**的失败运行（运行名会显示成文件路径）。改完用 `node -e` 加载 `js-yaml` 解析一遍再推。
+
+## 工作区稀疏检出（sparse on/off）
+
+**2026-10-18 决策**：不把上游文件从 master 剥离。理由：① 剥离后每次合并 upstream 都会对**每个上游改动文件**产生 `modify/delete` 冲突；② 会丢掉逐频道平移所需的 `electron/`、`src/` 行为参照；③ 与 `双栈隔离` 约束、`docs/` 上游镜像不可改、根 `pnpm-lock.yaml` 保持干净且禁删相冲突；④ 剥离不减 `.git`（历史 blob 仍在），只影响工作区。
+
+需要「只看产品树」时用**稀疏检出**而非分支剥离（只影响工作区里被跟踪的文件，不改历史、不删提交）：
+
+```powershell
+. .pi\tmp\sparse.ps1 on      # 只留 tauri-app / docs-fork / .github（根文件始终保留）
+. .pi\tmp\sparse.ps1 off     # 恢复全树（平移 Electron 参照时用）
+. .pi\tmp\sparse.ps1 status  # 查看状态与可见文件数
+```
+
+- 开关位于 `.pi\tmp\sparse.ps1`（会话工具，不入库）；切换前会检查未提交改动，有则拒绝执行。
+- `node_modules/`、`tauri-app/src-tauri/target/`、`.pi/tmp/` 等被忽略或未跟踪的内容不受影响。
+- 上游合并分支**不需要常驻**：每次同步临时开 `chore/merge-upstream-<YYYYMMDD>` 即可（先例：`chore/merge-upstream-20261010`、`20261018`）。
