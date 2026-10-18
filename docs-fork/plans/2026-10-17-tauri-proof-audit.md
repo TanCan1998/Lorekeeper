@@ -1,6 +1,14 @@
-# Tauri 首版证明与本机验收审计（第96次）
+# Tauri 首版证明与本机验收审计（第97次）
 
-当前全量验证代码：`561e91d092bfda67c3f1050fda13a499598cc70c` / 39094795752，1682/0，库255.35秒，all-targets36.92秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+当前全量验证代码：`39c1c885605bae966a07b8a1e061f5fc3fe8c5fa` / 39095854001，1684/0，库269.87秒，all-targets35.45秒无告警；完整SHA/lock、两个退出码0、state=passed及两日志已核验。下文保留历史证明版本与GUI范围，不混用实测；当前开放边界以最新快照为准。主会话有界源码/合成回归核查，不是独立安全审计，不代表发布认证。范围与授权见[首版决策](./2026-10-17-tauri-completion-decisions.md)、[混合验证](../agents/tauri-rust-ci.md)及[当前快照](../handoffs/2026-10-18-tauri-migration-status.md)。
+
+## 第97次：图效果收据与冻结专用入口
+
+- 代码39c1c885已推送，云端39095854001成功1684/0、all-targets35.45秒无告警；产物大小31587字节及GitHub SHA256匹配，完整SHA/lock/两个退出0/state=passed与两日志已核验。当前语义切片累计0；同SHA提交规范39095853945、Gitleaks39095854010成功。
+- 对照最新Electron修复图stored_effects/stored_effects_in把坏JSON或graphEffects:null降格为无效果；先失败回归后改为GENERATION_GRAPH_EFFECT_INVALID，合法缺省/[]保持。
+- 新增图SQLite回归覆盖NULL/空串/坏JSON/JSON null/非数组/坏结构/超限，普通效果读取、可变性及事务内证明一致拒绝，无回写。
+- 实际sanitizer/侧车/连接守卫回归证明图与旧名册require及confirm/stage在收据证明前精确拒绝冻结handle；来源回调不执行、事务退出、拒写、源文件不变。无守卫/非冻结新坏绑定不获豁免。不是有效当前角色完整证明链或任意旧档安装验收。
+- 本机graph_generation23/0、portable88/0、legacy_roster27/0、main_generation_owner211/0，格式/diff通过；无前端变更，未新增GUI验收。#30继续，#31待办。
 
 ## 第96次：恢复后完整审修与精确历史拒绝
 
