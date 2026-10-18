@@ -8,7 +8,7 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-2026-10-19第113次：[包身份正向归组、产品待接入](handoffs/2026-10-19-tauri-migration-status.md)。代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理和显式Latest选项已实现；沿用第110次验证：本机Rust18、Node25（含NSIS编译）、前端14通过，typecheck/lint/build成功，同SHA云端Rust全量1689项及all-targets成功。本轮真实完整MSIX身份取得归组正向结果：同一EXE无flag五次正反复验，无包前后拆组，带包三次均将宿主与全部6个WebView2放入同一应用组。产品尚未接入，正式身份/签名/安装路线须确认；macOS与产品生命周期仍待验收，新版继续暂停发布。
+2026-10-19第114次：[签名稀疏身份原路径归组、产品待接入](handoffs/2026-10-19-tauri-migration-status.md)。代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理和显式Latest选项已实现；沿用第110次验证：本机Rust18、Node25（含NSIS编译）、前端14通过，typecheck/lint/build成功，同SHA云端Rust全量1689项及all-targets成功。本轮签名稀疏身份也取得正向结果：EXE原路径/同字节五次对照，注册后三次宿主+全部6个WebView2同组，撤销后再次拆组，无诊断flag。临时信任/证书/私钥/包已清理；保留NSIS/MSI的接入草案待确认，产品与macOS未验收，新版继续暂停发布。
 
 当前已公开的仍是第106次 **[Lorekeeper 1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，旧版不设为最新版、不覆盖。
 
@@ -21,13 +21,14 @@ Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留�
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第113次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第114次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |
 | 查看本机/云端测试分工 | [Tauri Rust混合验证](agents/tauri-rust-ci.md) |
 | 手动打包与发布 | [Tauri受限发布协议](agents/tauri-release.md) |
 | 管理Actions存储 | [1天保留与历史制品清理](agents/actions-storage.md) |
+| 查看Windows稀疏身份接入草案 | [保留NSIS/MSI的待确认方案](plans/windows-sparse-identity-integration.md) |
 | 查看WebView进程归组研究 | [机制证据与后台验证矩阵](research/webview-process-attribution.md) |
 | 查看定稿图标与生成说明 | [图标登记](design/branding.md) |
 | 查看预发布说明 | [旧1.0.0-beta](releases/1.0.0-beta.md) · [未发布beta.1](releases/1.0.0-beta.1.md) |
