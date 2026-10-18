@@ -164,15 +164,16 @@ describe('relationship role semantics', () => {
   })
 })
 
-// Storybook 留在上游根 src/；只把其文档作为静态合同，逐项核对 Tauri 的运行时 token。
+// Storybook 留在上游根 src/；核对其语义变量与 Tauri token 的兼容性。
+// 上游现为纸墨外壳下的 light/dark，不能用其文档约束 Tauri 保留的四主题与皮肤。
 const baselineTokenStory = resolve(process.cwd(), '../src/stories/Introduction.mdx')
 
 describe('上游 Storybook 文档与 Tauri token 合同', () => {
-  it('renders every theme from runtime CSS variables without a hand-copied palette', () => {
+  it('renders upstream light and dark themes from shared semantic variables without a hand-copied palette', () => {
     const story = readFileSync(baselineTokenStory, 'utf8')
 
     expect(story).not.toMatch(/#[0-9a-f]{6}/i)
-    expect(story).toContain("['light', 'galaxy', 'paper', 'dark'].map")
+    expect(story).toContain("['light', 'dark'].map")
     expect(story).toContain('className={theme}')
     for (const token of [
       '--color-bg',

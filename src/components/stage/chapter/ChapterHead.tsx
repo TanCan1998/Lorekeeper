@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { chapterLabel } from '../../../shared/chapter-label'
+import { getChapterRoleLabels } from '../../../shared/chapter-role'
 import { useLocaleStore } from '../../../stores/locale-store'
 import { Lifecycle } from '../../ui/Lifecycle'
 
@@ -13,12 +14,14 @@ export default function ChapterHead({ chapterNumber, role, title, version, step,
   focus: boolean
 }) {
   const text = useLocaleStore(s => s.text)
+  const roleLabels = getChapterRoleLabels(role)
+  const roleText = roleLabels ? text(roleLabels.zhCN, roleLabels.enUS) : role
   return (
     <header className="stage-ch-head">
       {!focus && (
         <div className="stage-ch-kicker">
           <span className="stage-ch-numeral" aria-hidden="true">{chapterNumber}</span>
-          <span className="stage-ch-eyebrow">{role ? `${chapterLabel(chapterNumber, text)} · ${role}` : chapterLabel(chapterNumber, text)}</span>
+          <span className="stage-ch-eyebrow">{roleText ? `${chapterLabel(chapterNumber, text)} · ${roleText}` : chapterLabel(chapterNumber, text)}</span>
         </div>
       )}
       <div className="stage-ch-titlerow">

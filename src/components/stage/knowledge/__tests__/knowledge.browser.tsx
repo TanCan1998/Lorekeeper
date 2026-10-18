@@ -42,6 +42,8 @@ const copies: Record<string, string> = {
   ch2: '林舟在抽屉底下翻出一张旧照片。',
 }
 
+// 应用切换界面语言时会改 <html lang>，按钮的字距跟着 :lang() 变；量宽度的用例要照样设，结束后还原。
+const PAGE_LANG = document.documentElement.lang
 let root: Root | undefined
 let host: HTMLDivElement | undefined
 let invoke: ReturnType<typeof vi.fn<(channel: string, ...args: unknown[]) => Promise<unknown>>>
@@ -97,6 +99,7 @@ afterEach(async () => {
   host?.remove()
   setActiveProjectSessionContext(null)
   for (const restore of restores) restore()
+  document.documentElement.lang = PAGE_LANG
   vi.restoreAllMocks()
 })
 
@@ -383,6 +386,82 @@ describe('知识库', () => {
     await click(/母亲的旧照片/)
     await vi.waitFor(() => expect(document.body.textContent).toContain('这一章由定稿自动收入'))
     expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('定稿章节只读显示原文；旧外壳改过副本还没更新检索时提示并能更新检索，说明里不说重新定稿会自动更新', async () => {
+    const edited = `${copies.ch2}照片背面写着一个日期。`
+    const plain = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'kb:read-document-copy' && args[0] === 'ch2') return { available: true, content: edited, contentHash: 'h-ch2-edited', edited: true, indexStatus: 'stale' }
+      if (channel === 'kb:reindex-document-copy') return { success: true, docId: 'ch2', chunkCount: 4 }
+      return plain(channel, ...args)
+    })
+    await renderPage()
+    await click(/定稿章节 1/)
+    await click(/母亲的旧照片/)
+    await vi.waitFor(() => expect(document.body.textContent).toContain(edited))
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(document.body.textContent).toContain('这一章由定稿自动收入')
+    expect(document.body.textContent).toContain('改动还没进入检索')
+    expect(document.body.textContent).not.toContain('自动更新')
+    expect(button('更新检索')?.disabled).toBe(false)
+
+    await click('更新检索')
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'kb:reindex-document-copy').map(([, docId]) => docId)).toEqual(['ch2'])
+  })
+
+  it('定稿章节没改过、检索却过时（比如上次更新检索没做完）：提示不说改过，照样能更新检索', async () => {
+    const plain = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'kb:read-document-copy' && args[0] === 'ch2') return { available: true, content: copies.ch2, contentHash: 'h-ch2', edited: false, indexStatus: 'stale' }
+      if (channel === 'kb:reindex-document-copy') return { success: true, docId: 'ch2', chunkCount: 4 }
+      return plain(channel, ...args)
+    })
+    await renderPage()
+    await click(/定稿章节 1/)
+    await click(/母亲的旧照片/)
+    await vi.waitFor(() => expect(document.body.textContent).toContain(copies.ch2))
+    const notice = [...document.querySelectorAll('.stage-kb-reader .pi-notice')].map(node => node.textContent).join('\n')
+    expect(notice).toContain('还没进入检索')
+    expect(notice).not.toMatch(/改过|改动/)
+    await click('更新检索')
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'kb:reindex-document-copy').map(([, docId]) => docId)).toEqual(['ch2'])
+  })
+
+  it('导入的资料没改过、检索却过时：提示不说改过，照样能更新检索', async () => {
+    const plain = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'kb:read-document-copy' && args[0] === 'station') return { available: true, content: copies.station, contentHash: 'h-station', edited: false, indexStatus: 'stale' }
+      if (channel === 'kb:reindex-document-copy') return { success: true, docId: 'station', chunkCount: 3 }
+      return plain(channel, ...args)
+    })
+    await renderPage()
+    await click(/车站档案/)
+    await vi.waitFor(() => expect((document.querySelector('textarea') as HTMLTextAreaElement | null)?.value).toBe(copies.station))
+    const notice = [...document.querySelectorAll('.stage-kb-reader .pi-notice')].map(node => node.textContent).join('\n')
+    expect(notice).toContain('还没进入检索')
+    expect(notice).not.toMatch(/改过|改动|旧内容/)
+    await click('更新检索')
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'kb:reindex-document-copy').map(([, docId]) => docId)).toEqual(['station'])
+  })
+
+  it('定稿章节的副本已进入检索时只读显示原文，不提供更新检索', async () => {
+    await renderPage()
+    await click(/定稿章节 1/)
+    await click(/母亲的旧照片/)
+    await vi.waitFor(() => expect(document.body.textContent).toContain(copies.ch2))
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(button('更新检索')).toBeUndefined()
+    expect(document.body.textContent).not.toContain('自动更新')
+  })
+
+  it('没有项目副本的资料不叫作者重新导入：说明只能用来查找，不能在这里查看或修改', async () => {
+    await renderPage()
+    await click(/旧版地名表/)
+    const reader = () => document.querySelector('[aria-label="资料原文"]')?.textContent ?? ''
+    await vi.waitFor(() => expect(reader()).toContain('完整原文不可用'))
+    expect(reader()).not.toContain('重新导入')
+    expect(reader()).toContain('仍能用来查找')
   })
 
   it('项目副本有未保存修改时切换资料先确认；继续编辑留住修改，放弃才切换', async () => {
@@ -680,6 +759,71 @@ describe('知识库', () => {
     await act(async () => releases[0]())
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
     expect(document.body.textContent).not.toContain('有 2 段资料还不能按意思查找')
+  })
+
+  it('1280 宽窗口开着运行侧页时（内容区约 623px）资料来源分段不折行', async () => {
+    host!.style.width = '623px'
+    await renderPage()
+    const items = [...document.querySelectorAll<HTMLButtonElement>('.stage-kb-docs .pi-seg-item')]
+    expect(items.map(item => item.textContent)).toEqual(['我导入的 3', '定稿章节 1'])
+    for (const item of items) expect(item.scrollHeight, item.textContent ?? '').toBeLessThanOrEqual(item.clientHeight)
+    expect(items[1].getBoundingClientRect().top, '两项排在同一行').toBe(items[0].getBoundingClientRect().top)
+  })
+
+  for (const locale of ['zh-CN', 'en-US'] as Locale[]) {
+    it(`${locale} 下同样宽度、计数到四位数时资料栏里的按钮与分段都不伸出各自的框，文案与计数不被截断`, async () => {
+      useLocaleStore.setState({ locale })
+      document.documentElement.lang = locale
+      host!.style.width = '623px'
+      const plain = invoke.getMockImplementation()!
+      const contentBox = (element: HTMLElement) => {
+        const box = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        return {
+          left: box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+          right: box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight),
+        }
+      }
+      for (const [imported, chapters] of [[3, 1], [30, 1200]]) {
+        if (imported !== 3) invoke.mockImplementation(async (channel, ...args) => channel === 'kb:list-documents' ? [
+          ...Array.from({ length: imported }, (_, index) => ({ id: `doc-${index}`, fileName: `资料${index}.md`, importedAt: '', chunkCount: 1, filePath: `knowledge-copy:doc-${index}` })),
+          ...Array.from({ length: chapters }, (_, index) => ({ id: `ch-${index}`, fileName: `第${index + 1}章.txt`, importedAt: '', chunkCount: 1, filePath: `knowledge-copy:ch-${index}`, finalizedChapter: index + 1 })),
+        ] : plain(channel, ...args))
+        const labels = locale === 'zh-CN' ? [`我导入的 ${imported}`, `定稿章节 ${chapters}`] : [`Imported ${imported}`, `Final chapters ${chapters}`]
+        await act(async () => root!.render(<StageKnowledge key={imported} tabId={KB_TAB} />))
+        await vi.waitFor(() => expect(button(new RegExp(`^${labels[0]}$`))).toBeTruthy())
+        const column = document.querySelector<HTMLElement>('.stage-kb-docs')!
+        const items = [...column.querySelectorAll<HTMLButtonElement>('.pi-seg-item')]
+        expect(items.map(item => item.textContent)).toEqual(labels)
+        for (const item of items) expect(item.scrollHeight, `${item.textContent} 折行`).toBeLessThanOrEqual(item.clientHeight)
+        const buttons = [...column.querySelectorAll<HTMLButtonElement>('button')]
+        expect(buttons.map(item => item.textContent)).toEqual(expect.arrayContaining([...labels, ...(locale === 'zh-CN' ? ['导入创作资料', '清空知识库…'] : ['Import planning material', 'Clear knowledge base…'])]))
+        for (const item of buttons) {
+          const name = `${item.textContent || item.getAttribute('aria-label')}（${imported}/${chapters}）`
+          expect(item.scrollWidth, `${name} 的文字伸出按钮`).toBeLessThanOrEqual(item.clientWidth)
+          const rect = item.getBoundingClientRect()
+          const frame = contentBox(item.parentElement!)
+          expect(rect.left, `${name} 伸出左边`).toBeGreaterThanOrEqual(frame.left - 0.5)
+          expect(rect.right, `${name} 伸出右边`).toBeLessThanOrEqual(frame.right + 0.5)
+        }
+        expect(column.scrollWidth, `资料栏横向溢出（${imported}/${chapters}）`).toBeLessThanOrEqual(column.clientWidth)
+      }
+    })
+  }
+
+  it('索引状态读取失败后再读成功：失败提示消失', async () => {
+    const plain = invoke.getMockImplementation()!
+    let statusFails = true
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'kb:get-vector-rebuild-status' && statusFails) throw new Error('索引状态暂时读不出来')
+      return plain(channel, ...args)
+    })
+    await renderPage()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('读取知识库失败'))
+    statusFails = false
+    await click('刷新资料')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('有 4 段资料还不能按意思查找'))
+    expect(document.body.textContent).not.toContain('读取知识库失败')
   })
 
   it('打开知识库页只读一次索引状态；点「刷新资料」再读一次', async () => {

@@ -42,17 +42,28 @@
   color: var(--ink-3);
 }
 
-.stage-kb-import {
+/* 文字居中、两边留白收窄，240px 的资料栏里英文文案还能排一行；窄到 200px 放不下时折成两行，不伸出按钮 */
+.stage-kb-docs .stage-kb-import {
   width: 100%;
+  height: auto;
+  min-height: 36px;
+  padding: 6px var(--s-2);
   justify-content: center;
+  line-height: 1.3;
+  text-align: center;
+  white-space: normal;
 }
 
+/* 窄资料栏放不下两项时（英文文案、上千章的计数）各占一行，文案和计数都不截断 */
 .stage-kb-docs .pi-seg {
   display: flex;
+  flex-wrap: wrap;
 }
 
 .stage-kb-docs .pi-seg-item {
   flex: 1;
+  padding: 0 var(--s-2);
+  white-space: nowrap;
 }
 
 .stage-kb-list {
@@ -125,6 +136,15 @@
   margin: 0;
 }
 
+/* 同上：清空按钮的英文文案在窄资料栏里折行，不伸出危险区的框 */
+.stage-kb-danger .pi-btn {
+  height: auto;
+  min-height: 28px;
+  padding-block: 4px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
 .stage-kb-reader {
   overflow: auto;
   padding: var(--s-6) var(--s-10) var(--s-12);
@@ -186,6 +206,12 @@
   color: var(--ink);
   font: 15px/2 var(--font-prose);
   resize: vertical;
+}
+
+.stage-kb-original {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: none;
 }
 
 .stage-kb-editor:focus-visible {

@@ -381,6 +381,32 @@ describe('版本历史', () => {
     expect(column.querySelector('.stage-hist-help')?.textContent).toBe('这一章还没有当前稿。')
   })
 
+  it.each([
+    ['zh-CN', { success: false }, '回退失败：没有新建回滚草稿'],
+    ['en-US', { success: false }, 'Could not revert: the rollback draft was not created'],
+    ['zh-CN', new Error('数据库只读'), '回退失败：数据库只读'],
+  ] as const)('%s 下新建回滚草稿失败（%o）：提示与界面语言一致，只写原因，不带 Error 前缀', async (locale, outcome, message) => {
+    useLocaleStore.setState({ locale })
+    const errors = vi.spyOn(toast, 'error').mockImplementation(() => undefined)
+    await act(async () => root!.render(<StageHistory projectKey={session.projectPath} />))
+    await vi.waitFor(() => expect(button(/雨夜车站/)).toBeTruthy())
+    await click(/雨夜车站/)
+    await vi.waitFor(() => expect(button(/ v1/)).toBeTruthy())
+    await click(/ v1/)
+    const revert = locale === 'zh-CN' ? '回退到此版本…' : 'Revert to this version…'
+    await vi.waitFor(() => expect(button(revert)).toBeTruthy())
+    await click(revert)
+    const base = invoke.getMockImplementation()!
+    invoke.mockImplementation(async (channel, ...args) => {
+      if (channel !== 'db:draft-create') return base(channel, ...args)
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    })
+    await click(locale === 'zh-CN' ? '新建回滚草稿' : 'Create rollback draft')
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledWith(message))
+    expect(drafts).toHaveLength(2)
+  })
+
   it('回退已新建草稿但随后重读列表失败：照样关掉对话框并说已新建，不会让作者再点一次多建一稿', async () => {
     const success = vi.spyOn(toast, 'success').mockImplementation(() => undefined)
     await openChapterThree()

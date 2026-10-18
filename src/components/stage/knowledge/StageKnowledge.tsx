@@ -174,15 +174,32 @@ export default function StageKnowledge({ tabId }: { tabId: string }) {
                 )}
               </header>
               <h2 className="stage-kb-doc-title">{documentName(selected)}</h2>
-              {!selectedImported ? (
+              {!selectedImported && (
                 <Notice title={text('这一章由定稿自动收入', 'Added automatically when finalized')}>
-                  {text('要修改，请到正文里改这一章，重新定稿后会自动更新。', 'To change it, edit the chapter in the manuscript and finalize it again.')}
+                  {text('这里只能查看。要修改，请到正文里改这一章再定稿，新的定稿会另收一份。', 'You can only read it here. To change it, edit the chapter in the manuscript and finalize it again; the new version is added as a separate entry.')}
                 </Notice>
-              ) : !documentCopy ? <p className="stage-kb-help">{text('正在读取…', 'Loading…')}</p>
+              )}
+              {!documentCopy ? <p className="stage-kb-help">{text('正在读取…', 'Loading…')}</p>
                 : !documentCopy.available ? (
                   <Notice title={text('完整原文不可用', 'The full text is unavailable')}>
-                    {text('请重新导入这份资料。', 'Import this material again.')}
+                    {text('这份资料的原文没有存进作品，不能在这里查看或修改；它仍能用来查找。', 'This material’s text was not stored in the book, so it cannot be read or edited here. It can still be searched.')}
                   </Notice>
+                ) : !selectedImported ? (
+                  <>
+                    {documentCopy.edited && <p className="stage-kb-meta">{text('以前改过的项目副本', 'Previously edited project copy')}</p>}
+                    <div className="stage-kb-editor stage-kb-original" role="document" aria-label={text('定稿原文', 'Finalized text')}>{documentCopy.content}</div>
+                    {documentCopy.indexStatus === 'stale' && (
+                      <Notice
+                        tone="warn"
+                        title={documentCopy.edited ? text('改动还没进入检索', 'Changes are not searchable yet') : text('还没进入检索', 'Not searchable yet')}
+                        actions={<Button variant="secondary" size="sm" disabled={documentBusy} onClick={() => void kb.reindexDocument()}>{text('更新检索', 'Update search')}</Button>}
+                      >
+                        {documentCopy.edited
+                          ? text('这份副本以前改过，旧内容已不再参与检索和写作；更新后写作时就能查到上面的内容。', 'This copy was edited earlier, so its old text is no longer used for search or writing. Update to make the text above available.')
+                          : text('这一章的原文还没进入检索，写作时查不到；更新后就能查到上面的内容。', 'This chapter’s text is not in search yet, so writing cannot find it. Update to make the text above available.')}
+                      </Notice>
+                    )}
+                  </>
                 ) : <>
                   <p className="stage-kb-meta">
                     {documentCopy.edited ? text('已改过的项目副本', 'Edited project copy') : text('项目副本', 'Project copy')}
@@ -199,10 +216,12 @@ export default function StageKnowledge({ tabId }: { tabId: string }) {
                   {documentCopy.indexStatus === 'stale' ? (
                     <Notice
                       tone="warn"
-                      title={text('改动还没进入检索', 'Changes are not searchable yet')}
+                      title={documentCopy.edited ? text('改动还没进入检索', 'Changes are not searchable yet') : text('还没进入检索', 'Not searchable yet')}
                       actions={<Button variant="secondary" size="sm" disabled={documentBusy || dirty} onClick={() => void kb.reindexDocument()}>{text('更新检索', 'Update search')}</Button>}
                     >
-                      {text('旧内容已不再参与检索和写作，更新后写作时就能查到新内容。', 'The old text is no longer used for search or writing. Update to make the new text available.')}
+                      {documentCopy.edited
+                        ? text('旧内容已不再参与检索和写作，更新后写作时就能查到新内容。', 'The old text is no longer used for search or writing. Update to make the new text available.')
+                        : text('这份资料的原文还没进入检索，写作时查不到；更新后就能查到。', 'This material’s text is not in search yet, so writing cannot find it. Update to make it available.')}
                     </Notice>
                   ) : <p className="stage-kb-help">{text('保存后需要更新检索，写作时才能查到新内容。', 'After saving, update search so writing can find the new text.')}</p>}
                 </>}

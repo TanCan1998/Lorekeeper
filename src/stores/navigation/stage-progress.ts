@@ -129,7 +129,7 @@ type WorkingDraft = DraftMeta & { status: 'draft' | 'reviewed' | 'revised' }
 const isWorking = (draft: DraftMeta): draft is WorkingDraft => draft.status === 'draft' || draft.status === 'reviewed' || draft.status === 'revised'
 
 /**
- * 这份稿在定稿之后才建（版本历史「回退到此版本」会在定稿章上新建草稿）。草稿箱允许给较旧的版本定稿，
+ * 这份稿在定稿之后才建（版本历史「回退到此版本」会在定稿章上新建草稿）。旧版本的草稿箱允许给较旧的版本定稿，
  * 所以不能按版本号比：定稿前就有的更高版本不算。定稿时间取定稿稿的 updated_at（定稿后不可再改）；
  * 两者同为数据库 datetime('now') 的写法，可直接按字符串比；同一秒内分不出先后时退回按版本号。
  */

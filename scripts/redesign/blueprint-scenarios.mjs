@@ -266,7 +266,9 @@ export const BLUEPRINT_SCENARIOS = {
     const proceed = recovery.getByRole('button', { name: '继续生成缺少的章节' })
     await proceed.waitFor({ state: 'visible' })
     assert.equal(await proceed.isEnabled(), true, '恢复稿里可以接着生成缺少的章节')
-    return { remaining: await recovery.getByText(/^待完成第/).innerText() }
+    // 纸墨恢复页把待完成的章节范围写在提示正文的末尾，不再单独成段。
+    const remainingText = await recovery.getByText(/待完成第 \d+ 至 \d+ 章/).innerText()
+    return { remaining: remainingText.match(/待完成第 \d+ 至 \d+ 章[^。]*。/)?.[0] ?? remainingText }
   }, after: async ({ page, fake }) => {
     const before = fake.chats.length
     await page.getByLabel('蓝图恢复').getByRole('button', { name: '继续生成缺少的章节' }).click()

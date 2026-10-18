@@ -8,7 +8,6 @@ import { countDraftUnits } from '../../../../shared/draft-units'
 import { formatResourceUri } from '../../../../shared/project-paths'
 import { toast } from '../../../ui/Toast'
 import { setActiveProjectSessionContext } from '../../../../shared/project-session-context'
-import { useAppearanceStore } from '../../../../stores/appearance-bootstrap'
 import { useDraftStore } from '../../../../stores/draft-store'
 import { useEditorStore } from '../../../../stores/editor-store'
 import { useLLMStore } from '../../../../stores/llm-store'
@@ -26,7 +25,7 @@ import { AI_REVIEW, BLUEPRINT, ORIGINAL, REVISED, SESSION, chapterProject, creat
 
 const original = {
   editor: useEditorStore.getState(), project: useProjectStore.getState(), drafts: useDraftStore.getState(),
-  stage: useStageStore.getState(), llm: useLLMStore.getState(), workflow: useWorkflowStore.getState(), appearance: useAppearanceStore.getState(),
+  stage: useStageStore.getState(), llm: useLLMStore.getState(), workflow: useWorkflowStore.getState(),
 }
 
 let root: Root | undefined
@@ -87,7 +86,6 @@ afterEach(async () => {
   useStageStore.setState(original.stage, true)
   useLLMStore.setState(original.llm, true)
   useWorkflowStore.setState(original.workflow, true)
-  useAppearanceStore.setState(original.appearance, true)
 })
 
 describe('版本切换器', () => {
@@ -456,7 +454,6 @@ describe('写作此章、标签顶替与跨作品的请求', () => {
 
   it('删除正文的确认写的是新外壳里重试清理的位置', async () => {
     const draft = backend.addDraft({ status: 'finalized' })
-    useAppearanceStore.setState({ resolvedShell: 'stage' })
     await mount()
     await openDraft(draft.id)
     await click('更多操作')
@@ -516,6 +513,18 @@ describe('纸面', () => {
     await userEvent.keyboard('{End}{Escape}{ArrowLeft}{Tab}')
     expect([outAfterPause, outBackward, inEditor()]).toEqual([true, true, true])
     expect(activeTab()?.content).toBe('雨从傍晚开始就没有停过。\u2003\u2003\u2003\u2003')
+  })
+
+  it('刚打完字立刻按 Esc 再按 Tab，焦点照样移出编辑区，不插空格', async () => {
+    const draft = backend.addDraft({ status: 'draft', content: '雨从傍晚开始就没有停过。' })
+    await mount()
+    await openDraft(draft.id)
+    await expect.element(page.getByText('雨从傍晚开始就没有停过。')).toBeVisible()
+    const prose = host!.querySelector<HTMLElement>('.stage-ch-prose .cm-content')!
+    await userEvent.click(page.getByText('雨从傍晚开始就没有停过。'))
+    await userEvent.keyboard('{End}abc{Escape}{Tab}')
+    expect(prose.contains(document.activeElement)).toBe(false)
+    expect(activeTab()?.content).toBe('雨从傍晚开始就没有停过。abc')
   })
 
   it('中文分节符整行不缩进；以破折号开头的对白、以符号开头的正文仍缩进', async () => {

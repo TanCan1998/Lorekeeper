@@ -15,7 +15,7 @@ import { deleteFinalizedChapter } from './finalized-chapter-deletion'
 /**
  * 删除未定稿的一稿（连同它的审稿、修稿产物）。调用方先请作者确认，删除成功后自己处理打开的标签。
  * 这一稿其实已定稿时转交定稿删除流程（它有自己的确认与投影清理），此时返回 false。
- * 草稿箱与单章视图共用。
+ * 单章视图的章节操作用它。
  */
 export async function deleteDraftVersion({ draft, displayName, projectKey, project }: {
   draft: DraftMeta

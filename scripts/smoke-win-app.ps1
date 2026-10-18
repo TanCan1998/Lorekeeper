@@ -170,6 +170,13 @@ function Get-AiNovelProcessTreeIds {
 }
 
 function Get-AiNovelTopLevelWindowSnapshot {
+  # GetProcessById 每调一次都枚举全机进程；按窗口逐个查时，几百个窗口乘几百个进程要几秒，
+  # 发布门禁监视器每轮都拍快照，会慢到步骤完成超时。所以先取一次进程名表，表里没有的（之后才启动的）再单独查。
+  $processNames = @{}
+  foreach ($process in [System.Diagnostics.Process]::GetProcesses()) {
+    $processNames[[int]$process.Id] = $process.ProcessName
+    $process.Dispose()
+  }
   $windows = [System.Collections.Generic.List[object]]::new()
   [AiNovelSmoke.TopLevelWindowProbe]::EnumWindows({
     param($handle, $state)
@@ -182,14 +189,17 @@ function Get-AiNovelTopLevelWindowSnapshot {
     [void][AiNovelSmoke.TopLevelWindowProbe]::GetClassName($handle, $className, $className.Capacity)
     $windowProcessId = 0
     [void][AiNovelSmoke.TopLevelWindowProbe]::GetWindowThreadProcessId($handle, [ref]$windowProcessId)
-    $processName = '<exited>'
-    try {
-      $owner = [System.Diagnostics.Process]::GetProcessById([int]$windowProcessId)
-      $processName = $owner.ProcessName
-      $owner.Dispose()
-    }
-    catch {
-      # The owner may exit between EnumWindows and process lookup; retain the PID as evidence.
+    $processName = $processNames[[int]$windowProcessId]
+    if ($null -eq $processName) {
+      $processName = '<exited>'
+      try {
+        $owner = [System.Diagnostics.Process]::GetProcessById([int]$windowProcessId)
+        $processName = $owner.ProcessName
+        $owner.Dispose()
+      }
+      catch {
+        # The owner may exit between EnumWindows and process lookup; retain the PID as evidence.
+      }
     }
 
     $windows.Add([pscustomobject]@{

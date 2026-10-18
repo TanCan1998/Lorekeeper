@@ -6,7 +6,6 @@ import { EditorState, type Extension } from '@codemirror/state'
 import { openSearchPanel, closeSearchPanel, search } from '@codemirror/search'
 import { Sparkles, Bold, Check } from 'lucide-react'
 import { Button } from '../ui/Button'
-import { inkTheme } from '../stage/ink-theme'
 import { paragraphIndent } from './paragraph-indent'
 import { proseTab } from './prose-tab'
 import { useThemeStore } from '../../stores/theme-store'
@@ -67,7 +66,7 @@ export default function CodeMirrorEditor({
   fitContent = false,
   paragraphIndent: indentParagraphs = false,
 }: CodeMirrorEditorProps) {
-  const inkThemeName = useThemeStore(s => inkTheme(s.resolvedTheme))
+  const inkThemeName = useThemeStore(s => s.resolvedTheme)
   const uiText = useLocaleStore(s => s.text)
   const uiLocale = useLocaleStore(s => s.locale)
   const editorRef = useRef<ReactCodeMirrorRef>(null)
@@ -497,6 +496,7 @@ export default function CodeMirrorEditor({
   }
 
   // 固定 basicSetup 内存引用，防止 React 每次渲染生成新对象导致内部扩展被重载（搜索框消失的罪魁祸首）
+  // 正文不要补全：打字后补全请求还没结束时，它的键位表会先把 Esc 吞掉，「先 Esc 再 Tab」就移不出编辑区。
   const cmBasicSetup = useMemo(() => ({
     lineNumbers: false,
     foldGutter: false,
@@ -506,7 +506,9 @@ export default function CodeMirrorEditor({
     highlightActiveLine: false,
     highlightActiveLineGutter: false,
     searchKeymap: true,
-  }), [])
+    autocompletion: mode !== 'prose',
+    completionKeymap: mode !== 'prose',
+  }), [mode])
 
   return (
     <div className={fitContent ? 'relative' : 'relative h-full flex flex-col min-h-0'}
@@ -554,7 +556,7 @@ export default function CodeMirrorEditor({
         </div>
       </div>
 
-      {/* 选区工具条：纸墨浮层，旧外壳里也自带纸墨令牌与深浅色 */}
+      {/* 选区工具条：纸墨浮层，自带纸墨令牌与深浅色 */}
       {bubbleOpen && (editable || aiResult !== null) && bubblePos.top !== 0 && (
         <div
           role="toolbar"

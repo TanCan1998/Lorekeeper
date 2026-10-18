@@ -34,6 +34,7 @@ const SOURCE_CONFIG = {
 } as const
 
 const PROMPT_META_EN: Record<string, { name: string; description: string }> = {
+  planning_material_character_extraction: { name: 'Planning material character extraction', description: 'Extract character candidates from explicit author material' },
   assistant_writing_identity: { name: 'AI writing assistant identity', description: 'Define the creative role and working guidance for the writing assistant' },
   edit_selected_text: { name: 'Selected-text editing', description: 'Refine, expand, or rewrite selected story prose' },
   generate_novel_config_field: { name: 'Single configuration field', description: 'Complete one novel setting from existing author facts' },

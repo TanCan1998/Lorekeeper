@@ -132,7 +132,8 @@ export default function StageHistory({ projectKey }: { projectKey: string }) {
       setSelectedVersionId(null)
       setComparison(null)
     } catch (error) {
-      toast.error(text(`回退失败：${String(error)}`, `Could not revert: ${String(error)}`))
+      const reason = error instanceof Error ? error.message : String(error)
+      toast.error(text(`回退失败：${reason}`, `Could not revert: ${reason}`))
     } finally {
       setReverting(false)
     }
