@@ -73,7 +73,9 @@ if (identity.makeLatest) {
 // 同步只推送已提交对象和上传原样文件，不重新构建。
 try {
   execFileSync(process.execPath, ['tauri-app/scripts/sync-atomgit.mjs'], { stdio: ['ignore', 'pipe', 'pipe'] })
-  await mirrorPublishedRelease(identity.tag)
+  // 复用本作业已验证的文件，避免再从 GitHub 下载同一批大附件。
+  for (const asset of assets) fs.copyFileSync(asset.file, path.join(output, asset.name))
+  await mirrorPublishedRelease(identity.tag, { directory: output })
 } catch {
   throw new Error('GitHub 已发布，但 AtomGit 同步未完成；请用镜像工作流重试同一标签，不要重跑打包或覆盖附件')
 }

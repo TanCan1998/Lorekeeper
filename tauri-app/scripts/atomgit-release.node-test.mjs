@@ -77,6 +77,6 @@ test('镜像工作流不构建、不强推、不删除，现有发布显式调�
   assert(workflow.includes('ref: master'))
   assert(!/cargo (?:build|test)|pnpm (?:build|test)|tauri build/.test(workflow))
   assert(!/['"]--(?:force|mirror|prune|delete)['"]/.test(sync))
-  assert(publish.includes('await mirrorPublishedRelease(identity.tag)'))
-  assert(publish.indexOf('verifyUploadedAssets(published, expected)') < publish.indexOf('await mirrorPublishedRelease(identity.tag)'))
+  assert(publish.includes('await mirrorPublishedRelease(identity.tag, { directory: output })'))
+  assert(publish.indexOf('verifyUploadedAssets(published, expected)') < publish.indexOf('await mirrorPublishedRelease(identity.tag, { directory: output })'))
 })

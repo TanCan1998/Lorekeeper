@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: atomgit-mirror
+  group: atomgit-mirror-${{ github.event.release.tag_name || inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
