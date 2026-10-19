@@ -366,3 +366,22 @@ Node身份9+安装6+发布19共34通过，含真实NSIS语法编译；typecheck/
 - MSI 全机安装现在会：写 HKLM 记录 → 安装文件（含身份包与激活器资源）→ `InstallFinalize` 后调用 `lorekeeper-activate.exe --register-identity`（提权上下文）完成注册并回写 `IdentityLauncherPath`；卸载时在 `InstallFinalize` 前调用 `--unregister-identity` 移除当前用户注册并删除记录值。
 - **多用户仍不成立**：未签名身份包无法置备（`provisioned=0`），因此不能把“全机安装”写成“所有用户都已获得身份”。第二个用户需要各自提权注册，或改用可签名的身份包。这条必须在发布说明与验收中保持未完成状态。
 - 升级路径：自定义动作以 `Installed AND NOT UPGRADINGPRODUCTCODE` 保护，升级时不会注销身份；但升级后包版本变化会让 `IdentityLauncherPath` 指向旧版本目录，尚未实现升级后重新注册与路径刷新。
+
+## 14. 第120次：多用户范围决策与首启注册流程
+
+### 决策
+用户在本机源码核对后选择 **A：不要求“全机安装后所有用户零操作自动覆盖”**，改为“MSI 全机安装 + 每个用户首次使用一次提权注册”，不引入签名。理由与证据：
+- 数据根按用户隔离（`AI_NOVEL_LOREKEEPER_HOME` 或 `~/.lorekeeper`），云凭据用**当前用户 DPAPI**（非机器范围），项目目录由用户各自选择。
+- 全项目无 `ProgramData` 等机器级共享状态，因此“多用户”只影响程序文件位置与身份包注册，不影响数据模型。
+- 未签名包无法置备（`provisioned=0`），若不签名又要求零操作全覆盖，二者不可兼得。
+
+### 已实现（尚未验证通过）
+包外启动器在转交包内启动器前，按“当前用户仓库键 `HKCU\...\AppModel\Repository\Packages\<包全名>` 是否存在”判断本用户是否已注册；缺失时用一次 UAC 调用自身 `--register-identity`，成功后再启动。包全名由 WindowsApps 内启动器路径的父目录名推导（纯函数，含单测）。
+
+### 本轮实测与失败点
+- 提权 `msiexec /i ... /qn INSTALLDIR=自选目录` 退出 0：记录 `scope=machine`、`IdentityLauncherPath` 就位、包计数 1。
+- 手动 `Remove-AppxPackage` 模拟“另一个账号”（本用户计数归 0）后，非提权启动激活器：**150 秒内没有出现主程序**，流程未通过；未记录到明确错误原因（可能停在 UAC 提权或错误提示框）。
+- 清理：提权 `msiexec /x /qn` 后目录、HKLM 记录、包、置备、WindowsApps 目录全部为 0/false，无残留进程。
+
+### 结论
+首启自动注册仍是“已实现、未验证”，不能算通过；下一轮必须解决 UAC 交互与错误呈现（当前错误用 MessageBox，自动化会被阻塞），并区分“用户取消授权”与“系统策略阻止”的可恢复路径。

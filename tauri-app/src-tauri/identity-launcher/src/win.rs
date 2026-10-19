@@ -15,7 +15,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     INVALID_FILE_ATTRIBUTES,
 };
 use windows_sys::Win32::System::Registry::{
-    RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegCloseKey, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
+    KEY_READ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
@@ -46,6 +47,10 @@ pub const RECORD_CANDIDATES: [(HKEY, &str, InstallScope, &str); 4] = [
         "HKCU",
     ),
 ];
+
+/// 当前用户已注册包的仓库键；用于判断本用户是否已获得包身份。
+const USER_PACKAGE_REPOSITORY: &str =
+    r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
 
 /// 命中记录的位置：注册表蜂巢前缀 + 子键，用于把结果写回同一处。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,9 +411,60 @@ fn packaged_launcher_path() -> Result<String, LauncherError> {
     Ok(launcher)
 }
 
+/// 当前用户是否已注册该包（按包全名查用户仓库键）。
+fn registered_for_current_user(full_name: &str) -> bool {
+    let subkey = wide(&format!(
+        "{USER_PACKAGE_REPOSITORY}\\{full_name}"
+    ));
+    let mut key = std::ptr::null_mut();
+    // SAFETY: 只读打开仓库键；成功时立即关闭。
+    let opened = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
+    if opened != ERROR_SUCCESS {
+        return false;
+    }
+    // SAFETY: 句柄由 RegOpenKeyExW 成功返回。
+    unsafe { RegCloseKey(key) };
+    true
+}
+
+/// 首次为当前用户注册：请求一次 UAC，调用自身的 --register-identity。
+fn register_for_current_user_once(self_exe: &str) -> Result<(), LauncherError> {
+    let script = format!(
+        "$p=Start-Process -FilePath '{self_exe}' -ArgumentList '--register-identity' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+    );
+    let windir = std::env::var_os("WINDIR")
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| r"C:\Windows".to_string());
+    let status = std::process::Command::new(format!(
+        r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"
+    ))
+    .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+    .status()
+    .map_err(|error| LauncherError::RecordInvalid(format!("无法请求管理员授权：{error}")))?;
+    if !status.success() {
+        return Err(LauncherError::RecordInvalid(
+            "身份组件注册未完成（用户取消或系统策略阻止）".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 包外模式：只转交给包内启动器以取得真实包身份，绝不无身份启动主程序。
 pub fn activate_identity_package() -> Result<String, LauncherError> {
     let launcher = packaged_launcher_path()?;
+    // 全机安装后其他用户首次使用：本用户还没有该包注册，按需请求一次提权注册。
+    let full_name = crate::record::package_full_name_from_launcher(&launcher)
+        .ok_or_else(|| LauncherError::RecordInvalid("无法从启动器路径确定包全名".to_string()))?;
+    if !registered_for_current_user(&full_name) {
+        let self_exe = std::env::current_exe()
+            .map_err(|error| LauncherError::RecordInvalid(format!("无法定位自身：{error}")))?;
+        register_for_current_user_once(&self_exe.to_string_lossy())?;
+        if !registered_for_current_user(&full_name) {
+            return Err(LauncherError::RecordInvalid(
+                "注册后当前用户仍没有该身份包".to_string(),
+            ));
+        }
+    }
     let mut child = std::process::Command::new(&launcher)
         .spawn()
         .map_err(|error| LauncherError::RecordInvalid(format!("无法启动身份启动器：{error}")))?;

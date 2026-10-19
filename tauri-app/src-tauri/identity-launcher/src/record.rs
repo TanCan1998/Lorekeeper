@@ -165,6 +165,23 @@ pub fn validate(record: &InstallRecord) -> Result<(), RecordError> {
 }
 
 /// 命令行必须是可写缓冲：Windows 允许 CreateProcess 就地修改该字符串。
+/// 由 WindowsApps 内的启动器路径取包全名（父目录名）。
+///
+/// 只接受 `...\\WindowsApps\\<name_version_arch_resource_hash>\\<文件>` 形状，
+/// 其他形状返回 `None`，不猜测。
+pub fn package_full_name_from_launcher(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    let (parent, name) = trimmed.rsplit_once(['\\', '/'])?;
+    if name.is_empty() || !parent.to_ascii_lowercase().contains("\\windowsapps") {
+        return None;
+    }
+    let full = parent.rsplit(['\\', '/']).next()?;
+    if full.split('_').count() != 5 || !full.starts_with("com.tancan1998.lorekeeper_") {
+        return None;
+    }
+    Some(full.to_string())
+}
+
 pub fn quote_command_line(executable: &str) -> Result<String, RecordError> {
     if executable.contains('"') || executable.contains('\0') {
         return Err(RecordError::UnsafeCharacter);
@@ -272,6 +289,20 @@ mod tests {
         let mut elsewhere = record();
         elsewhere.main_executable = r"C:\Program Files\Other\lorekeeper.exe".to_string();
         assert_eq!(validate(&elsewhere), Err(RecordError::OutsideInstallLocation));
+    }
+
+    #[test]
+    fn derives_package_full_name_only_from_windowsapps_launcher() {
+        let path = r"C:\Program Files\WindowsApps\com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy\lorekeeper-identity-launcher.exe";
+        assert_eq!(
+            package_full_name_from_launcher(path),
+            Some("com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy".to_string())
+        );
+        assert_eq!(package_full_name_from_launcher(r"D:\Temp\LoreKeeper\lorekeeper.exe"), None);
+        assert_eq!(
+            package_full_name_from_launcher(r"C:\Program Files\WindowsApps\other_1.0.0.0_x64__abc\x.exe"),
+            None
+        );
     }
 
     #[test]
