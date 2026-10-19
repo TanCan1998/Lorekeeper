@@ -9,11 +9,12 @@ import { createWindowsIdentityPlan, renderUnsignedIdentityManifest } from './win
 const here = path.dirname(fileURLToPath(import.meta.url))
 const nativeRoot = path.resolve(here, '../src-tauri')
 const read = file => JSON.parse(fs.readFileSync(path.join(nativeRoot, file), 'utf8'))
-const plan = createWindowsIdentityPlan({
+const identityOptions = {
   tauriConfig: read('tauri.conf.json'),
   identityConfig: read('installer/windows-identity.json'),
   architecture: process.env.TAURI_ENV_ARCH === 'aarch64' || process.env.IDENTITY_ARCH === 'arm64' ? 'arm64' : 'x64',
-})
+}
+const plan = createWindowsIdentityPlan(identityOptions)
 const outRoot = path.join(nativeRoot, 'target/identity')
 const stage = path.join(outRoot, 'stage')
 const launcherCrate = path.join(nativeRoot, 'identity-launcher')
@@ -44,7 +45,11 @@ if (process.argv.includes('--check')) {
 }
 
 // 1. 构建启动器（独立 crate，不进入主应用依赖图）。
-run('cargo', ['build', '--release', '--manifest-path', path.join(launcherCrate, 'Cargo.toml')])
+// 期望版本与清单使用同一次读取结果；不在运行时信任旧注册表中的版本。
+// option_env! 会参与 Rust 的增量构建追踪，版本变化时须重新编译启动器。
+run('cargo', ['build', '--release', '--manifest-path', path.join(launcherCrate, 'Cargo.toml')], {
+  env: { ...process.env, LOREKEEPER_IDENTITY_VERSION: plan.identity.version },
+})
 const launcherExe = path.join(launcherCrate, 'target/release/lorekeeper-identity-launcher.exe')
 if (!fs.existsSync(launcherExe)) throw new Error('缺少启动器构建产物')
 
@@ -53,7 +58,7 @@ fs.rmSync(stage, { recursive: true, force: true })
 copyFile(launcherExe, path.join(stage, plan.layout.launcherExecutable))
 for (const [from, to] of icons) copyFile(path.join(nativeRoot, from), path.join(stage, to))
 fs.writeFileSync(path.join(stage, 'AppxManifest.xml'),
-  renderUnsignedIdentityManifest({ tauriConfig: read('tauri.conf.json'), identityConfig: read('installer/windows-identity.json') }),
+  renderUnsignedIdentityManifest(identityOptions),
   'utf8')
 
 // 3. 打包：MakeAppx 由本机 Windows SDK 提供，只做确定性探测，不下载。

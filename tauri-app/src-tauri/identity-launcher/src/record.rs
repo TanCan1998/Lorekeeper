@@ -164,24 +164,70 @@ pub fn validate(record: &InstallRecord) -> Result<(), RecordError> {
     }
 }
 
-/// 命令行必须是可写缓冲：Windows 允许 CreateProcess 就地修改该字符串。
-/// 由 WindowsApps 内的启动器路径取包全名（父目录名）。
-///
-/// 只接受 `...\\WindowsApps\\<name_version_arch_resource_hash>\\<文件>` 形状，
-/// 其他形状返回 `None`，不猜测。
-pub fn package_full_name_from_launcher(path: &str) -> Option<String> {
-    let trimmed = path.trim_end_matches(['\\', '/']);
-    let (parent, name) = trimmed.rsplit_once(['\\', '/'])?;
-    if name.is_empty() || !parent.to_ascii_lowercase().contains("\\windowsapps") {
-        return None;
+/// 与清单生成器一致：只接受四段、无前导零的 UInt16 数字版本。
+pub fn valid_package_version(value: &str) -> bool {
+    let mut count = 0;
+    for part in value.split('.') {
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+            || part.parse::<u16>().is_err()
+        {
+            return false;
+        }
+        count += 1;
     }
-    let full = parent.rsplit(['\\', '/']).next()?;
-    if full.split('_').count() != 5 || !full.starts_with("com.tancan1998.lorekeeper_") {
-        return None;
-    }
-    Some(full.to_string())
+    count == 4
 }
 
+/// 只解析本产品的完整主包名；不从包族名或不完整字段猜版本。
+fn version_from_package_full_name(full_name: &str) -> Option<&str> {
+    let mut fields = full_name.split('_');
+    let name = fields.next()?;
+    let version = fields.next()?;
+    let architecture = fields.next()?;
+    let resource = fields.next()?;
+    let publisher_id = fields.next()?;
+    if fields.next().is_some()
+        || name != PACKAGE_NAME
+        || !valid_package_version(version)
+        || !matches!(architecture, "x64" | "arm64")
+        || !resource.is_empty()
+        || publisher_id.len() != 13
+        || !publisher_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(version)
+}
+
+/// 版本必须精确匹配本次构建；旧包存在/已注册不代表升级已完成。
+pub fn package_matches_version(full_name: &str, expected_version: &str) -> bool {
+    valid_package_version(expected_version)
+        && version_from_package_full_name(full_name) == Some(expected_version)
+}
+
+/// 从 WindowsApps 内的固定启动器路径取完整包名（父目录名）。
+///
+/// 仅接受当前部署使用的系统目录，不接受名称相似的目录、额外子目录或任意 EXE。
+pub fn package_full_name_from_launcher(path: &str) -> Option<String> {
+    let (parent, executable) = path.rsplit_once('\\')?;
+    let (root, full_name) = parent.rsplit_once('\\')?;
+    if !root.eq_ignore_ascii_case(r"C:\Program Files\WindowsApps")
+        || !executable.eq_ignore_ascii_case("lorekeeper-identity-launcher.exe")
+    {
+        return None;
+    }
+    version_from_package_full_name(full_name)?;
+    Some(full_name.to_string())
+}
+
+/// PowerShell 单引号字面量：自选目录中的单引号必须加倍，不拼接可执行脚本。
+pub fn quote_powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// 命令行必须是可写缓冲：Windows 允许 CreateProcess 就地修改该字符串。
 pub fn quote_command_line(executable: &str) -> Result<String, RecordError> {
     if executable.contains('"') || executable.contains('\0') {
         return Err(RecordError::UnsafeCharacter);
@@ -302,6 +348,70 @@ mod tests {
         assert_eq!(
             package_full_name_from_launcher(r"C:\Program Files\WindowsApps\other_1.0.0.0_x64__abc\x.exe"),
             None
+        );
+    }
+
+    #[test]
+    fn validates_numeric_package_versions_without_semver_fallback() {
+        for version in ["0.0.0.0", "1.0.1.0", "65535.65535.65535.65535"] {
+            assert!(valid_package_version(version), "{version}");
+        }
+        for version in [
+            "",
+            "1.0.0",
+            "1.0.0.0.0",
+            "1.0.0-beta.1",
+            "01.0.0.0",
+            "1.0.0.65536",
+            "1.0.-1.0",
+            "1.0.0.+1",
+            "1.0.0. 1",
+            "1.0.0.１",
+        ] {
+            assert!(!valid_package_version(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn requires_exact_version_even_when_an_old_or_newer_package_is_present() {
+        let full_name = "com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy";
+        assert!(package_matches_version(full_name, "1.0.1.0"));
+        assert!(!package_matches_version(full_name, "1.0.2.0"));
+        assert!(!package_matches_version(full_name, "1.0.0.0"));
+        assert!(!package_matches_version(full_name, "1.0.1"));
+        assert!(!package_matches_version(
+            "com.other.app_1.0.1.0_x64__e8hwe6njnc7fy",
+            "1.0.1.0"
+        ));
+        assert!(!package_matches_version(
+            "com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy_extra",
+            "1.0.1.0"
+        ));
+    }
+
+    #[test]
+    fn rejects_similar_windowsapps_directories_and_malformed_package_paths() {
+        for path in [
+            r"C:\Program Files\WindowsAppsBackup\com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy\lorekeeper-identity-launcher.exe",
+            r"C:\Program Files\WindowsApps\com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy\other.exe",
+            r"C:\Program Files\WindowsApps\com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy\extra\lorekeeper-identity-launcher.exe",
+            r"C:\Program Files\WindowsApps\com.tancan1998.lorekeeper_bad_x64__e8hwe6njnc7fy\lorekeeper-identity-launcher.exe",
+            r"C:\Program Files\WindowsApps\com.tancan1998.lorekeeper_1.0.1.0_x86__e8hwe6njnc7fy\lorekeeper-identity-launcher.exe",
+            r"C:\Program Files\WindowsApps\com.tancan1998.lorekeeper_1.0.1.0_x64_resource_e8hwe6njnc7fy\lorekeeper-identity-launcher.exe",
+        ] {
+            assert_eq!(package_full_name_from_launcher(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn quotes_powershell_literals_without_expanding_user_paths() {
+        assert_eq!(
+            quote_powershell_literal(r"D:\作者's [草稿]\LoreKeeper"),
+            r"'D:\作者''s [草稿]\LoreKeeper'"
+        );
+        assert_eq!(
+            quote_powershell_literal("$env:TEMP; exit 1"),
+            "'$env:TEMP; exit 1'"
         );
     }
 

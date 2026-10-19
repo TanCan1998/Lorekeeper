@@ -24,11 +24,11 @@
         </RegistryKey>
       </Component>
     </DirectoryRef>
-    <!-- 安装/卸载后调用身份注册助手：MSI 本身已提权，助手在此上下文执行。 -->
+    <!-- 保持既有即时执行上下文；非提权时助手明确失败，不等同 SYSTEM/全用户注册。 -->
     <CustomAction
       Id="SetRegisterIdentityCmd"
       Property="WixQuietExecCmdLine"
-      Value="&quot;[INSTALLDIR]lorekeeper-activate.exe&quot; --register-identity"
+      Value="&quot;[INSTALLDIR]lorekeeper-activate.exe&quot; --register-identity --quiet"
     />
     <CustomAction
       Id="RegisterIdentity"
@@ -40,7 +40,7 @@
     <CustomAction
       Id="SetUnregisterIdentityCmd"
       Property="WixQuietExecCmdLine"
-      Value="&quot;[INSTALLDIR]lorekeeper-activate.exe&quot; --unregister-identity"
+      Value="&quot;[INSTALLDIR]lorekeeper-activate.exe&quot; --unregister-identity --quiet"
     />
     <CustomAction
       Id="UnregisterIdentity"
@@ -51,10 +51,12 @@
     />
     <!-- WiX 3 的序列内 Custom：条件是元素文本，不是属性也不是子元素。 -->
     <InstallExecuteSequence>
-      <Custom Action="SetRegisterIdentityCmd" Before="RegisterIdentity">NOT Installed</Custom>
-      <Custom Action="RegisterIdentity" After="InstallFinalize">NOT Installed</Custom>
-      <Custom Action="SetUnregisterIdentityCmd" Before="UnregisterIdentity">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
-      <Custom Action="UnregisterIdentity" Before="InstallFinalize">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <!-- 安装/升级的新产品及修复均刷新；完整卸载（包括升级移除旧产品）不注册。 -->
+      <Custom Action="SetRegisterIdentityCmd" Before="RegisterIdentity">NOT (REMOVE~="ALL")</Custom>
+      <Custom Action="RegisterIdentity" After="InstallFinalize">NOT (REMOVE~="ALL")</Custom>
+      <!-- 只在显式完整卸载时注销；在移除文件前调用，避免助手已被删除。 -->
+      <Custom Action="SetUnregisterIdentityCmd" Before="UnregisterIdentity">Installed AND (REMOVE~="ALL") AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="UnregisterIdentity" Before="RemoveFiles">Installed AND (REMOVE~="ALL") AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
   </Fragment>
 </Wix>

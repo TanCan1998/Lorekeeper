@@ -4,7 +4,9 @@
 //! 不注入浏览器诊断参数、不改共享 WebView2。
 
 use crate::record::{
-    quote_command_line, validate, InstallRecord, InstallScope, PACKAGE_NAME, RECORD_SCHEMA_VERSION,
+    package_full_name_from_launcher, package_matches_version, quote_command_line,
+    quote_powershell_literal, valid_package_version, validate, InstallRecord, InstallScope,
+    PACKAGE_NAME, RECORD_SCHEMA_VERSION,
 };
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -393,18 +395,10 @@ fn packaged_launcher_path(record: &InstallRecord) -> Result<String, LauncherErro
         .identity_launcher
         .clone()
         .ok_or(LauncherError::PackageMissing)?;
-    let lower = launcher.to_ascii_lowercase();
-    // 未签名包不出现在应用列表，只能直接运行包内 EXE；路径必须落在 WindowsApps 内。
-    if !lower.starts_with(r"c:\program files\windowsapps\com.tancan1998.lorekeeper_")
-        && !lower.starts_with(r"c:\program files\windowsapps\com.tancan1998.lorekeeper_1")
-    {
+    // 包名、系统目录和固定文件名统一按纯逻辑校验，不接受前缀相似路径。
+    if package_full_name_from_launcher(&launcher).is_none() {
         return Err(LauncherError::RecordInvalid(
-            "登记的身份启动器路径不在 WindowsApps 内".to_string(),
-        ));
-    }
-    if !launcher.to_ascii_lowercase().ends_with("\\lorekeeper-identity-launcher.exe") {
-        return Err(LauncherError::RecordInvalid(
-            "登记的身份启动器文件名不符".to_string(),
+            "登记的身份启动器路径或包全名无效".to_string(),
         ));
     }
     attributes(&launcher).ok_or_else(|| LauncherError::UnsafeFile("身份启动器不存在".to_string()))?;
@@ -413,9 +407,7 @@ fn packaged_launcher_path(record: &InstallRecord) -> Result<String, LauncherErro
 
 /// 当前用户是否已注册该包（按包全名查用户仓库键）。
 fn registered_for_current_user(full_name: &str) -> bool {
-    let subkey = wide(&format!(
-        "{USER_PACKAGE_REPOSITORY}\\{full_name}"
-    ));
+    let subkey = wide(&format!("{USER_PACKAGE_REPOSITORY}\\{full_name}"));
     let mut key = std::ptr::null_mut();
     // SAFETY: 只读打开仓库键；成功时立即关闭。
     let opened = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
@@ -427,12 +419,43 @@ fn registered_for_current_user(full_name: &str) -> bool {
     true
 }
 
-/// 首次为当前用户注册：请求一次 UAC，调用自身的 --register-identity。
-///
-/// 用户取消授权（UAC 被拒）与系统策略阻止分开报告，避免把拒绝说成失败。
+/// 版本只来自构建脚本的已校验清单，不使用旧安装记录作为期望值。
+fn expected_package_version() -> Result<&'static str, LauncherError> {
+    option_env!("LOREKEEPER_IDENTITY_VERSION")
+        .filter(|version| valid_package_version(version))
+        .ok_or_else(|| {
+            LauncherError::RecordInvalid(
+                "启动器缺少有效的身份版本，请使用 build-windows-identity.mjs 重新构建".to_string(),
+            )
+        })
+}
+
+/// 文件、版本和当前用户注册必须同时就绪；旧包仍存在也必须触发刷新。
+fn ready_packaged_launcher(
+    record: &InstallRecord,
+    expected_version: &str,
+) -> Result<String, LauncherError> {
+    let launcher = packaged_launcher_path(record)?;
+    let full_name = package_full_name_from_launcher(&launcher)
+        .ok_or_else(|| LauncherError::RecordInvalid("无法确定包全名".to_string()))?;
+    if !package_matches_version(&full_name, expected_version) {
+        return Err(LauncherError::RecordInvalid(format!(
+            "身份包版本与当前安装不一致，需要刷新至 {expected_version}"
+        )));
+    }
+    if !registered_for_current_user(&full_name) {
+        return Err(LauncherError::PackageMissing);
+    }
+    Ok(launcher)
+}
+
+/// 首次或版本漂移时请求一次 UAC；提权助手只记录错误，由原调用方决定是否提示。
 fn register_for_current_user_once(self_exe: &str) -> Result<(), LauncherError> {
+    let self_exe = quote_powershell_literal(self_exe);
     let script = format!(
-        "$p=Start-Process -FilePath '{self_exe}' -ArgumentList '--register-identity' -Verb RunAs -Wait -PassThru; if($p){{ exit $p.ExitCode }} else {{ exit 1 }}"
+        "$ErrorActionPreference='Stop'; \
+         try {{ $p=Start-Process -FilePath {self_exe} -ArgumentList '--register-identity','--quiet' -Verb RunAs -Wait -PassThru -ErrorAction Stop; exit $p.ExitCode }} \
+         catch {{ if($_.Exception.NativeErrorCode -eq 1223){{ exit 1223 }}; [Console]::Error.Write($_.Exception.Message); exit 1 }}"
     );
     let windir = std::env::var_os("WINDIR")
         .map(|value| value.to_string_lossy().into_owned())
@@ -445,49 +468,41 @@ fn register_for_current_user_once(self_exe: &str) -> Result<(), LauncherError> {
     .map_err(|error| LauncherError::RecordInvalid(format!("无法请求管理员授权：{error}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let cancelled = stderr.contains("canceled")
-            || stderr.contains("cancelled")
-            || stderr.contains("取消")
-            || output.status.code() == Some(1223);
-        return Err(LauncherError::RecordInvalid(if cancelled {
-            "已取消管理员授权，LoreKeeper 需要一次授权才能加入应用组".to_string()
-        } else {
-            format!("身份组件注册未完成：{}", stderr.trim())
-        }));
+        return Err(LauncherError::RecordInvalid(
+            if output.status.code() == Some(1223) {
+                "已取消管理员授权，LoreKeeper 需要一次授权才能加入应用组".to_string()
+            } else {
+                format!(
+                    "身份组件注册未完成（退出码 {:?}）：{}；详情见 identity-launcher.log",
+                    output.status.code(),
+                    stderr.trim()
+                )
+            },
+        ));
     }
     Ok(())
 }
 
 /// 包外模式：只转交给包内启动器以取得真实包身份，绝不无身份启动主程序。
 pub fn activate_identity_package() -> Result<String, LauncherError> {
-    let mut record = read_install_record()?;
-    let mut launcher = packaged_launcher_path(&record);
-    // 需要补注册的两种情况：本用户没有该包注册；或包文件已被其他账号卸载删除。
-    let needs_registration = match &launcher {
-        Ok(path) => crate::record::package_full_name_from_launcher(path)
-            .map(|full_name| !registered_for_current_user(&full_name))
-            .unwrap_or(true),
-        Err(_) => true,
-    };
-    if needs_registration {
-        let self_exe = std::env::current_exe()
-            .map_err(|error| LauncherError::RecordInvalid(format!("无法定位自身：{error}")))?;
-        register_for_current_user_once(&self_exe.to_string_lossy())?;
-        // 注册会重新登记启动器路径，必须重读记录后再取路径。
-        record = read_install_record()?;
-        launcher = packaged_launcher_path(&record);
-        if let Ok(path) = &launcher {
-            let full_name = crate::record::package_full_name_from_launcher(path)
-                .ok_or_else(|| LauncherError::RecordInvalid("无法从启动器路径确定包全名".to_string()))?;
-            if !registered_for_current_user(&full_name) {
-                return Err(LauncherError::RecordInvalid(
-                    "注册后当前用户仍没有该身份包".to_string(),
-                ));
-            }
+    let expected_version = expected_package_version()?;
+    let record = read_install_record()?;
+    let launcher = match ready_packaged_launcher(&record, expected_version) {
+        Ok(launcher) => launcher,
+        Err(_) => {
+            let self_exe = std::env::current_exe()
+                .map_err(|error| LauncherError::RecordInvalid(format!("无法定位自身：{error}")))?;
+            // 每次启动最多尝试一次；失败明确返回，不用旧身份或无身份兜底。
+            register_for_current_user_once(&self_exe.to_string_lossy())?;
+            let refreshed_record = read_install_record()?;
+            ready_packaged_launcher(&refreshed_record, expected_version)?
         }
+    };
+    let mut command = std::process::Command::new(&launcher);
+    if QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        command.arg(crate::QUIET);
     }
-    let launcher = launcher?;
-    let mut child = std::process::Command::new(&launcher)
+    let mut child = command
         .spawn()
         .map_err(|error| LauncherError::RecordInvalid(format!("无法启动身份启动器：{error}")))?;
     let code = child
@@ -541,17 +556,19 @@ pub fn register_identity() -> Result<String, LauncherError> {
             "注册身份组件需要管理员权限".to_string(),
         ));
     }
-    let key_path = format!("{}:\\{}", location.hive, location.subkey);
+    let expected_version = expected_package_version()?;
+    let msix = quote_powershell_literal(&msix);
+    let key_path = quote_powershell_literal(&format!("{}:\\{}", location.hive, location.subkey));
     let script = format!(
         "$ErrorActionPreference='Stop'; \
-         try {{ Add-AppxProvisionedPackage -Online -PackagePath '{msix}' -SkipLicense | Out-Null }} catch {{ }}; \
-         Add-AppxPackage -Path '{msix}' -AllowUnsigned -ErrorAction Stop; \
-         $p=Get-AppxPackage -Name {PACKAGE_NAME}; \
-         if(-not $p){{ throw '注册后仍找不到身份包' }}; \
+         try {{ Add-AppxProvisionedPackage -Online -PackagePath {msix} -SkipLicense | Out-Null }} catch {{ }}; \
+         Add-AppxPackage -Path {msix} -AllowUnsigned -ErrorAction Stop; \
+         $p=Get-AppxPackage -Name {PACKAGE_NAME} | Where-Object {{ $_.Version -eq [version]'{expected_version}' }} | Select-Object -First 1; \
+         if(-not $p){{ throw '注册后身份包版本与当前安装不一致' }}; \
          $launcher=Join-Path $p.InstallLocation 'lorekeeper-identity-launcher.exe'; \
-         if(-not (Test-Path $launcher)){{ throw '身份包内缺少启动器' }}; \
-         if(-not (Test-Path '{key_path}')){{ New-Item -Path '{key_path}' -Force | Out-Null }}; \
-         Set-ItemProperty -Path '{key_path}' -Name 'IdentityLauncherPath' -Value $launcher; \
+         if(-not (Test-Path -LiteralPath $launcher -PathType Leaf)){{ throw '身份包内缺少启动器' }}; \
+         if(-not (Test-Path -LiteralPath {key_path})){{ New-Item -Path {key_path} -Force | Out-Null }}; \
+         Set-ItemProperty -LiteralPath {key_path} -Name 'IdentityLauncherPath' -Value $launcher; \
          [Console]::Out.Write($launcher)"
     );
     let windir = std::env::var_os("WINDIR")
