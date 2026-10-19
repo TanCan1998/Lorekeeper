@@ -52,6 +52,8 @@ pub struct AppState {
     pub(crate) latest_open_token: Mutex<Option<String>>,
     /// 批次 B：项目文件操作串行锁（骨架阶段全局互斥，安全语义同基线 per-path 队列）
     pub(crate) fs_lock: Mutex<()>,
+    /// 头像缓存只在项目库临界区内访问；不作为文件授权或事实来源。
+    pub(crate) avatar_cache: Mutex<crate::commands::character_avatar::cache::AvatarCache>,
     /// 批次 D2：模型执行租约注册表（进程内存态，重启即失效）
     pub(crate) llm_leases: std::sync::Arc<Mutex<crate::llm::lease::LlmLeaseStore>>,
     /// 主生成 owner 缓存跨 IPC 保留；项目关闭前挂起并逐出。
@@ -105,6 +107,9 @@ impl AppState {
             )),
             latest_open_token: Mutex::new(None),
             fs_lock: Mutex::new(()),
+            avatar_cache: Mutex::new(
+                crate::commands::character_avatar::cache::AvatarCache::default(),
+            ),
             llm_leases: std::sync::Arc::clone(&llm_leases),
             generation_owners:
                 crate::services::main_generation_owner::MainGenerationOwnerCache::with_lease_store(

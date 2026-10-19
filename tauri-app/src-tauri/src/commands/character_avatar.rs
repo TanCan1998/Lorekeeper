@@ -13,11 +13,13 @@
 //!
 //! 与基线的必然差异：
 //! - 无 `webContents` / 多窗口语义：基线 `validSender` 的等价物是「主窗口存在」；
-//! - 基线的读面缓存（`cache` + `invalidate`）不改变任何返回值，属性能优化，未迁移；
+//! - 读面缓存按项目、租约、数据根与资产修订隔离；成功修改后失效，最多 512 项；
 //! - 基线把 `recordReclaimableOrphans` 挂在 `resolveService` 上（每次请求惰性执行），
 //!   此处同样在每次进入服务层前执行，失败按 `AVATAR_SAVE_FAILED` 上报；
 //! - `choose` 需要「校验 → 弹窗 → 预览」两段，`with_project_db` 是同步闭包，
 //!   故两次取连接（中间不持有数据库锁）。
+
+pub(crate) mod cache;
 
 use std::path::Path;
 use std::time::Duration;
@@ -88,21 +90,46 @@ pub struct CharacterAvatarRemoveResponse {
     pub error: Option<CharacterAvatarError>,
 }
 
-/// 基线 `failure`：错误码 → 中文文案（基线 `mainText` 的中文分支）
+/// 错误码与本地化分离；不把内部路径或 IO 细节带到渲染层。
+fn failure_copy(code: &str) -> (&'static str, &'static str) {
+    match code {
+        "INVALID_SENDER" => (
+            "当前窗口无权访问角色头像。",
+            "This window cannot access character avatars.",
+        ),
+        "INVALID_CHARACTER_ID" => (
+            "角色身份无效，头像未修改。",
+            "The character identity is invalid.",
+        ),
+        "PROJECT_NOT_OPEN" => ("尚未打开项目，无法访问头像。", "No project is open."),
+        "CHARACTER_NOT_FOUND" => (
+            "该角色已不存在，头像未修改。",
+            "That character no longer exists.",
+        ),
+        "IMAGE_READ_FAILED" => (
+            "无法读取所选图片，请重新选择。",
+            "The selected image could not be read.",
+        ),
+        "IMAGE_FORMAT_INVALID" => (
+            "请选择有效的 PNG、JPEG 或 WebP 图片。",
+            "Choose a valid PNG, JPEG, or WebP image.",
+        ),
+        "IMAGE_TOO_LARGE" => (
+            "图片超过 4 MB，请换一张更小的。",
+            "The image is larger than 4 MB.",
+        ),
+        _ => (
+            "头像保存失败，原头像保持不变。",
+            "The avatar could not be saved; the previous avatar is unchanged.",
+        ),
+    }
+}
+
 fn failure(code: &str) -> CharacterAvatarError {
-    let message = match code {
-        "INVALID_SENDER" => "当前窗口无权访问角色头像。",
-        "INVALID_CHARACTER_ID" => "角色身份无效，头像未修改。",
-        "PROJECT_NOT_OPEN" => "尚未打开项目，无法访问头像。",
-        "CHARACTER_NOT_FOUND" => "该角色已不存在，头像未修改。",
-        "IMAGE_READ_FAILED" => "无法读取所选图片，请重新选择。",
-        "IMAGE_FORMAT_INVALID" => "请选择有效的 PNG、JPEG 或 WebP 图片。",
-        "IMAGE_TOO_LARGE" => "图片超过 4 MB，请换一张更小的。",
-        _ => "头像保存失败，原头像保持不变。",
-    };
+    let (zh, en) = failure_copy(code);
     CharacterAvatarError {
         code: code.to_string(),
-        message: message.to_string(),
+        message: crate::commands::config::main_text_with_system_locale(zh, en),
     }
 }
 
@@ -203,7 +230,10 @@ pub async fn character_avatar_choose(
     let mut builder = app
         .dialog()
         .file()
-        .set_title("选择角色头像")
+        .set_title(crate::commands::config::main_text_with_system_locale(
+            "选择角色头像",
+            "Choose a character avatar",
+        ))
         .add_filter("PNG / JPEG / WebP", &["png", "jpg", "jpeg", "webp"]);
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         builder = builder.set_parent(&window);
@@ -266,7 +296,13 @@ pub fn character_avatar_commit(
     };
     match state.with_project_db(|conn| {
         avatar::record_reclaimable_orphans(conn, &data_root)?;
-        avatar::commit(conn, &data_root, &character_id, &base64)
+        let image = avatar::commit(conn, &data_root, &character_id, &base64)?;
+        let mut cache = state
+            .avatar_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache.invalidate(&character_id);
+        Ok(image)
     }) {
         Ok(avatar) => Ok(CharacterAvatarCommitResponse {
             success: true,
@@ -300,7 +336,17 @@ pub fn character_avatar_read_batch(
     };
     match state.with_project_db(|conn| {
         avatar::record_reclaimable_orphans(conn, &data_root)?;
-        avatar::read_many(conn, &data_root, &character_ids)
+        let context = project_session
+            .as_ref()
+            .ok_or_else(|| "PROJECT_NOT_OPEN".to_string())?;
+        assert_current_project_context(context, state.active_project_snapshot().as_ref())
+            .map_err(|_| "PROJECT_NOT_OPEN".to_string())?;
+        let mut cache = state
+            .avatar_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache.enter_scope(context, &data_root);
+        cache.read_many(conn, &data_root, &character_ids)
     }) {
         Ok(avatars) => Ok(CharacterAvatarBatchReadResponse {
             success: true,
@@ -333,7 +379,13 @@ pub fn character_avatar_remove(
     };
     match state.with_project_db(|conn| {
         avatar::record_reclaimable_orphans(conn, &data_root)?;
-        avatar::remove(conn, &data_root, &character_id)
+        avatar::remove(conn, &data_root, &character_id)?;
+        state
+            .avatar_cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .invalidate(&character_id);
+        Ok(())
     }) {
         Ok(()) => Ok(CharacterAvatarRemoveResponse {
             success: true,
