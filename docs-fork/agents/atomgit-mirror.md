@@ -8,6 +8,19 @@
 - 两端共用相同 README。文件、图片和文档使用相对路径，分别由当前托管平台解析到当前仓库；Release 是平台路由，不把它当作仓库文件相对路径。
 - Release 和附件使用明确的两套绝对 URL；不在镜像仓库单独编辑 README，不用脚本做平台替换。
 
+## 中文首页 README 的选择
+
+2026-10-19 实际网页核验：AtomGit 中文首页请求 `readme_file`（`language=zh`）后选择 `README_zh.md`，即使默认分支为 `master`、`README.md` 已完整同步，也会显示旧的短跳转页。不能只检查指定文件 API 一致就宣布首页完整。
+
+`README.md` 是唯一编辑源，`README_zh.md` 是逐字节相同的完整展示副本，两平台都提交同样内容；不是只在 AtomGit 修改，也不按平台改写正文。每次修改 README 或合并上游后执行：
+
+```powershell
+node tauri-app/scripts/sync-readme.mjs
+node tauri-app/scripts/sync-readme.mjs --check
+```
+
+这两个命令只处理 README，不构建、不测试应用。验收要同时检查中文首页实际渲染内容和所选文件，不能只读 `README.md`。
+
 ## 代码自动同步
 
 工作流：`.github/workflows/atomgit-mirror.yml`。
