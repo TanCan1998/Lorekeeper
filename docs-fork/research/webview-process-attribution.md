@@ -321,6 +321,10 @@ Node身份9+安装6+发布19共34通过，含真实NSIS语法编译；typecheck/
 - 未签名包不能有可执行激活项，`shell:AppsFolder` 激活方式作废；包外启动器改为读取安装器登记的 `IdentityLauncherPath`（必须在 `%ProgramFiles%\WindowsApps\com.tancan1998.lorekeeper_*` 内且文件名固定）后启动包内启动器，绝不无身份启动主程序。
 - 契约新增 `registration: { requiresElevation: true, appListEntry: 'none', lastError: '0x80073D2B' }` 与 `elevated-unsigned-registration-flow` 验收项。
 
+### CI 失败与修复（同一轮）
+
+`Tauri Rust CI`（39184958870，提交 `4c66847c`）在编译阶段失败：`resource path target\identity\LoreKeeper.msix doesn't exist`。原因是主 crate 已把身份小包声明为安装资源，而 CI 只跑 `cargo test`。修复：`build-windows-identity.mjs` 改为按版本倒序探测本机 Windows SDK 的 `makeappx.exe`（不下载工具），CI 在测试前新增“构建身份小包”步骤（PATH 加入隔离 `CARGO_HOME\bin` 并固定 `RUSTUP_TOOLCHAIN`），`build.rs` 在缺包时给出可直接执行的修复提示。
+
 ### 仍未完成
 1. MSI 侧的注册/置备自定义动作（提权上下文、安装用户 vs SYSTEM、`Add-AppxProvisionedPackage` 多用户语义）尚未实现与实测。
 2. 真实产品 GUI 启动后的“任务管理器真实归组”未验证：本轮用户级注册被系统拒绝，必须先在提权路径成功后才能测。

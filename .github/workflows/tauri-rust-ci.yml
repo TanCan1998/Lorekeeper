@@ -6,6 +6,8 @@ on:
       - 'tauri-app/src-tauri/**'
       - 'tauri-app/src/shared/unsupported-channels.json'
       - 'tauri-app/scripts/test-rust-ci*.ps1'
+      - 'tauri-app/scripts/build-windows-identity.mjs'
+      - 'tauri-app/scripts/windows-identity.mjs'
       - '.github/workflows/tauri-rust-ci.yml'
   pull_request:
     branches: [master]
@@ -13,6 +15,8 @@ on:
       - 'tauri-app/src-tauri/**'
       - 'tauri-app/src/shared/unsupported-channels.json'
       - 'tauri-app/scripts/test-rust-ci*.ps1'
+      - 'tauri-app/scripts/build-windows-identity.mjs'
+      - 'tauri-app/scripts/windows-identity.mjs'
       - '.github/workflows/tauri-rust-ci.yml'
   workflow_dispatch:
     inputs:
@@ -92,6 +96,15 @@ jobs:
           restore-keys: |
             tauri-rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}
             tauri-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock', 'tauri-app/src-tauri/Cargo.toml') }}-
+
+      # 主 crate 把身份小包声明为安装资源，cargo 构建会校验文件存在。
+      # 因此先按产品构建脚本产出真实 MSIX（Windows SDK 自带 MakeAppx，不下载工具）。
+      - name: 构建身份小包
+        run: |
+          $env:PATH = "$env:CARGO_HOME\bin;$env:PATH"
+          $env:RUSTUP_TOOLCHAIN = $env:RUST_TOOLCHAIN
+          node tauri-app/scripts/build-windows-identity.mjs
+          exit $LASTEXITCODE
 
       - name: 运行全量测试与所有目标检查
         env:

@@ -56,9 +56,29 @@ fs.writeFileSync(path.join(stage, 'AppxManifest.xml'),
   renderUnsignedIdentityManifest({ tauriConfig: read('tauri.conf.json'), identityConfig: read('installer/windows-identity.json') }),
   'utf8')
 
-// 3. 打包：MakeAppx 由 Windows SDK 提供，路径可显式覆盖，不做隐式搜索下载。
-const makeAppx = process.env.MAKEAPPX || 'C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/makeappx.exe'
-if (!fs.existsSync(makeAppx)) throw new Error(`找不到 MakeAppx：${makeAppx}`)
+// 3. 打包：MakeAppx 由本机 Windows SDK 提供，只做确定性探测，不下载。
+function findMakeAppx() {
+  const override = process.env.MAKEAPPX
+  if (override) return fs.existsSync(override) ? override : null
+  const binRoots = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles]
+    .filter(Boolean)
+    .map(root => path.join(root, 'Windows Kits/10/bin'))
+  for (const root of binRoots) {
+    if (!fs.existsSync(root)) continue
+    const versions = fs.readdirSync(root).filter(name => /^\d+\.\d+\.\d+\.\d+$/.test(name)).sort((a, b) => {
+      const [a1, a2, a3, a4] = a.split('.').map(Number)
+      const [b1, b2, b3, b4] = b.split('.').map(Number)
+      return b1 - a1 || b2 - a2 || b3 - a3 || b4 - a4
+    })
+    for (const version of versions) {
+      const candidate = path.join(root, version, 'x64/makeappx.exe')
+      if (fs.existsSync(candidate)) return candidate
+    }
+  }
+  return null
+}
+const makeAppx = findMakeAppx()
+if (!makeAppx) throw new Error('找不到 MakeAppx：请安装 Windows SDK 或用 MAKEAPPX 指定路径')
 // 文件名保持稳定：版本在清单内，升级按清单版本比较，不靠文件名。
 const msix = path.join(outRoot, 'LoreKeeper.msix')
 fs.rmSync(msix, { force: true })
