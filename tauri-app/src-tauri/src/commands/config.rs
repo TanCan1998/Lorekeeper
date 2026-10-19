@@ -45,6 +45,79 @@ pub fn read_global_config_at(path: &std::path::Path) -> serde_json::Value {
     crate::json_store::read_json_value_or(path, default_global_config())
 }
 
+/// 无系统语言参数的主进程短文案：与 Electron `mainText(undefined, zh, en)` 一致。
+/// 只使用本机全局配置的界面语言，不读取项目写作语言，也不缓存或写回配置。
+pub(crate) fn main_text(zh_cn: &str, en_us: &str) -> String {
+    main_text_at(&app_paths::global_config_path(), zh_cn, en_us)
+}
+
+/// 需要系统语言回退的文案，对齐头像控制器 `mainText(app.getLocale(), ...)`。
+pub(crate) fn main_text_with_system_locale(zh_cn: &str, en_us: &str) -> String {
+    let config = read_global_config_at(&app_paths::global_config_path());
+    let system = system_ui_locale();
+    localized_main_text(&config, system.as_deref(), zh_cn, en_us)
+}
+
+fn localized_main_text(
+    config: &serde_json::Value,
+    system: Option<&str>,
+    zh: &str,
+    en: &str,
+) -> String {
+    let chinese = match config.get("locale").filter(|value| !value.is_null()) {
+        Some(value) => value.as_str() == Some("zh-CN"),
+        None => system.is_some_and(|locale| locale.to_ascii_lowercase().starts_with("zh")),
+    };
+    if chinese { zh } else { en }.to_string()
+}
+
+#[cfg(windows)]
+fn system_ui_locale() -> Option<String> {
+    let mut buffer = [0u16; 85];
+    // 安全：缓冲区可写且长度与传入容量一致，Windows 只在调用期间借用它。
+    let length = unsafe {
+        windows_sys::Win32::Globalization::GetUserDefaultLocaleName(
+            buffer.as_mut_ptr(),
+            buffer.len() as i32,
+        )
+    };
+    if length <= 1 || length as usize > buffer.len() {
+        return None;
+    }
+    String::from_utf16(&buffer[..length as usize - 1]).ok()
+}
+
+#[cfg(not(windows))]
+fn system_ui_locale() -> Option<String> {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.trim().is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/usr/bin/defaults")
+            .args(["read", "-g", "AppleLocale"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let value = String::from_utf8(output.stdout).ok()?;
+            if !value.trim().is_empty() {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn main_text_at(path: &std::path::Path, zh_cn: &str, en_us: &str) -> String {
+    let config = read_global_config_at(path);
+    // fs 控制器不传系统语言，保持未保存时回落英文。
+    localized_main_text(&config, None, zh_cn, en_us)
+}
+
 /// 读取用于**增量更新**的全局配置：损坏时返回中文拒绝覆盖文案。
 ///
 /// 对齐基线 `loadGlobalConfigForUpdate()`：损坏时抛错，绝不静默覆盖用户配置。
@@ -159,6 +232,81 @@ mod tests {
 
     fn read(path: &Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn stored_ui_locale_overrides_system_without_using_writing_language_test() {
+        for (config, system, expected) in [
+            (serde_json::json!({"locale":"zh-CN"}), Some("en-US"), "中文"),
+            (
+                serde_json::json!({"locale":"en-US"}),
+                Some("zh-CN"),
+                "English",
+            ),
+            (serde_json::json!({"locale":null}), Some("zh-TW"), "中文"),
+            (
+                serde_json::json!({"writingLanguage":"zh-CN"}),
+                Some("en-US"),
+                "English",
+            ),
+            (serde_json::json!({}), Some("ZH_cn.UTF-8"), "中文"),
+            (serde_json::json!({}), None, "English"),
+        ] {
+            assert_eq!(
+                localized_main_text(&config, system, "中文", "English"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn main_text_uses_persisted_ui_locale_without_caching_test() {
+        let dir = temp_dir("main-text-locale");
+        let path = config_path(&dir);
+        for (locale, expected) in [
+            ("zh-CN", "中文文案"),
+            ("en-US", "English copy"),
+            ("zh-CN", "中文文案"),
+        ] {
+            let config = serde_json::json!({ "locale": locale, "writingLanguage": "en-US" });
+            let raw = serde_json::to_string(&config).unwrap();
+            std::fs::write(&path, &raw).unwrap();
+            assert_eq!(main_text_at(&path, "中文文案", "English copy"), expected);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn main_text_defaults_to_english_without_valid_stored_locale_test() {
+        let dir = temp_dir("main-text-fallback");
+        let path = config_path(&dir);
+        assert_eq!(main_text_at(&path, "中文", "English"), "English");
+        assert!(!path.exists(), "读取文案不应创建配置");
+        for raw in [
+            "{}",
+            "null",
+            "[]",
+            r#"{"locale":null}"#,
+            r#"{"locale":42}"#,
+            r#"{"locale":"zh-TW"}"#,
+            r#"{"writingLanguage":"zh-CN"}"#,
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            assert_eq!(main_text_at(&path, "中文", "English"), "English");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn main_text_does_not_repair_corrupted_configuration_test() {
+        let dir = temp_dir("main-text-corrupt");
+        let path = config_path(&dir);
+        std::fs::write(&path, b"{ broken").unwrap();
+        assert_eq!(main_text_at(&path, "中文", "English"), "English");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ broken");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

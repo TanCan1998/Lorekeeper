@@ -90,24 +90,42 @@ impl From<GuardKind> for FsError {
 
 type FsOutcome<T> = Result<T, FsError>;
 
-/// 对齐 `projectFilesystemFailure`：不暴露文件系统路径或原始错误。
-/// TODO(i18n)：文案随批次 E 与 i18n 收口统一接入 `mainText` 等价物。
+/// 对齐 `projectFilesystemFailure`：只本地化文案，不暴露路径或原始错误。
+/// locale 来自已保存的界面偏好，不来自当前项目的写作语言。
 fn fs_error_message(channel: &str, error: &FsError) -> String {
+    let (zh_cn, en_us) = fs_error_copy(channel, error);
+    crate::commands::config::main_text(&zh_cn, en_us)
+}
+
+/// 错误分类与文案分离，便于不触碰全局配置地检查所有守卫/频道组合。
+fn fs_error_copy(channel: &str, error: &FsError) -> (String, &'static str) {
     if let FsError::Guard(kind) = error {
-        return guard_message(*kind);
-    }
-    match channel {
-        "fs:read-file" => {
-            if matches!(error, FsError::MissingFile) {
-                // 对齐基线 ENOENT 特例文案（引导使用 read_architecture 工具）。
-                return "项目文件不存在。请检查文件路径；故事架构保存在项目数据中，请使用 read_architecture 工具读取。".to_string();
+        let en_us = match kind {
+            GuardKind::MissingSessionContext => {
+                "Project session context is missing; the operation was rejected."
             }
-            "无法读取项目文件。".to_string()
-        }
-        "fs:read-json" => "无法读取项目数据。".to_string(),
-        "fs:write-file" | "fs:mkdir" | "fs:write-json" => "无法写入项目文件。".to_string(),
-        _ => "项目文件操作失败。".to_string(),
+            GuardKind::OutsideProject => {
+                "The target is outside the current project; the operation was rejected."
+            }
+            GuardKind::CrossProject => "Cross-project file access was rejected.",
+            GuardKind::LeaseInvalid => "The project lease has expired; the operation was rejected.",
+        };
+        return (guard_message(*kind), en_us);
     }
+    let (zh_cn, en_us) = match channel {
+        "fs:read-file" if matches!(error, FsError::MissingFile) => (
+            "项目文件不存在。请检查文件路径；故事架构保存在项目数据中，请使用 read_architecture 工具读取。",
+            "The project file does not exist. Check the file path; story architecture is stored in project data and must be read with the read_architecture tool.",
+        ),
+        "fs:read-file" => ("无法读取项目文件。", "Could not read the project file."),
+        "fs:read-json" => ("无法读取项目数据。", "Could not read the project data."),
+        "fs:write-file" | "fs:mkdir" | "fs:write-json" => (
+            "无法写入项目文件。",
+            "Could not write the project file.",
+        ),
+        _ => ("项目文件操作失败。", "The project file operation failed."),
+    };
+    (zh_cn.to_string(), en_us)
 }
 
 /// 统一守卫链 —— 对齐 `assertProjectFileOperation`：
@@ -350,9 +368,9 @@ pub async fn fs_mkdir(
                 success: true,
                 error: None,
             },
-            Err(_) => SimpleResult {
+            Err(error) => SimpleResult {
                 success: false,
-                error: Some("无法创建项目目录。".to_string()),
+                error: Some(fs_error_message("fs:mkdir", &error)),
             },
         },
     )
@@ -428,10 +446,10 @@ pub async fn fs_read_json(
             data: Some(data),
             error: None,
         }),
-        Err(_) => Ok(JsonReadResponse {
+        Err(error) => Ok(JsonReadResponse {
             success: false,
             data: None,
-            error: Some("无法读取项目数据。".to_string()),
+            error: Some(fs_error_message("fs:read-json", &error)),
         }),
     }
 }
@@ -465,9 +483,9 @@ pub async fn fs_write_json(
             success: true,
             error: None,
         }),
-        Err(_) => Ok(SimpleResult {
+        Err(error) => Ok(SimpleResult {
             success: false,
-            error: Some("无法写入项目数据。".to_string()),
+            error: Some(fs_error_message("fs:write-json", &error)),
         }),
     }
 }
@@ -481,6 +499,125 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn filesystem_guard_copy_remains_specific_in_both_languages_test() {
+        for channel in [
+            "fs:read-file",
+            "fs:write-file",
+            "fs:list-dir",
+            "fs:mkdir",
+            "fs:check-exists",
+            "fs:read-json",
+            "fs:write-json",
+        ] {
+            for (kind, expected_english) in [
+                (
+                    GuardKind::MissingSessionContext,
+                    "Project session context is missing; the operation was rejected.",
+                ),
+                (
+                    GuardKind::OutsideProject,
+                    "The target is outside the current project; the operation was rejected.",
+                ),
+                (
+                    GuardKind::CrossProject,
+                    "Cross-project file access was rejected.",
+                ),
+                (
+                    GuardKind::LeaseInvalid,
+                    "The project lease has expired; the operation was rejected.",
+                ),
+            ] {
+                let (zh_cn, en_us) = fs_error_copy(channel, &FsError::Guard(kind));
+                assert_eq!(zh_cn, guard_message(kind));
+                assert_eq!(en_us, expected_english);
+            }
+        }
+    }
+
+    #[test]
+    fn filesystem_io_copy_does_not_disclose_paths_or_raw_errors_test() {
+        let raw = "Access denied: D:\\private-synthetic\\source.txt";
+        let error = FsError::Io(raw.to_string());
+        for (channel, zh, en) in [
+            (
+                "fs:read-file",
+                "无法读取项目文件。",
+                "Could not read the project file.",
+            ),
+            (
+                "fs:read-json",
+                "无法读取项目数据。",
+                "Could not read the project data.",
+            ),
+            (
+                "fs:write-file",
+                "无法写入项目文件。",
+                "Could not write the project file.",
+            ),
+            (
+                "fs:mkdir",
+                "无法写入项目文件。",
+                "Could not write the project file.",
+            ),
+            (
+                "fs:write-json",
+                "无法写入项目文件。",
+                "Could not write the project file.",
+            ),
+            (
+                "fs:list-dir",
+                "项目文件操作失败。",
+                "The project file operation failed.",
+            ),
+            (
+                "fs:check-exists",
+                "项目文件操作失败。",
+                "The project file operation failed.",
+            ),
+        ] {
+            let copy = fs_error_copy(channel, &error);
+            assert_eq!(copy.0, zh);
+            assert_eq!(copy.1, en);
+            assert!(!copy.0.contains(raw));
+            assert!(!copy.1.contains(raw));
+        }
+    }
+
+    #[test]
+    fn missing_file_copy_only_guides_plain_text_readers_test() {
+        let (zh_cn, en_us) = fs_error_copy("fs:read-file", &FsError::MissingFile);
+        assert_eq!(zh_cn, "项目文件不存在。请检查文件路径；故事架构保存在项目数据中，请使用 read_architecture 工具读取。");
+        assert_eq!(en_us, "The project file does not exist. Check the file path; story architecture is stored in project data and must be read with the read_architecture tool.");
+        for channel in ["fs:read-json", "fs:write-file", "fs:mkdir", "fs:write-json"] {
+            let (zh_cn, en_us) = fs_error_copy(channel, &FsError::MissingFile);
+            assert!(!zh_cn.contains("read_architecture"));
+            assert!(!en_us.contains("read_architecture"));
+        }
+    }
+
+    #[test]
+    fn write_failure_envelopes_keep_commit_state_and_json_shape_test() {
+        let (_, message) = fs_error_copy("fs:write-file", &FsError::Guard(GuardKind::LeaseInvalid));
+        let response = WriteFileResponse {
+            success: false,
+            commit_state: FileWriteCommitState::NotCommitted,
+            error: Some(message.to_string()),
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["success"], false);
+        assert_eq!(value["commitState"], "not_committed");
+        assert_eq!(value["error"], message);
+        let response = JsonReadResponse {
+            success: false,
+            data: None,
+            error: Some(message.to_string()),
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["data"], serde_json::Value::Null);
+        assert_eq!(value["error"], message);
     }
 
     #[test]
