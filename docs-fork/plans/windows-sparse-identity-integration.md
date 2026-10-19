@@ -10,10 +10,11 @@
 | 安装记录契约（schema 1，HKLM/HKCU + WOW 视图，范围一致性校验） | **已实现** | 同上 `src/win.rs`、`src/record.rs` |
 | NSIS 当前用户记录写入 | **已实现**，生成的 `installer.nsi` 确认插入 | `installer/hooks.nsh` |
 | MSI 全机记录（HKLM，随卸载移除） | **已实现并真实构建**，MSI `Registry` 表核出 4 条 | `installer/lorekeeper-install-record.wxs` |
-| 身份包产物（清单 + 启动器 + 资源 → MSIX） | 仅清单生成；启动器未打包 | `scripts/windows-identity.mjs` |
-| 启动器随 NSIS/MSI 安装 | 未接线 | 需 `bundle.resources` 与构建顺序 |
-| 激活入口（快捷方式指向激活器） | 未接线 | 仍是安装目录 exe |
-| MSIX 注册/置备（MSI 全机 stage/provision、每用户注册） | 未实现 | 需 MSI 自定义动作与多用户验证 |
+| 身份包产物（清单 + 启动器 + 资源 → MSIX） | **已实现并真实产出**（134,256 B，启动器 262,144 B） | `scripts/build-windows-identity.mjs` |
+| 启动器随 NSIS/MSI 安装 | **已接线并实测落盘** | `tauri.windows.conf.json` + `beforeBuildCommand` |
+| 激活入口（快捷方式指向激活器） | **已接线**；包外启动器转交 WindowsApps 内包启动器 | `installer/hooks.nsh`、`src/win.rs` |
+| 未签名包注册 | **实测必须提权**（非提权 0x80073D2B，提权成功） | 第117次研究§11 |
+| MSIX 注册/置备（MSI 全机 stage/provision、多用户） | 未实现；MSI 自定义动作待做 | 需提权上下文与 `Add-AppxProvisionedPackage` 实测 |
 | 真实安装/升级/回滚/卸载、多用户、macOS | 未验证 | 发布门禁 |
 
 本轮只构建安装包，**没有安装、没有注册身份包、没有改快捷方式**；用户级与全机记录已分别落到两条安装链，键名与启动器单一来源。

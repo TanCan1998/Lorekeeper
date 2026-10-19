@@ -27,6 +27,15 @@ test('默认无签名，不导入证书信任；签名证书位置仅预留', ()
   })
 })
 
+test('未签名注册需提权、不出现在应用列表，清单不声明可执行激活', () => {
+  const plan = createWindowsIdentityPlan(options())
+  assert.deepEqual(plan.registration, { requiresElevation: true, appListEntry: 'none', lastError: '0x80073D2B' })
+  const xml = renderUnsignedIdentityManifest(options())
+  // 未签名包不能出现可执行激活项（本机实测 0x80073D2B），入口改由安装器登记包内路径。
+  assert.match(xml, /AppListEntry="none"/)
+  assert(!xml.includes('shell:AppsFolder'))
+})
+
 test('只使用公开桌面进程策略，外部工具须另验脱离包环境', () => {
   const plan = createWindowsIdentityPlan(options())
   assert.equal(plan.processPolicy.attribute, 'PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY')

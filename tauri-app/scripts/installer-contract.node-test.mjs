@@ -71,7 +71,11 @@ test('安装记录在MSI写全机、NSIS写当前用户，键名与启动器单�
   assert(fragment.includes('Win64="yes"'))
   // 记录只追加命名值，不搬运文件、不建链接、不改模板默认值。
   assert.doesNotMatch(fragment, /junction|symboliclink|CopyFile/i)
-  assert.doesNotMatch(hook, /CopyFiles|CreateShortCut|SetOutPath/)
+  assert.doesNotMatch(hook, /CopyFiles|SetOutPath|CreateDirectory/)
+  // 快捷方式改指激活器：只允许这一种 CreateShortCut，且目标必须是激活器。
+  const shortcuts = [...hook.matchAll(/CreateShortcut "([^"]+)" "([^"]+)"/g)]
+  assert(shortcuts.length > 0)
+  for (const [, , target] of shortcuts) assert.match(target, /\$INSTDIR\\lorekeeper-activate\.exe$/)
 })
 
 test('WiX片段已接入MSI构建，且不进入主crate依赖图', () => {
@@ -89,7 +93,10 @@ test('启动器只在真实包身份下启动主程序，无身份时只激活�
   assert(launcher.includes('GetCurrentPackageFullName'))
   assert(launcher.includes('PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY'))
   assert(launcher.includes('POLICY_DISABLE_PROCESS_TREE: u32 = 2'))
-  assert(launcher.includes('shell:AppsFolder'))
+  // 未签名包不允许可执行激活，因此只登记并转交 WindowsApps 内的包启动器路径。
+  assert(launcher.includes('windowsapps'))
+  assert(launcher.includes('lorekeeper-identity-launcher.exe'))
+  assert(!launcher.includes('shell:AppsFolder'))
   assert(launcher.includes('EXTENDED_STARTUPINFO_PRESENT'))
   // 反向约束：不关闭沙箱、不加浏览器诊断参数、不按命令行任意路径启动。
   assert.doesNotMatch(launcher, /--edge-webview|no-sandbox|disable-gpu|CREATE_NEW_CONSOLE/)

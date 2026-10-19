@@ -188,9 +188,11 @@ fn record_from(
             declared.as_str()
         )));
     }
+    let identity_launcher = read_string(hive, subkey_path, "IdentityLauncherPath");
     let record = InstallRecord {
         schema_version,
         scope: declared,
+        identity_launcher,
         package_name,
         install_location,
         main_executable,
@@ -400,25 +402,40 @@ fn installed_package_full_names() -> Vec<String> {
     names
 }
 
-/// 包外模式：只激活已注册的身份包，绝不无身份启动主程序。
-pub fn activate_identity_package() -> Result<String, LauncherError> {
-    let family = installed_package_full_names()
-        .iter()
-        .filter(|name| name.starts_with(&format!("{PACKAGE_NAME}_")))
-        .filter_map(|name| package_family_from_full_name(name))
-        .next()
+/// 登记在记录里的包内启动器路径：必须是 WindowsApps 下本产品的启动器。
+fn packaged_launcher_path() -> Result<String, LauncherError> {
+    let record = read_install_record()?;
+    let launcher = record
+        .identity_launcher
         .ok_or(LauncherError::PackageMissing)?;
-    let aumid = application_user_model_id(&family);
-    let windir = std::env::var_os("WINDIR")
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_else(|| r"C:\Windows".to_string());
-    let explorer = format!(r"{windir}\explorer.exe");
-    let target = format!("shell:AppsFolder\\{aumid}");
-    std::process::Command::new(explorer)
-        .arg(target)
+    let lower = launcher.to_ascii_lowercase();
+    // 未签名包不出现在应用列表，只能直接运行包内 EXE；路径必须落在 WindowsApps 内。
+    if !lower.starts_with(r"c:\program files\windowsapps\com.tancan1998.lorekeeper_")
+        && !lower.starts_with(r"c:\program files\windowsapps\com.tancan1998.lorekeeper_1")
+    {
+        return Err(LauncherError::RecordInvalid(
+            "登记的身份启动器路径不在 WindowsApps 内".to_string(),
+        ));
+    }
+    if !launcher.to_ascii_lowercase().ends_with("\\lorekeeper-identity-launcher.exe") {
+        return Err(LauncherError::RecordInvalid(
+            "登记的身份启动器文件名不符".to_string(),
+        ));
+    }
+    attributes(&launcher).ok_or_else(|| LauncherError::UnsafeFile("身份启动器不存在".to_string()))?;
+    Ok(launcher)
+}
+
+/// 包外模式：只转交给包内启动器以取得真实包身份，绝不无身份启动主程序。
+pub fn activate_identity_package() -> Result<String, LauncherError> {
+    let launcher = packaged_launcher_path()?;
+    let mut child = std::process::Command::new(&launcher)
         .spawn()
-        .map_err(|error| LauncherError::RecordInvalid(format!("无法激活身份包：{error}")))?;
-    Ok(aumid)
+        .map_err(|error| LauncherError::RecordInvalid(format!("无法启动身份启动器：{error}")))?;
+    let code = child
+        .wait()
+        .map_err(|error| LauncherError::RecordInvalid(format!("等待身份启动器失败：{error}")))?;
+    Ok(format!("{launcher} (exit {})", code.code().unwrap_or(-1)))
 }
 
 /// 启动失败时给出可见提示；正常启动不弹窗、不抢焦点。

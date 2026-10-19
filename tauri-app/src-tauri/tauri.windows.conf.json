@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "target/identity/LoreKeeper.msix": "identity/LoreKeeper.msix",
+      "target/identity/stage/lorekeeper-identity-launcher.exe": "lorekeeper-activate.exe"
+    }
+  }
+}

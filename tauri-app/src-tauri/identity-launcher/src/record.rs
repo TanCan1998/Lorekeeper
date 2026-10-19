@@ -42,6 +42,8 @@ pub struct InstallRecord {
     pub package_name: String,
     pub install_location: String,
     pub main_executable: String,
+    /// 安装器登记的包内启动器路径（WindowsApps 内）；包外模式据此转交身份。
+    pub identity_launcher: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +205,7 @@ mod tests {
             package_name: PACKAGE_NAME.to_string(),
             install_location: r"C:\Program Files\LoreKeeper".to_string(),
             main_executable: r"C:\Program Files\LoreKeeper\lorekeeper.exe".to_string(),
+            identity_launcher: None,
         }
     }
 

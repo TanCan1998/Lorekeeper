@@ -296,3 +296,33 @@ Node身份9+安装6+发布19共34通过，含真实NSIS语法编译；typecheck/
 3. **激活入口**：快捷方式仍指向安装目录 exe；直接双击主程序不带身份，包外启动器尚未被任何入口使用。
 4. 真实安装/升级/修复/回滚/卸载、多用户、最低系统版本、外部工具 breakaway、macOS 均未验证。
 5. 因此“任务管理器真实归组”仍只在最简宿主与本机机制层面成立，产品未验收，发布继续暂停。
+
+## 11. 第117次：身份包产物、资源安装与真实安装/卸载回归
+
+继续落地“全部”：身份包真实产出、随安装器分发、真实静默安装与卸载都执行了，并查出一条决定性的系统限制。
+
+### 已真实执行
+- `node scripts/build-windows-identity.mjs` 构建独立启动器（release，262,144 B）并打包真实 MSIX（134,256 B）：内容只有启动器与图标，清单 `AppListEntry="none"`，无主程序、无用户路径。构建接入 `beforeBuildCommand`，资源经 `tauri.windows.conf.json` 映射为 `identity\LoreKeeper.msix` 与 `lorekeeper-activate.exe`。
+- 真实 MSI 与 NSIS 均重新构建成功；生成的 `installer.nsi` 含两条 `File` 与卸载 `Delete`。
+- **真实静默安装**（`/S /NS /D=...` 到临时目录）：退出码 0，落盘 `lorekeeper.exe`（79,312,896 B）、`lorekeeper-activate.exe`、`identity\LoreKeeper.msix`；`HKCU\Software\tancan1998\LoreKeeper` 记录为 `schema=1 / scope=user / 正确安装目录与主程序`。
+- **真实静默卸载**：安装目录、注册表键、身份包全部清零（`installDir=false, package=0, recordExists=false, WindowsApps=0`）。
+
+### 决定性限制：未签名身份包注册必须提权
+
+| 场景 | 结果 |
+|---|---|
+| 普通用户 `Add-AppxPackage -AllowUnsigned` | 失败 `0x80073D2B`：“未签名的程序包不能包含可执行的激活” |
+| 加 `AppListEntry="none"` 后普通用户 | 仍为同一失败 |
+| 提权后同一 MSIX | **注册成功**，`InstallLocation` 内启动器存在；测试后立即 `Remove-AppxPackage`，剩余 0 |
+
+因此“不签名”这条路线在**当前用户安装**下无法自动登记身份：Tauri 的 NSIS `currentUser` 安装不请求管理员。安装器现已在注册失败时明确告警（静默安装不弹窗但保持非假成功），不再假装归组可用。真正可行的组合是 MSI 全机（安装本就提权）或显式提权的安装流程。
+
+### 相应调整
+- 未签名包不能有可执行激活项，`shell:AppsFolder` 激活方式作废；包外启动器改为读取安装器登记的 `IdentityLauncherPath`（必须在 `%ProgramFiles%\WindowsApps\com.tancan1998.lorekeeper_*` 内且文件名固定）后启动包内启动器，绝不无身份启动主程序。
+- 契约新增 `registration: { requiresElevation: true, appListEntry: 'none', lastError: '0x80073D2B' }` 与 `elevated-unsigned-registration-flow` 验收项。
+
+### 仍未完成
+1. MSI 侧的注册/置备自定义动作（提权上下文、安装用户 vs SYSTEM、`Add-AppxProvisionedPackage` 多用户语义）尚未实现与实测。
+2. 真实产品 GUI 启动后的“任务管理器真实归组”未验证：本轮用户级注册被系统拒绝，必须先在提权路径成功后才能测。
+3. 升级/修复/回滚、多用户、最低系统版本、外部工具 breakaway、macOS 仍未验证。
+4. 发布继续暂停。

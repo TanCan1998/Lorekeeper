@@ -62,6 +62,9 @@ export function createWindowsIdentityPlan({ tauriConfig, identityConfig, archite
       externalToolsRequireBreakaway: true,
     },
     signing: { mode: 'unsigned', allowUnsignedDeployment: true, importCertificateTrust: false },
+    // 本机实测：非提权注册返回 0x80073D2B「未签名的程序包不能包含可执行的激活」，
+    // 提权后同一 MSIX 注册成功。安装器必须显式提权或明确告知失败，不能静默当成功。
+    registration: { requiresElevation: true, appListEntry: 'none', lastError: '0x80073D2B' },
     installation: {
       primaryScope: 'machine',
       perUserRegistrationRequired: true,
@@ -74,6 +77,7 @@ export function createWindowsIdentityPlan({ tauriConfig, identityConfig, archite
       'native-launcher-and-install-record',
       'real-lorekeeper-process-group',
       'machine-stage-provision-and-per-user-registration',
+      'elevated-unsigned-registration-flow',
       'upgrade-repair-rollback-uninstall',
       'external-tool-breakaway',
       'project-permissions-and-data-lifecycle',
@@ -99,7 +103,9 @@ export function renderUnsignedIdentityManifest(options) {
  <Capabilities><rescap:Capability Name="runFullTrust"/></Capabilities>
  <Applications><Application Id="${applicationId}" Executable="${plan.layout.launcherExecutable}"
   uap10:TrustLevel="mediumIL" EntryPoint="Windows.FullTrustApplication" uap10:RuntimeBehavior="packagedClassicApp">
-  <uap:VisualElements DisplayName="LoreKeeper" Description="LoreKeeper" BackgroundColor="transparent"
+  <!-- 未签名包不允许出现可执行激活项（0x80073D2B），因此不出现在应用列表；
+       由安装器登记包内启动器路径直接运行该 EXE 获得身份。 -->
+  <uap:VisualElements AppListEntry="none" DisplayName="LoreKeeper" Description="LoreKeeper" BackgroundColor="transparent"
    Square150x150Logo="Assets\\Square150x150Logo.png" Square44x44Logo="Assets\\Square44x44Logo.png"/>
  </Application></Applications>
 </Package>

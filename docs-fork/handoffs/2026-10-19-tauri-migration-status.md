@@ -1,6 +1,8 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **116** 次：产品身份启动器与全机安装记录已实现并真实构建 MSI/NSIS（仅构建，未安装）。身份包注册、激活入口与多用户置备未完成，发布暂停。**不是LoreKeeper产品修复或新版发布完成报告。**
+> [当前入口](./CURRENT.md) · 第 **117** 次：身份包真实产出、随安装器分发，并完成真实静默安装/卸载回归；发现未签名注册必须提权（0x80073D2B）。归组未在产品上验收，发布暂停。
+>
+> 第 **116** 次：产品身份启动器与全机安装记录已实现并真实构建 MSI/NSIS（仅构建，未安装）。身份包注册、激活入口与多用户置备未完成，发布暂停。**不是LoreKeeper产品修复或新版发布完成报告。**
 
 ## 已验证状态（Rust/前端功能基线沿用第110次，本轮构建检查另列）
 
@@ -25,7 +27,16 @@
 | 产品安装/卸载/项目删除/注册表清理 | **未执行** | 临时测试部署不能替代原生产品生命周期验收 |
 | 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
-## 本次更新：第116次产品启动器与安装记录
+## 本次更新：第117次身份包产物与真实安装回归
+
+- 真实产出身份包：独立启动器 release 262,144 B → MSIX 134,256 B（仅启动器+图标，`AppListEntry="none"`）；构建接入 `beforeBuildCommand`，资源经 `tauri.windows.conf.json` 随 NSIS/MSI 安装为 `identity\LoreKeeper.msix` 与 `lorekeeper-activate.exe`。
+- **真实静默安装**到用户自选目录：退出 0，落盘主程序、激活器与身份包；`HKCU` 记录 schema=1/scope=user/路径正确。**真实静默卸载**后目录、注册表键、身份包全部清零。
+- **决定性限制**：未签名 MSIX 普通用户注册失败（`0x80073D2B`，加 `AppListEntry=none` 仍失败），提权后同一包注册成功、包内启动器就位（测试后已移除）。故 Tauri NSIS `currentUser` 无法自动获得身份；安装器改为失败明确告警，不假成功。
+- 未签名包不能有可执行激活项 → `shell:AppsFolder` 作废；包外启动器改为读取登记的 `IdentityLauncherPath`（限定 WindowsApps 内本产品启动器）再转交，绝不无身份启动主程序。
+- 合同 Node 38 项通过；启动器单测 10/10、clippy 无告警；`git diff --check` 通过。未验证：MSI 注册/置备自定义动作、真实 GUI 归组、升级/回滚、多用户、breakaway、macOS。
+- 详见[研究§11](../research/webview-process-attribution.md#11-第117次身份包产物资源安装与真实安装卸载回归)。
+
+## 前轮更新：第116次产品启动器与安装记录
 
 - 新增独立 crate `identity-launcher/`（仅官方 `windows-sys`，不进主 crate 依赖图）。包内模式：`GetCurrentPackageFullName` 通过 → 读记录 → 校验路径（绝对/无上级片段/无引号控制字符/文件名固定/父目录等于安装目录/拒绝链接与缺失）→ 以 `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY`(0x20012)=2 启动主程序并透传退出码。包外模式：绝不无身份启动，只按仓库包全名推导包族名并 `explorer.exe shell:AppsFolder\<AUMID>` 激活。无参数，错误中文 MessageBox + 非 0 退出码。
 - 安装记录 schema 1（`IdentityRecordSchema`/`IdentityPackageName`/`InstallScope`/`InstallLocation`，`MainExecutable` 可省按固定名补全）；读取候选 HKLM/HKCU 各含 WOW6432Node，声明范围必须与命中位置一致。NSIS `POSTINSTALL` 写当前用户；MSI 片段写 HKLM 并随卸载移除，键名 `Software\tancan1998\LoreKeeper`（模板 `Manufacturer`）。
