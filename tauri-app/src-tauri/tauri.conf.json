@@ -35,6 +35,7 @@
         "version": "1.0.1.0",
         "upgradeCode": "ed3e3199-4ddc-501a-a745-179a185e8dfb",
         "language": "zh-CN",
+        "template": "installer/main.wxs",
         "fragmentPaths": ["installer/lorekeeper-install-record.wxs"],
         "componentRefs": ["LoreKeeperInstallRecord"]
       },

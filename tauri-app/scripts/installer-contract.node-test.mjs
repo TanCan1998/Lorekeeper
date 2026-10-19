@@ -11,8 +11,11 @@ const read = file => fs.readFileSync(path.join(nativeRoot, file), 'utf8')
 const config = JSON.parse(read('tauri.conf.json'))
 const hook = read('installer/hooks.nsh')
 const fragment = read('installer/lorekeeper-install-record.wxs')
+const wixTemplate = read('installer/main.wxs')
 const launcher = read('identity-launcher/src/win.rs')
 const launcherMain = read('identity-launcher/src/main.rs')
+const launcherRecord = read('identity-launcher/src/record.rs')
+const identityBuilder = read('../scripts/build-windows-identity.mjs')
 
 test('中文双安装包保留应用标识、安装范围及既有MSI升级身份', () => {
   assert.equal(config.productName, 'LoreKeeper')
@@ -26,6 +29,29 @@ test('中文双安装包保留应用标识、安装范围及既有MSI升级身�
   assert.equal(nsis.installMode, 'currentUser')
   assert.equal(nsis.installerHooks, 'installer/hooks.nsh')
   assert.equal(nsis.customLanguageFiles.SimpChinese, 'installer/SimpChinese.nsh')
+})
+
+test('MSI桌面、开始菜单和安装结束启动只经过身份激活器', () => {
+  assert.equal(config.bundle.windows.wix.template, 'installer/main.wxs')
+  for (const id of ['ApplicationDesktopShortcut', 'ApplicationStartMenuShortcut']) {
+    const start = wixTemplate.indexOf(`<Shortcut Id="${id}"`)
+    assert(start >= 0, `缺少 ${id}`)
+    const shortcut = wixTemplate.slice(start, wixTemplate.indexOf('>', start) + 1)
+    assert(shortcut.includes('Target="[INSTALLDIR]lorekeeper-activate.exe"'))
+    assert(!shortcut.includes('[!Path]'))
+    assert(shortcut.includes('Icon="ProductIcon"'))
+  }
+  const action = wixTemplate.match(/<CustomAction Id="LaunchApplication"[^>]+\/>/)?.[0]
+  assert(action?.includes('Directory="INSTALLDIR"'))
+  assert(action?.includes('ExeCommand="&quot;[INSTALLDIR]lorekeeper-activate.exe&quot;"'))
+  assert(!action?.includes('FileKey="Path"'))
+  assert(!action?.includes('[LAUNCHAPPARGS]'))
+  assert(wixTemplate.includes('<File Id="Path" Source="{{main_binary_path}}"'))
+  assert(wixTemplate.includes('{{resources}}'))
+  assert(wixTemplate.includes('{{#each component_refs'))
+  assert(wixTemplate.includes('AUTOLAUNCHAPP AND NOT Installed'))
+  const windowsConfig = JSON.parse(read('tauri.windows.conf.json'))
+  assert.equal(windowsConfig.bundle.resources['target/identity/stage/lorekeeper-identity-launcher.exe'], 'lorekeeper-activate.exe')
 })
 
 test('卸载默认保留；接管原勾选框而不按AppData目录递归删除', () => {
@@ -85,9 +111,19 @@ test('MSI在安装后注册身份、卸载前注销，且只在对应阶段触�
   assert(fragment.includes('--unregister-identity'))
   assert(fragment.includes('WixQuietExec'))
   assert(fragment.includes('BinaryKey="WixCA"'))
-  // 安装阶段：NOT Installed；卸载阶段：Installed AND NOT UPGRADINGPRODUCTCODE（升级不清身份）。
-  assert.match(fragment, /<Custom Action="RegisterIdentity" After="InstallFinalize">NOT Installed<\/Custom>/)
-  assert.match(fragment, /<Custom Action="UnregisterIdentity" Before="InstallFinalize">Installed AND NOT UPGRADINGPRODUCTCODE<\/Custom>/)
+  // 安装/升级/修复刷新；只有非升级的完整卸载注销，不能把修复当卸载。
+  const registerCondition = 'NOT (REMOVE~="ALL")'
+  const unregisterCondition = 'Installed AND (REMOVE~="ALL") AND NOT UPGRADINGPRODUCTCODE'
+  for (const [action, position, condition] of [
+    ['SetRegisterIdentityCmd', 'Before="RegisterIdentity"', registerCondition],
+    ['RegisterIdentity', 'After="InstallFinalize"', registerCondition],
+    ['SetUnregisterIdentityCmd', 'Before="UnregisterIdentity"', unregisterCondition],
+    ['UnregisterIdentity', 'Before="RemoveFiles"', unregisterCondition],
+  ]) {
+    assert(fragment.includes(`<Custom Action="${action}" ${position}>${condition}</Custom>`), action)
+  }
+  assert(fragment.includes('--register-identity --quiet'))
+  assert(fragment.includes('--unregister-identity --quiet'))
   // 记录键随组件卸载删除，不残留全机键。
   assert(fragment.includes('ForceDeleteOnUninstall="yes"'))
 })
@@ -108,7 +144,7 @@ test('启动器只在真实包身份下启动主程序，无身份时只激活�
   assert(launcher.includes('PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY'))
   assert(launcher.includes('POLICY_DISABLE_PROCESS_TREE: u32 = 2'))
   // 未签名包不允许可执行激活，因此只登记并转交 WindowsApps 内的包启动器路径。
-  assert(launcher.includes('windowsapps'))
+  assert(launcherRecord.includes('WindowsApps'))
   assert(launcher.includes('lorekeeper-identity-launcher.exe'))
   assert(!launcher.includes('shell:AppsFolder'))
   assert(launcher.includes('EXTENDED_STARTUPINFO_PRESENT'))
@@ -122,6 +158,30 @@ test('启动器只在真实包身份下启动主程序，无身份时只激活�
   for (const key of ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', 'RegistryWrite', 'CreateSymbolicLink']) {
     assert(!launcher.includes(key), `启动器不应包含 ${key}`)
   }
+})
+
+test('身份版本从同一构建计划写入启动器和清单，旧包仍存在也必须刷新', () => {
+  assert(identityBuilder.includes('LOREKEEPER_IDENTITY_VERSION: plan.identity.version'))
+  assert(identityBuilder.includes('createWindowsIdentityPlan(identityOptions)'))
+  assert(identityBuilder.includes('renderUnsignedIdentityManifest(identityOptions)'))
+  assert(launcher.includes('option_env!("LOREKEEPER_IDENTITY_VERSION")'))
+  assert(launcher.includes('package_matches_version(&full_name, expected_version)'))
+  assert(launcher.includes('ready_packaged_launcher(&record, expected_version)'))
+  assert(launcher.includes('ready_packaged_launcher(&refreshed_record, expected_version)'))
+  assert(launcher.includes("$_.Version -eq [version]'{expected_version}'"))
+  // 注册成功且版本匹配后才允许写回；不能把任意 Get-AppxPackage 结果当成新版本。
+  assert(launcher.indexOf("$_.Version -eq [version]'{expected_version}'")
+    < launcher.indexOf("Set-ItemProperty -LiteralPath {key_path}"))
+})
+
+test('静默标记覆盖提权助手和包内启动器，自选目录按字面量传递', () => {
+  assert(launcherMain.includes('const QUIET: &str = "--quiet"'))
+  assert(launcher.includes("-ArgumentList '--register-identity','--quiet'"))
+  assert(launcher.includes('command.arg(crate::QUIET)'))
+  assert(launcher.includes('quote_powershell_literal(self_exe)'))
+  assert(launcher.includes('let msix = quote_powershell_literal(&msix)'))
+  assert(launcher.includes('Test-Path -LiteralPath $launcher -PathType Leaf'))
+  assert(launcher.includes('output.status.code() == Some(1223)'))
 })
 
 test('macOS保持拖拽默认保留，提供中文说明及宿主显示名', () => {
