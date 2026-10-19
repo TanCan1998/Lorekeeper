@@ -19,12 +19,13 @@
 //! | D1 | 来源身份摘要改为**无密钥 `sha256`**（基线为 `HMAC(applicationSecret, …)`） | 身份从不进入渲染层；零新依赖 |
 //! | D2 | 不迁移 `webContentsId` 归属校验（`clear()` 退化为「清空全部待处理检视」） | Tauri 单窗口，无多 webContents 语义 |
 //! | D3 | 不建 `import_legacy_identity_bridge`，legacy 解析路径整体跳过 | L3 双栈项目目录刻意不互通 |
-//! | D4 | `.epub` 暂不支持（对话框仍列出，选中后返回诚实错误） | Rust 解包需 `zip` 类新依赖（Ask first） |
+//! | D4 | EPUB 已接入纯内存正文提取（本轮待验证） | 复用便携归档已批准的 `zip`；阅读顺序、DRM 与解压限额对齐基线 |
 //! | D5 | 文件读取直接走 `std::fs`（带字节上限），不引入基线句柄链 | 路径从不回传渲染层；上限与基线一致 |
 //! | D6 | 对话框用 `tauri-plugin-dialog`（`pick_files` + 筛选器 + 多选） | 与 `dialog:select-knowledge-files` 同路径 |
 //! | D7 | （本批新增）来源文件按 **数字感知自然序** 排序，逼近但不等价于 `localeCompare(…, 'zh-CN', {numeric:true})` | 完整 zh-CN 拼音排序需 ICU 类新依赖（Ask first）；章号最终由正文/文件名解析决定，排序只影响来源处理顺序 |
 
 pub mod batch_checkpoint;
+pub(crate) mod epub;
 // 批次 G2b：来源身份解析（无密钥版 resolveEncodedSources）
 pub mod identity;
 pub mod inspection_store;

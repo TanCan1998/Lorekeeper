@@ -155,7 +155,7 @@ pub fn source_media_type(display_name: &str) -> String {
     }
 }
 
-/// 文件名是否以 `.epub` 结尾（D4 诚实错误的判别入口）。
+/// 文件名是否以 `.epub` 结尾（正文提取与普通文本读取的分流入口）。
 pub fn is_epub_name(display_name: &str) -> bool {
     Path::new(display_name)
         .extension()

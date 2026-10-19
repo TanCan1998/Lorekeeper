@@ -5,8 +5,8 @@
 //! # 交付范围（G1）
 //!
 //! 「导入作者原稿」完整链路：**选择 → 受限读取 → 拆章 → 检视存储**；
-//! 渲染层只拿到 [`ImportInspectionSummary`]。`reference`（参考语料）路径依赖
-//! 批次 G2 的导入运行状态机，G1 返回**诚实错误**。`.epub` 同理（D4）。
+//! 渲染层只拿到 [`ImportInspectionSummary`]。`reference`（参考语料）路径已接入
+//! 批次 G2 的导入运行状态机；EPUB 通过受限内存提取接入相同检视与冻结章路径。
 //!
 //! # 失败的两种形态（刻意区分）
 //!
@@ -29,6 +29,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::commands::db::guard_read;
 use crate::commands::project::file_path_to_string;
 use crate::draft_units::count_draft_units;
+use crate::import::epub::{extract_epub_chapters, EpubLimits};
 use crate::import::inspection_store::{
     ImportInspectionStore, ImportInspectionSummary, InspectedImportChapter, InspectedImportSource,
 };
@@ -174,21 +175,27 @@ pub(crate) fn import_selection_error_message(
             format!("拆分后的章节数超过导入上限（最多 {MAX_IMPORT_CHAPTERS} 章）。"),
             format!("The import chapter limit was exceeded (limit: {MAX_IMPORT_CHAPTERS})."),
         ),
+        "EPUB_DRM_UNSUPPORTED" => import_text(
+            locale,
+            "该 EPUB 受 DRM 或加密保护，无法导入。请使用无 DRM 的 EPUB 或文本文件。",
+            "This EPUB is DRM-protected or encrypted and cannot be imported. Use a DRM-free EPUB or text file.",
+        ),
+        "EPUB_EXPANSION_LIMIT" => import_text(
+            locale,
+            "该 EPUB 的条目数或解压后内容超过安全上限，无法导入。",
+            "This EPUB exceeds the safe entry-count or expanded-content limit and cannot be imported.",
+        ),
+        "EPUB_INVALID_ARCHIVE" => import_text(
+            locale,
+            "EPUB 文件已损坏，或缺少有效的 container.xml、OPF 与正文阅读顺序。",
+            "The EPUB is damaged or lacks a valid container.xml, OPF package, or textual reading order.",
+        ),
         _ => import_text(
             locale,
             "无法读取所选文件；请重新选择后再试。",
             "Could not read the selected files. Please choose them again.",
         ),
     }
-}
-
-/// D4：`.epub` 诚实错误
-fn epub_import_unmigrated_message(locale: ImportRunLocale) -> String {
-    import_text(
-        locale,
-        "EPUB 导入尚未迁移：需要新增解包依赖（已登记待批）。请改用 txt / md 文件。",
-        "EPUB import is not migrated yet: it requires a new unpacking dependency (registered for approval). Please use txt / md files instead.",
-    )
 }
 
 /// 空来源文案（对齐基线两条专用错误）
@@ -276,11 +283,11 @@ fn compare_numeric_runs(left: &str, right: &str) -> std::cmp::Ordering {
     trimmed_left.cmp(trimmed_right)
 }
 
-/// 受限文本读取（D5：直接 `std::fs`，字节上限与基线一致）。
+/// 受限字节读取（D5：直接 `std::fs`，字节上限与基线一致）。
 ///
 /// 超限返回基线的 `SECURE_FS_FILE_TOO_LARGE` 错误码，由文案映射落回
 /// 「总大小超过导入上限」。
-fn read_text_bounded(path: &Path, limit: usize) -> Result<String, String> {
+fn read_bytes_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut buffer = Vec::new();
     let mut limited = (&file).take(limit as u64 + 1);
@@ -290,8 +297,57 @@ fn read_text_bounded(path: &Path, limit: usize) -> Result<String, String> {
     if buffer.len() > limit {
         return Err("SECURE_FS_FILE_TOO_LARGE".to_string());
     }
-    // 对齐 Node `readFile(path, 'utf8')` 的宽松解码语义
-    Ok(String::from_utf8_lossy(&buffer).into_owned())
+    Ok(buffer)
+}
+
+fn read_text_bounded(path: &Path, limit: usize) -> Result<String, String> {
+    // 对齐 Node `readFile(path, 'utf8')` 的宽松解码语义；EPUB 内文单独严格解码。
+    let bytes = read_bytes_bounded(path, limit)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// EPUB 正文按阅读顺序拆章；限额统计使用提取正文的 UTF-8 字节，而非压缩包大小。
+fn parse_epub_source(
+    path: &Path,
+    remaining_bytes: usize,
+    remaining_chapters: usize,
+) -> Result<(usize, Vec<ParsedChapter>), String> {
+    let bytes = read_bytes_bounded(path, remaining_bytes)?;
+    let defaults = EpubLimits::default();
+    let extracted = extract_epub_chapters(
+        &bytes,
+        EpubLimits {
+            max_entry_bytes: defaults.max_entry_bytes.min(remaining_bytes),
+            max_extracted_bytes: defaults.max_extracted_bytes.min(remaining_bytes),
+            ..defaults
+        },
+    )?;
+    let mut content_bytes = 0usize;
+    let mut parsed = Vec::new();
+    for (index, chapter) in extracted.into_iter().enumerate() {
+        if chapter.content.len() > remaining_bytes - content_bytes {
+            return Err("IMPORT_SOURCE_BYTES_EXCEEDED".to_string());
+        }
+        content_bytes += chapter.content.len();
+        let available = remaining_chapters - parsed.len();
+        if parsing::has_chapter_headings(&chapter.content) {
+            parsed.extend(parsing::split_single_file_content(
+                &chapter.content,
+                available,
+            )?);
+        } else {
+            if available == 0 {
+                return Err("IMPORT_CHAPTER_COUNT_EXCEEDED".to_string());
+            }
+            parsed.push(ParsedChapter {
+                number: (index + 1) as i64,
+                title: chapter.title,
+                word_count: count_draft_units(&chapter.content),
+                content: chapter.content,
+            });
+        }
+    }
+    Ok((content_bytes, parsed))
 }
 
 /// 预检通过的一个来源
@@ -478,54 +534,63 @@ pub(crate) fn inspect_selected_novel_files(
                 }
             }
         }
-        if parsing::is_epub_name(&source.display_name) {
-            return Err(epub_import_unmigrated_message(locale));
-        }
         let remaining = MAX_IMPORT_TOTAL_BYTES - consumed_bytes;
-        let raw = match read_text_bounded(Path::new(&source.identity.canonical_location), remaining)
-        {
-            Ok(value) => value,
-            Err(code) => {
-                let message = import_selection_error_message(&code, locale);
+        let source_path = Path::new(&source.identity.canonical_location);
+        let (content_bytes, parsed) = if parsing::is_epub_name(&source.display_name) {
+            parse_epub_source(source_path, remaining, MAX_IMPORT_CHAPTERS - chapter_count).map_err(
+                |code| {
+                    let message = import_selection_error_message(&code, locale);
+                    fail_reference_source(conn, parsing.as_ref(), source_index, &message);
+                    message
+                },
+            )?
+        } else {
+            let raw = match read_text_bounded(source_path, remaining) {
+                Ok(value) => value,
+                Err(code) => {
+                    let message = import_selection_error_message(&code, locale);
+                    fail_reference_source(conn, parsing.as_ref(), source_index, &message);
+                    return Err(message);
+                }
+            };
+            let content_bytes = raw.len();
+            if content_bytes > remaining {
+                let message =
+                    import_selection_error_message("IMPORT_SOURCE_BYTES_EXCEEDED", locale);
                 fail_reference_source(conn, parsing.as_ref(), source_index, &message);
                 return Err(message);
             }
+            let content = raw.trim();
+            if content.is_empty() {
+                consumed_bytes += content_bytes;
+                empty_source_found = true;
+                fail_reference_source(
+                    conn,
+                    parsing.as_ref(),
+                    source_index,
+                    &import_text(locale, "所选来源文件为空", "Selected source file is empty"),
+                );
+                continue;
+            }
+            let parsed = if parsing::has_chapter_headings(content) {
+                parsing::split_single_file_content(content, MAX_IMPORT_CHAPTERS - chapter_count)
+                    .map_err(|code| import_selection_error_message(&code, locale))?
+            } else {
+                let stem = Path::new(&source.display_name)
+                    .file_stem()
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_else(|| source.display_name.clone());
+                let extracted = parsing::extract_chapter_number(&stem);
+                vec![ParsedChapter {
+                    number: if extracted != 0 { extracted } else { 1 },
+                    title: stem,
+                    content: content.to_string(),
+                    word_count: count_draft_units(content),
+                }]
+            };
+            (content_bytes, parsed)
         };
-        let content_bytes = raw.len();
-        if content_bytes > MAX_IMPORT_TOTAL_BYTES - consumed_bytes {
-            let message = import_selection_error_message("IMPORT_SOURCE_BYTES_EXCEEDED", locale);
-            fail_reference_source(conn, parsing.as_ref(), source_index, &message);
-            return Err(message);
-        }
         consumed_bytes += content_bytes;
-        let content = raw.trim();
-        if content.is_empty() {
-            empty_source_found = true;
-            fail_reference_source(
-                conn,
-                parsing.as_ref(),
-                source_index,
-                &import_text(locale, "所选来源文件为空", "Selected source file is empty"),
-            );
-            continue;
-        }
-
-        let parsed = if parsing::has_chapter_headings(content) {
-            parsing::split_single_file_content(content, MAX_IMPORT_CHAPTERS - chapter_count)
-                .map_err(|code| import_selection_error_message(&code, locale))?
-        } else {
-            let stem = Path::new(&source.display_name)
-                .file_stem()
-                .map(|value| value.to_string_lossy().to_string())
-                .unwrap_or_else(|| source.display_name.clone());
-            let extracted = parsing::extract_chapter_number(&stem);
-            vec![ParsedChapter {
-                number: if extracted != 0 { extracted } else { 1 },
-                title: stem,
-                content: content.to_string(),
-                word_count: count_draft_units(content),
-            }]
-        };
 
         sources.push(InspectedImportSource {
             location_alias_digest: source.location_alias_digest.clone(),
@@ -813,6 +878,279 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
+    /// 合成 EPUB 夹具只写隔离目录，支持多正文与可选加密声明。
+    fn write_epub(dir: &Path, name: &str, documents: &[&str], encryption: Option<&str>) -> String {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let mut manifest = String::new();
+        let mut spine = String::new();
+        for index in 0..documents.len() {
+            manifest.push_str(&format!(
+                "<item id='c{index}' href='c{index}.xhtml' media-type='application/xhtml+xml'/>"
+            ));
+            spine.push_str(&format!("<itemref idref='c{index}'/>"));
+        }
+        let package =
+            format!("<package><manifest>{manifest}</manifest><spine>{spine}</spine></package>");
+        let mut entries = vec![
+            (
+                "META-INF/container.xml".to_string(),
+                "<container><rootfiles><rootfile full-path='book.opf'/></rootfiles></container>"
+                    .to_string(),
+            ),
+            ("book.opf".to_string(), package),
+        ];
+        for (index, document) in documents.iter().enumerate() {
+            entries.push((format!("c{index}.xhtml"), document.to_string()));
+        }
+        if let Some(encryption) = encryption {
+            entries.push((
+                "META-INF/encryption.xml".to_string(),
+                encryption.to_string(),
+            ));
+        }
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for (entry, content) in entries {
+            writer
+                .start_file(
+                    entry,
+                    SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+                )
+                .unwrap();
+            writer.write_all(content.as_bytes()).unwrap();
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn epub_author_inspection_splits_body_and_preserves_source_contract_test() {
+        let dir = temp_dir("epub-author");
+        let path = write_epub(&dir, "合成作者.EPUB", &[
+            "<html><body><h1>第一章 开端</h1><p>正文甲</p><h2>第二章 发展</h2><p>正文乙</p></body></html>",
+        ], None);
+        let mut store = ImportInspectionStore::new();
+        let summary = inspect_author_summary(&mut store, vec![path]);
+        assert_eq!(summary.chapter_count, 2);
+        assert_eq!(summary.source_count, 1);
+        assert_eq!(summary.preview[0].title, "开端");
+        assert_eq!(summary.preview[1].title, "发展");
+        let inspection = store.consume(&summary.inspection_id).unwrap();
+        assert_eq!(inspection.sources[0].media_type, "application/epub+zip");
+        assert_eq!(
+            inspection.sources[0].size,
+            "第一章 开端\n\n正文甲\n\n第二章 发展\n\n正文乙".len()
+        );
+        assert_eq!(inspection.chapters[0].content, "正文甲");
+        assert_eq!(inspection.chapters[1].content, "正文乙");
+        for chapter in &inspection.chapters {
+            assert_eq!(chapter.content_size, chapter.content.len());
+            assert_eq!(
+                chapter.content_fingerprint,
+                parsing::sha256_hex(&chapter.content)
+            );
+            assert_eq!(chapter.word_count, count_draft_units(&chapter.content));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn epub_title_fallback_and_plain_text_can_share_author_inspection_test() {
+        let dir = temp_dir("epub-mixed");
+        let epub = write_epub(
+            &dir,
+            "1-book.epub",
+            &[
+                "<html><head><title>Arrival</title></head><body><p>合成甲</p></body></html>",
+                "<html><body><h2>Departure</h2><p>合成乙</p></body></html>",
+            ],
+            None,
+        );
+        let text = write_file(&dir, "第3章.txt", "第三章 尾声\n合成丙");
+        let mut store = ImportInspectionStore::new();
+        let summary = inspect_author_summary(&mut store, vec![text, epub]);
+        assert_eq!(summary.chapter_count, 3);
+        assert_eq!(summary.source_count, 2);
+        assert_eq!(summary.preview[0].title, "Arrival");
+        assert_eq!(summary.preview[1].title, "Departure");
+        assert_eq!(summary.preview[2].title, "尾声");
+        let inspection = store.consume(&summary.inspection_id).unwrap();
+        assert_eq!(inspection.chapters[1].number, 2);
+        assert_eq!(inspection.chapters[2].source_index, 1);
+        assert_eq!(inspection.chapters[2].number, 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn epub_parser_enforces_archive_bytes_and_aggregate_chapter_budget_test() {
+        let dir = temp_dir("epub-limits");
+        let path = write_epub(
+            &dir,
+            "book.epub",
+            &[
+                "<body><p>普通正文</p></body>",
+                "<body><h1>第二章 转折</h1><p>合成甲</p><h2>第三章 结尾</h2><p>合成乙</p></body>",
+            ],
+            None,
+        );
+        let path = Path::new(&path);
+        let error = parse_epub_source(path, MAX_IMPORT_TOTAL_BYTES, 2).unwrap_err();
+        assert_eq!(error, "IMPORT_CHAPTER_COUNT_EXCEEDED");
+        assert_eq!(
+            parse_epub_source(path, MAX_IMPORT_TOTAL_BYTES, 3)
+                .unwrap()
+                .1
+                .len(),
+            3
+        );
+        assert_eq!(
+            parse_epub_source(path, 1, 3).unwrap_err(),
+            "SECURE_FS_FILE_TOO_LARGE"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn epub_title_only_and_duplicate_chapters_keep_existing_author_guards_test() {
+        let dir = temp_dir("epub-author-guards");
+        for (name, document, expected) in [
+            (
+                "title.epub",
+                "<body><h1>第一章 开端</h1></body>",
+                title_only_source_message(ImportRunLocale::ZhCn),
+            ),
+            (
+                "duplicate.epub",
+                "<body><h1>第一章 开端</h1><p>合成甲</p><h2>第一章 重复</h2><p>合成乙</p></body>",
+                author_manuscript_duplicate_message(ImportRunLocale::ZhCn, 1),
+            ),
+        ] {
+            let epub = write_epub(&dir, name, &[document], None);
+            let mut store = ImportInspectionStore::new();
+            let error = inspect_selected_novel_files(
+                &mut store,
+                None,
+                vec![epub],
+                ImportPurpose::AuthorManuscript,
+                ImportRunLocale::ZhCn,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(store.active_count(), 0);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn epub_reference_prepares_frozen_chapters_and_reselection_is_resumable_test() {
+        let dir = temp_dir("epub-reference");
+        let path = write_epub(
+            &dir,
+            "book.epub",
+            &[
+                "<body><h1>第一章 开端</h1><p>合成甲</p></body>",
+                "<body><h1>第二章 发展</h1><p>合成乙</p></body>",
+            ],
+            None,
+        );
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let mut store = ImportInspectionStore::new();
+        let outcome = inspect_selected_novel_files(
+            &mut store,
+            Some(&conn),
+            vec![path.clone()],
+            ImportPurpose::Reference,
+            ImportRunLocale::ZhCn,
+            Some("epub-ref"),
+        )
+        .unwrap();
+        let InspectOutcome::Preparation(preparation) = outcome else {
+            panic!("应返回参考语料准备结果")
+        };
+        let run = preparation.run.unwrap();
+        assert_eq!(run.stage, "prepared");
+        assert_eq!(run.total_chapters, 2);
+        let chapters = import_runs::list_chapter_batch(&conn, "epub-ref", 0, 10).unwrap();
+        assert_eq!(chapters.len(), 2);
+        assert_eq!(chapters[0].content, "合成甲");
+        assert_eq!(chapters[1].content, "合成乙");
+        let outcome = inspect_selected_novel_files(
+            &mut store,
+            Some(&conn),
+            vec![path],
+            ImportPurpose::Reference,
+            ImportRunLocale::ZhCn,
+            Some("epub-ref-again"),
+        )
+        .unwrap();
+        let InspectOutcome::Preparation(preparation) = outcome else {
+            panic!("应命中可恢复运行")
+        };
+        assert_eq!(preparation.classification, "resumable");
+        assert_eq!(preparation.run.unwrap().id, "epub-ref");
+        assert_eq!(store.active_count(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn epub_reference_drm_failure_is_recorded_without_frozen_chapters_test() {
+        let dir = temp_dir("epub-reference-fail");
+        let path = write_epub(&dir, "book.epub", &["<body><p>不得冻结的合成正文</p></body>"], Some(
+            "<encryption><EncryptedData><EncryptionMethod Algorithm='urn:example:drm'/><CipherReference URI='c0.xhtml'/></EncryptedData></encryption>",
+        ));
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::create_tables(&conn).unwrap();
+        let mut store = ImportInspectionStore::new();
+        let error = inspect_selected_novel_files(
+            &mut store,
+            Some(&conn),
+            vec![path],
+            ImportPurpose::Reference,
+            ImportRunLocale::EnUs,
+            Some("epub-drm"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            import_selection_error_message("EPUB_DRM_UNSUPPORTED", ImportRunLocale::EnUs)
+        );
+        let run = import_runs::get(&conn, "epub-drm").unwrap().unwrap();
+        assert_eq!(run.status, "failed");
+        assert_eq!(run.last_error, error);
+        assert!(import_runs::list_chapter_batch(&conn, "epub-drm", 0, 10)
+            .unwrap()
+            .is_empty());
+        let source_status: String = conn
+            .query_row(
+                "SELECT status FROM import_run_sources WHERE run_id = 'epub-drm'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_status, "failed");
+        assert_eq!(store.active_count(), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn epub_error_copy_matches_baseline_in_both_languages_test() {
+        for (code, zh, en) in [
+            ("EPUB_DRM_UNSUPPORTED", "该 EPUB 受 DRM 或加密保护，无法导入。请使用无 DRM 的 EPUB 或文本文件。", "This EPUB is DRM-protected or encrypted and cannot be imported. Use a DRM-free EPUB or text file."),
+            ("EPUB_EXPANSION_LIMIT", "该 EPUB 的条目数或解压后内容超过安全上限，无法导入。", "This EPUB exceeds the safe entry-count or expanded-content limit and cannot be imported."),
+            ("EPUB_INVALID_ARCHIVE", "EPUB 文件已损坏，或缺少有效的 container.xml、OPF 与正文阅读顺序。", "The EPUB is damaged or lacks a valid container.xml, OPF package, or textual reading order."),
+        ] {
+            assert_eq!(import_selection_error_message(code, ImportRunLocale::ZhCn), zh);
+            assert_eq!(import_selection_error_message(code, ImportRunLocale::EnUs), en);
+        }
+    }
+
     #[test]
     fn parse_selection_request_defaults_and_rejects_unknown_test() {
         // 缺省 / null / 非对象 → reference
@@ -919,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn inspect_reference_without_run_id_creates_inspection_and_epub_is_honest_test() {
+    fn inspect_reference_without_run_id_creates_inspection_and_corrupt_epub_is_rejected_test() {
         let dir = temp_dir("honest");
         let text = write_file(&dir, "a.md", "正文");
         let epub = write_file(&dir, "book.epub", "not-a-real-epub");
@@ -953,7 +1291,7 @@ mod tests {
         // 基线把这条错误也经过 `importSelectionErrorMessage` 收敛为通用文案
         assert_eq!(error, "无法读取所选文件；请重新选择后再试。");
 
-        // D4：.epub 仍为诚实错误
+        // 损坏的 EPUB 进入真实提取器，返回专用格式错误而不是迁移占位。
         let error = inspect_selected_novel_files(
             &mut store,
             None,
@@ -963,7 +1301,10 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(error.contains("EPUB"), "epub 错误应说明未迁移：{error}");
+        assert_eq!(
+            error,
+            import_selection_error_message("EPUB_INVALID_ARCHIVE", ImportRunLocale::ZhCn)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
