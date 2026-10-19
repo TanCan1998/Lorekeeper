@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::db::schema::ensure_blueprint_commit_schema;
@@ -253,6 +253,12 @@ fn is_valid_commit_mode(mode: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlueprintCommitRangeRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::repositories::project_core_repository::deserialize_author_recovery"
+    )]
+    pub author_recovery: Option<serde_json::Value>,
     /// 基线 `generationRunHandle?`（生成运行句柄；存在时提交前在事务内
     /// 断言生成源当前性，接线见 `commands::db::blueprint_commit_range_inner`
     /// 的分支③）。
@@ -338,6 +344,12 @@ pub struct BlueprintCommitRangeReceipt {
     /// 冻结的生成事实，用于重放角色候选同步
     pub character_sync_input: Vec<BlueprintData>,
     pub character_sync_operation: BlueprintCharacterSyncOperation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_edit:
+        Option<crate::repositories::generation_run_repository::BlueprintAuthorEditReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_progress:
+        Option<crate::repositories::generation_run_repository::DirectoryGenerationProgress>,
 }
 
 /// `blueprint_commit_operations` 行
@@ -472,6 +484,7 @@ fn read_exact_range(
         snapshot.push(row.map_err(|error| format!("读取蓝图范围失败：{error}"))?);
     }
     assert_exact_range(&BlueprintCommitRangeRequest {
+        author_recovery: None,
         generation_run_handle: None,
         generation_requested_range: None,
         mode: mode.to_string(),
@@ -1026,6 +1039,8 @@ fn receipt_from_existing_operation(
         operation_id: existing.operation_id.clone(),
         payload_hash,
         idempotent: true,
+        author_edit: None,
+        generation_progress: None,
         start_chapter: existing.start_chapter,
         end_chapter: existing.end_chapter,
         chapter_numbers: snapshot
@@ -1091,6 +1106,8 @@ pub fn get_committed_range_operation(
         operation_id: existing.operation_id,
         payload_hash: existing.payload_hash,
         idempotent: false,
+        author_edit: None,
+        generation_progress: None,
         start_chapter: existing.start_chapter,
         end_chapter: existing.end_chapter,
         chapter_numbers: snapshot
@@ -1103,12 +1120,26 @@ pub fn get_committed_range_operation(
     }))
 }
 
+/// 复用调用方的原子事务，防止蓝图事实与恢复回执分别提交。
+pub(crate) fn commit_range_in_existing_transaction(
+    conn: &Connection,
+    request: &BlueprintCommitRangeRequest,
+    hook: Option<&dyn Fn()>,
+) -> Result<BlueprintCommitRangeReceipt, String> {
+    if conn.is_autocommit() {
+        return Err("GENERATION_DIRECTORY_TRANSACTION_REQUIRED".to_string());
+    }
+    assert_exact_range(request)?;
+    ensure_blueprint_commit_schema(conn).map_err(|error| error.to_string())?;
+    commit_range_in_transaction(conn, request, commit_payload_hash(request)?, hook)
+}
+
 /// 事务体内的范围提交逻辑（批次 G3a 抽取）：供 [`commit_range`] 与
 /// `import_run_repository::commit_effect_receipt` 的跨仓原子事务复用。
 /// 错误返回时 `tx` drop 即回滚，与基线 `db.transaction()` 语义一致。
 /// 对齐基线 commitRange 的可选 assertGenerationSources 钩子（生成源校验，事务内生效前调用）。
 pub(crate) fn commit_range_in_transaction(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     request: &BlueprintCommitRangeRequest,
     payload_hash: String,
     assert_generation_sources: Option<&dyn Fn()>,
@@ -1205,6 +1236,8 @@ pub(crate) fn commit_range_in_transaction(
         operation_id: request.operation_id.clone(),
         payload_hash,
         idempotent: false,
+        author_edit: None,
+        generation_progress: None,
         start_chapter: request.start_chapter,
         end_chapter: request.end_chapter,
         chapter_numbers: snapshot
@@ -1408,6 +1441,7 @@ mod tests {
         chapters: &[i64],
     ) -> BlueprintCommitRangeRequest {
         BlueprintCommitRangeRequest {
+            author_recovery: None,
             generation_run_handle: None,
             generation_requested_range: None,
             mode: mode.to_string(),

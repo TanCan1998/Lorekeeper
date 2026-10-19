@@ -1929,9 +1929,8 @@ pub fn prove_character_proposal(
                     .filter(|artifact| artifact["artifactId"].as_str() != manifest_artifact_id)
                     .cloned()
                     .collect();
-                // TODO(B1 后续批次)：移植 `parseArchitectureCharacterProposal`
-                // （`character-proposal-parser.ts`，依赖 ArchitectureDerivationVersion
-                // 结构化解析，尚未迁移）。
+                // 基线 `parseArchitectureCharacterProposal`（`character-proposal-parser.ts`，
+                // 依赖 ArchitectureDerivationVersion 结构化解析）。
                 let items = parse_architecture_character_proposal(
                     manifest.unwrap(),
                     &details,
@@ -1968,9 +1967,8 @@ pub fn prove_character_proposal(
                 }
                 materials.push(material);
             }
-            // TODO(B1 后续批次)：移植 `characterProposalMaterialChunks` 与
-            // `parsePlanningMaterialCharacterProposal`（`character-proposal-parser.ts`，
-            // 尚未迁移）。
+            // 基线 `characterProposalMaterialChunks` + `parsePlanningMaterialCharacterProposal`
+            // （`character-proposal-parser.ts`）。
             let items =
                 character_proposal_material_chunks(&materials).and_then(|expected_source_ids| {
                     parse_planning_material_character_proposal(&artifacts, &expected_source_ids)

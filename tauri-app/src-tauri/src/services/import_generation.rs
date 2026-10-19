@@ -1,17 +1,18 @@
 //! import_generation —— 导入生成契约类型（对齐 `src/shared/import-generation.ts`）。
 //!
-//! 本波只移植 `ImportGenerationSlot` / `ImportGenerationContext` 两个类型
-//! （含上下文内联章节类型 `ImportGenerationChapter`）。
+//! 本模块只承载**上下文契约类型**（`ImportGenerationSlot` /
+//! `ImportGenerationContext`，含内联章节类型 `ImportGenerationChapter`）。
 //!
-//! 未移植项（依赖尚未迁移的生成运行时类型，后续批次收口）：
-//! - `ImportGenerationRecovery`（依赖 `MainGenerationRunView`）；
-//! - `ImportGenerationChannels`（依赖 `MainGenerationRunHandle` /
-//!   `MainGenerationExecuteReceipt` / `GenerationTask` /
-//!   `ImportRunExecutionAuthority`）。
+//! 两个频道已实现：`commands::generation::import_generation_read` /
+//! `import_generation_execute`（owner 侧 `read_import_generation` /
+//! 执行面委托，经 `lib.rs` 注册）。`ImportGenerationRecovery` 与
+//! `ImportGenerationChannels` 只作为 TS 侧的**读出形状**：与其它生成类
+//! 命令一致，Rust 侧直接以 `serde_json::Value` 返回运行视图，不声明
+//! 平行结构体。
 //!
 //! 偏差说明：`prompts: Record<string, PromptTemplate>` 的
-//! `PromptTemplate` 类型尚未移植（`prompt-templates` 服务未迁移），
-//! 暂以 `serde_json::Value` 承载，字段名与上游逐字对齐。
+//! `PromptTemplate` 在 Rust 侧为 `prompt_system_role::PromptTemplate`；
+//! 该字段按上游形状以 `serde_json::Value` 承载，字段名逐字对齐。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -25,6 +26,17 @@ pub enum ImportGenerationSlotStage {
     Global,
     Style,
     Blueprints,
+}
+
+impl ImportGenerationSlotStage {
+    /// 数据库 `import_run_receipts.stage` 的取值（对齐 TS 字面量联合）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Style => "style",
+            Self::Blueprints => "blueprints",
+        }
+    }
 }
 
 /// 持久导入检查点，绝不是渲染层选择的生成根。
@@ -48,7 +60,7 @@ pub struct ImportGenerationChapter {
 }
 
 /// 导入生成的冻结上下文（不可变素材，非渲染层采样）。
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportGenerationContext {
     pub slot: ImportGenerationSlot,
@@ -58,6 +70,44 @@ pub struct ImportGenerationContext {
     pub core: ProjectCoreData,
     pub prompts: Map<String, Value>,
     pub chapters: Vec<ImportGenerationChapter>,
+}
+
+/// 基线 `ImportGeneration.assertMutable`：导入槽位的效应已封存时不再可写。
+///
+/// 非导入来源的运行（`importSlot` 缺失）直接放行；导入来源必须带
+/// 上下文与一致的槽位键，否则 `GENERATION_IMPORT_CONTEXT_REQUIRED`。
+pub(crate) fn assert_import_mutable(
+    conn: &rusqlite::Connection,
+    run: &crate::repositories::generation_run_repository::DurableGenerationRun,
+) -> Result<(), String> {
+    let manifest = &run.binding.source_manifest;
+    if manifest
+        .get("importSlot")
+        .is_none_or(serde_json::Value::is_null)
+    {
+        return Ok(());
+    }
+    let context: ImportGenerationContext = manifest
+        .get("importContext")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .ok_or_else(|| "GENERATION_IMPORT_CONTEXT_REQUIRED".to_string())?;
+    let slot_key =
+        crate::services::import_generation_source::import_generation_slot_key(&context.slot)?;
+    if manifest.get("importSlotKey").and_then(Value::as_str) != Some(slot_key.as_str()) {
+        return Err("GENERATION_IMPORT_CONTEXT_REQUIRED".to_string());
+    }
+    let receipt = crate::repositories::import_run_repository::get_effect_receipt(
+        conn,
+        &context.slot.run_id,
+        context.slot.stage.as_str(),
+        &context.slot.batch_id,
+    )?;
+    if receipt.is_some() {
+        return Err("GENERATION_IMPORT_EFFECT_SEALED".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

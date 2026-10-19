@@ -257,9 +257,10 @@ END;
 /// - `import_legacy_identity_bridge`：旧库身份桥密文（5 列，便携策略码 `X`，**导出时中和**）；
 /// - `import_effect_ledger`：导入效应台账 + 状态索引（`electron/migrations/m04-import-effect-ledger.ts`，10 列）。
 ///
-/// 三张表承载的功能频道（导入效应台账 / 旧库身份桥 / 字数指标迁移）尚未迁移到 Tauri，
-/// 故当前恒为空表；先建表是为了让便携导出/恢复的 `assertPortableSourceSchema` 与基线同口径 ——
-/// 缺失字段会被 fail-closed 拒绝。
+/// 三张表在基线里由 Electron 内部服务写入，没有对应 IPC 频道；Tauri 侧
+/// 不建旧库解析路径（见 `import/mod.rs` D3 决策），但便携导出/恢复的
+/// `assertPortableSourceSchema` 必须与基线同口径，缺失列会被 fail-closed
+/// 拒绝，故仍按基线逐字建表（正常项目中保持为空）。
 pub const CREATE_PORTABLE_ALIGNED_TABLES: &str = r#"
 CREATE TABLE IF NOT EXISTS text_metric_versions (
   metric TEXT PRIMARY KEY,

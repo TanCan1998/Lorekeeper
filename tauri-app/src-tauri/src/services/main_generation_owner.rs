@@ -63,7 +63,8 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::repositories::generation_run_repository::{
     ChapterRange, DurableGenerationRun, FrozenInputFingerprint, GenerationExecutionReceipt,
     GenerationRunRepository, GenerationTransportDiagnostics, MainGenerationRunHandle,
-    PhysicalAttempt, PlotOutlineProgress, RootBudget, RunBinding, RunView,
+    PhysicalAttempt, PlotOutlineCursor, PlotOutlineProgress, PlotOutlineRange, RootBudget,
+    RunBinding, RunView,
 };
 
 use crate::security::{self, ProjectSessionContext};
@@ -1333,10 +1334,10 @@ impl MainGenerationOwner {
     /// （main-generation-owner.ts:1320-1327）：`generation:compose-visible`
     /// 频道——按可见制品 ID 列表合成可见正文（追加/草稿可见文本算法）。
     ///
-    /// ⚠️ 基线在 `requireRun(handle, true)` 前还执行 5 个可变性守卫
+    /// 基线在 `requireRun(handle, true)` 前执行 5 个可变性守卫
     /// （`reviewRevisions` / `imports` / `finalizations` / `graphs` /
-    /// `legacyRosters` 的 `assertMutable`，:1322-1326）——对应服务尚未迁移，
-    /// 按 B2 范围此处**刻意省略**（B3 写面收口时补齐）。
+    /// `legacyRosters` 的 `assertMutable`，:1322-1326）——五个服务均已迁移，
+    /// 此处逐条接线：已封存的效果不得再合成新正文。
     pub fn compose_visible(
         &self,
         conn: &Connection,
@@ -1356,6 +1357,33 @@ impl MainGenerationOwner {
         {
             return Err(mutating_error("GENERATION_AGENT_CONTROL_IMMUTABLE"));
         }
+        // 基线 :1322-1326 五个子生成器可变性守卫：已封存效果不得再合成新正文。
+        self.review_revision_service()
+            .assert_mutable(conn, &first.run_id)?;
+        crate::services::import_generation::assert_import_mutable(conn, &first)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        crate::services::finalization_generation::assert_finalization_mutable(
+            conn,
+            &self.repository,
+            &self.session.project_id,
+            &first,
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        crate::services::graph_generation::GraphGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+        )
+        .assert_mutable(&first)
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        crate::services::legacy_roster_generation::LegacyRosterGeneration::new(
+            conn,
+            self.repository.clone(),
+            &self.session.project_id,
+            &self.character_proposal_service(conn),
+        )
+        .assert_mutable(&first)
+        .map_err(|error| mutating_error(map_generation_error(&error)))?;
         let run = self.require_run(conn, handle, true)?;
         let budget = self
             .repository
@@ -3766,10 +3794,8 @@ impl MainGenerationOwner {
     /// `GENERATION_BATCH_INTENT_MAIN_ONLY`）创建批量根运行，
     /// 再经 `readBatch(run.handle.runId)` 返回批次进度快照。
     ///
-    /// ⚠️ 执行依赖型：基线 :1282 的 `begin` 创建核心（策略构造器
-    /// / 模型租约 / buildBinding / service.open）随 G4-6b-1 在
-    /// 策略构造点 fail-closed——合法请求当前收到「尚未迁移」
-    /// 拒绝而非批次进度（命令层收敛为 `GENERATION_REQUEST_FAILED`）；
+    /// `begin` 创建核心（策略构造器 / 模型租约 / buildBinding /
+    /// service.open）已迁移，故批量根运行会真实创建并返回批次进度；
     /// 意图准入（`GENERATION_BATCH_INTENT_INVALID`）与 begin
     /// 选择形状校验的错误码与基线逐字一致。
     pub fn begin_batch(&self, conn: &Connection, request: &Value) -> Result<Value, String> {
@@ -4220,6 +4246,487 @@ impl MainGenerationOwner {
             return Err(mutating_error("GENERATION_FORMAL_RANGE_NOT_SELECTED"));
         }
         self.assert_binding_current(conn, &run.binding)
+    }
+
+    // =====================================================================
+    // 作者恢复写入（大纲 / 目录蓝图）—— 对齐 main-generation-owner.ts:683-836
+    // =====================================================================
+
+    /// 基线 `plotOutlineTargetCurrent`（main-generation-owner.ts:683-697）。
+    ///
+    /// `Ok(false)` = 当前大纲不是该目标；`Err` = 冻结源已漂移
+    /// （基线在调用侧统一按 `source-changed` 处理）。
+    pub(crate) fn plot_outline_target_current(
+        &self,
+        conn: &Connection,
+        run: &DurableGenerationRun,
+        outline: &PlotOutlineProgress,
+        target: &str,
+    ) -> Result<bool, String> {
+        let Some(row) = crate::repositories::project_core_repository::source_row(conn)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+        else {
+            return Ok(false);
+        };
+        if row.get("synopsis").and_then(Value::as_str) != Some(target) {
+            return Ok(false);
+        }
+        // 基线 `{ ...core, synopsis: outline.sourceExpected.synopsis }`：
+        // 用冻结期望值替换当前值后与开跑时冻结的来源逐字段比对。
+        let mut core = row;
+        core.insert(
+            "synopsis".to_string(),
+            json!(outline.source_expected.synopsis),
+        );
+        let origin = run
+            .binding
+            .source_manifest
+            .get("plotOutlineSource")
+            .and_then(|source| source.get("core"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if Value::Object(core) != origin {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        let current = self.rebuild_binding(conn, &run.binding)?;
+        let refs = |binding: &RunBinding| -> Value {
+            Value::Array(
+                binding
+                    .source_refs
+                    .iter()
+                    .filter(|item| item.source_id != "project-core:main")
+                    .map(|item| {
+                        let mut value = serde_json::to_value(item).unwrap_or(Value::Null);
+                        if let Some(object) = value.as_object_mut() {
+                            object.remove("epoch");
+                        }
+                        value
+                    })
+                    .collect(),
+            )
+        };
+        let unchanged_fingerprint = |binding: &RunBinding| -> Value {
+            let mut value = serde_json::to_value(&binding.fingerprint).unwrap_or(Value::Null);
+            if let Some(object) = value.as_object_mut() {
+                object.remove("authorGuidanceHash");
+                object.remove("contextSnapshotHash");
+            }
+            value
+        };
+        if current.project_id != run.binding.project_id
+            || current.source_manifest != run.binding.source_manifest
+            || refs(&current) != refs(&run.binding)
+            || unchanged_fingerprint(&current) != unchanged_fingerprint(&run.binding)
+        {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        Ok(true)
+    }
+
+    /// 基线 `projectGenerationInFlight()`（main-generation-owner.ts:698）：
+    /// 已持久的在途尝试 **或** 执行面仍挂着的同批请求。
+    fn project_generation_in_flight(&self, conn: &Connection) -> Result<bool, String> {
+        if self.run_service.has_pending_execution() {
+            return Ok(true);
+        }
+        crate::commands::generation::project_generation_in_flight(conn)
+    }
+
+    /// 基线 `assertSynopsisCommit`（main-generation-owner.ts:837-848）：
+    /// 生成中的大纲提交必须先与本运行可见合成一致且来源未漂移；
+    /// 已写入同一份大纲时返回 `true`（幂等，不再重复提交）。
+    pub(crate) fn assert_synopsis_commit(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        synopsis: &str,
+        expected: &crate::repositories::project_core_repository::ProjectCoreSynopsisExpected,
+    ) -> Result<bool, String> {
+        let run = self.require_run(conn, handle, false)?;
+        // 基线 `Object.fromEntries(...)` 的比较语义：两侧同形序列化后深比较。
+        let read_outline = |conn: &Connection| {
+            self.repository
+                .read_plot_outline(conn, &run.run_id, None)
+                .map_err(|error| mutating_error(map_generation_error(&error)))
+        };
+        let outline = read_outline(conn)?;
+        self.repository
+            .assert_plot_outline_writable(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if let Some(outline) = &outline {
+            let rendered = outline
+                .composition
+                .as_ref()
+                .map(|composition| {
+                    crate::services::plot_outline_recovery_contract::render_plot_outline_range(
+                        &composition.text,
+                        &outline.range,
+                        &outline.source_expected,
+                    )
+                })
+                .transpose()
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+            let expected_matches = serde_json::to_value(expected).ok()
+                == serde_json::to_value(&outline.source_expected).ok();
+            if !matches!(outline.cursor, PlotOutlineCursor::Complete)
+                || rendered.as_deref() != Some(synopsis)
+                || !expected_matches
+            {
+                return Err(mutating_error("GENERATION_PLOT_OUTLINE_COMMIT_INVALID"));
+            }
+            if let Some(rendered) = rendered.as_deref() {
+                if self.plot_outline_target_current(conn, &run, outline, rendered)? {
+                    return Ok(true);
+                }
+            }
+        }
+        self.assert_sources_current(conn, handle, None)?;
+        Ok(false)
+    }
+
+    /// 基线 `commitPlotOutlineAuthorEdit`（main-generation-owner.ts:778-801）：
+    /// 作者保存恢复稿——幂等回执重放 → 前缀校验 → 在途/源现状门禁 →
+    /// 台账提交 → 记录回执，全部在同一事务内完成。
+    pub(crate) fn commit_plot_outline_author_edit(
+        &self,
+        conn: &Connection,
+        request: &crate::repositories::project_core_repository::ProjectCoreSynopsisCommitRequest,
+    ) -> Result<crate::repositories::generation_run_repository::PlotOutlineAuthorEditReceipt, String>
+    {
+        if conn.is_autocommit() {
+            return Err(mutating_error(
+                "GENERATION_PLOT_OUTLINE_TRANSACTION_REQUIRED",
+            ));
+        }
+        let author = request
+            .author_recovery
+            .as_ref()
+            .filter(|value| value.is_object())
+            .ok_or_else(|| mutating_error("GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID"))?;
+        if request
+            .generation_run_handle
+            .as_ref()
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err(mutating_error(
+                "GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID",
+            ));
+        }
+        let source_handle = author
+            .get("sourceHandle")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID"))?;
+        if author.get("leaseEpoch").and_then(Value::as_str) != Some(self.session.lease_id.as_str())
+        {
+            return Err(mutating_error("GENERATION_EPOCH_STALE"));
+        }
+        let operation_id = author
+            .get("operationId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| mutating_error("GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID"))?;
+        let committed_range: PlotOutlineRange = author
+            .get("committedRange")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .ok_or_else(|| mutating_error("GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID"))?;
+        let run = self.require_run(conn, &source_handle, false)?;
+        let repository = &self.repository;
+        let outline = repository
+            .read_plot_outline(conn, &run.run_id, None)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .ok_or_else(|| mutating_error("GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID"))?;
+        if serde_json::to_value(&request.expected).ok()
+            != serde_json::to_value(&outline.source_expected).ok()
+        {
+            return Err(mutating_error(
+                "GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID",
+            ));
+        }
+        let receipt = repository
+            .plot_outline_author_edit_receipt(
+                conn,
+                &run.run_id,
+                &operation_id,
+                &committed_range,
+                &text_hash(&request.synopsis),
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let saved = repository
+            .read_plot_outline_author_edit(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if let Some(saved) = saved {
+            if serde_json::to_value(&saved).ok() != serde_json::to_value(&receipt).ok() {
+                return Err(mutating_error(
+                    "GENERATION_PLOT_OUTLINE_AUTHOR_RECEIPT_CONFLICT",
+                ));
+            }
+            if !self.plot_outline_target_current(conn, &run, &outline, &request.synopsis)? {
+                return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+            }
+            let mut replay = saved;
+            replay.idempotent = true;
+            return Ok(replay);
+        }
+        if crate::services::plot_outline_recovery_contract::plot_outline_source_invalid(&outline) {
+            return Err(mutating_error("GENERATION_PLOT_OUTLINE_PREFIX_INVALID"));
+        }
+        if !crate::services::plot_outline_recovery_contract::valid_plot_outline_author_prefix(
+            &request.synopsis,
+            &outline,
+            &committed_range,
+        )
+        .map_err(|error| mutating_error(map_generation_error(&error)))?
+        {
+            return Err(mutating_error(
+                "GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID",
+            ));
+        }
+        repository
+            .assert_plot_outline_writable(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if self.project_generation_in_flight(conn)? {
+            return Err(mutating_error("GENERATION_PLOT_OUTLINE_AUTHOR_IN_FLIGHT"));
+        }
+        if !self.binding_is_current(conn, &run.binding) {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        let committed =
+            crate::repositories::project_core_repository::commit_synopsis(conn, request)
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if !committed {
+            return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+        }
+        repository
+            .record_plot_outline_author_edit(conn, &receipt)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        Ok(receipt)
+    }
+
+    /// 基线 `commitBlueprintAuthorEdit`（main-generation-owner.ts:802-836）：
+    /// 作者保存恢复蓝图——重放已存回执 → 剩余范围/在途门禁 → 范围提交 →
+    /// 记录作者回执，全部在同一事务内完成。
+    pub(crate) fn commit_blueprint_author_edit(
+        &self,
+        conn: &Connection,
+        request: &crate::repositories::blueprint_repository::BlueprintCommitRangeRequest,
+    ) -> Result<crate::repositories::blueprint_repository::BlueprintCommitRangeReceipt, String>
+    {
+        if conn.is_autocommit() {
+            return Err(mutating_error("GENERATION_DIRECTORY_TRANSACTION_REQUIRED"));
+        }
+        let author = request
+            .author_recovery
+            .as_ref()
+            .filter(|value| value.is_object())
+            .ok_or_else(|| mutating_error("GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID"))?;
+        if request.generation_run_handle.is_some()
+            || request.mode != crate::repositories::blueprint_repository::COMMIT_MODE_REPLACE_RANGE
+        {
+            return Err(mutating_error("GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID"));
+        }
+        let source_handle = author
+            .get("sourceHandle")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .ok_or_else(|| mutating_error("GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID"))?;
+        if author.get("leaseEpoch").and_then(Value::as_str) != Some(self.session.lease_id.as_str())
+        {
+            return Err(mutating_error("GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID"));
+        }
+        let run = self.require_run(conn, &source_handle, false)?;
+        let repository = &self.repository;
+        repository
+            .assert_blueprint_recovery_writable(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let continuation =
+            crate::commands::generation::planning_continuation(conn, self, repository, &run)?
+                .ok_or_else(|| mutating_error("GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID"))?;
+        let oversized = serde_json::to_string(&request.blueprints)
+            .map(|text| text.len() > 8 * 1024 * 1024)
+            .unwrap_or(true);
+        if run
+            .binding
+            .source_manifest
+            .get("operation")
+            .and_then(Value::as_str)
+            != Some("chapter-blueprint-directory")
+            || request.start_chapter < 1
+            || request.end_chapter < request.start_chapter
+            || request.end_chapter - request.start_chapter >= 10_000
+            || oversized
+        {
+            return Err(mutating_error("GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID"));
+        }
+        let chapters: Vec<i64> = (request.start_chapter..=request.end_chapter).collect();
+        let blueprints =
+            crate::services::blueprint_author_payload::normalize_blueprint_author_payload(
+                request.blueprints.clone(),
+                &chapters,
+            )
+            .map_err(|error| mutating_error(&error))?;
+        let mut commit_request = request.clone();
+        commit_request.blueprints = blueprints;
+        commit_request.author_recovery = None;
+        let saved = repository
+            .read_blueprint_author_edit(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        if let Some(saved) = &saved {
+            if saved.operation_id != request.operation_id
+                || saved.committed_range.from != request.start_chapter
+                || saved.committed_range.to != request.end_chapter
+            {
+                return Err(mutating_error(
+                    "GENERATION_BLUEPRINT_AUTHOR_RECEIPT_CONFLICT",
+                ));
+            }
+            if continuation.state == "source-changed" {
+                return Err(mutating_error("GENERATION_SOURCE_CHANGED"));
+            }
+            let mut receipt =
+                crate::repositories::blueprint_repository::commit_range_in_existing_transaction(
+                    conn,
+                    &commit_request,
+                    None,
+                )
+                .map_err(|error| mutating_error(map_generation_error(&error)))?;
+            receipt.author_edit = Some(saved.clone());
+            return Ok(receipt);
+        }
+        repository
+            .assert_plot_outline_writable(conn, &run.run_id)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let allowed = continuation.state == "ready"
+            && continuation.remaining_range.is_some_and(|remaining| {
+                request.start_chapter == remaining.from && request.end_chapter <= remaining.to
+            });
+        if !allowed {
+            let code = format!(
+                "GENERATION_BLUEPRINT_AUTHOR_{}",
+                continuation.state.to_uppercase().replace('-', "_")
+            );
+            return Err(mutating_error(&code));
+        }
+        let assert_ready = || {
+            let next =
+                crate::commands::generation::planning_continuation(conn, self, repository, &run);
+            match next {
+                Ok(Some(next)) if next.state == "ready" => {}
+                _ => panic!("蓝图作者恢复续作状态已变化，已拒绝提交"),
+            }
+        };
+        let mut receipt =
+            crate::repositories::blueprint_repository::commit_range_in_existing_transaction(
+                conn,
+                &commit_request,
+                Some(&assert_ready),
+            )
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        let requested: ChapterRange = run
+            .binding
+            .source_manifest
+            .get("authorInputs")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("id").and_then(Value::as_str) == Some("directory:requested-range")
+                })
+            })
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .and_then(|text| serde_json::from_str(text).ok())
+            .ok_or_else(|| mutating_error("GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID"))?;
+        let author_edit =
+            crate::repositories::generation_run_repository::BlueprintAuthorEditReceipt {
+                kind: "blueprint-author-edit".to_string(),
+                operation_id: request.operation_id.clone(),
+                source_handle: serde_json::from_value(source_handle)
+                    .map_err(|error| mutating_error(&error.to_string()))?,
+                requested_range: PlotOutlineRange {
+                    from: requested.start_chapter,
+                    to: requested.end_chapter,
+                },
+                committed_range: PlotOutlineRange {
+                    from: request.start_chapter,
+                    to: request.end_chapter,
+                },
+                remaining_range: if request.end_chapter < requested.end_chapter {
+                    Some(PlotOutlineRange {
+                        from: request.end_chapter + 1,
+                        to: requested.end_chapter,
+                    })
+                } else {
+                    None
+                },
+                payload_hash: receipt.payload_hash.clone(),
+            };
+        repository
+            .record_blueprint_author_edit(conn, &author_edit)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        receipt.author_edit = Some(author_edit);
+        Ok(receipt)
+    }
+
+    /// 基线 `recordDirectoryCommit`（main-generation-owner.ts:1319-1331）：
+    /// 目录范围提交后登记进度；同 operationId 重放只校验并回读既有进度。
+    pub(crate) fn record_directory_commit(
+        &self,
+        conn: &Connection,
+        handle: &Value,
+        requested: &ChapterRange,
+        receipt: &crate::repositories::blueprint_repository::BlueprintCommitRangeReceipt,
+    ) -> Result<crate::repositories::generation_run_repository::DirectoryGenerationProgress, String>
+    {
+        let run = self.require_run(conn, handle, true)?;
+        let policy = read_main_generation_policy(run.binding.source_manifest.get("policy"))?;
+        if policy.get("version").and_then(Value::as_str) == Some("s07-capacity-v2")
+            && receipt.mode != crate::repositories::blueprint_repository::COMMIT_MODE_REPLACE_RANGE
+        {
+            return Err(mutating_error(
+                "GENERATION_DIRECTORY_RANGE_REPLACE_REQUIRED",
+            ));
+        }
+        let existing = self
+            .repository
+            .list_directory_progress(conn)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?
+            .into_iter()
+            .find(|item| item.operation_id == receipt.operation_id);
+        if let Some(existing) = existing {
+            if existing.payload_hash != receipt.payload_hash
+                || existing.source_handle.run_id != run.run_id
+                || existing.requested_range != *requested
+            {
+                return Err(mutating_error("GENERATION_DIRECTORY_PROGRESS_CONFLICT"));
+            }
+            return Ok(existing);
+        }
+        let progress =
+            crate::repositories::generation_run_repository::DirectoryGenerationProgress {
+                operation_id: receipt.operation_id.clone(),
+                payload_hash: receipt.payload_hash.clone(),
+                source_handle: serde_json::from_value(handle.clone())
+                    .map_err(|error| mutating_error(&error.to_string()))?,
+                requested_range: *requested,
+                committed_range: ChapterRange {
+                    start_chapter: receipt.start_chapter,
+                    end_chapter: receipt.end_chapter,
+                },
+                remaining_range: if receipt.end_chapter < requested.end_chapter {
+                    Some(ChapterRange {
+                        start_chapter: receipt.end_chapter + 1,
+                        end_chapter: requested.end_chapter,
+                    })
+                } else {
+                    None
+                },
+                continuation_handle: None,
+                author_inputs: None,
+            };
+        self.repository
+            .record_directory_progress(conn, &progress)
+            .map_err(|error| mutating_error(map_generation_error(&error)))?;
+        Ok(progress)
     }
 
     /// 基线 `assertSourcesCurrent`（review-revision 提交路径注入的闭包）：

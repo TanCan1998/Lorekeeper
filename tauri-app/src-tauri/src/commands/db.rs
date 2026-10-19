@@ -158,28 +158,143 @@ pub(crate) fn project_core_update_inner(
     }
 }
 
+/// `db:project-core-synopsis-commit` 的 IPC 信封
+/// （对齐 `{ success, receipt?: PlotOutlineAuthorEditReceipt, error? }`）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCoreSynopsisCommitResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt:
+        Option<crate::repositories::generation_run_repository::PlotOutlineAuthorEditReceipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ProjectCoreSynopsisCommitResult {
+    fn ok(
+        receipt: Option<
+            crate::repositories::generation_run_repository::PlotOutlineAuthorEditReceipt,
+        >,
+    ) -> Self {
+        Self {
+            success: true,
+            receipt,
+            error: None,
+        }
+    }
+
+    fn failed(error: String) -> Self {
+        Self {
+            success: false,
+            receipt: None,
+            error: Some(if error.starts_with("Error: ") {
+                error
+            } else {
+                mutating_error(error)
+            }),
+        }
+    }
+}
+
 pub(crate) fn project_core_synopsis_commit_inner(
     state: &AppState,
     request: &project_core::ProjectCoreSynopsisCommitRequest,
     expected_project_path: &str,
     session: Option<&ProjectSessionContext>,
-) -> SimpleResult {
-    let outcome = guard_read(state, expected_project_path, session)
-        .and_then(|()| state.with_project_db(|conn| project_core::commit_synopsis(conn, request)));
+) -> ProjectCoreSynopsisCommitResult {
+    if let Err(error) = guard_read(state, expected_project_path, session) {
+        return ProjectCoreSynopsisCommitResult::failed(error);
+    }
+    let session_context = session.expect("guard_read 已校验会话存在");
+    // 分支①（基线 db-controller.ts:199-203）：`Object.hasOwn(request, 'authorRecovery')`
+    // —— **键存在即走恢复写入**（含显式 null），绝不静默回落普通提交。
+    if request.author_recovery.is_some() {
+        let cache = &state.generation_owners;
+        let mut guard = match cache
+            .authorized_owner(session_context, state.active_project_snapshot().as_ref())
+        {
+            Ok(guard) => guard,
+            // authorized_owner 的错误已是 MUTATING 信封形态。
+            Err(error) => {
+                return ProjectCoreSynopsisCommitResult {
+                    success: false,
+                    receipt: None,
+                    error: Some(error),
+                }
+            }
+        };
+        let owner = &*guard.owner();
+        let outcome = state.with_project_db(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|error| mutating_error(error.to_string()))?;
+            let receipt = owner.commit_plot_outline_author_edit(&tx, request)?;
+            tx.commit()
+                .map_err(|error| mutating_error(error.to_string()))?;
+            Ok(receipt)
+        });
+        return match outcome {
+            Ok(receipt) => ProjectCoreSynopsisCommitResult::ok(Some(receipt)),
+            Err(error) => ProjectCoreSynopsisCommitResult::failed(error),
+        };
+    }
+    // 分支②（基线 :204-214）：普通提交；带 generationRunHandle 时先做
+    // `assertSynopsisCommit` 幂等判定，再在子代效应内提交。
+    let handle = request
+        .generation_run_handle
+        .as_ref()
+        .filter(|value| !value.is_null())
+        .cloned();
+    let outcome = match handle {
+        None => state
+            .with_project_db(|conn| project_core::commit_synopsis(conn, request))
+            .map_err(mutating_error),
+        Some(handle) => {
+            let cache = &state.generation_owners;
+            let mut guard = match cache
+                .authorized_owner(session_context, state.active_project_snapshot().as_ref())
+            {
+                Ok(guard) => guard,
+                Err(error) => {
+                    return ProjectCoreSynopsisCommitResult {
+                        success: false,
+                        receipt: None,
+                        error: Some(error),
+                    }
+                }
+            };
+            let owner = &*guard.owner();
+            state.with_project_db(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| mutating_error(error.to_string()))?;
+                let committed = owner.with_agent_child_effect(&tx, &handle, || {
+                    if owner.assert_synopsis_commit(
+                        &tx,
+                        &handle,
+                        &request.synopsis,
+                        &request.expected,
+                    )? {
+                        return Ok(true);
+                    }
+                    project_core::commit_synopsis(&tx, request).map_err(mutating_error)
+                })??;
+                tx.commit()
+                    .map_err(|error| mutating_error(error.to_string()))?;
+                Ok(committed)
+            })
+        }
+    };
     match outcome {
         // 快照冲突是基线**显式返回**的裸文案（不经过 `String(err)` 包装）
-        Ok(false) => SimpleResult {
+        Ok(false) => ProjectCoreSynopsisCommitResult {
             success: false,
+            receipt: None,
             error: Some(project_core::SYNOPSIS_CONFLICT_MESSAGE.to_string()),
         },
-        Ok(true) => SimpleResult {
-            success: true,
-            error: None,
-        },
-        Err(error) => SimpleResult {
-            success: false,
-            error: Some(mutating_error(error)),
-        },
+        Ok(true) => ProjectCoreSynopsisCommitResult::ok(None),
+        Err(error) => ProjectCoreSynopsisCommitResult::failed(error),
     }
 }
 
@@ -350,7 +465,7 @@ pub fn db_project_core_synopsis_commit(
     request: project_core::ProjectCoreSynopsisCommitRequest,
     expected_project_path: String,
     project_session: Option<ProjectSessionContext>,
-) -> SimpleResult {
+) -> ProjectCoreSynopsisCommitResult {
     project_core_synopsis_commit_inner(
         state.inner(),
         &request,
@@ -834,13 +949,43 @@ pub(crate) fn blueprint_commit_range_inner(
     session: Option<&ProjectSessionContext>,
 ) -> BlueprintCommitRangeResult {
     // 基线 db-controller.ts:554-578 三分支：
-    // ① `authorRecovery` → `commitGenerationBlueprintAuthorEdit` —— 作者编辑
-    //    提交未迁移（Rust 侧无对应仓储路径），本分支维持现状：请求按普通
-    //    范围提交处理（基线 `authorRecovery` 字段经 serde 默认忽略），
-    //    待作者编辑域迁移后补齐分支判定；
-    // ② 无 `generationRunHandle` → 直提（保持现状）；
+    // ① `authorRecovery` → `commitGenerationBlueprintAuthorEdit`：作者保存
+    //    恢复稿，先按作者载荷合同重新校验再在事务内提交并记录回执；
+    // ② 无 `generationRunHandle` → 直提；
     // ③ 有 `generationRunHandle` → 范围归约 + GENERATION_DIRECTORY_RANGE_INVALID
-    //    校验 + 幂等分支 + 源断言闭包（见 `blueprint_commit_range_with_generation`）。
+    //    校验 + 幂等分支 + 源断言闭包 + 目录进度登记
+    //    （见 `blueprint_commit_range_with_generation`）。
+    if request.author_recovery.is_some() {
+        if let Err(error) = guard_read(state, expected_project_path, session) {
+            return blueprint_commit_range_result(Err(error));
+        }
+        let session_context = session.expect("guard_read 已校验会话存在");
+        let cache = &state.generation_owners;
+        let mut guard = match cache
+            .authorized_owner(session_context, state.active_project_snapshot().as_ref())
+        {
+            Ok(guard) => guard,
+            // authorized_owner 的错误已是 MUTATING 信封形态。
+            Err(error) => {
+                return BlueprintCommitRangeResult {
+                    success: false,
+                    receipt: None,
+                    error: Some(error),
+                }
+            }
+        };
+        let owner = &*guard.owner();
+        let outcome = state.with_project_db(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|error| mutating_error(error.to_string()))?;
+            let receipt = owner.commit_blueprint_author_edit(&tx, request)?;
+            tx.commit()
+                .map_err(|error| mutating_error(error.to_string()))?;
+            Ok(receipt)
+        });
+        return blueprint_commit_range_result(outcome);
+    }
     if request.generation_run_handle.is_none() {
         // 分支②（基线 :559）：无 generationRunHandle → 直提
         let outcome = guard_read(state, expected_project_path, session).and_then(|()| {
@@ -859,12 +1004,10 @@ pub(crate) fn blueprint_commit_range_inner(
 /// - **幂等重放**（操作已存在）→ `commit()`：仓储层在断言钩子前早退
 ///   （"An acknowledged operation is read-only on replay"），源断言闭包
 ///   接线但重放时不触发，与基线一致；基线 `commit()` 末步的
-///   `recordGenerationDirectoryCommit`（generation-run-service 域）未迁移
-///   → 回执 `generationProgress` 字段占位省略（Rust 回执无对应字段）；
+///   回执 `generationProgress` 与本事务内的目录进度登记一并返回；
 /// - **新提交** → 基线经 `withGenerationAgentChildEffect(handle, commit)`
-///   包装（agent-generation 服务域，G4-7）未迁移 → 按 G4-6c-1 既定
-///   **fail-closed**：显式拒绝，禁止静默走直提路径（静默直提会跳过
-///   子代效应前后快照与 `agentSourceTransition` 记录，与基线语义不一致）。
+///   包装：子代效应前后快照与 `agentSourceTransition` 由 agent 服务在
+///   同一事务内记录；失败即回滚，不静默走直提路径。
 fn blueprint_commit_range_with_generation(
     state: &AppState,
     request: &blueprints::BlueprintCommitRangeRequest,
@@ -926,27 +1069,42 @@ fn blueprint_commit_range_with_generation(
         }
     };
     let outcome = state.with_project_db(|conn| {
+        // 基线 :572-576 整体在一个 immediate 事务内：范围提交、子代效应与
+        // 目录进度登记必须原子，否则回执会声明未登记的进度。
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|error| mutating_error(error.to_string()))?;
         // 源断言闭包（基线 :571
         // `() => assertGenerationSourcesCurrent(request.generationRunHandle!, requested)`）：
         // 事务内生效前调用，失败以 panic 中断提交（M8 约定：仓储钩子闭包无返回通道）。
         let assert_sources = || {
             owner
-                .assert_sources_current(conn, &handle_value, Some(&requested))
+                .assert_sources_current(&tx, &handle_value, Some(&requested))
                 .unwrap_or_else(|error| panic!("生成源当前性断言失败：{error}"));
         };
         // 基线 :572-573 事务结构（见方法头注）
-        match blueprints::get_committed_range_operation(conn, &request.operation_id)? {
-            Some(_) => blueprints::commit_range(conn, request, Some(&assert_sources)),
-            // 基线 :572-573 新提交路径 withGenerationAgentChildEffect(handle,
-            // commit) → G4-7 结构接线：经 owner.with_agent_child_effect 包装
-            // （主体 fail-closed 占位——agent-generation 状态机未迁移，
-            // 错误码不变，禁止静默走直提路径）；随 agent-generation 域波次活化。
-            None => owner
-                .with_agent_child_effect(conn, &handle_value, || {
-                    blueprints::commit_range(conn, request, Some(&assert_sources))
-                })
-                .and_then(|outcome| outcome),
-        }
+        let mut receipt =
+            match blueprints::get_committed_range_operation(&tx, &request.operation_id)? {
+                Some(_) => blueprints::commit_range_in_existing_transaction(
+                    &tx,
+                    request,
+                    Some(&assert_sources),
+                )?,
+                // 基线 :572-573 新提交路径 withGenerationAgentChildEffect(handle, commit)
+                None => owner.with_agent_child_effect(&tx, &handle_value, || {
+                    blueprints::commit_range_in_existing_transaction(
+                        &tx,
+                        request,
+                        Some(&assert_sources),
+                    )
+                })??,
+            };
+        // 基线 commit() 末步（db-controller.ts:571-574）：登记目录进度。
+        let progress = owner.record_directory_commit(&tx, &handle_value, &requested, &receipt)?;
+        receipt.generation_progress = Some(progress);
+        tx.commit()
+            .map_err(|error| mutating_error(error.to_string()))?;
+        Ok(receipt)
     });
     blueprint_commit_range_result(outcome)
 }
@@ -4327,6 +4485,8 @@ mod tests {
         let (state, root, session) = activated_state("synopsis");
 
         let request = project_core::ProjectCoreSynopsisCommitRequest {
+            generation_run_handle: None,
+            author_recovery: None,
             synopsis: "新大纲".to_string(),
             expected: project_core::ProjectCoreSynopsisExpected {
                 synopsis: String::new(),
@@ -4586,6 +4746,7 @@ mod tests {
         chapters: &[i64],
     ) -> blueprints::BlueprintCommitRangeRequest {
         blueprints::BlueprintCommitRangeRequest {
+            author_recovery: None,
             generation_run_handle: None,
             generation_requested_range: None,
             mode: mode.to_string(),
@@ -4736,7 +4897,7 @@ mod tests {
         );
 
         // 分支③新提交：基线经 withGenerationAgentChildEffect(handle, commit)
-        // 包装（G4-10d 活化）——handle 指向的 run-1 在本夹具中不存在
+        // 包装——handle 指向的 run-1 在本夹具中不存在
         // （夹具仅初始化 project_core 台账），门禁链首环 require_run
         // 的运行读取失败 → GENERATION_RUN_MISSING，禁止静默走直提路径
         let fresh = blueprint_commit_range_inner(
@@ -4753,7 +4914,9 @@ mod tests {
 
         // 分支③幂等重放：操作已存在 → 直提（基线
         // getCommittedRangeOperation(operationId) ? commit()；仓储层在
-        // 断言钩子前早退，源断言闭包接线但重放时不触发）
+        // 断言钩子前早退，源断言闭包接线但重放时不触发）。基线 commit()
+        // 末步仍会 `recordDirectoryCommit`，故缺失运行仍报
+        // GENERATION_RUN_MISSING——不会因为幂等就跳过进度登记。
         let first = blueprint_commit_range_inner(
             &state,
             &commit_request("full", "op-replay", 1, 2, &[1, 2]),
@@ -4767,8 +4930,108 @@ mod tests {
             &root,
             Some(&session),
         );
-        assert!(replay.success, "重放应成功：{:?}", replay.error);
-        assert!(replay.receipt.expect("重放应返回回执").idempotent);
+        assert!(!replay.success);
+        assert_eq!(
+            replay.error.as_deref(),
+            Some("Error: GENERATION_RUN_MISSING")
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn synopsis_commit_author_recovery_requires_valid_owner_request_test() {
+        let (state, root, session) = activated_state("synopsis-author");
+        // 显式 null 也算「携带 authorRecovery」：绝不回落普通提交。
+        let mut request = project_core::ProjectCoreSynopsisCommitRequest {
+            generation_run_handle: None,
+            author_recovery: None,
+            synopsis: "新大纲".to_string(),
+            expected: project_core::ProjectCoreSynopsisExpected {
+                synopsis: String::new(),
+                premise: String::new(),
+                characters_arch: String::new(),
+                worldbuilding: String::new(),
+                genre: String::new(),
+                total_chapters: 100,
+                words_per_chapter: 3000,
+                writing_language: "zh-CN".to_string(),
+                plot_structure: "three_act".to_string(),
+                narrative_pov: "third_limited".to_string(),
+                global_guidance: String::new(),
+            },
+        };
+        request.author_recovery = Some(serde_json::Value::Null);
+        let null_author =
+            project_core_synopsis_commit_inner(&state, &request, &root, Some(&session));
+        assert!(!null_author.success);
+        assert_eq!(
+            null_author.error.as_deref(),
+            Some("Error: GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID")
+        );
+        assert!(null_author.receipt.is_none());
+
+        // 形状正确但运行不存在的恢复请求：门禁首环 require_run 失败，
+        // 不会把作者文本当成普通乐观并发提交写进台账。
+        request.author_recovery = Some(serde_json::json!({
+            "sourceHandle": {
+                "projectId": session.project_id,
+                "epoch": session.lease_id,
+                "rootActionId": "root-1",
+                "runId": "run-1",
+            },
+            "leaseEpoch": session.lease_id,
+            "operationId": "op-author-1",
+            "committedRange": { "from": 1, "to": 2 },
+        }));
+        let missing = project_core_synopsis_commit_inner(&state, &request, &root, Some(&session));
+        assert!(!missing.success);
+        assert_eq!(
+            missing.error.as_deref(),
+            Some("Error: GENERATION_RUN_MISSING")
+        );
+
+        cleanup(&root);
+    }
+
+    #[test]
+    fn blueprint_author_recovery_rejects_non_replace_range_without_touching_facts_test() {
+        let (state, root, session) = activated_state("blueprint-author");
+        let author = serde_json::json!({
+            "sourceHandle": {
+                "projectId": session.project_id,
+                "epoch": session.lease_id,
+                "rootActionId": "root-1",
+                "runId": "run-1",
+            },
+            "leaseEpoch": session.lease_id,
+        });
+        // 基线要求作者恢复只能是 replace-range：`full` 模式一律拒绝，
+        // 且拒绝发生在任何写入之前。
+        let mut request = commit_request("full", "op-author-full", 1, 2, &[1, 2]);
+        request.author_recovery = Some(author.clone());
+        let rejected = blueprint_commit_range_inner(&state, &request, &root, Some(&session));
+        assert!(!rejected.success);
+        assert_eq!(
+            rejected.error.as_deref(),
+            Some("Error: GENERATION_BLUEPRINT_AUTHOR_EDIT_INVALID")
+        );
+        assert!(blueprint_get_all_inner(&state, &root, Some(&session))
+            .unwrap()
+            .is_empty());
+
+        // replace-range 但运行不存在：门禁首环失败，蓝图仍为空。
+        let mut request = commit_request("replace-range", "op-author-1", 1, 2, &[1, 2]);
+        request.author_recovery = Some(author);
+        let missing = blueprint_commit_range_inner(&state, &request, &root, Some(&session));
+        assert!(!missing.success);
+        assert_eq!(
+            missing.error.as_deref(),
+            Some("Error: GENERATION_RUN_MISSING")
+        );
+        assert!(blueprint_get_all_inner(&state, &root, Some(&session))
+            .unwrap()
+            .is_empty());
 
         cleanup(&root);
     }

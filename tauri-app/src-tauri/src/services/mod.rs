@@ -108,8 +108,10 @@ pub mod generation_run_service;
 // B3-3：从 owner 的 dispatchProvider 抽出的进程内适配器。
 pub mod main_generation_dispatcher;
 
+pub(crate) mod blueprint_author_payload;
 pub mod builtin_writing_skills;
 pub(crate) mod main_generation_sources;
+pub(crate) mod plot_outline_recovery_contract;
 
 // ── B7 启动态子集：启动门禁（全局外观/皮肤状态 + 读回确认；命令层在 commands/startup.rs）──
 pub mod startup_gate;

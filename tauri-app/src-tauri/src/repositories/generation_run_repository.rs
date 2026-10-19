@@ -134,6 +134,8 @@ const GENERATION_COMPOSITION_OUTPUT_INVALID: &str = "GENERATION_COMPOSITION_OUTP
 const GENERATION_JSON_PARSE_ERROR: &str = "GENERATION_JSON_PARSE_ERROR";
 const GENERATION_PLANNING_HISTORY_READ_ONLY: &str = "GENERATION_PLANNING_HISTORY_READ_ONLY";
 const GENERATION_PLOT_OUTLINE_AUTHOR_SAVED: &str = "GENERATION_PLOT_OUTLINE_AUTHOR_SAVED";
+/// 蓝图事实被清空后，旧恢复稿只能读取，不能再写回。
+const GENERATION_BLUEPRINTS_CLEARED: &str = "GENERATION_BLUEPRINTS_CLEARED";
 const GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID: &str =
     "GENERATION_PLOT_OUTLINE_AUTHOR_EDIT_INVALID";
 const GENERATION_PLOT_OUTLINE_AUTHOR_RECEIPT_INVALID: &str =
@@ -2224,6 +2226,40 @@ impl GenerationRunRepository {
         if self.author_edited_root(conn, &self.get(conn, run_id)?.root_action_id)? {
             return Err(GENERATION_PLOT_OUTLINE_AUTHOR_SAVED.to_string());
         }
+        Ok(())
+    }
+
+    /// 基线 `assertBlueprintRecoveryWritable`：已清空或损坏的目录恢复不得再写。
+    /// 清空标记来自 `clear` 系列事实收敛（`$blueprintRetirement`）。
+    pub fn assert_blueprint_recovery_writable(
+        &self,
+        conn: &Connection,
+        run_id: &str,
+    ) -> Result<(), String> {
+        let run = self.get(conn, run_id)?;
+        let marker: Option<String> = conn
+            .query_row(
+                "SELECT json_extract(binding_json,'$.\"$blueprintRetirement\"') FROM generation_runs WHERE run_id=? AND json_valid(binding_json) AND json_extract(binding_json,'$.\"$blueprintRetirement\"') IS NOT NULL",
+                [run_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .flatten();
+        if let Some(marker) = marker {
+            if run
+                .binding
+                .source_manifest
+                .get("operation")
+                .and_then(Value::as_str)
+                != Some("chapter-blueprint-directory")
+                || marker != "blueprints-cleared"
+            {
+                return Err(GENERATION_DIRECTORY_PROGRESS_INVALID.to_string());
+            }
+            return Err(GENERATION_BLUEPRINTS_CLEARED.to_string());
+        }
+        self.read_blueprint_author_edit(conn, run_id)?;
         Ok(())
     }
 

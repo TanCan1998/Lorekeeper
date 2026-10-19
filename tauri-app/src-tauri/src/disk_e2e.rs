@@ -107,6 +107,7 @@ fn real_project_creation_lifecycle_persists_across_reopen_test() {
 
         // 2) 蓝图范围提交（full 1..=3）
         let request = blueprints::BlueprintCommitRangeRequest {
+            author_recovery: None,
             generation_run_handle: None,
             generation_requested_range: None,
             mode: "full".to_string(),

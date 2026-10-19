@@ -1105,6 +1105,11 @@ impl GenerationRunService {
     // 基线 execute（:110-320）
     // -------------------------------------------------------------------------
 
+    /// 恢复写入门禁必须覆盖尚未产生持久 attempt 的在途执行。
+    pub(crate) fn has_pending_execution(&self) -> bool {
+        !self.pending.lock().unwrap().is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn pending_waiter_count(&self) -> usize {
         self.pending

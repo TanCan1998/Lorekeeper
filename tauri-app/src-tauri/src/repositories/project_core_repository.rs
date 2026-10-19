@@ -9,7 +9,7 @@
 //! - 休眠阈值读取时收敛到 [1, 50]，写入时先归一化；
 //! - `commit_synopsis` 是带前置条件（expected）的乐观并发提交，仅当全部字段未变才写入。
 
-use rusqlite::{Connection, Row};
+use rusqlite::{Connection, OptionalExtension, Row};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -36,7 +36,7 @@ pub const CHARACTERS_ARCH_READONLY_MESSAGE: &str =
     "角色图谱由角色名单自动生成；请通过角色管理修改角色资料";
 
 /// 前端使用的驼峰命名数据结构（字段顺序与基线接口一致）
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCoreData {
     pub project_name: String,
@@ -65,7 +65,7 @@ pub struct ProjectCoreData {
 }
 
 /// 乐观并发提交的前置快照（对齐基线 `ProjectCoreSynopsisExpected`）
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCoreSynopsisExpected {
     pub synopsis: String,
@@ -85,8 +85,19 @@ pub struct ProjectCoreSynopsisExpected {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCoreSynopsisCommitRequest {
+    #[serde(default)]
+    pub generation_run_handle: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_author_recovery")]
+    pub author_recovery: Option<Value>,
     pub synopsis: String,
     pub expected: ProjectCoreSynopsisExpected,
+}
+
+/// 区分字段缺失与显式 null，避免畸形恢复请求静默落入普通写入。
+pub(crate) fn deserialize_author_recovery<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 /// 字段映射：前端驼峰名 → 数据库列名
@@ -215,6 +226,63 @@ fn row_to_data(row: &Row<'_>) -> rusqlite::Result<ProjectCoreData> {
         synopsis: text("synopsis")?,
         character_states: text("character_states")?,
     })
+}
+
+/// `project_core` 的冻结来源投影（对齐基线 `SELECT *` 剔除
+/// `created_at` / `updated_at` / `character_states` / `plot_tree_snapshot`）。
+/// 刻意返回**原始列值**（不做写作语言/策略收敛），供源一致性深比较。
+pub fn source_row(conn: &Connection) -> Result<Option<Map<String, Value>>, String> {
+    const COLUMNS: [&str; 23] = [
+        "id",
+        "project_name",
+        "genre",
+        "sub_genre",
+        "target_audience",
+        "total_chapters",
+        "words_per_chapter",
+        "writing_language",
+        "creative_strategy",
+        "narrative_thread_dormant_threshold",
+        "plot_structure",
+        "narrative_pov",
+        "writing_style",
+        "reference_works",
+        "global_guidance",
+        "golden_finger",
+        "core_outline",
+        "world_setting",
+        "protagonist_profile",
+        "premise",
+        "worldbuilding",
+        "characters_arch",
+        "synopsis",
+    ];
+    let sql = format!(
+        "SELECT {} FROM project_core WHERE id = ?1",
+        COLUMNS.join(", ")
+    );
+    let existing = conn
+        .query_row(&sql, ["main"], |row| {
+            let mut object = Map::new();
+            for (index, column) in COLUMNS.iter().enumerate() {
+                let value = match row.get_ref(index)? {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(number) => Value::from(number),
+                    rusqlite::types::ValueRef::Real(number) => Value::from(number),
+                    rusqlite::types::ValueRef::Text(bytes) => {
+                        Value::from(String::from_utf8_lossy(bytes).into_owned())
+                    }
+                    rusqlite::types::ValueRef::Blob(bytes) => {
+                        Value::from(String::from_utf8_lossy(bytes).into_owned())
+                    }
+                };
+                object.insert((*column).to_string(), value);
+            }
+            Ok(object)
+        })
+        .optional()
+        .map_err(|error| format!("读取项目配置失败：{error}"))?;
+    Ok(existing)
 }
 
 const SELECT_ALL_COLUMNS: &str = "SELECT id, project_name, genre, sub_genre, target_audience, \
@@ -511,6 +579,8 @@ mod tests {
 
     fn synopsis_request(synopsis: &str) -> ProjectCoreSynopsisCommitRequest {
         ProjectCoreSynopsisCommitRequest {
+            generation_run_handle: None,
+            author_recovery: None,
             synopsis: synopsis.to_string(),
             expected: ProjectCoreSynopsisExpected {
                 synopsis: String::new(),
