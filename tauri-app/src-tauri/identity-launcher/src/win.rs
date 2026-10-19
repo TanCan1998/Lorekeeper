@@ -388,10 +388,10 @@ pub fn launch_with_identity(record: &InstallRecord) -> Result<u32, LauncherError
 }
 
 /// 登记在记录里的包内启动器路径：必须是 WindowsApps 下本产品的启动器。
-fn packaged_launcher_path() -> Result<String, LauncherError> {
-    let record = read_install_record()?;
+fn packaged_launcher_path(record: &InstallRecord) -> Result<String, LauncherError> {
     let launcher = record
         .identity_launcher
+        .clone()
         .ok_or(LauncherError::PackageMissing)?;
     let lower = launcher.to_ascii_lowercase();
     // 未签名包不出现在应用列表，只能直接运行包内 EXE；路径必须落在 WindowsApps 内。
@@ -428,43 +428,65 @@ fn registered_for_current_user(full_name: &str) -> bool {
 }
 
 /// 首次为当前用户注册：请求一次 UAC，调用自身的 --register-identity。
+///
+/// 用户取消授权（UAC 被拒）与系统策略阻止分开报告，避免把拒绝说成失败。
 fn register_for_current_user_once(self_exe: &str) -> Result<(), LauncherError> {
     let script = format!(
-        "$p=Start-Process -FilePath '{self_exe}' -ArgumentList '--register-identity' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+        "$p=Start-Process -FilePath '{self_exe}' -ArgumentList '--register-identity' -Verb RunAs -Wait -PassThru; if($p){{ exit $p.ExitCode }} else {{ exit 1 }}"
     );
     let windir = std::env::var_os("WINDIR")
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| r"C:\Windows".to_string());
-    let status = std::process::Command::new(format!(
+    let output = std::process::Command::new(format!(
         r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"
     ))
     .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
-    .status()
+    .output()
     .map_err(|error| LauncherError::RecordInvalid(format!("无法请求管理员授权：{error}")))?;
-    if !status.success() {
-        return Err(LauncherError::RecordInvalid(
-            "身份组件注册未完成（用户取消或系统策略阻止）".to_string(),
-        ));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let cancelled = stderr.contains("canceled")
+            || stderr.contains("cancelled")
+            || stderr.contains("取消")
+            || output.status.code() == Some(1223);
+        return Err(LauncherError::RecordInvalid(if cancelled {
+            "已取消管理员授权，LoreKeeper 需要一次授权才能加入应用组".to_string()
+        } else {
+            format!("身份组件注册未完成：{}", stderr.trim())
+        }));
     }
     Ok(())
 }
 
 /// 包外模式：只转交给包内启动器以取得真实包身份，绝不无身份启动主程序。
 pub fn activate_identity_package() -> Result<String, LauncherError> {
-    let launcher = packaged_launcher_path()?;
-    // 全机安装后其他用户首次使用：本用户还没有该包注册，按需请求一次提权注册。
-    let full_name = crate::record::package_full_name_from_launcher(&launcher)
-        .ok_or_else(|| LauncherError::RecordInvalid("无法从启动器路径确定包全名".to_string()))?;
-    if !registered_for_current_user(&full_name) {
+    let mut record = read_install_record()?;
+    let mut launcher = packaged_launcher_path(&record);
+    // 需要补注册的两种情况：本用户没有该包注册；或包文件已被其他账号卸载删除。
+    let needs_registration = match &launcher {
+        Ok(path) => crate::record::package_full_name_from_launcher(path)
+            .map(|full_name| !registered_for_current_user(&full_name))
+            .unwrap_or(true),
+        Err(_) => true,
+    };
+    if needs_registration {
         let self_exe = std::env::current_exe()
             .map_err(|error| LauncherError::RecordInvalid(format!("无法定位自身：{error}")))?;
         register_for_current_user_once(&self_exe.to_string_lossy())?;
-        if !registered_for_current_user(&full_name) {
-            return Err(LauncherError::RecordInvalid(
-                "注册后当前用户仍没有该身份包".to_string(),
-            ));
+        // 注册会重新登记启动器路径，必须重读记录后再取路径。
+        record = read_install_record()?;
+        launcher = packaged_launcher_path(&record);
+        if let Ok(path) = &launcher {
+            let full_name = crate::record::package_full_name_from_launcher(path)
+                .ok_or_else(|| LauncherError::RecordInvalid("无法从启动器路径确定包全名".to_string()))?;
+            if !registered_for_current_user(&full_name) {
+                return Err(LauncherError::RecordInvalid(
+                    "注册后当前用户仍没有该身份包".to_string(),
+                ));
+            }
         }
     }
+    let launcher = launcher?;
     let mut child = std::process::Command::new(&launcher)
         .spawn()
         .map_err(|error| LauncherError::RecordInvalid(format!("无法启动身份启动器：{error}")))?;
@@ -584,9 +606,43 @@ pub fn unregister_identity() -> Result<(), LauncherError> {
     Ok(())
 }
 
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 静默模式：错误写日志而不是弹模态框（无人值守与自动化）。
+pub fn set_quiet(value: bool) {
+    QUIET.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn log_error(message: &str) {
+    use std::io::Write;
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let directory = std::path::Path::new(&local).join("LoreKeeper");
+    if std::fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    let Ok(mut handle) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("identity-launcher.log"))
+    else {
+        return;
+    };
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(handle, "{seconds} {message}");
+}
+
 /// 启动失败时给出可见提示；正常启动不弹窗、不抢焦点。
 pub fn report(message: &str) {
     eprintln!("Error: {message}");
+    if QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        log_error(message);
+        return;
+    }
     let text = wide(message);
     let title = wide("LoreKeeper");
     // SAFETY: 两个字符串均在调用期间有效；父窗口为空，属应用自身错误提示。

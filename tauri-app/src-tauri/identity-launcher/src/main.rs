@@ -1,6 +1,6 @@
 //! LoreKeeper 身份启动器（发布构建无控制台窗口）。
 //!
-//! 两个模式，均不接受命令行参数：
+//! 两个模式；`--quiet` 仅抑制错误弹窗（写日志），不改变启动语义：
 //! - 包内（有包身份）：校验安装记录与文件后，用公开桌面应用进程策略启动真实主程序，
 //!   让主程序与全部 WebView2 进程留在同一应用组；等待并透传退出码。
 //! - 包外（无包身份）：只激活已注册的身份包（`shell:AppsFolder\<AUMID>`），
@@ -19,6 +19,8 @@ mod win;
 const REGISTER_IDENTITY: &str = "--register-identity";
 /// 卸载时移除当前用户注册与全机置备（需要提权）。
 const UNREGISTER_IDENTITY: &str = "--unregister-identity";
+/// 静默模式：错误只写日志，不弹模态框（自动化与无人值守场景）。
+const QUIET: &str = "--quiet";
 
 fn main() {
     std::process::exit(run());
@@ -26,10 +28,17 @@ fn main() {
 
 #[cfg(windows)]
 fn run() -> i32 {
-    let arguments: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|value| value.to_string_lossy().into_owned())
-        .collect();
+    let mut arguments: Vec<String> = Vec::new();
+    let mut quiet = false;
+    for argument in std::env::args_os().skip(1) {
+        let argument = argument.to_string_lossy().into_owned();
+        if argument == QUIET {
+            quiet = true;
+        } else {
+            arguments.push(argument);
+        }
+    }
+    win::set_quiet(quiet);
     if arguments.len() == 1 && arguments[0] == REGISTER_IDENTITY {
         return match win::register_identity() {
             Ok(_) => 0,
@@ -49,7 +58,7 @@ fn run() -> i32 {
         };
     }
     if !arguments.is_empty() {
-        win::report("身份启动器只接受 --register-identity 或 --unregister-identity");
+        win::report("身份启动器只接受 --register-identity、--unregister-identity 或 --quiet");
         return 2;
     }
     match win::current_package_full_name() {
