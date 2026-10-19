@@ -224,3 +224,41 @@ EXE SHA256：`e875add803a75aabf91be0cd73c9351aa87b9ff491d45d87d8eebea8041da445`�
 - 证据位于 `.pi/tmp/process-group-probe/signed/ec8d2211f1d6c119b820616878baad53/`：`verification-digest.json`、`independent-cleanup.json`、`control/`逐步回执及 `runs/2026-10-18T23-09-52-779Z/`。EXE、清单、控制器和检查器已固定；原始报告/包/证书信息不入库。
 - **可行条件已经扩展到签名稀疏身份，不能再沿用“该路线未测试”的旧断点。** 但真实LoreKeeper二进制、安装器升级/卸载/失败回滚、文件权限及macOS仍未验证。
 - [保留NSIS/MSI的接入草案](../plans/windows-sparse-identity-integration.md)只提出构建清单、签名、注册/升级/移除、MSI用户上下文及发布门禁要求；未改产品/CI/发布配置。本轮临时自签名证书已删除，不是正式发行的签名来源，也不授权在用户机器自动增加证书信任。生产接入与正式签名须另行确认，发布继续暂停。
+
+## 9. 第115次：未签名小启动器与外部自选目录
+
+用户随后明确“不签名但要归组，可预留签名证书位置”、安装时可选目录，并确认“小型完整MSIX身份启动器+外部主程序逻辑映射”方向。**不再把付费或正式签名稀疏包当实施前提**；不能通过联接WindowsApps/VFS伪装安装位置。
+
+### 公开进程策略的正反对照
+
+复用此前单独获准的唯一临时测试包名称/未签名部署范围，不增加信任或开发模式。普通权限包内启动器无窗口，使用同一个未签名最简EXE，SHA256仍为 `de67eedf218b0d1dc5e84acc10ebde8faeddb4b2f5ef148dba45114fc62e0c77`。真正宿主分别位于两个外部中文/空格目录，而不是WindowsApps中的主程序副本。
+
+普通CreateProcess不会自动传递包身份。微软公开的[UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)支持 `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY`；使用 `PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_DISABLE_PROCESS_TREE`（0x02）使外部主程序及后代保留桌面包环境。这里的DISABLE针对breakaway，不是关闭沙箱，也未伪造PPID或加入浏览器诊断参数。
+
+先完成3次普通创建、4次包含策略的消息窗口实验，确认身份变化；随后同轮运行库155.0.4283.62、屏幕外NOACTIVATE窗口、隔离UDF和合成页面，在真实Taskmgr完成4次/48份原生采样：
+
+| 外部主程序启动方式 | 宿主 → 浏览器PID | 两边包身份 | UIA逐PID及共同容器 |
+|---|---|---|---|
+| 策略0x02，中文目录A | 27600 → 14536 | 0，相同身份 | 8/8：主程序+6个WebView2+启动器21888，同一组 |
+| 策略0x02，空格目录B | 30544 → 4332 | 0，相同身份 | 8/8，同一组；启动器25724 |
+| 同一启动器但普通创建，目录A | 32996 → 8060 | 15700，无包 | 8/8均找到，但无共同组，浏览器仍独立 |
+| 直接运行同字节主程序，目录A | 9884 → 34656 | 15700，无包 | 7/7均找到，无共同组 |
+
+两个正向的界面均显示“LoreKeeper Process Probe，9实例”；核验的是8个自有PID及其相同TreeItem祖先，额外系统成员不计入自有统计。浏览器直接以真正主程序为父；所有成员可见，名称本身不当作归组证据。没有向外部主程序嵌入未签名OID稀疏身份清单，绕开了第113次未取得运行结果的SxS入口。
+
+### 后台与收尾的精确记录
+
+- 两次先行视觉尝试因前后台句柄变化而安全中止，未完成正向矩阵，不计入4次/48份有效结果；不能笼统写成每次句柄都不变。第一轮自开Taskmgr33880的关闭请求已在第二轮收尾发出，该PID最终不存在。
+- 有效矩阵改成只读UIA：不选择页面、不调用排序或展开动作；保持既有CPU排序，不为了名称升序触发控件操作。启动阶段每50毫秒观察、检查器每20毫秒观察任务管理器焦点归属，累计前台命中0；探针自身前台采样也均0。
+- 目录B的UIA读取前后句柄仍发生变化，但期间任务管理器前台采样0、探针前台采样0；如实保留该测量，不把用户在其他窗口切换误写成“句柄不变”，也不把采样当作逐指令绝对保证。
+- 有效轮复用了已存在的Taskmgr23564，未取得其所有权，故未关闭；没有擅自结束其他窗口。读取器/注册监督器退出0，排序保持原样。唯一测试包finally移除全用户剩余0，普通权限独立复核当前用户包0、自有探针/WebView2遗留0；未强杀系统Broker。
+- 本轮未新增证书、信任、工具、服务、计划任务或用户账户。此前临时证书已在第114次清理，本轮不复用其权限或私钥。
+- 证据：`.pi/tmp/process-group-probe/placement/native/2026-10-18T23-47-56-104Z/`、`placement/runs/2026-10-18T23-58-09-014Z/`的summary/verification/逐PID UIA与原生记录；控制器/启动器源码与唯一包控制收据同目录留存，不入库。
+
+### 首个构建契约切片与边界
+
+新增 `windows-identity.json`、`windows-identity.mjs` 与9项Node测试：默认unsigned、签名字段null且不读证书，signed尚未实现则明确失败；固定identifier、数字包版本、外部主程序布局、MSI机器级优先和未验收项。只生成完整身份小包清单，未接入产品启动器或现有打包/发布入口。
+
+Node身份9+安装6+发布19共34通过，含真实NSIS语法编译；typecheck/lint退出0。候选清单通过既有MakeAppx，仅使用实验占位启动器做语法检查，没有注册该产品名小包或当作可安装产品。候选仅runFullTrust，少于探针清单的额外unvirtualizedResources，仍须重验最小能力、文件/注册表虚拟化、数据根和外部工具兼容。
+
+真实LoreKeeper、MSI机器级stage/provision/各用户注册与升级卸载/回滚、直接主EXE入口、外部CLI/MCP的脱离包环境策略及macOS均未验收。以上证明本机**未签名且主程序真实位于所选外部目录**可以归组，不等于安装器已经支持所有用户。接入步骤见[更新后的计划](../plans/windows-sparse-identity-integration.md)，发布仍暂停。

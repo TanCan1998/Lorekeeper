@@ -8,7 +8,7 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-2026-10-19第114次：[签名稀疏身份原路径归组、产品待接入](handoffs/2026-10-19-tauri-migration-status.md)。代码44259fa3已推送：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理和显式Latest选项已实现；沿用第110次验证：本机Rust18、Node25（含NSIS编译）、前端14通过，typecheck/lint/build成功，同SHA云端Rust全量1689项及all-targets成功。本轮签名稀疏身份也取得正向结果：EXE原路径/同字节五次对照，注册后三次宿主+全部6个WebView2同组，撤销后再次拆组，无诊断flag。临时信任/证书/私钥/包已清理；保留NSIS/MSI的接入草案待确认，产品与macOS未验收，新版继续暂停发布。
+2026-10-19第115次：[未签名小启动器、主程序自选目录归组与构建契约](handoffs/2026-10-19-tauri-migration-status.md)。用户已确认无签名逻辑映射方案、MSI全机/多用户优先；两个外部目录最简宿主均8/8自有PID真实同组，普通创建/直接启动对照仍拆组，不改共享运行库、不加诊断flag。新增默认unsigned的清单构建契约及预留证书字段；本轮Node34、typecheck/lint与MakeAppx语法通过。临时测试包已移除，自有探针遗留0；既有非自有Taskmgr保持不关闭。真实产品启动器/安装器、多用户、工具子进程与macOS仍待验收，新版继续暂停发布；Rust全量基线仍44259fa3的1689项，不冒充重测。
 
 当前已公开的仍是第106次 **[Lorekeeper 1.0.0-beta预发布](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，旧版不设为最新版、不覆盖。
 
@@ -28,7 +28,7 @@ Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留�
 | 查看本机/云端测试分工 | [Tauri Rust混合验证](agents/tauri-rust-ci.md) |
 | 手动打包与发布 | [Tauri受限发布协议](agents/tauri-release.md) |
 | 管理Actions存储 | [1天保留与历史制品清理](agents/actions-storage.md) |
-| 查看Windows稀疏身份接入草案 | [保留NSIS/MSI的待确认方案](plans/windows-sparse-identity-integration.md) |
+| 查看Windows身份与自选目录接入 | [已选无签名方案及待实现生命周期](plans/windows-sparse-identity-integration.md) |
 | 查看WebView进程归组研究 | [机制证据与后台验证矩阵](research/webview-process-attribution.md) |
 | 查看定稿图标与生成说明 | [图标登记](design/branding.md) |
 | 查看预发布说明 | [旧1.0.0-beta](releases/1.0.0-beta.md) · [未发布beta.1](releases/1.0.0-beta.1.md) |

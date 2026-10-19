@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "layout": "external-main",
+  "signing": {
+    "mode": "unsigned",
+    "certificateFile": null,
+    "certificateThumbprint": null,
+    "publisher": null,
+    "timestampUrl": null
+  }
+}
