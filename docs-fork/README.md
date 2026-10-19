@@ -14,20 +14,20 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-2026-10-19第117次：[身份包真实产出与真实安装/卸载回归](handoffs/2026-10-19-tauri-migration-status.md)。独立启动器打成真实 MSIX（134,256 B）并随安装器分发；静默安装到用户自选目录、静默卸载均实测通过（目录/注册表/包清零）。关键限制：未签名身份包注册必须提权（非提权 0x80073D2B，提权成功），NSIS currentUser 流程无法自动登记，安装器已改为明确告警。MSI 注册/置备、真实归组、多用户与 macOS 仍未验收，发布继续暂停。前轮：新增独立启动器 crate（包内带身份启动、包外只激活）与安装记录契约；NSIS 写当前用户、MSI 写 HKLM 并随卸载移除。本机真实生成 MSI 53,186,560 B 与 NSIS 49,738,678 B，MSI Registry 表核出 4 条记录，Node 合同 18 项通过。未安装、未注册身份包、未改快捷方式；身份包打包、注册/置备、激活入口与多用户仍未完成，发布继续暂停。前轮：用户已确认无签名逻辑映射方案、MSI全机/多用户优先；两个外部目录最简宿主均8/8自有PID真实同组，普通创建/直接启动对照仍拆组，不改共享运行库、不加诊断flag。新增默认unsigned的清单构建契约及预留证书字段；本轮Node34、typecheck/lint与MakeAppx语法通过。临时测试包已移除，自有探针遗留0；既有非自有Taskmgr保持不关闭。真实产品启动器/安装器、多用户、工具子进程与macOS仍待验收，新版继续暂停发布；Rust全量基线仍44259fa3的1689项，不冒充重测。
+2026-10-19第125次：[剩余迁移合并实现，尚未验收](handoffs/2026-10-19-tauri-migration-status.md#本次更新第125次剩余迁移合并实现未验收)。用户要求不切片、最后统一验证；本轮完成大纲/蓝图作者恢复全链路、目录进度登记、合成前五个可变性守卫、头像双语与缓存、MSI 快捷方式与安装后启动改走激活器，并纠正陈旧注释。仅新增既有 `windows-sys` feature。用户随后授权完整验证：`cargo check --all-targets` 0 错误、`cargo test --lib` **1734 通过 0 失败**、定向 344 通过、rustfmt 与 `pnpm typecheck`/`lint` 通过、安装合同 13 通过、频道缺失 0；前端 vitest 2757 通过、1 项既存品牌大小写断言失败。**未构建/安装 MSI、未注册提权、未提交推送、未发布**。升级/回滚与多用户验收未完成；新版发布继续暂停。精确状态以[当前交接](handoffs/CURRENT.md)为准。
 
 当前已公开的仍是第106次 **[Lorekeeper 1.0.0-beta 预发布与双源下载](releases/1.0.0-beta.md)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，旧版不设为最新版、不覆盖。
 
 Tauri已跟随RD-10采用纸墨流程外壳、浅深主题及外观v3，保留独立数据目录与作者/定稿安全边界；频道285项功能迁移、1项旧库导入明确不支持，未迁移0。比例不是产品完成率，旧轮次的290频道口径不代表当前契约。
 
-> #30/#31内部范围验收已收口；真实模型/MCP/业务云、签名公证、新包真机安装/首次启动仍未认证。新版支持保留beta名称、以GitHub普通Release标记Latest，正文须明确预览；用户明确拒绝归组未修复先公开，继续调研并暂停发布，不放宽后台窗口规则或其他安全确认边界。准确源码SHA、CI与发布证据见[当前交接](handoffs/CURRENT.md)，频道明细见[盘点](plans/tauri-migration-channel-inventory.md)。
+> #30/#31内部范围验收已收口；真实模型/MCP/业务云、签名公证、所有正常安装入口及升级/回滚仍未认证。历史手动激活器身份验证不等于产品全生命周期通过。用户明确拒绝归组未修复先公开，资源操作恢复前不编译、运行或推送触发CI；新版继续暂停发布，后台窗口规则与系统变更确认边界不变。
 
 
 ## 接续工作从这里开始
 
 | 我要… | 去哪里 |
 |---|---|
-| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第114次未完成任务快照](handoffs/2026-10-19-tauri-migration-status.md) |
+| 接续迁移任务 | [当前交接](handoffs/CURRENT.md) → [第125次状态与待验清单](handoffs/2026-10-19-tauri-migration-status.md) |
 | 新建一份快照 | 复制 [`handoffs/_TEMPLATE-tauri-migration-status.md`](handoffs/_TEMPLATE-tauri-migration-status.md)，规则见 [`agents/pi-development.md`](agents/pi-development.md) §9 |
 | 查频道盘点 | [`plans/tauri-migration-channel-inventory.md`](plans/tauri-migration-channel-inventory.md) |
 | 查迁移开发规范 | [`agents/pi-development.md`](agents/pi-development.md) |

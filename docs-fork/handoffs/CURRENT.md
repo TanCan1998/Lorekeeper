@@ -1,14 +1,13 @@
 # 当前交接入口
 
-- 最新：[第121次：首启补注册闭环（自愈）与静默可观测](./2026-10-19-tauri-migration-status.md)。**多用户按方案 A 收口**：MSI 全机安装 + 每用户首次一次提权注册，不引入签名；该流程已实测通过。
-- 决策依据（本机源码）：数据根按用户隔离（`AI_NOVEL_LOREKEEPER_HOME` 或 `~/.lorekeeper`），云凭据用当前用户 DPAPI，全项目无 `ProgramData` 机器级共享状态。因此“多用户”只影响安装位置与身份注册，不影响数据模型；不签名的前提下，“全机装完零操作全覆盖”不可实现。
-- 已实测：
-  - NSIS 与 MSI 两条链均完成真实安装 → 注册 → 归组（主程序 + 6 个 WebView2 同包身份）→ 卸载清零。
-  - MSI：`msiexec /i /qn INSTALLDIR=自选目录` 退出 0（`scope=machine`、启动器路径就位、包计数 1）；`/x /qn` 后目录、HKLM 记录、包、置备、WindowsApps 目录全部 0/false，无残留进程。
-- 首启注册（方案 A 的关键）**已实测通过**：删除本用户注册与包文件后，非提权静默首启 → 自动一次 UAC 补注册（从安装目录 MSIX 重新 `Add-AppxPackage`）→ 重读记录 → 主程序 PID 32620 与 WebView2 同为 `com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy`；包计数 0 → 1，错误日志为空。
-- 上一轮失败原因已定位：`Remove-AppxPackage` 连带删除 WindowsApps 内包目录，加上错误走 MessageBox 阻塞非交互环境；现已改为“文件缺失/未注册即自愈”+ `--quiet` 写日志不弹框，并区分“用户取消授权”与“系统策略阻止”。
-- 升级导致的路径漂移（包版本变化后 `IdentityLauncherPath` 指向旧目录）**仍未处理**，自愈只覆盖未注册/文件缺失。
-- 云 CI：`dcb88e77` 三运行 success；本轮改动待提交后核验。
-- 合同：Node 39 项、启动器单测 10 项（新增包全名推导）、clippy 无告警。主 crate 与前端未改，云端全量基线仍 44259fa3/39148045359。
-- **仍未完成**：首启注册验证、升级后重新注册/路径刷新、修复/回滚、最低系统版本、外部工具 breakaway、macOS。发布继续暂停。
-- 禁止子代理、不抢焦点、不改 Electron/根构建及锁文件/上游 docs；证据见[研究§14](../research/webview-process-attribution.md#14-第120次多用户范围决策与首启注册流程)。
+- 最新：[第125次：剩余迁移合并实现，尚未验收](./2026-10-19-tauri-migration-status.md#本次更新第125次剩余迁移合并实现未验收)。用户要求「一起迁移不切片、最后统一验证」并确认合并范围；本轮完成大纲/蓝图作者恢复全链路、目录进度登记、`compose_visible` 五个可变性守卫、头像双语与缓存、MSI 快捷方式/安装后启动改走激活器、陈旧注释纠正。仅新增既有 `windows-sys` feature；无新 crate/schema/锁/权限变更。用户随后授权完整验证：`cargo check --all-targets` 0 错误、`cargo test --lib` **1734 通过 0 失败**、定向 344 通过、24 文件 rustfmt 通过、`pnpm typecheck`/`lint` 通过、安装合同 13 通过、频道缺失 0；前端 vitest 2757 通过、1 项既存品牌大小写断言失败（前端源码与测试均未改）。证据 `.pi/tmp/migration-batch-125/static-check.json`。**未构建/安装 MSI、未注册提权、未提交推送、未发布。**前轮[第124次 fs 文案](./2026-10-19-tauri-migration-status.md#前轮更新第124次项目文件系统错误文案双语迁移未验收)与[第123次 EPUB](./2026-10-19-tauri-migration-status.md#前轮更新第123次-epub-静态迁移未验收)仍待验证。
+- **独立镜像维护已落地**：`467029c5` 已推送 GitHub；新增 GitHub 推送式 AtomGit 同步、同批附件发布与双源表格。既有 beta 两端说明相同，AtomGit 九附件已匿名读回大小/SHA256；配置与证据见[镜像说明](../agents/atomgit-mirror.md)。最终提交纯代码同步 [39228758897](https://github.com/TanCan1998/Lorekeeper/actions/runs/39228758897) 成功，发布作业跳过；未触发构建。
+- **迁移资源操作仍暂缓**：上一轮身份启动器/安装器切片未提交；不编译、测试、打包、启动/安装/卸载、注册包或提权。前轮镜像专项授权仅允许镜像配置提交、已有 beta 说明更新和纯传输工作流；后续仅恢复EPUB与普通残余子功能源码迁移，不恢复资源验证或安装器变更授权，未触发构建 CI、未发布 beta.1。HEAD/origin 为中文首页修复提交 `3e8101ba`；纯同步 `39230233145` 成功。实测 AtomGit 中文首页选择短版 `README_zh.md`，已将其生成成与完整 `README.md` 相同的副本；但目前平台返回 `REVIEW`、正文为空，首页完整展示仍待审核后验收。证据见本机 `homepage-check.json`，不把源码同步当作渲染通过。
+- **已编辑、未验收**：构建版本与清单同源；旧包虽存在且已注册，只要版本不符仍需刷新，注册后重读并复核版本。MSI 安装/升级/修复刷新，只有非升级的完整卸载才注销，移到删除文件前调用。补齐 `--quiet` 传递和自选路径字面量转义；新增回归用例未执行。
+- **MSI 正常入口**：本轮新增 `installer/main.wxs` 并让桌面/开始菜单快捷方式与安装结束启动指向 `[INSTALLDIR]lorekeeper-activate.exe`（`tauri.conf.json` 已接 `wix.template`）。**仅源码修改，未构建、未安装**；旧生成产物仍是旧模板，前轮手动激活器验证不能替代这些入口验收。
+- 用户方案 A 不变：MSI 全机安装 + 每用户首次按需提权注册，不引入签名，不要求装完自动覆盖所有用户。真实第二账号、不同凭据 UAC、SYSTEM 上下文均未验收；此前同账号无注册状态自愈不等同跨用户测试。
+- 历史证据仅属于旧代码：第121次记录 `05b740b5` 的三个 CI 成功、Node 39 / 启动器 10 / clippy 通过；同账号缺包自愈后主程序与采样 WebView2 同包身份；MSI 卸载目录/记录/包清零。**本轮未重跑，不能给新工作区记成功**；真实产品全部 WebView2 的旧证据见研究§12，Taskmgr 机制证据见§9。
+- 主应用 Rust 全量：2026-10-19 本机工作区 `cargo test --lib` **1734 通过 0 失败** + `cargo check --all-targets` 0 错误（未提交，故无对应云端 SHA）；历史云端基线仍为 `44259fa3 / 39148045359`（1689）。提交后若需云端全量，仍按混合策略单独登记。
+- 下一步：①**等用户给出最终验证授权**后一次性执行：`cargo test commands::config::tests`、`commands::fs::tests`、`import::epub::tests`、`commands::import::tests`、`services::blueprint_author_payload::tests`、`commands::character_avatar`、`commands::db::tests`、`services::generation_run_service` / owner 相关回归，定向 `rustfmt --check`，`cargo check --all-targets`，前端 `pnpm typecheck|test|lint`；未通过前不登记验收、不清零切片累计；②MSI 模板已改**未构建未安装**，构建/安装/注册/提权需单独授权，之后才能验收快捷方式与安装后启动；③升级/修复/失败回滚/卸载/UAC 仍按具体授权验证。任务与暂缓项在 `.pi/tmp/pipeline-state.md`。
+- 其余未完成：最低 Windows 门禁、外部工具 breakaway、macOS 真机、真实账号和数据/权限生命周期；新版发布继续暂停，仅镜像已公开 beta，不创建 beta.1 标签/Release/Latest。
+- 禁止子代理、抢焦点、修改 Electron/根构建锁文件或上游 `docs/`；本轮未新增依赖、改系统配置或文件权限。

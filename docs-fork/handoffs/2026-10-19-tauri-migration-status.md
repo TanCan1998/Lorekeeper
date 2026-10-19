@@ -1,6 +1,10 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **119** 次：MSI 全机安装后注册、卸载前注销均已实测通过；`Add-AppxProvisionedPackage` 未生效，多用户待解决。
+> [当前入口](./CURRENT.md) · 第 **125** 次：用户要求把剩余未迁移项一次性合并迁移、不切片，并授权最后统一验证。已完成源码：大纲/蓝图作者恢复全链路、目录进度登记、合成前五个可变性守卫、头像双语与缓存、MSI 正常入口改走激活器、陈旧“未迁移”注释纠正。**验证通过**：`cargo check --all-targets` 0 错误，`cargo test --lib` **1734 通过 0 失败**，定向 344 通过，24 文件 rustfmt 通过，`pnpm typecheck`/`lint` 通过，安装合同 13 通过，频道覆盖无缺失；前端 vitest 2757 通过、1 项既存品牌大小写断言失败（前端源码与测试均未改）。只新增既有 windows-sys feature，无新 crate、schema、锁或权限变更；HEAD仍为`3e8101ba`。**未构建/安装 MSI、未注册提权、未提交推送、未发布**。
+>
+> 第 **124** 次：已静态接入项目文件系统错误文案的已保存界面语言，补7个回归用例未执行；只改文案选择与错误呈现，不改权限/租约/文件操作。
+>
+> 第 **119** 次：MSI 全机安装后注册、卸载前注销均已实测通过；`Add-AppxProvisionedPackage` 未生效，多用户待解决。
 >
 > 第 **118** 次：真实产品经激活器启动后，主程序与 6 个 WebView2 读回同一包身份；提权注册、真实安装与卸载清理全部实测通过。MSI 注册与多用户仍待做。
 >
@@ -8,7 +12,68 @@
 >
 > 第 **116** 次：产品身份启动器与全机安装记录已实现并真实构建 MSI/NSIS（仅构建，未安装）。身份包注册、激活入口与多用户置备未完成，发布暂停。**不是LoreKeeper产品修复或新版发布完成报告。**
 
-## 已验证状态（Rust/前端功能基线沿用第110次，本轮构建检查另列）
+## 独立维护：AtomGit 镜像与双源下载
+
+用户单独确认配置 GitHub→AtomGit 自动同步、仓库 Secret、同批发布附件以及双源下载表格。镜像配置提交为 `467029c5`，未把本地待验 Rust/安装器改动混入；提交使用 `[skip ci]`，没有触发编译/打包工作流。
+
+- GitHub/AtomGit 的既有 `lorekeeper-v1.0.0-beta` 九附件原样传输，AtomGit 全部附件匿名读回大小与 SHA256 后，两端正文更新为相同双源表格，国内推荐 AtomGit；未发布 beta.1。
+- 代码同步首轮 `39228355899`、最终提交 `39228758897` 均成功；两轮发布作业均跳过。README 使用仓库内文档/图片相对路径，附件采用两平台绝对 URL。
+- 本机仅脚本语法、YAML、链接与 diff 等轻量检查；新增单元回归尚未运行。完整新版本双端发布、首次缺失附件的 Node 上传路径仍待后续有授权的验收。
+- 这不更新主应用 Rust 全量基线、不清零切片累计，不解除资源操作与原生生命周期暂停；详见[镜像协议](../agents/atomgit-mirror.md)。
+
+## 本次更新：第125次剩余迁移合并实现（未验收）
+
+- 授权变化：用户明确「还没有迁移的一起迁移不切片，等最终一次性验证」，并在集中确认卡中选择「按上述范围合并迁移」+「最后再确认验证授权，本轮仅合并源码」。故本轮只写源码与用例声明，**不运行**测试/编译/格式器/前端检查，也不打包或安装 MSI。
+- **大纲作者恢复**：`ProjectCoreSynopsisCommitRequest` 补 `generationRunHandle` / `authorRecovery`（区分键缺失与显式 null），`db:project-core-synopsis-commit` 改为三分支信封（作者恢复 / 生成运行 / 普通提交），返回 `receipt`。命令层新增 `commit_plot_outline_author_edit`、`assert_synopsis_commit`、`plot_outline_target_current`：事务内校验会话租约、epoch、期望快照、回执幂等、源一致性与在途状态，成功才写台账并记录回执。
+- **蓝图作者恢复**：`BlueprintCommitRangeRequest` 补 `authorRecovery`，回执补 `authorEdit` / `generationProgress`；命令层新增 `commit_blueprint_author_edit`，复用 `commit_range_in_existing_transaction` 在同一事务内完成范围提交与回执登记，并按基线返回 `GENERATION_BLUEPRINT_AUTHOR_*` 状态码。新增 `services/blueprint_author_payload.rs` 重新校验作者载荷（章节精确覆盖、必填文本、角色唯一、关系端点/自指/重复、新角色候选角色枚举）。
+- **目录进度**：新增 `record_directory_commit`，`db:blueprint-commit-range` 分支③改为单事务「范围提交 → 子代效应 → 目录进度登记」，幂等重放同样登记/校验进度，回执不再省略 `generationProgress`。恢复读面新增 `unavailable` 分支（`GENERATION_BLUEPRINTS_CLEARED` / `GENERATION_DIRECTORY_PROGRESS_INVALID`）。
+- **可变性守卫**：`compose_visible` 补齐基线 5 个子生成器 `assertMutable`（reviewRevisions / imports / finalizations / graphs / legacyRosters）；`in_progress` 判据叠加执行面 `has_pending_execution()`。
+- **头像**：错误文案与文件选择标题接入已保存界面语言（缺省回退系统语言，仍不读项目写作语言）；新增 `commands/character_avatar/cache.rs` 会话域缓存（项目 + 租约 + 数据根隔离、按资产修订索引、FIFO 上限 512、commit/remove 后失效、每次仍校验数据库记录）。仅复用既有 `windows-sys` 并启用 `Win32_Globalization`，未新增 crate。
+- **MSI 正常入口**：新增 `installer/main.wxs`（从已安装 Tauri CLI 2.12.1 内嵌模板导出，附 `main.wxs.LICENSE`），桌面/开始菜单快捷方式与安装结束启动改为 `[INSTALLDIR]lorekeeper-activate.exe`，移除 `[LAUNCHAPPARGS]`；`tauri.conf.json` 指定 `wix.template`；安装合同新增静态断言。**未构建 MSI，未安装**。
+- **注释纠正**（不改语义）：`import_generation` 头注（两频道已实现）、`character_proposal` 两处 TODO（解析器已迁移）、`compose_visible` / `begin_batch` / `generation.rs` 源探针说明、`db/schema.rs` 三张空表用途（Electron 内部服务，无 IPC 频道）。
+- 回归声明：本轮新增 11 个（config 1、db 2、avatar cache 3、蓝图载荷 5），全部**未执行**；未提交的累计声明为 49 个，不得计为通过。
+- 静态检查：`git diff --check` 通过，保护目录（`electron/`、`src/`、`docs/`、根构建与锁文件）与 `Cargo.lock` 无差异，`Cargo.toml` 仅新增既有 feature；39 个改动/新增文件指纹见本机 `.pi/tmp/migration-batch-125/static-check.json`。
+
+### 最终一次性验证结果（用户授权：完整验证）
+
+| 范围 | 结果 | 证据 |
+|---|---|---|
+| `cargo check --all-targets` | **0 错误** | `D:\Temp\lorekeeper-verify\check.log` |
+| `cargo test --lib`（全量库测试） | **1734 通过，0 失败**，55.27s | `full-tests.log` |
+| 定向 9 个模块（config/fs/epub/import/avatar/db/generation_run_service/main_generation_owner/blueprint payload） | **344 通过，0 失败** | `test-*.log` |
+| `rustfmt --edition 2021 --check`（24 个改动文件） | **通过**（首次检查发现 18 个文件需格式化，已就地格式化后复检通过） | `fmt-*.log` |
+| `pnpm typecheck` / `pnpm run lint` | **退出码 0** | `frontend.ps1` 输出 |
+| 安装合同 `node --test scripts/installer-contract.node-test.mjs` | **13 通过，0 失败** | 同上 |
+| 频道覆盖 `verify-channel-coverage.mjs` | 286 invoke / 7 事件 / 287 注册 / 285 计入迁移 / 1 明确不支持 / **缺失 0** | 同上 |
+| 前端 `vitest` | 2757 通过、1 skipped、**1 失败（既存）** | `vitest.log` |
+
+- 修复记录（编译阶段）：`source_row` 闭包错误类型、`ImportGenerationContext`/`ProjectCoreData` 缺 `Deserialize`、`MainGenerationRunHandle` 误用 `is_null`、`AvatarCache` 缺 `Debug`（改为只打印作用域与条目数的自定义实现）；`installer-contract` 里模板字符串转义导致正则失配，改为 `indexOf` 切片断言。
+- 唯一失败项：`src/services/__tests__/safe-call-diagnostic.test.ts:60` 期望 `# Lorekeeper safe diagnostics`，实现已是 `# LoreKeeper safe diagnostics`（品牌大小写），本轮未改任何前端源码与测试，属既存失败，未修复。
+- 未做：MSI 构建 / 安装 / 卸载 / 包注册 / 提权 / GUI 与原生文件选择器 / 真实模型·MCP·云业务 / 提交推送 / 发布。
+
+## 前轮更新：第124次项目文件系统错误文案双语迁移（未验收）
+
+- 用户在询问是否恢复EPUB最小验证时明确选择“继续迁移未迁移项”；不恢复测试/构建，转向残余子功能。蓝图作者恢复缺少规划恢复准入和持久回执链，涉及安全/恢复语义，未据泛授权擅自实现。
+- 范围：`commands/config.rs`补无系统语言参数的`main_text`，对齐基线`mainText(undefined, zh, en)`；逐次读取已保存的`locale`，不缓存、不写回、不使用项目写作语言；未保存/损坏配置按基线回落英文。这不是全部主进程或系统语言回退迁移完成。
+- `commands/fs.rs`七频道错误呈现接入该文案函数；保留守卫错误优先、文件缺失工具提示、IO脱敏和响应信封。`mkdir/read-json/write-json`不再丢弃已判定的错误类别后固定返回中文；底层守卫、原子写、读取/列目录及提交状态规则不变。
+- 新增配置3项、文件系统4项合成回归（**7个声明，未执行**）：已保存语言即时切换、损坏/缺失配置不改写、语言与写作语言隔离、守卫/频道矩阵、缺失文件提示、原始路径脱敏与信封形状。
+- 本轮只做源码结构核对、`git diff --check`、空白/BOM与保护路径/依赖差异检查；证据`.pi/tmp/fs-locale-migration/static-check.json`。EPUB5个源码文件与前轮指纹一致；不更新任何测试/GUI/全量通过结果，不提交推送。
+- 下步验证仍待恢复资源操作：定向`cargo test commands::config::tests`及`cargo test commands::fs::tests`、定向格式、跨模块all-targets；连同前轮EPUB切片按既有累计/阶段门槛收口，不以34个新增用例声明冒充34通过。
+- 非本轮范围：头像缓存/系统语言回退、蓝图作者恢复、MSI正常入口与原生生命周期。没有新增依赖、schema、权限、定稿或会话准入变化；频道映射与注册统计不变。
+
+## 前轮更新：第123次 EPUB 静态迁移（未验收）
+
+- 授权：用户先选择只读核查，确认 EPUB 属于 Tauri 未迁移后明确要求“迁移”并“继续”；仅推进该源码切片，不解释为恢复测试/构建、修改安装器或发布授权。
+- 实现：`src/import/epub.rs` 纯内存读取 ZIP；container→OPF manifest/spine 阅读顺序；跳过导航、非线性和非正文项；严格 UTF-8/UTF-16 解码、正文/标题/实体提取，不执行 HTML、不访问外链、不落地条目。
+- 防护：条目数10000、单条目32MiB、累计解压128MiB，并收窄至剩余导入预算；拒绝损坏/重复/越界引用及加密 ZIP，DRM 与已知字体混淆例外按上游判定。针对现有zip9.0.3合并原始同名条目的行为，补充已定位中央目录的计数一致性检查；解压、ZIP64与CRC仍由zip处理。
+- 接线：`commands/import.rs` 保留原文本读取行为，EPUB正文走现有拆章、字数/哈希、作者重号校验、参考语料冻结与失败台账；不改schema、定稿、租约或外部文件授权规则。`Cargo.toml`/`Cargo.lock`不变。
+- 回归：新增提取器20项、命令层7项（源码声明计数，**不是通过数**），覆盖顺序、编码、DRM/字体、Zip64/CRC、重复名称/伪造大小、预算及作者/参考路径；旧EPUB占位回归改为损坏格式拒绝。
+- 本轮实测仅`git diff --check`、新文件空白/BOM与保护路径/依赖差异核查；源码指纹和静态证据见本机`.pi/tmp/epub-migration/static-check.json`。**cargo/rustfmt/TS/GUI均未执行，不记迁移验收完成**；没有提交、推送或在飞运行。
+- 只读口径复核：当前源码286 invoke/7事件、287注册命令（含health）、285计入迁移/1旧库明确不支持，无缺失注册；不因本次填充频道内功能而增减统计。旧290是历史口径，注册覆盖不等于功能完整。
+- 后续：用户恢复资源操作后，先定向`cargo test import::epub::tests`与`cargo test commands::import::tests`、定向rustfmt，再按跨模块规则补all-targets；阶段收口全量遵循既有本机/云端分工。首次原生文件选择器需遵守不抢焦点规则，无法后台完成则标待验收。
+- 另行待办：蓝图`authorRecovery`分支存在前后端接线缺口，仅只读确认，本轮未修改。MSI入口、升级/回滚、多用户和真实外部服务边界仍按CURRENT保留。
+
+## 已验证历史基线（第110至119次，不代表第124次工作区通过）
 
 - 代码 **44259fa3fff24134fe548ed72bf35dfe1b8b705b** 已提交推送 `origin/master`。名称改为 LoreKeeper，应用版本为 1.0.0-beta.1；标识、数据根、既有MSI UpgradeCode保持不变。
 - 本轮未修改根 `package.json`、`pnpm-lock.yaml`、`vite.config.ts`、`.npmrc`、`electron/`、根 `src/` 或上游镜像 `docs/`；无新依赖、schema或渲染层IPC权限。
@@ -31,7 +96,25 @@
 | 产品安装/卸载/项目删除/注册表清理 | **未执行** | 临时测试部署不能替代原生产品生命周期验收 |
 | 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
-## 本次更新：第119次 MSI 全机注册/注销
+## 前轮更新：第122次升级版本刷新与修复条件静态修改
+
+| 范围 | 本轮状态 | 版本/证据 |
+|---|---|---|
+| 分支、HEAD、工作区 | `master`；迁移切片仍未提交；HEAD/origin 后续已推进至独立镜像提交 `467029c5` | 本轮本地只读 Git 检查，2026-10-19 |
+| 身份版本刷新 | 已编辑：构建版本注入、启动前精确匹配、补注册后重读复核 | `build-windows-identity.mjs`、独立启动器 `record.rs/win.rs` |
+| MSI 升级/修复/卸载条件 | 已编辑：修复不注销、非完整卸载刷新、移除文件前才注销 | `installer/lorekeeper-install-record.wxs`；未运行 candle 或 msiexec |
+| 静默与路径回归 | 已补用例，未运行；静默传至提权及包内助手，单引号按字面量转义 | `installer-contract.node-test.mjs`、`record.rs` |
+| 本轮测试/构建/GUI/系统变更/CI | **全部暂缓**，未提交推送；只做源码审阅与轻量差异检查 | 用户要求“涉及到资源占用的操作先不执行” |
+| 最近独立启动器验证 | 沿用第121次 Node 39、启动器10、clippy与三个CI成功记录 | 仅属于 `05b740b5`，不归给本轮改动 |
+
+- 本轮没有修改产品版本号、identifier、UpgradeCode、数据根、schema、新依赖、权限或 CI/发布配置；没有后台遗留构建/测试任务。
+- 更正当前口径：生成 MSI 的两类快捷方式 `Target="[!Path]"`、安装后 `LaunchApplication FileKey="Path"` 都直指主程序。尚未接入激活器，手动激活器身份采样不能当作这些入口验证；不得继续声明 MSI 所有正常入口均归组。
+- 方案 A 只要求全机程序文件 + 每用户按需注册；真实第二账号与不同凭据 UAC 未验收，同账号删包后自愈不能替代。既有置备失败记录也不等于证明所有未签名置备路线不可能。
+- 下一步：先静态修正 MSI 实际入口；用户恢复资源操作后再做定向测试/格式、增量版本构建、升级/修复/回滚/卸载矩阵与后台原生验收。生产产物通过既有身份构建脚本注入版本，不能拿无版本的直接 cargo 构建替代。
+- 失败回滚、最低系统、breakaway、macOS、跨账号/真实数据权限生命周期仍阻塞发布；未创建 tag、Release 或 Latest。
+- 证据与待验证矩阵见[研究§16](../research/webview-process-attribution.md#16-第122次升级版本刷新与修复条件静态修改)，活动状态见 `.pi/tmp/pipeline-state.md`。
+
+## 前轮更新：第119次 MSI 全机注册/注销
 
 - WiX 片段新增两个即时自定义动作（`WixQuietExec`）：安装 `InstallFinalize` 后 `--register-identity`，卸载 `InstallFinalize` 前 `--unregister-identity`；条件分别 `NOT Installed` 与 `Installed AND NOT UPGRADINGPRODUCTCODE`。序列内条件必须写成元素文本，写成属性或子元素都会让 candle 失败。
 - 实测（提权静默）：`msiexec /i ... /qn INSTALLDIR=自选目录` → 退出 0、HKLM 记录 `scope=machine` 且含 `IdentityLauncherPath`、包计数 1；`msiexec /x ... /qn` → 退出 0、目录/HKLM 记录/包全部清零。
