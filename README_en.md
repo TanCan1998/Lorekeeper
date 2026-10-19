@@ -1,3 +1,5 @@
+> **LoreKeeper / 设定司 Fork**：[安装包与校验](docs-fork/releases/1.0.0-beta.md)（国内推荐 AtomGit，另提供 GitHub 源）· [Fork 文档](docs-fork/README.md)。仓库内文档、图片使用相对路径；以下 Pagekin 说明属于上游 Electron 产品，不代表 LoreKeeper 发布状态。
+
 <div align="center">
 
 **English** | [中文](README.md)
@@ -19,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/EthanYoQ/AI-Novel-Writer/releases/latest"><img src="https://img.shields.io/badge/Download-Windows%20%7C%20macOS-2b4c8c?style=for-the-badge" alt="Download for Windows and macOS" /></a>
+  <a href="docs-fork/releases/1.0.0-beta.md"><img src="https://img.shields.io/badge/Download-Windows%20%7C%20macOS-2b4c8c?style=for-the-badge" alt="Download for Windows and macOS" /></a>
 </p>
 
 <p align="center">
@@ -153,7 +155,7 @@ Embedding models also use the `/v1` address. Do not use `http://127.0.0.1:11434/
 
 ## Download and install
 
-Download official installers only from [GitHub Releases](https://github.com/EthanYoQ/AI-Novel-Writer/releases/latest).
+LoreKeeper 安装包：[AtomGit（国内推荐）及 GitHub 双源下载与校验](docs-fork/releases/1.0.0-beta.md)。以下安装示例保留自上游，仅适用于 Pagekin Electron 版。
 
 ### Windows x64
 

@@ -23,6 +23,16 @@
 
 所有Actions固定commit SHA；本次download-artifact v8.0.2为 `9000827ccba6bdab643e8b6fd33ac0654aef8333`。
 
+## AtomGit 镜像与双源说明
+
+详见[镜像协议](atomgit-mirror.md)。GitHub 仍为主仓库，原打包平台与验收门禁不变；AtomGit 只同步已提交源码和同一批已验证安装包，不重复编译或压缩。
+
+- 发布作业必须有仓库 Secret `ATOMGIT_ACCESS_TOKEN`。在 GitHub 公开并核验后，显式推送代码与标签、同步原始九附件；不能依赖 `GITHUB_TOKEN` 创建的 Release 事件自动触发另一个工作流。
+- 镜像完成前不登记双端发布成功；AtomGit 上传后匿名流式读回大小和 SHA256，更新并读回两端相同下载表格，推荐中国大陆用户使用 AtomGit。
+- `.github/workflows/atomgit-mirror.yml` 自动同步分支/标签，以及用户手动公开/编辑的 Release；手动填 `release_tag` 可仅重试既有发布同步。
+- 两端公开操作不是事务；失败保留现状，不删除、强推或覆盖原包。预发布属性保留，AtomGit Latest 语义不冒充 GitHub 独立 `make_latest`。
+- 本轮不触发打包、Rust 全量或 beta.1 发布，既有新版本暂停边界不变。
+
 ## 离线自检
 
 在仓库根执行：

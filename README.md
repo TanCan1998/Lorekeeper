@@ -6,7 +6,10 @@
 > - **上游同步**：通过 `git remote add upstream https://github.com/EthanYoQ/AI-Novel-Writer.git` 关联原仓库，定期 `git fetch upstream` 合并上游演进，避免功能分叉。
 > - **文档**：[Fork 文档入口](docs-fork/README.md)；迁移评估见 `docs-fork/research/2026-10-04-tauri-migration-evaluation.md`；pi agent 开发指南见 `docs-fork/agents/pi-development.md`。
 >
-> 以下内容与原项目一致。
+> - **LoreKeeper 下载**：[安装包与 SHA256 校验](docs-fork/releases/1.0.0-beta.md)。**中国大陆用户推荐 AtomGit**，同时保留 GitHub 下载源；这是已有预览版，不是正式版。
+> - **代码仓库**：[GitHub 主仓库](https://github.com/TanCan1998/Lorekeeper) · [AtomGit 镜像](https://atomgit.com/TanCan1998/Lorekeeper)。文档和图片使用仓库内相对路径，在两端均指向各自仓库。
+>
+> 下方保留上游 Pagekin 的产品说明；其版本记录和 Electron 安装示例不代表 LoreKeeper 的版本、安装方式或验收状态。
 
 
 <div align="center">
@@ -30,7 +33,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/EthanYoQ/AI-Novel-Writer/releases/latest"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Windows%20%7C%20macOS-2b4c8c?style=for-the-badge" alt="下载 Windows 与 macOS 安装包" /></a>
+  <a href="docs-fork/releases/1.0.0-beta.md"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Windows%20%7C%20macOS-2b4c8c?style=for-the-badge" alt="下载 Windows 与 macOS 安装包" /></a>
 </p>
 
 <p align="center">
@@ -164,7 +167,9 @@ API Key：  可以留空；界面要求时填任意占位值
 
 ## 下载与安装
 
-请只从 [GitHub Releases](https://github.com/EthanYoQ/AI-Novel-Writer/releases/latest) 下载正式安装包。
+**本 Fork 的 LoreKeeper 安装包**请从[下载与校验](docs-fork/releases/1.0.0-beta.md)选择 AtomGit（国内推荐）或 GitHub。两端文件相同；当前为预览版，不是正式版。
+
+下列 Pagekin 文件名及更新器说明保留自上游，仅适用于上游 Electron 产品，不适用于 LoreKeeper。
 
 ### Windows x64
 

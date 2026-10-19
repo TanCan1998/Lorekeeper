@@ -1,0 +1,71 @@
+name: AtomGit mirror
+
+# 只做远程 Git 同步与原样附件传输；不编译、不打包、不触发业务服务。
+on:
+  push:
+    branches: ['**']
+    tags: ['lorekeeper-v*']
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '可选：重试镜像已公开版本；留空仅同步代码'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atomgit-mirror
+  cancel-in-progress: false
+
+jobs:
+  code:
+    if: ${{ github.repository == 'TanCan1998/Lorekeeper' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: 检出可信同步脚本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 设置 Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.0
+      - name: 同步分支和标签（不强推、不删除）
+        env:
+          ATOMGIT_ACCESS_TOKEN: ${{ secrets.ATOMGIT_ACCESS_TOKEN }}
+        run: node tauri-app/scripts/sync-atomgit.mjs
+
+  release:
+    needs: code
+    if: ${{ github.repository == 'TanCan1998/Lorekeeper' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: atomgit-release-${{ github.event.release.tag_name || inputs.release_tag }}
+      cancel-in-progress: false
+    steps:
+      - name: 检出可信镜像脚本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          persist-credentials: false
+      - name: 设置 Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.0
+      - name: 传输并核验已公开版本
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATOMGIT_ACCESS_TOKEN: ${{ secrets.ATOMGIT_ACCESS_TOKEN }}
+          MIRROR_RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: node tauri-app/scripts/mirror-published-release.mjs

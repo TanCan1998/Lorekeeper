@@ -2,12 +2,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { mirrorPublishedRelease } from './mirror-published-release.mjs'
 import {
   RELEASE_REPOSITORY, releaseIdentity, assertReleaseAbsent, collectReleaseAssets,
   digest, ghJson, verifyUploadedAssets,
 } from './release-helpers.mjs'
 
 assert.equal(process.env.PUBLISH, 'true', '必须显式选择发布')
+assert(process.env.ATOMGIT_ACCESS_TOKEN, '双平台发布必须先配置 AtomGit 仓库 Secret')
 const identity = releaseIdentity(process.cwd(), process.env)
 // 不在打包流运行测试；发布前必须已有同一源码SHA的独立Rust全量成功记录。
 const validations = ghJson(['api', `repos/${RELEASE_REPOSITORY}/actions/workflows/tauri-rust-ci.yml/runs?head_sha=${identity.sha}&per_page=20`])
@@ -67,5 +69,13 @@ if (identity.makeLatest) {
   const latest = ghJson(['api', `repos/${RELEASE_REPOSITORY}/releases/latest`])
   assert.equal(latest.id, published.id, '最新版指针未指向本次发布')
 }
-fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## 发布完成\n\n${published.html_url}\n\n源码：\`${identity.sha}\`；安装包4个，全部资产${expected.length}个，大小/SHA256已核验。\n`)
+// GITHUB_TOKEN 创建 Release 不触发另一条 release 工作流，必须在本发布作业内显式同步。
+// 同步只推送已提交对象和上传原样文件，不重新构建。
+try {
+  execFileSync(process.execPath, ['tauri-app/scripts/sync-atomgit.mjs'], { stdio: ['ignore', 'pipe', 'pipe'] })
+  await mirrorPublishedRelease(identity.tag)
+} catch {
+  throw new Error('GitHub 已发布，但 AtomGit 同步未完成；请用镜像工作流重试同一标签，不要重跑打包或覆盖附件')
+}
+fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## 双平台发布完成\n\n${published.html_url}\n\n源码：\`${identity.sha}\`；安装包4个，全部资产${expected.length}个，大小/SHA256已核验。\n`)
 console.log('发布完成：', published.html_url, '源码：', identity.sha, '资产：', expected.length)
