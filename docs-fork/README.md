@@ -6,7 +6,7 @@
 
 ## 仓库与下载
 
-- [GitHub 主仓库](https://github.com/TanCan1998/Lorekeeper) · [AtomGit 镜像](https://atomgit.com/TanCan1998/Lorekeeper)。
+- [项目首页](../README.md) · [镜像与同步说明](agents/atomgit-mirror.md)。GitHub 与 AtomGit 共用同一份 README，本项目链接使用相对路径，上游链接保持原地址。
 - [安装包与 SHA256 校验：AtomGit（国内推荐）/ GitHub 双源](releases/1.0.0-beta.md)。当前为已公开预览版，不重新压缩或打包。
 - [自动代码同步、双平台 Release 与恢复说明](agents/atomgit-mirror.md)。两端共用 README，仓库内文档和图片使用相对路径。
 
