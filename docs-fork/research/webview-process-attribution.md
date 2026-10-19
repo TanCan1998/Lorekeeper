@@ -350,3 +350,19 @@ Node身份9+安装6+发布19共34通过，含真实NSIS语法编译；typecheck/
 2. 未在第二个 Windows 用户下验证“置备后新用户首次使用”；SYSTEM 上下文注册仍不等于全用户覆盖。
 3. 升级/修复/回滚、最低系统版本、外部工具 breakaway、macOS 未验证。
 4. 本轮实测使用提权安装；普通用户双击安装时的 UAC 提交流程未人工确认（静默不适用）。
+
+## 13. 第119次：MSI 全机注册/注销闭环与置备缺口
+
+### 已实测
+| 项 | 结果 |
+|---|---|
+| `pnpm tauri build --bundles msi` | 成功；candle 零错误（WiX 3 序列内自定义动作的条件必须写成元素文本，不能写属性或子元素） |
+| `msiexec /i ... /qn INSTALLDIR=自选目录`（提权） | 退出 0；落盘 4 个文件；`HKLM\Software\tancan1998\LoreKeeper` 记录 `schema=1 / scope=machine` 且含 `IdentityLauncherPath`（WindowsApps 内启动器） |
+| 安装后身份包 | `Get-AppxPackage` 计数 1，包全名 `com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy` |
+| `msiexec /x ... /qn`（提权） | 退出 0；目录、HKLM 记录、当前用户身份包全部清零 |
+| `Add-AppxProvisionedPackage -SkipLicense` | **未生效**：安装后 `provisioned=0` |
+
+### 结论
+- MSI 全机安装现在会：写 HKLM 记录 → 安装文件（含身份包与激活器资源）→ `InstallFinalize` 后调用 `lorekeeper-activate.exe --register-identity`（提权上下文）完成注册并回写 `IdentityLauncherPath`；卸载时在 `InstallFinalize` 前调用 `--unregister-identity` 移除当前用户注册并删除记录值。
+- **多用户仍不成立**：未签名身份包无法置备（`provisioned=0`），因此不能把“全机安装”写成“所有用户都已获得身份”。第二个用户需要各自提权注册，或改用可签名的身份包。这条必须在发布说明与验收中保持未完成状态。
+- 升级路径：自定义动作以 `Installed AND NOT UPGRADINGPRODUCTCODE` 保护，升级时不会注销身份；但升级后包版本变化会让 `IdentityLauncherPath` 指向旧版本目录，尚未实现升级后重新注册与路径刷新。

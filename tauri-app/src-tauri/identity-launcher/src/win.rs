@@ -29,20 +29,30 @@ pub const RECORD_SUBKEY: &str = r"Software\tancan1998\LoreKeeper";
 /// 读取候选：64 位native视图 + WOW6432Node + 当前用户两种视图。
 /// 安装器可能是 32 位（NSIS）或 64 位 MSI，写入视图不同；这里按明确清单读取，
 /// 不猜测、不搜索任意键。
-pub const RECORD_CANDIDATES: [(HKEY, &str, InstallScope); 4] = [
-    (HKEY_LOCAL_MACHINE, RECORD_SUBKEY, InstallScope::Machine),
+/// 候选同时带 PowerShell 可用的蜂巢前缀，注册助手据此写回同一位置。
+pub const RECORD_CANDIDATES: [(HKEY, &str, InstallScope, &str); 4] = [
+    (HKEY_LOCAL_MACHINE, RECORD_SUBKEY, InstallScope::Machine, "HKLM"),
     (
         HKEY_LOCAL_MACHINE,
         r"Software\WOW6432Node\tancan1998\LoreKeeper",
         InstallScope::Machine,
+        "HKLM",
     ),
-    (HKEY_CURRENT_USER, RECORD_SUBKEY, InstallScope::User),
+    (HKEY_CURRENT_USER, RECORD_SUBKEY, InstallScope::User, "HKCU"),
     (
         HKEY_CURRENT_USER,
         r"Software\WOW6432Node\tancan1998\LoreKeeper",
         InstallScope::User,
+        "HKCU",
     ),
 ];
+
+/// 命中记录的位置：注册表蜂巢前缀 + 子键，用于把结果写回同一处。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordLocation {
+    pub hive: &'static str,
+    pub subkey: &'static str,
+}
 // `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY` = ProcThreadAttributeValue(18, FALSE, TRUE, FALSE)。
 // 该常量由 Windows SDK 定义；windows-sys 未导出，此处按 SDK 取值声明。
 const PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY: usize = 0x0002_0012;
@@ -202,10 +212,23 @@ fn record_from(
 
 /// 全机安装优先于当前用户安装；两者都缺失时明确失败，不回退猜测路径。
 pub fn read_install_record() -> Result<InstallRecord, LauncherError> {
+    locate_install_record().map(|located| located.0)
+}
+
+/// 同一次读取同时返回记录与位置，避免写回时猜错蜂巢。
+pub fn locate_install_record() -> Result<(InstallRecord, RecordLocation), LauncherError> {
     let mut first_error = None;
-    for (hive, subkey, scope) in RECORD_CANDIDATES {
+    for (hive, subkey, scope, hive_name) in RECORD_CANDIDATES {
         match record_from(hive, subkey, scope) {
-            Ok(record) => return Ok(record),
+            Ok(record) => {
+                return Ok((
+                    record,
+                    RecordLocation {
+                        hive: hive_name,
+                        subkey,
+                    },
+                ))
+            }
             Err(LauncherError::RecordMissing) => continue,
             Err(error) => {
                 first_error.get_or_insert(error);
@@ -426,7 +449,8 @@ pub fn is_elevated() -> bool {
 /// 未签名身份包必须提权才能注册（本机实测 0x80073D2B），因此这里只在已提权时执行；
 /// 未提权由调用方负责显式提升，绝不静默伪装成功。
 pub fn register_identity() -> Result<String, LauncherError> {
-    let record = read_install_record()?;
+    // 记录可能在全机（MSI）或当前用户（NSIS）蜂巢，写回必须落在同一处。
+    let (record, location) = locate_install_record()?;
     let msix = format!(
         "{}\\identity\\LoreKeeper.msix",
         record.install_location.trim_end_matches(['\\', '/'])
@@ -439,7 +463,7 @@ pub fn register_identity() -> Result<String, LauncherError> {
             "注册身份组件需要管理员权限".to_string(),
         ));
     }
-    let key = RECORD_SUBKEY;
+    let key_path = format!("{}:\\{}", location.hive, location.subkey);
     let script = format!(
         "$ErrorActionPreference='Stop'; \
          try {{ Add-AppxProvisionedPackage -Online -PackagePath '{msix}' -SkipLicense | Out-Null }} catch {{ }}; \
@@ -448,7 +472,8 @@ pub fn register_identity() -> Result<String, LauncherError> {
          if(-not $p){{ throw '注册后仍找不到身份包' }}; \
          $launcher=Join-Path $p.InstallLocation 'lorekeeper-identity-launcher.exe'; \
          if(-not (Test-Path $launcher)){{ throw '身份包内缺少启动器' }}; \
-         Set-ItemProperty -Path ('HKCU:\\{key}') -Name 'IdentityLauncherPath' -Value $launcher; \
+         if(-not (Test-Path '{key_path}')){{ New-Item -Path '{key_path}' -Force | Out-Null }}; \
+         Set-ItemProperty -Path '{key_path}' -Name 'IdentityLauncherPath' -Value $launcher; \
          [Console]::Out.Write($launcher)"
     );
     let windir = std::env::var_os("WINDIR")
@@ -470,6 +495,37 @@ pub fn register_identity() -> Result<String, LauncherError> {
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// 卸载助手：移除当前用户注册与全机置备，并清除记录中的启动器路径。
+pub fn unregister_identity() -> Result<(), LauncherError> {
+    let (_, location) = locate_install_record()?;
+    if !is_elevated() {
+        return Err(LauncherError::RecordInvalid(
+            "注销身份组件需要管理员权限".to_string(),
+        ));
+    }
+    let key_path = format!("{}:\\{}", location.hive, location.subkey);
+    let script = format!(
+        "$ErrorActionPreference='Continue'; \
+         Get-AppxPackage -Name {PACKAGE_NAME} | Remove-AppxPackage -ErrorAction SilentlyContinue; \
+         try {{ Get-AppxProvisionedPackage -Online | Where-Object {{ $_.DisplayName -eq '{PACKAGE_NAME}' }} | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Out-Null }} catch {{ }}; \
+         if(Test-Path '{key_path}') {{ Remove-ItemProperty -Path '{key_path}' -Name 'IdentityLauncherPath' -ErrorAction SilentlyContinue }}; \
+         [Console]::Out.Write('unregistered')"
+    );
+    let windir = std::env::var_os("WINDIR")
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| r"C:\Windows".to_string());
+    let output = std::process::Command::new(format!(r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"))
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .output()
+        .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
+    if !output.status.success() {
+        return Err(LauncherError::RecordInvalid(
+            "注销身份组件失败".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// 启动失败时给出可见提示；正常启动不弹窗、不抢焦点。

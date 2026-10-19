@@ -1,6 +1,8 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **118** 次：真实产品经激活器启动后，主程序与 6 个 WebView2 读回同一包身份；提权注册、真实安装与卸载清理全部实测通过。MSI 注册与多用户仍待做。
+> [当前入口](./CURRENT.md) · 第 **119** 次：MSI 全机安装后注册、卸载前注销均已实测通过；`Add-AppxProvisionedPackage` 未生效，多用户待解决。
+>
+> 第 **118** 次：真实产品经激活器启动后，主程序与 6 个 WebView2 读回同一包身份；提权注册、真实安装与卸载清理全部实测通过。MSI 注册与多用户仍待做。
 >
 > 第 **117** 次：身份包真实产出、随安装器分发，并完成真实静默安装/卸载回归；发现未签名注册必须提权（0x80073D2B）。归组未在产品上验收，发布暂停。
 >
@@ -29,7 +31,15 @@
 | 产品安装/卸载/项目删除/注册表清理 | **未执行** | 临时测试部署不能替代原生产品生命周期验收 |
 | 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
-## 本次更新：第118次真实产品归组与提权注册
+## 本次更新：第119次 MSI 全机注册/注销
+
+- WiX 片段新增两个即时自定义动作（`WixQuietExec`）：安装 `InstallFinalize` 后 `--register-identity`，卸载 `InstallFinalize` 前 `--unregister-identity`；条件分别 `NOT Installed` 与 `Installed AND NOT UPGRADINGPRODUCTCODE`。序列内条件必须写成元素文本，写成属性或子元素都会让 candle 失败。
+- 实测（提权静默）：`msiexec /i ... /qn INSTALLDIR=自选目录` → 退出 0、HKLM 记录 `scope=machine` 且含 `IdentityLauncherPath`、包计数 1；`msiexec /x ... /qn` → 退出 0、目录/HKLM 记录/包全部清零。
+- 记录写回位置按命中的蜂巢（HKLM/HKCU，含 WOW6432Node），修掉了此前固定写 HKCU 的错误。
+- **缺口**：`Add-AppxProvisionedPackage -SkipLicense` 未生效（`provisioned=0`），多用户置备不成立；升级后包版本变化会让启动器路径指向旧目录，重新注册/路径刷新未实现。
+- 详见[研究§13](../research/webview-process-attribution.md#13-第119次msi-全机注册注销闭环与置备缺口)。
+
+## 前轮更新：第118次真实产品归组与提权注册
 
 - 提权静默安装（`/S /NS /D=自选目录`）退出 0：身份包注册成功（Status=0），`IdentityLauncherPath` 指向 WindowsApps 内启动器且文件存在。
 - **真实产品启动核验**：经激活器启动后，主程序 PID 28944 位于所选目录，包身份与 6 个 WebView2 子进程完全一致（去重后仅一个包全名）。

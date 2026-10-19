@@ -11,7 +11,7 @@
         <RegistryKey
           Root="HKLM"
           Key="Software\tancan1998\LoreKeeper"
-          Action="createAndRemoveOnUninstall"
+          ForceDeleteOnUninstall="yes"
         >
           <RegistryValue Type="integer" Name="IdentityRecordSchema" Value="1" KeyPath="yes" />
           <RegistryValue
@@ -24,5 +24,37 @@
         </RegistryKey>
       </Component>
     </DirectoryRef>
+    <!-- 安装/卸载后调用身份注册助手：MSI 本身已提权，助手在此上下文执行。 -->
+    <CustomAction
+      Id="SetRegisterIdentityCmd"
+      Property="WixQuietExecCmdLine"
+      Value="&quot;[INSTALLDIR]lorekeeper-activate.exe&quot; --register-identity"
+    />
+    <CustomAction
+      Id="RegisterIdentity"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec"
+      Execute="immediate"
+      Return="ignore"
+    />
+    <CustomAction
+      Id="SetUnregisterIdentityCmd"
+      Property="WixQuietExecCmdLine"
+      Value="&quot;[INSTALLDIR]lorekeeper-activate.exe&quot; --unregister-identity"
+    />
+    <CustomAction
+      Id="UnregisterIdentity"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec"
+      Execute="immediate"
+      Return="ignore"
+    />
+    <!-- WiX 3 的序列内 Custom：条件是元素文本，不是属性也不是子元素。 -->
+    <InstallExecuteSequence>
+      <Custom Action="SetRegisterIdentityCmd" Before="RegisterIdentity">NOT Installed</Custom>
+      <Custom Action="RegisterIdentity" After="InstallFinalize">NOT Installed</Custom>
+      <Custom Action="SetUnregisterIdentityCmd" Before="UnregisterIdentity">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="UnregisterIdentity" Before="InstallFinalize">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
   </Fragment>
 </Wix>

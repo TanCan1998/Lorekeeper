@@ -68,7 +68,7 @@ test('安装记录在MSI写全机、NSIS写当前用户，键名与启动器单�
   assert(fragment.includes('Value="machine"'))
   assert(hook.includes('"user"'))
   assert(fragment.includes('DirectoryRef Id="INSTALLDIR"'))
-  assert(fragment.includes('Action="createAndRemoveOnUninstall"'))
+  assert(fragment.includes('ForceDeleteOnUninstall="yes"'))
   assert(fragment.includes('Win64="yes"'))
   // 记录只追加命名值，不搬运文件、不建链接、不改模板默认值。
   assert.doesNotMatch(fragment, /junction|symboliclink|CopyFile/i)
@@ -77,6 +77,19 @@ test('安装记录在MSI写全机、NSIS写当前用户，键名与启动器单�
   const shortcuts = [...hook.matchAll(/CreateShortcut "([^"]+)" "([^"]+)"/g)]
   assert(shortcuts.length > 0)
   for (const [, , target] of shortcuts) assert.match(target, /\$INSTDIR\\lorekeeper-activate\.exe$/)
+})
+
+test('MSI在安装后注册身份、卸载前注销，且只在对应阶段触发', () => {
+  assert(fragment.includes('SetRegisterIdentityCmd'))
+  assert(fragment.includes('--register-identity'))
+  assert(fragment.includes('--unregister-identity'))
+  assert(fragment.includes('WixQuietExec'))
+  assert(fragment.includes('BinaryKey="WixCA"'))
+  // 安装阶段：NOT Installed；卸载阶段：Installed AND NOT UPGRADINGPRODUCTCODE（升级不清身份）。
+  assert.match(fragment, /<Custom Action="RegisterIdentity" After="InstallFinalize">NOT Installed<\/Custom>/)
+  assert.match(fragment, /<Custom Action="UnregisterIdentity" Before="InstallFinalize">Installed AND NOT UPGRADINGPRODUCTCODE<\/Custom>/)
+  // 记录键随组件卸载删除，不残留全机键。
+  assert(fragment.includes('ForceDeleteOnUninstall="yes"'))
 })
 
 test('WiX片段已接入MSI构建，且不进入主crate依赖图', () => {
