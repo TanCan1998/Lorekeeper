@@ -1,6 +1,6 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **125** 次：用户要求把剩余未迁移项一次性合并迁移、不切片，并授权最后统一验证。已完成源码：大纲/蓝图作者恢复全链路、目录进度登记、合成前五个可变性守卫、头像双语与缓存、MSI 正常入口改走激活器、陈旧“未迁移”注释纠正。**验证通过**：`cargo check --all-targets` 0 错误，`cargo test --lib` **1734 通过 0 失败**，定向 344 通过，24 文件 rustfmt 通过，`pnpm typecheck`/`lint` 通过，安装合同 13 通过，频道覆盖无缺失；前端 vitest 2757 通过、1 项既存品牌大小写断言失败（前端源码与测试均未改）。只新增既有 windows-sys feature，无新 crate、schema、锁或权限变更；HEAD仍为`3e8101ba`。**未构建/安装 MSI、未注册提权、未提交推送、未发布**。
+> [当前入口](./CURRENT.md) · 第 **125** 次：用户要求把剩余未迁移项一次性合并迁移、不切片，并授权最后统一验证与提交推送。已分 7 个主题提交并推送 `3e8101ba..011b4b0f`，**云端 Rust 全量与配套检查全部通过**。已完成源码：大纲/蓝图作者恢复全链路、目录进度登记、合成前五个可变性守卫、头像双语与缓存、MSI 正常入口改走激活器、陈旧“未迁移”注释纠正。**验证通过**：`cargo check --all-targets` 0 错误，`cargo test --lib` **1734 通过 0 失败**，定向 344 通过，24 文件 rustfmt 通过，`pnpm typecheck`/`lint` 通过，安装合同 13 通过，频道覆盖无缺失；前端 vitest 2757 通过、1 项既存品牌大小写断言失败（前端源码与测试均未改）。只新增既有 windows-sys feature，无新 crate、schema、锁或权限变更；HEAD仍为`3e8101ba`。**未构建/安装 MSI、未注册提权、未提交推送、未发布**。
 >
 > 第 **124** 次：已静态接入项目文件系统错误文案的已保存界面语言，补7个回归用例未执行；只改文案选择与错误呈现，不改权限/租约/文件操作。
 >
@@ -49,7 +49,33 @@
 
 - 修复记录（编译阶段）：`source_row` 闭包错误类型、`ImportGenerationContext`/`ProjectCoreData` 缺 `Deserialize`、`MainGenerationRunHandle` 误用 `is_null`、`AvatarCache` 缺 `Debug`（改为只打印作用域与条目数的自定义实现）；`installer-contract` 里模板字符串转义导致正则失配，改为 `indexOf` 切片断言。
 - 唯一失败项：`src/services/__tests__/safe-call-diagnostic.test.ts:60` 期望 `# Lorekeeper safe diagnostics`，实现已是 `# LoreKeeper safe diagnostics`（品牌大小写），本轮未改任何前端源码与测试，属既存失败，未修复。
-- 未做：MSI 构建 / 安装 / 卸载 / 包注册 / 提权 / GUI 与原生文件选择器 / 真实模型·MCP·云业务 / 提交推送 / 发布。
+- 未做：MSI 构建 / 安装 / 卸载 / 包注册 / 提权 / GUI 与原生文件选择器 / 真实模型·MCP·云业务 / 发布。
+
+### 提交与云端验证（2026-10-19）
+
+工作区按主题分成 7 个提交，范围 `3e8101ba..011b4b0f`，已推送 `origin/master`；提交消息本地检查 7/7 合规，无 BOM/CRLF/尾空白。
+
+| 提交 | 主题 |
+|---|---|
+| `ea635620` | 身份包版本刷新与安装记录生命周期 |
+| `07e242e1` | EPUB 导入的作者原稿与参考语料 |
+| `cb91857f` | 项目文件系统错误文案跟随界面语言 |
+| `0ec40039` | 角色头像文案本地化与会话域缓存 |
+| `3f9db5bd` | 大纲与蓝图作者恢复写入链 |
+| `12ef37f8` | MSI 正常入口改由身份激活器启动 |
+| `011b4b0f` | 第125次交接与验证记录 |
+
+云端对应同一 SHA `011b4b0f`：
+
+| 工作流 | 运行 | 结论 |
+|---|---|---|
+| Tauri Rust CI（Windows 全量） | [39282333603](https://github.com/TanCan1998/Lorekeeper/actions/runs/39282333603) | **success** |
+| Commit message CI | [39282333517](https://github.com/TanCan1998/Lorekeeper/actions/runs/39282333517) | success |
+| Gitleaks | [39282333549](https://github.com/TanCan1998/Lorekeeper/actions/runs/39282333549) | success |
+| AtomGit mirror | [39282333525](https://github.com/TanCan1998/Lorekeeper/actions/runs/39282333525) | success |
+
+- README 与交接此前只写“未提交推送”，已在本次文档提交中更正；代码提交 `3e8101ba..12ef37f8` 之后未再改动源码。
+- 前端 vitest 的 1 项既存品牌大小写断言失败**未修复**，也未在本次提交中改动前端源码或测试；云端 PR CI 只在 PR 上运行，本次推送未触发它。
 
 ## 前轮更新：第124次项目文件系统错误文案双语迁移（未验收）
 
