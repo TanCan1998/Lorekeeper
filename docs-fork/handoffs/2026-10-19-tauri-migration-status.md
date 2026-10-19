@@ -1,6 +1,6 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **115** 次：未签名小启动器+外部主程序自选目录取得真实归组正向结果，完成默认不签名的构建契约切片。真实产品启动器/安装器尚未接入，发布暂停。**不是LoreKeeper产品修复或新版发布完成报告。**
+> [当前入口](./CURRENT.md) · 第 **116** 次：产品身份启动器与全机安装记录已实现并真实构建 MSI/NSIS（仅构建，未安装）。身份包注册、激活入口与多用户置备未完成，发布暂停。**不是LoreKeeper产品修复或新版发布完成报告。**
 
 ## 已验证状态（Rust/前端功能基线沿用第110次，本轮构建检查另列）
 
@@ -25,7 +25,16 @@
 | 产品安装/卸载/项目删除/注册表清理 | **未执行** | 临时测试部署不能替代原生产品生命周期验收 |
 | 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
-## 本次更新：第115次未签名与自选目录
+## 本次更新：第116次产品启动器与安装记录
+
+- 新增独立 crate `identity-launcher/`（仅官方 `windows-sys`，不进主 crate 依赖图）。包内模式：`GetCurrentPackageFullName` 通过 → 读记录 → 校验路径（绝对/无上级片段/无引号控制字符/文件名固定/父目录等于安装目录/拒绝链接与缺失）→ 以 `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY`(0x20012)=2 启动主程序并透传退出码。包外模式：绝不无身份启动，只按仓库包全名推导包族名并 `explorer.exe shell:AppsFolder\<AUMID>` 激活。无参数，错误中文 MessageBox + 非 0 退出码。
+- 安装记录 schema 1（`IdentityRecordSchema`/`IdentityPackageName`/`InstallScope`/`InstallLocation`，`MainExecutable` 可省按固定名补全）；读取候选 HKLM/HKCU 各含 WOW6432Node，声明范围必须与命中位置一致。NSIS `POSTINSTALL` 写当前用户；MSI 片段写 HKLM 并随卸载移除，键名 `Software\tancan1998\LoreKeeper`（模板 `Manufacturer`）。
+- 本机验证：启动器 10/10；`pnpm tauri build --bundles msi --bundles nsis` EXIT=0（MSI 53,186,560 B / NSIS 49,738,678 B，WiX 3.14.1 自动下载）；`main.wxs` 含 `ComponentRef LoreKeeperInstallRecord`；MSI `Registry` 表只读查询到 4 条 HKLM 记录；`installer.nsi` 第 706 行插入 `NSIS_HOOK_POSTINSTALL`；Node 18 项合同通过（另发布 19 项）。
+- 明确未做：没有安装、没有写注册表、没有注册身份包、没有改快捷方式。启动器尚未进入 MSIX 内容或作为安装资源；两个安装器均未注册/置备身份；快捷方式仍指向安装目录 exe；真实安装/升级/回滚/卸载、多用户、最低系统、工具 breakaway、macOS 未验证。
+- 主 crate 与前端未改动（Rust 语义切片累计仍 0，云端全量基线仍 44259fa3/39148045359）。发布继续暂停，无新 tag/Release/Latest。
+- 详见[研究§10](../research/webview-process-attribution.md#10-第116次产品启动器与全机安装记录接线构建验证)与[接入计划](../plans/windows-sparse-identity-integration.md)。
+
+## 前轮更新：第115次未签名与自选目录
 
 - 用户明确不要签名、要真实归组/主程序自选目录，接受小型完整MSIX身份启动器+外部主程序逻辑映射；MSI全机/多用户优先。不是WindowsApps联接或VFS伪装。
 - 先完成消息窗口身份对照；普通CreateProcess不传递身份，公开桌面进程策略0x02则使外部主程序和WebView2读回同包身份。随后4次/48采样真实Taskmgr对照：两个目录正向各8/8自有PID共同应用组，普通创建/直接启动两个负向仍拆组。同字节主程序，无浏览器flag，运行库155.0.4283.62。

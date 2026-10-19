@@ -10,6 +10,8 @@ const nativeRoot = path.join(root, 'tauri-app/src-tauri')
 const read = file => fs.readFileSync(path.join(nativeRoot, file), 'utf8')
 const config = JSON.parse(read('tauri.conf.json'))
 const hook = read('installer/hooks.nsh')
+const fragment = read('installer/lorekeeper-install-record.wxs')
+const launcher = read('identity-launcher/src/win.rs')
 
 test('中文双安装包保留应用标识、安装范围及既有MSI升级身份', () => {
   assert.equal(config.productName, 'LoreKeeper')
@@ -50,6 +52,50 @@ test('清理入口不接收目录参数、不注册IPC、不加载业务数据',
   assert.equal((source.match(/if !confirm\(/g) || []).length, 2)
   assert(source.includes('self.revalidate(home, protected)?'))
   assert(source.includes('same_object(&self.identity, &latest.identity)'))
+})
+
+test('安装记录在MSI写全机、NSIS写当前用户，键名与启动器单一来源', () => {
+  // 与 Tauri 生成的模板一致：Manufacturer=tancan1998，Directory Id=INSTALLDIR。
+  assert(launcher.includes('r"Software\\tancan1998\\LoreKeeper"'))
+  assert(fragment.includes('Key="Software\\tancan1998\\LoreKeeper"'))
+  assert(hook.includes('"${MANUPRODUCTKEY}"'))
+  for (const name of ['IdentityRecordSchema', 'IdentityPackageName', 'InstallScope', 'InstallLocation']) {
+    assert(fragment.includes(`Name="${name}"`), `片段缺少 ${name}`)
+    assert(hook.includes(`"${name}"`), `NSIS 缺少 ${name}`)
+  }
+  assert(fragment.includes('Root="HKLM"'))
+  assert(fragment.includes('Value="machine"'))
+  assert(hook.includes('"user"'))
+  assert(fragment.includes('DirectoryRef Id="INSTALLDIR"'))
+  assert(fragment.includes('Action="createAndRemoveOnUninstall"'))
+  assert(fragment.includes('Win64="yes"'))
+  // 记录只追加命名值，不搬运文件、不建链接、不改模板默认值。
+  assert.doesNotMatch(fragment, /junction|symboliclink|CopyFile/i)
+  assert.doesNotMatch(hook, /CopyFiles|CreateShortCut|SetOutPath/)
+})
+
+test('WiX片段已接入MSI构建，且不进入主crate依赖图', () => {
+  const wix = config.bundle.windows.wix
+  assert.deepEqual(wix.fragmentPaths, ['installer/lorekeeper-install-record.wxs'])
+  assert.deepEqual(wix.componentRefs, ['LoreKeeperInstallRecord'])
+  assert.equal(wix.version, '1.0.1.0')
+  // 启动器是独立 crate：不改主应用依赖、不参与 Tauri 打包主体。
+  assert.doesNotMatch(read('Cargo.toml'), /identity-launcher/)
+  assert(fs.existsSync(path.join(nativeRoot, 'identity-launcher/Cargo.toml')))
+  assert(fs.existsSync(path.join(nativeRoot, 'identity-launcher/src/main.rs')))
+})
+
+test('启动器只在真实包身份下启动主程序，无身份时只激活身份包', () => {
+  assert(launcher.includes('GetCurrentPackageFullName'))
+  assert(launcher.includes('PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY'))
+  assert(launcher.includes('POLICY_DISABLE_PROCESS_TREE: u32 = 2'))
+  assert(launcher.includes('shell:AppsFolder'))
+  assert(launcher.includes('EXTENDED_STARTUPINFO_PRESENT'))
+  // 反向约束：不关闭沙箱、不加浏览器诊断参数、不按命令行任意路径启动。
+  assert.doesNotMatch(launcher, /--edge-webview|no-sandbox|disable-gpu|CREATE_NEW_CONSOLE/)
+  for (const key of ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', 'RegistryWrite', 'CreateSymbolicLink']) {
+    assert(!launcher.includes(key), `启动器不应包含 ${key}`)
+  }
 })
 
 test('macOS保持拖拽默认保留，提供中文说明及宿主显示名', () => {

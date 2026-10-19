@@ -1,4 +1,15 @@
 ; 仅扩展当前用户安装；不删除共享 WebView2、其他应用或最近项目列表。
+
+; 安装记录：身份启动器据此在用户所选目录中定位真实主程序。
+; 只追加本应用键下的命名值，不改模板默认值、不移动文件、不建链接。
+!macro NSIS_HOOK_POSTINSTALL
+  WriteRegDWORD SHCTX "${MANUPRODUCTKEY}" "IdentityRecordSchema" 1
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "IdentityPackageName" "com.tancan1998.lorekeeper"
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "InstallScope" "user"
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "MainExecutable" "$INSTDIR\${MAINBINARYNAME}.exe"
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   ; 接管模板的“删除应用数据”勾选框，禁止模板随后按 AppData 路径递归删除。
   StrCpy $R8 $DeleteAppDataCheckboxState

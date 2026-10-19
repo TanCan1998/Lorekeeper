@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  全机安装记录（MSI）：身份启动器只按明确记录定位主程序，不搜索、不猜测路径。
+  由 tauri.conf.json 的 bundle.windows.wix.fragmentPaths / componentRefs 引用。
+  主程序名固定为 lorekeeper.exe，因此这里只记录安装目录，避免目录属性拼接歧义。
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="LoreKeeperInstallRecord" Guid="*" Win64="yes">
+        <RegistryKey
+          Root="HKLM"
+          Key="Software\tancan1998\LoreKeeper"
+          Action="createAndRemoveOnUninstall"
+        >
+          <RegistryValue Type="integer" Name="IdentityRecordSchema" Value="1" KeyPath="yes" />
+          <RegistryValue
+            Type="string"
+            Name="IdentityPackageName"
+            Value="com.tancan1998.lorekeeper"
+          />
+          <RegistryValue Type="string" Name="InstallScope" Value="machine" />
+          <RegistryValue Type="string" Name="InstallLocation" Value="[INSTALLDIR]" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

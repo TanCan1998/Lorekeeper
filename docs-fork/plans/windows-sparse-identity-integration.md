@@ -2,6 +2,22 @@
 
 日期：2026-10-19，第115次。用户已确认“不签名、真实归组、主程序自选目录、预留签名位置”，并选择此方案。**当前仅完成机制验证和构建契约切片，尚未接入产品启动器或安装器。** 文件名沿用早期草案；签名稀疏包已不是默认方案，历史证据见[研究§8](../research/webview-process-attribution.md#8-第114次签名稀疏身份包原路径正向验证)，当前证据见[研究§9](../research/webview-process-attribution.md#9-第115次未签名小启动器与外部自选目录)。
 
+## 实现进度（第116次更新）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 原生身份启动器（包内带身份启动 / 包外只激活） | **已实现**，10 项单测通过 | `tauri-app/src-tauri/identity-launcher/` |
+| 安装记录契约（schema 1，HKLM/HKCU + WOW 视图，范围一致性校验） | **已实现** | 同上 `src/win.rs`、`src/record.rs` |
+| NSIS 当前用户记录写入 | **已实现**，生成的 `installer.nsi` 确认插入 | `installer/hooks.nsh` |
+| MSI 全机记录（HKLM，随卸载移除） | **已实现并真实构建**，MSI `Registry` 表核出 4 条 | `installer/lorekeeper-install-record.wxs` |
+| 身份包产物（清单 + 启动器 + 资源 → MSIX） | 仅清单生成；启动器未打包 | `scripts/windows-identity.mjs` |
+| 启动器随 NSIS/MSI 安装 | 未接线 | 需 `bundle.resources` 与构建顺序 |
+| 激活入口（快捷方式指向激活器） | 未接线 | 仍是安装目录 exe |
+| MSIX 注册/置备（MSI 全机 stage/provision、每用户注册） | 未实现 | 需 MSI 自定义动作与多用户验证 |
+| 真实安装/升级/回滚/卸载、多用户、macOS | 未验证 | 发布门禁 |
+
+本轮只构建安装包，**没有安装、没有注册身份包、没有改快捷方式**；用户级与全机记录已分别落到两条安装链，键名与启动器单一来源。
+
 ## 确定的布局
 
 | 位置 | 内容 | 约束 |

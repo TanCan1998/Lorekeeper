@@ -1,12 +1,11 @@
 # 当前交接入口
 
-- 最新：[第115次：未签名小启动器、外部自选目录归组与构建契约](./2026-10-19-tauri-migration-status.md)。**真实LoreKeeper启动器/安装器尚未接入，不是产品修复或发布完成报告。**
-- 用户已确认：不签名、真实归组、主程序自选目录、预留签名位置；使用小型完整MSIX身份启动器+外部主程序逻辑映射，MSI全机/多用户优先。签名稀疏包不再是默认主线。
-- 本轮最简宿主4次/48份采样：公开进程策略0x02使两个外部目录均8/8自有PID同组，普通创建/直接启动仍拆组；同字节EXE、无浏览器flag。有效UIA只读不排序/展开，任务管理器/探针前台采样均0；一轮其他句柄变化如实保留。见[研究§9](../research/webview-process-attribution.md#9-第115次未签名小启动器与外部自选目录)。
-- 新增 `tauri-app/scripts/windows-identity.mjs`、同名Node测试、`src-tauri/installer/windows-identity.json`。仅生成构建契约/清单；默认unsigned，证书字段null，signed尚未实现则报错。没有接入build.rs、安装器或发布流程。
-- 本轮身份9+安装6+发布19共34测试通过，typecheck/lint退出0，MakeAppx候选清单语法通过（实验占位二进制，未注册）。Rust/前端功能代码未变；最近云端全量仍44259fa3 / 39148045359：1689通过、all-targets成功，Rust语义切片累计0，不冒充新全量。
-- 临时包finally全用户剩余0，独立复核当前用户包0、自有探针进程0。先行自开Taskmgr33880已结束；有效轮复用的23564不是本轮所有，不关闭。无新证书或信任变更；第114次临时证书/私钥清理结果仍是历史基线。
-- [接入计划](../plans/windows-sparse-identity-integration.md)：下一切片原生启动器/安装记录与合成工具子进程策略，随后真实LoreKeeper后台验证、MSI全机stage/provision/每用户注册、升级/修复/回滚/卸载。候选最小能力、文件/注册表虚拟化、直接EXE入口、多用户和macOS均待验收。
-- 既有运行时代码44259fa3：LoreKeeper / 1.0.0-beta.1、中文NSIS/MSI、安全清理与显式Latest已实现；identifier/数据根/UpgradeCode不变。默认保留，删除须显式目录+两次确认，只清本应用注册键。
-- 产品归组和生命周期未通过前继续暂停新版；无新tag、Release或Latest变化，公开仍[旧1.0.0-beta](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)。真实产品安装卸载、项目删除/注册表清理、模型/MCP/云业务仍未执行。
-- 禁止子代理、不抢焦点、不改Electron/根构建及锁文件/上游docs；授权和在飞状态见 `.pi/tmp/pipeline-state.md`。
+- 最新：[第116次：产品身份启动器与全机安装记录（构建验证）](./2026-10-19-tauri-migration-status.md)。**只做构建与单测，没有安装、没有注册身份包；产品未验收，发布继续暂停。**
+- 用户要求“继续”落地真实启动器与 MSI 全机/多用户。本轮已把机制转成产品代码并真实生成 MSI 与 NSIS。
+- 新增独立 crate `tauri-app/src-tauri/identity-launcher/`（仅官方 `windows-sys`，不进主 crate 依赖图）：包内模式校验证安装记录与文件后，用公开 `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY`(2) 带身份启动真实主程序并透传退出码；包外模式绝不无身份启动，只用 `shell:AppsFolder\<AUMID>` 激活身份包。单测 10/10。
+- 安装记录（schema 1）已双向接线：NSIS `POSTINSTALL` 写当前用户；MSI 新 WiX 片段写 HKLM（`DirectoryRef INSTALLDIR`、`Action=createAndRemoveOnUninstall`、`Win64=yes`）。键名 `Software\tancan1998\LoreKeeper` 与模板 `Manufacturer` 一致。
+- 本机验证：`pnpm tauri build --bundles msi --bundles nsis` EXIT=0，产出 MSI 53,186,560 B 与 NSIS 49,738,678 B；生成的 `main.wxs` 含 `ComponentRef LoreKeeperInstallRecord`；MSI `Registry` 表只读查询到 4 条 HKLM 记录；生成的 `installer.nsi` 在第 706 行插入 `NSIS_HOOK_POSTINSTALL`。Node 合同 18 项（安装 7 + 身份 9，另有发布 19）通过，含真实 `makensis` 语法编译。
+- **仍未完成**：启动器未打包进 MSIX、也未随安装包安装；两个安装器都未注册/置备 MSIX 身份；快捷方式仍指向安装目录 exe（包外启动器未被入口使用）；真实安装/升级/修复/回滚/卸载、多用户、最低系统版本、外部工具 breakaway、macOS 均未验证。
+- 因此“Windows 真实归组”仍停在最简宿主与机制层；运行时代码基线仍 44259fa3（LoreKeeper / 1.0.0-beta.1、中文 NSIS/MSI、安全清理、identifier/数据根/UpgradeCode 不变），最近云端全量 39148045359：1689 通过、all-targets 成功，Rust 语义切片累计 0（本轮未改主 crate）。
+- 发布继续暂停：无新 tag/Release/Latest，公开仍[旧 1.0.0-beta](https://github.com/TanCan1998/Lorekeeper/releases/tag/lorekeeper-v1.0.0-beta)。真实产品安装卸载、项目删除/注册表清理、模型/MCP/云业务仍未执行。
+- 禁止子代理、不抢焦点、不改 Electron/根构建及锁文件/上游 docs；授权与在飞状态见 `.pi/tmp/pipeline-state.md`，机制证据见[研究§10](../research/webview-process-attribution.md#10-第116次产品启动器与全机安装记录接线构建验证)。

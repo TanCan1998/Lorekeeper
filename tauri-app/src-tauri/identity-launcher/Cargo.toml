@@ -1,0 +1,21 @@
+[package]
+name = "lorekeeper-identity-launcher"
+version = "1.0.0-beta.1"
+edition = "2021"
+publish = false
+description = "LoreKeeper 身份启动器：包内带身份启动主程序，包外只激活身份包"
+
+# 独立 crate：不进入主应用的依赖图，也不改变 Tauri 打包主体。
+# 只使用已在主 crate lock 中存在的官方 windows-sys，避免新增第三方依赖。
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    # CreateProcessW 的参数含 SECURITY_ATTRIBUTES，windows-sys 用该 feature 门禁。
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }

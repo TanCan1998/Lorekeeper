@@ -262,3 +262,37 @@ EXE SHA256：`e875add803a75aabf91be0cd73c9351aa87b9ff491d45d87d8eebea8041da445`�
 Node身份9+安装6+发布19共34通过，含真实NSIS语法编译；typecheck/lint退出0。候选清单通过既有MakeAppx，仅使用实验占位启动器做语法检查，没有注册该产品名小包或当作可安装产品。候选仅runFullTrust，少于探针清单的额外unvirtualizedResources，仍须重验最小能力、文件/注册表虚拟化、数据根和外部工具兼容。
 
 真实LoreKeeper、MSI机器级stage/provision/各用户注册与升级卸载/回滚、直接主EXE入口、外部CLI/MCP的脱离包环境策略及macOS均未验收。以上证明本机**未签名且主程序真实位于所选外部目录**可以归组，不等于安装器已经支持所有用户。接入步骤见[更新后的计划](../plans/windows-sparse-identity-integration.md)，发布仍暂停。
+
+## 10. 第116次：产品启动器与全机安装记录接线（构建验证）
+
+用户要求继续落地真实启动器与 MSI 全机/多用户。本轮把最简验证转成产品代码并真实构建两个安装包，但**没有执行安装/卸载，也没有注册身份包**。
+
+### 新增产品代码
+
+- 独立 crate `tauri-app/src-tauri/identity-launcher/`（仅用官方 `windows-sys`，不进入主 crate 依赖图，`cargo test` 10/10）：
+  - **包内模式**：`GetCurrentPackageFullName` 成功且包名前缀为本产品时，读取安装记录 → 校验路径（绝对、无 `..`、无引号/控制字符、主程序必须是 `lorekeeper.exe` 且父目录等于安装目录）→ 拒绝链接与缺失文件 → 以 `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY`(0x20012)=`DISABLE_PROCESS_TREE`(2) 启动真实主程序，等待并透传退出码。
+  - **包外模式**：绝不无身份启动主程序；只从 `HKCU\...\AppModel\Repository\Packages` 推导包族名，用 `explorer.exe shell:AppsFolder\<AUMID>` 激活身份包。
+  - 不接受任何命令行参数；错误以中文 MessageBox 呈现并返回非 0（2–7）。
+- **安装记录契约**（schema 1）：`IdentityRecordSchema`、`IdentityPackageName`、`InstallScope`、`InstallLocation`；`MainExecutable` 可省略，缺省按固定文件名补全，避免两条安装链的目录属性拼接差异。读取候选为 HKLM/HKCU 各含 WOW6432Node 视图，命中的声明范围必须与位置一致。
+- **安装器接线**：NSIS `NSIS_HOOK_POSTINSTALL` 写当前用户记录；MSI 新增 WiX 片段 `installer/lorekeeper-install-record.wxs`（`DirectoryRef Id="INSTALLDIR"`、`Root="HKLM"`、`Action="createAndRemoveOnUninstall"`、`Win64="yes"`），经 `wix.fragmentPaths`/`componentRefs` 接入。键名与启动器一致：`Software\tancan1998\LoreKeeper`（与模板 `Manufacturer=tancan1998` 对齐）。
+
+### 本机构建验证（只构建，不安装）
+
+| 项 | 结果 |
+|---|---|
+| 启动器单测 | 10/10 通过；覆盖记录校验、持久化范围一致性、AUMID 推导、引号/非法字符 |
+| `pnpm tauri build --bundles msi --bundles nsis` | EXIT=0；产出 `LoreKeeper_1.0.0-beta.1_x64_zh-CN.msi`（53,186,560 B）与 `LoreKeeper_1.0.0-beta.1_x64-setup.exe`（49,738,678 B）；WiX 3.14.1 由 CLI 自动下载 |
+| 生成模板 `main.wxs` | 含 `<ComponentRef Id="LoreKeeperInstallRecord"/>` |
+| MSI `Registry` 表（WindowsInstaller 只读查询） | 4 条 HKLM 记录：`IdentityRecordSchema=#1`、`IdentityPackageName=com.tancan1998.lorekeeper`、`InstallScope=machine`、`InstallLocation=[INSTALLDIR]` |
+| 生成 `installer.nsi` | `hooks.nsh` 已 include；`NSIS_HOOK_POSTINSTALL` 在安装段插入（第 706 行） |
+| Node 合同 | 安装 7 + 身份 9 + 发布 19 全通过（含真实 `makensis` 语法编译） |
+
+未安装、未写注册表、未注册身份包、未改快捷方式、未触碰共享 WebView2 或证书。
+
+### 仍未完成（发布门禁不变）
+
+1. **身份包产物链**：`windows-identity.mjs` 仍只生成清单；启动器二进制既未进入 MSIX 内容，也未作为资源随 NSIS/MSI 安装——即使安装包已就绪，产品还不会带身份启动。
+2. **安装时注册/置备**：两个安装器都未注册 MSIX 身份；MSI 全机 stage/provision 与每用户注册、SYSTEM 上下文语义未实现。
+3. **激活入口**：快捷方式仍指向安装目录 exe；直接双击主程序不带身份，包外启动器尚未被任何入口使用。
+4. 真实安装/升级/修复/回滚/卸载、多用户、最低系统版本、外部工具 breakaway、macOS 均未验证。
+5. 因此“任务管理器真实归组”仍只在最简宿主与本机机制层面成立，产品未验收，发布继续暂停。
