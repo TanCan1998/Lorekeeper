@@ -330,3 +330,23 @@ Node身份9+安装6+发布19共34通过，含真实NSIS语法编译；typecheck/
 2. 真实产品 GUI 启动后的“任务管理器真实归组”未验证：本轮用户级注册被系统拒绝，必须先在提权路径成功后才能测。
 3. 升级/修复/回滚、多用户、最低系统版本、外部工具 breakaway、macOS 仍未验证。
 4. 发布继续暂停。
+
+## 12. 第118次：真实产品归组与提权注册闭环
+
+用户要求不再分片，故本轮把提权注册、真实安装、真实启动核验、卸载清理全部跑完。
+
+### 已实测（真实产品、非探针）
+- **提权静默安装**（`/S /NS /D=自选目录`）退出 0：身份包注册成功（`com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy`，`Status=0`），记录含 `IdentityLauncherPath=C:\Program Files\WindowsApps\...\lorekeeper-identity-launcher.exe` 且文件存在。
+- **真实产品启动核验**：经激活器启动后，主程序 PID 28944 位于用户所选目录 `...\install-test\lorekeeper.exe`，其包身份为上述包全名；**6 个 WebView2 子进程读回同一包身份**（去重后仅一个值）。这是真实 LoreKeeper 二进制，不是探针。
+- **卸载清理**：提权静默卸载退出 0；安装目录、`HKCU\Software\tancan1998\LoreKeeper`、当前用户身份包、`WindowsApps` 内包目录全部为 0/false。测试实例先自行关闭（`CloseMainWindow` 被未保存内容确认拦截，最终只结束本次测试进程）。
+- 关闭测试窗口后机器仍有 24 个其他应用的 WebView2 进程，属系统其他程序，未触碰。
+
+### 提权注册实现
+- 启动器新增唯一开关 `--register-identity`：非提权时明确报错（不自作提权、不假成功）；已提权时执行 `Add-AppxProvisionedPackage -Online -SkipLicense`（全机置备，供多用户）→ `Add-AppxPackage -AllowUnsigned`（当前用户注册）→ 取 `InstallLocation` 并把 `IdentityLauncherPath` 写回 `HKCU` 记录。
+- NSIS `POSTINSTALL`：先尝试直接注册（安装器已提权时立即成功并写路径）；失败且非静默时用 `ExecShell "runas"` 调起提权助手；静默安装不弹 UAC，也不写假路径。
+
+### 仍未完成
+1. MSI 侧尚无调用同一助手的自定义动作（安装记录已写 HKLM，但注册要另接）。
+2. 未在第二个 Windows 用户下验证“置备后新用户首次使用”；SYSTEM 上下文注册仍不等于全用户覆盖。
+3. 升级/修复/回滚、最低系统版本、外部工具 breakaway、macOS 未验证。
+4. 本轮实测使用提权安装；普通用户双击安装时的 UAC 提交流程未人工确认（静默不适用）。

@@ -25,6 +25,13 @@
       WriteRegStr SHCTX "${MANUPRODUCTKEY}" "IdentityLauncherPath" "$R6\lorekeeper-identity-launcher.exe"
       Goto lorekeeper_identity_done
     lorekeeper_identity_failed:
+      ; 未提权时（currentUser 安装）用 UAC 提升调用注册助手；静默安装不弹 UAC，保持非假成功。
+      IfFileExists "$INSTDIR\lorekeeper-activate.exe" 0 lorekeeper_identity_warn
+        ${IfNot} ${Silent}
+          ExecShell "runas" '"$INSTDIR\lorekeeper-activate.exe" --register-identity'
+          Goto lorekeeper_identity_done
+        ${EndIf}
+      lorekeeper_identity_warn:
       ${IfNot} ${Silent}
         MessageBox MB_ICONEXCLAMATION|MB_OK "LoreKeeper 身份组件注册失败（$R9）。应用仍可使用，但任务管理器不会把 WebView2 进程归入同一应用组。"
       ${EndIf}

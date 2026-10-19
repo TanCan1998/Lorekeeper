@@ -1,6 +1,8 @@
 # LoreKeeper迁移进度快照（2026-10-19）
 
-> [当前入口](./CURRENT.md) · 第 **117** 次：身份包真实产出、随安装器分发，并完成真实静默安装/卸载回归；发现未签名注册必须提权（0x80073D2B）。归组未在产品上验收，发布暂停。
+> [当前入口](./CURRENT.md) · 第 **118** 次：真实产品经激活器启动后，主程序与 6 个 WebView2 读回同一包身份；提权注册、真实安装与卸载清理全部实测通过。MSI 注册与多用户仍待做。
+>
+> 第 **117** 次：身份包真实产出、随安装器分发，并完成真实静默安装/卸载回归；发现未签名注册必须提权（0x80073D2B）。归组未在产品上验收，发布暂停。
 >
 > 第 **116** 次：产品身份启动器与全机安装记录已实现并真实构建 MSI/NSIS（仅构建，未安装）。身份包注册、激活入口与多用户置备未完成，发布暂停。**不是LoreKeeper产品修复或新版发布完成报告。**
 
@@ -27,7 +29,16 @@
 | 产品安装/卸载/项目删除/注册表清理 | **未执行** | 临时测试部署不能替代原生产品生命周期验收 |
 | 新版打包与发布 | **未触发** | beta.1 Release API返回404；没有创建新标签或改Latest |
 
-## 本次更新：第117次身份包产物与真实安装回归
+## 本次更新：第118次真实产品归组与提权注册
+
+- 提权静默安装（`/S /NS /D=自选目录`）退出 0：身份包注册成功（Status=0），`IdentityLauncherPath` 指向 WindowsApps 内启动器且文件存在。
+- **真实产品启动核验**：经激活器启动后，主程序 PID 28944 位于所选目录，包身份与 6 个 WebView2 子进程完全一致（去重后仅一个包全名）。
+- 提权静默卸载退出 0：目录、HKCU 记录、当前用户包、WindowsApps 包目录全部清零；测试实例自行关闭，未触碰其他应用（机器上仍有 24 个他人 WebView2 进程）。
+- 启动器新增 `--register-identity`（非提权明确报错）：`Add-AppxProvisionedPackage -SkipLicense` + `Add-AppxPackage -AllowUnsigned` + 回写 `IdentityLauncherPath`；NSIS 失败且非静默时用 `ExecShell "runas"` 调起。
+- 云 CI：`4c66847c` 的 Tauri Rust CI 因已声明资源未预生成失败，`76fec45` 修复后 success。
+- 未完成：MSI 注册自定义动作、第二个用户下的置备验证、升级/回滚、最低系统、breakaway、macOS。详见[研究§12](../research/webview-process-attribution.md#12-第118次真实产品归组与提权注册闭环)。
+
+## 前轮更新：第117次身份包产物与真实安装回归
 
 - 真实产出身份包：独立启动器 release 262,144 B → MSIX 134,256 B（仅启动器+图标，`AppListEntry="none"`）；构建接入 `beforeBuildCommand`，资源经 `tauri.windows.conf.json` 随 NSIS/MSI 安装为 `identity\LoreKeeper.msix` 与 `lorekeeper-activate.exe`。
 - **真实静默安装**到用户自选目录：退出 0，落盘主程序、激活器与身份包；`HKCU` 记录 schema=1/scope=user/路径正确。**真实静默卸载**后目录、注册表键、身份包全部清零。

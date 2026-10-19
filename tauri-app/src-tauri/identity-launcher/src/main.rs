@@ -15,14 +15,30 @@ mod record;
 #[cfg(windows)]
 mod win;
 
+/// 唯一允许的命令行开关：提权注册身份组件（安装器或用户显式触发）。
+const REGISTER_IDENTITY: &str = "--register-identity";
+
 fn main() {
     std::process::exit(run());
 }
 
 #[cfg(windows)]
 fn run() -> i32 {
-    if std::env::args_os().len() > 1 {
-        win::report("身份启动器不接受命令行参数");
+    let arguments: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    if arguments.len() == 1 && arguments[0] == REGISTER_IDENTITY {
+        return match win::register_identity() {
+            Ok(_) => 0,
+            Err(error) => {
+                win::report(&error.to_string());
+                8
+            }
+        };
+    }
+    if !arguments.is_empty() {
+        win::report("身份启动器只接受 --register-identity");
         return 2;
     }
     match win::current_package_full_name() {

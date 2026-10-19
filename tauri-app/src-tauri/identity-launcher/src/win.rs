@@ -4,8 +4,7 @@
 //! 不注入浏览器诊断参数、不改共享 WebView2。
 
 use crate::record::{
-    application_user_model_id, package_family_from_full_name, quote_command_line, validate,
-    InstallRecord, InstallScope, PACKAGE_NAME, RECORD_SCHEMA_VERSION,
+    quote_command_line, validate, InstallRecord, InstallScope, PACKAGE_NAME, RECORD_SCHEMA_VERSION,
 };
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -16,8 +15,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     INVALID_FILE_ATTRIBUTES,
 };
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
-    HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
@@ -45,10 +43,6 @@ pub const RECORD_CANDIDATES: [(HKEY, &str, InstallScope); 4] = [
         InstallScope::User,
     ),
 ];
-/// 已安装应用模型包的仓库键；只读，用于包外模式定位包族名。
-const PACKAGE_REPOSITORY: &str =
-    r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
-
 // `PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY` = ProcThreadAttributeValue(18, FALSE, TRUE, FALSE)。
 // 该常量由 Windows SDK 定义；windows-sys 未导出，此处按 SDK 取值声明。
 const PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY: usize = 0x0002_0012;
@@ -365,43 +359,6 @@ pub fn launch_with_identity(record: &InstallRecord) -> Result<u32, LauncherError
     Ok(exit_code)
 }
 
-fn installed_package_full_names() -> Vec<String> {
-    let subkey = wide(PACKAGE_REPOSITORY);
-    let mut key: HKEY = null_mut();
-    // SAFETY: 只读打开仓库键；失败时返回空集合，由调用方报明确错误。
-    let opened = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
-    if opened != ERROR_SUCCESS {
-        return Vec::new();
-    }
-    let mut names = Vec::new();
-    let mut index = 0u32;
-    loop {
-        let mut buffer = vec![0u16; 512];
-        let mut length = buffer.len() as u32;
-        // SAFETY: 缓冲与长度按文档传入；不再有子键时返回 ERROR_NO_MORE_ITEMS。
-        let status = unsafe {
-            RegEnumKeyExW(
-                key,
-                index,
-                buffer.as_mut_ptr(),
-                &mut length,
-                null_mut(),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-            )
-        };
-        if status != ERROR_SUCCESS {
-            break;
-        }
-        names.push(String::from_utf16_lossy(&buffer[..length as usize]));
-        index += 1;
-    }
-    // SAFETY: 句柄由 RegOpenKeyExW 成功返回。
-    unsafe { RegCloseKey(key) };
-    names
-}
-
 /// 登记在记录里的包内启动器路径：必须是 WindowsApps 下本产品的启动器。
 fn packaged_launcher_path() -> Result<String, LauncherError> {
     let record = read_install_record()?;
@@ -436,6 +393,83 @@ pub fn activate_identity_package() -> Result<String, LauncherError> {
         .wait()
         .map_err(|error| LauncherError::RecordInvalid(format!("等待身份启动器失败：{error}")))?;
     Ok(format!("{launcher} (exit {})", code.code().unwrap_or(-1)))
+}
+
+/// 是否已提权（用于判断是否需要自我提升）。
+pub fn is_elevated() -> bool {
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token = std::ptr::null_mut();
+    // SAFETY: 只查询当前进程令牌的提权状态，句柄在此关闭。
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut size = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        );
+        CloseHandle(token);
+        ok != 0 && elevation.TokenIsElevated != 0
+    }
+}
+
+/// 提权注册助手：置备到全机（多用户）+ 为当前用户注册，并登记包内启动器路径。
+///
+/// 未签名身份包必须提权才能注册（本机实测 0x80073D2B），因此这里只在已提权时执行；
+/// 未提权由调用方负责显式提升，绝不静默伪装成功。
+pub fn register_identity() -> Result<String, LauncherError> {
+    let record = read_install_record()?;
+    let msix = format!(
+        "{}\\identity\\LoreKeeper.msix",
+        record.install_location.trim_end_matches(['\\', '/'])
+    );
+    if attributes(&msix).is_none() {
+        return Err(LauncherError::UnsafeFile("安装包内缺少身份组件".to_string()));
+    }
+    if !is_elevated() {
+        return Err(LauncherError::RecordInvalid(
+            "注册身份组件需要管理员权限".to_string(),
+        ));
+    }
+    let key = RECORD_SUBKEY;
+    let script = format!(
+        "$ErrorActionPreference='Stop'; \
+         try {{ Add-AppxProvisionedPackage -Online -PackagePath '{msix}' -SkipLicense | Out-Null }} catch {{ }}; \
+         Add-AppxPackage -Path '{msix}' -AllowUnsigned -ErrorAction Stop; \
+         $p=Get-AppxPackage -Name {PACKAGE_NAME}; \
+         if(-not $p){{ throw '注册后仍找不到身份包' }}; \
+         $launcher=Join-Path $p.InstallLocation 'lorekeeper-identity-launcher.exe'; \
+         if(-not (Test-Path $launcher)){{ throw '身份包内缺少启动器' }}; \
+         Set-ItemProperty -Path ('HKCU:\\{key}') -Name 'IdentityLauncherPath' -Value $launcher; \
+         [Console]::Out.Write($launcher)"
+    );
+    let windir = std::env::var_os("WINDIR")
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| r"C:\Windows".to_string());
+    let output = std::process::Command::new(format!(r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"))
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .output()
+        .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf16_lossy(
+            &String::from_utf8_lossy(&output.stderr)
+                .encode_utf16()
+                .collect::<Vec<u16>>(),
+        );
+        return Err(LauncherError::RecordInvalid(format!(
+            "注册身份组件失败：{}",
+            stderr.trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// 启动失败时给出可见提示；正常启动不弹窗、不抢焦点。

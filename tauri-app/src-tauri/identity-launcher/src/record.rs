@@ -7,8 +7,6 @@
 pub const RECORD_SCHEMA_VERSION: u32 = 1;
 /// 记录中的包名必须与 tauri.conf.json 的 identifier 一致。
 pub const PACKAGE_NAME: &str = "com.tancan1998.lorekeeper";
-/// 应用清单里的 Application Id；AUMID 由「包族名 + ! + 应用 Id」组成。
-pub const APPLICATION_ID: &str = "LoreKeeper";
 /// 安装目录中真正的主程序文件名。
 pub const MAIN_EXECUTABLE_NAME: &str = "lorekeeper.exe";
 
@@ -166,26 +164,6 @@ pub fn validate(record: &InstallRecord) -> Result<(), RecordError> {
     }
 }
 
-/// 由包全名推导包族名：`name_version_arch_resource_publisherHash` → `name_hash`。
-pub fn package_family_from_full_name(full_name: &str) -> Option<String> {
-    let parts: Vec<&str> = full_name.trim().split('_').collect();
-    if parts.len() != 5 {
-        return None;
-    }
-    let [name, version, arch, _resource, hash] = [parts[0], parts[1], parts[2], parts[3], parts[4]];
-    if name.is_empty() || hash.is_empty() || !version.contains('.') || arch.is_empty() {
-        return None;
-    }
-    if !full_name.starts_with(&format!("{name}_")) {
-        return None;
-    }
-    Some(format!("{name}_{hash}"))
-}
-
-pub fn application_user_model_id(package_family: &str) -> String {
-    format!("{package_family}!{APPLICATION_ID}")
-}
-
 /// 命令行必须是可写缓冲：Windows 允许 CreateProcess 就地修改该字符串。
 pub fn quote_command_line(executable: &str) -> Result<String, RecordError> {
     if executable.contains('"') || executable.contains('\0') {
@@ -294,17 +272,6 @@ mod tests {
         let mut elsewhere = record();
         elsewhere.main_executable = r"C:\Program Files\Other\lorekeeper.exe".to_string();
         assert_eq!(validate(&elsewhere), Err(RecordError::OutsideInstallLocation));
-    }
-
-    #[test]
-    fn derives_package_family_and_aumid_from_full_name() {
-        let full = "com.tancan1998.lorekeeper_1.0.1.0_x64__rwbxxw9d4h55m";
-        let family = package_family_from_full_name(full).expect("应当解析成功");
-        assert_eq!(family, "com.tancan1998.lorekeeper_rwbxxw9d4h55m");
-        assert_eq!(application_user_model_id(&family), format!("{family}!LoreKeeper"));
-        assert_eq!(package_family_from_full_name("not-a-package"), None);
-        assert_eq!(package_family_from_full_name("a_1.0.0.0_x64__"), None);
-        assert_eq!(package_family_from_full_name("a_b_x64__hash"), None);
     }
 
     #[test]

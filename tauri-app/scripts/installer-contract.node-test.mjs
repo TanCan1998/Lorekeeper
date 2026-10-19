@@ -12,6 +12,7 @@ const config = JSON.parse(read('tauri.conf.json'))
 const hook = read('installer/hooks.nsh')
 const fragment = read('installer/lorekeeper-install-record.wxs')
 const launcher = read('identity-launcher/src/win.rs')
+const launcherMain = read('identity-launcher/src/main.rs')
 
 test('中文双安装包保留应用标识、安装范围及既有MSI升级身份', () => {
   assert.equal(config.productName, 'LoreKeeper')
@@ -98,6 +99,11 @@ test('启动器只在真实包身份下启动主程序，无身份时只激活�
   assert(launcher.includes('lorekeeper-identity-launcher.exe'))
   assert(!launcher.includes('shell:AppsFolder'))
   assert(launcher.includes('EXTENDED_STARTUPINFO_PRESENT'))
+  // 提权注册助手：置备全机 → 当前用户注册 → 回写包内启动器路径。
+  assert(launcherMain.includes('--register-identity'))
+  assert(launcher.includes('Add-AppxProvisionedPackage'))
+  assert(launcher.includes('IdentityLauncherPath'))
+  assert(launcher.includes('TokenElevation'))
   // 反向约束：不关闭沙箱、不加浏览器诊断参数、不按命令行任意路径启动。
   assert.doesNotMatch(launcher, /--edge-webview|no-sandbox|disable-gpu|CREATE_NEW_CONSOLE/)
   for (const key of ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', 'RegistryWrite', 'CreateSymbolicLink']) {
