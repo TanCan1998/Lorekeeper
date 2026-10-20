@@ -3,9 +3,27 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { collectReleaseAssets, digest, releaseIdentity, verifyUploadedAssets } from './release-helpers.mjs'
+import { assertWixVersion, collectReleaseAssets, digest, releaseIdentity, verifyUploadedAssets } from './release-helpers.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+
+test('MSI 数字版本允许预发布补丁领先，但主次版本必须跟随产品版本', () => {
+  assert.equal(assertWixVersion('1.0.0-beta.1', '1.0.1.0'), '1.0.1.0')
+  assert.equal(assertWixVersion('1.0.1', '1.0.1.0'), '1.0.1.0')
+  assert.equal(assertWixVersion('1.0.1', '1.0.1.7'), '1.0.1.7')
+  assert.equal(assertWixVersion('2.3.4-rc.1', '2.3.4'), '2.3.4')
+})
+
+test('MSI 数字版本拒绝主次版本漂移、修订号落后与非法格式', () => {
+  assert.throws(() => assertWixVersion('1.0.0-beta.1', '1.1.0.0'), /次版本必须与应用版本一致/)
+  assert.throws(() => assertWixVersion('2.0.0', '1.9.9'), /主版本必须与应用版本一致/)
+  assert.throws(() => assertWixVersion('1.0.5', '1.0.4.0'), /修订号不得低于应用版本修订号/)
+  assert.throws(() => assertWixVersion('1.0.0-beta.1', '1.0.0-beta.1'), /纯数字/)
+  assert.throws(() => assertWixVersion('1.0.0', '01.0.0'), /纯数字/)
+  assert.throws(() => assertWixVersion('1.0.0', '256.0.0'), /不得超过255/)
+  assert.throws(() => assertWixVersion('1.0.0', '1.0.65536'), /不得超过65535/)
+  assert.throws(() => assertWixVersion('1.0.0', undefined), /纯数字/)
+})
 const identity = { version: '1.0.0-beta.1', sha: 'a'.repeat(40), tag: 'lorekeeper-v1.0.0-beta.1', prerelease: true }
 
 function fixture() {

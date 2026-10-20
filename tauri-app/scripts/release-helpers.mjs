@@ -6,6 +6,29 @@ import { execFileSync, spawnSync } from 'node:child_process'
 
 export const RELEASE_REPOSITORY = 'TanCan1998/Lorekeeper'
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+// Windows Installer 的 ProductVersion 只接受纯数字点分格式，预发布后缀无法表达。
+const WIX_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$/
+
+/**
+ * 校验 Tauri 的 MSI 数字版本与产品版本的关系。
+ *
+ * Windows Installer 只用 major.minor.patch 判定升级，第四段不参与比较，所以
+ * 预发布迭代只能靠 patch 递增表达（见 docs-fork/agents/tauri-release.md）。
+ * 因此这里不要求逐段相等：主版本与次版本必须一致，修订号不得低于产品修订号。
+ */
+export function assertWixVersion(version, wixVersion) {
+  assert(SEMVER.test(version), '无效的应用版本')
+  assert(typeof wixVersion === 'string' && WIX_VERSION.test(wixVersion),
+    'MSI版本必须是 major.minor.patch[.build] 形式的纯数字，不能带预发布后缀')
+  const [major, minor, patch] = version.split('-')[0].split('.').map(Number)
+  const parts = wixVersion.split('.').map(Number)
+  assert(parts[0] <= 255 && parts[1] <= 255, 'MSI版本的主版本与次版本不得超过255')
+  assert(parts[2] <= 65535 && (parts[3] ?? 0) <= 65535, 'MSI版本的修订号与构建号不得超过65535')
+  assert.equal(parts[0], major, 'MSI版本主版本必须与应用版本一致')
+  assert.equal(parts[1], minor, 'MSI版本次版本必须与应用版本一致')
+  assert(parts[2] >= patch, 'MSI版本修订号不得低于应用版本修订号')
+  return wixVersion
+}
 export const digest = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 
 export function releaseIdentity(root, env) {
@@ -16,6 +39,9 @@ export function releaseIdentity(root, env) {
   const cargo = fs.readFileSync(path.join(root, 'tauri-app/src-tauri/Cargo.toml'), 'utf8')
   const lock = fs.readFileSync(path.join(root, 'tauri-app/src-tauri/Cargo.lock'), 'utf8')
   assert.equal(config.version, version, 'Tauri配置版本不一致')
+  const wixVersion = config.bundle?.windows?.wix?.version
+  assert(typeof wixVersion === 'string' && wixVersion.length > 0, '必须在 tauri.conf.json 显式设置 MSI 数字版本')
+  assertWixVersion(version, wixVersion)
   assert.equal(cargo.match(/^version = "([^"]+)"/m)?.[1], version, 'Cargo版本不一致')
   assert.equal(lock.match(/name = "lorekeeper"\r?\nversion = "([^"]+)"/)?.[1], version, 'Cargo锁项目版本不一致')
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
@@ -35,7 +61,7 @@ export function releaseIdentity(root, env) {
     const notes = fs.readFileSync(path.join(root, `docs-fork/releases/${version}.md`), 'utf8')
     assert(/^# .*预览/m.test(notes) && /非正式版/.test(notes), '先行版本发布说明必须明确预览及非正式版')
   }
-  return { version, sha, tag, prerelease, makeLatest, preview }
+  return { version, wixVersion, sha, tag, prerelease, makeLatest, preview }
 }
 
 export function ghJson(args) {

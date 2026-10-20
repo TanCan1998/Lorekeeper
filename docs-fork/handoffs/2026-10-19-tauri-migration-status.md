@@ -116,7 +116,8 @@
 
 **已知差异与未验收**
 
-- 注册表 `DisplayVersion=1.0.1.0`（WiX 数值版本）与可执行文件 `FileVersion=1.0.0-beta.1` 不同：Windows Installer 的 `ProductVersion` 只接受纯数字点分格式（major/minor ≤ 255，patch/build ≤ 65535，Tauri schema 明确说明），`-beta.1` 不可用，故两项必须分开维护；该字段在 `44259fa3` 显式固定，未填时 Tauri 会尝试从产品版本推导。
+- 注册表 `DisplayVersion=1.0.1.0`（WiX 数值版本）与可执行文件 `FileVersion=1.0.0-beta.1` 不同：Windows Installer 的 `ProductVersion` 只接受纯数字点分格式（major/minor ≤ 255，patch/build ≤ 65535，Tauri schema 明确说明），`-beta.1` 不可用，故两项必须分开维护。
+- 已加发布门禁 `assertWixVersion`（`tauri-app/scripts/release-helpers.mjs`，由 `releaseIdentity` 调用）：要求该字段存在、为纯数字点分、段位不越界、主次版本与应用版本相同、修订号不低于应用版本修订号。用户先选「严格相等」，在说明「第四段被 MSI 忽略会让后续 beta 无法递增」后改为宽松规则并保留 `1.0.1.0`。`installer-contract.node-test.mjs` 两处硬编码值改为调用同一函数，`release-helpers.node-test.mjs` 新增 2 个用例（8 条断言）覆盖通过/漂移/落后/越界/预发布后缀；Node 测试 34 通过 0 失败，实测门禁返回 `{version: 1.0.0-beta.1, wixVersion: 1.0.1.0}`。
 - `lorekeeper-activate.exe` 无文件版本资源（小体积启动器）。
 - 仍未验收：旧版本升级路径（用户决定搁置到下个版本）、多用户 UAC 与本机全量注册/注销回归。
 

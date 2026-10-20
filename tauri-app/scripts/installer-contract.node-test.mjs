@@ -4,6 +4,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { assertWixVersion } from './release-helpers.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const nativeRoot = path.join(root, 'tauri-app/src-tauri')
@@ -22,8 +23,8 @@ test('中文双安装包保留应用标识、安装范围及既有MSI升级身�
   assert.equal(config.identifier, 'com.tancan1998.lorekeeper')
   assert.equal(config.bundle.windows.wix.language, 'zh-CN')
   assert.equal(config.bundle.windows.wix.upgradeCode, 'ed3e3199-4ddc-501a-a745-179a185e8dfb')
-  // MSI 只比较前三段，不能仅递增第四段。
-  assert.equal(config.bundle.windows.wix.version, '1.0.1.0')
+  // MSI 只比较前三段，不能仅递增第四段；规则在 release-helpers 里统一校验。
+  assertWixVersion(config.version, config.bundle.windows.wix.version)
   const nsis = config.bundle.windows.nsis
   assert.deepEqual(nsis.languages, ['SimpChinese'])
   assert.equal(nsis.installMode, 'currentUser')
@@ -132,7 +133,7 @@ test('WiX片段已接入MSI构建，且不进入主crate依赖图', () => {
   const wix = config.bundle.windows.wix
   assert.deepEqual(wix.fragmentPaths, ['installer/lorekeeper-install-record.wxs'])
   assert.deepEqual(wix.componentRefs, ['LoreKeeperInstallRecord'])
-  assert.equal(wix.version, '1.0.1.0')
+  assertWixVersion(config.version, wix.version)
   // 启动器是独立 crate：不改主应用依赖、不参与 Tauri 打包主体。
   assert.doesNotMatch(read('Cargo.toml'), /identity-launcher/)
   assert(fs.existsSync(path.join(nativeRoot, 'identity-launcher/Cargo.toml')))
