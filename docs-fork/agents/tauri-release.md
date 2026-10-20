@@ -48,7 +48,7 @@ node --check tauri-app/scripts/publish-release.mjs
 
 ## 安装与版本限制
 
-Windows无证书签名；macOS仅ad-hoc、未开发者签名/公证。应用版本为1.0.0-beta.1，WiX数字版本由1.0.0.0递增至1.0.1.0（不能仅递增MSI忽略的第四段）；UpgradeCode固定为 `ed3e3199-4ddc-501a-a745-179a185e8dfb`。发布门禁 `releaseIdentity` 会调用 `assertWixVersion` 校验该字段：必须是 `major.minor.patch[.build]` 纯数字（主/次≤255，修订/构建≤65535），主次版本必须与应用版本相同、修订号不得低于应用版本修订号，缺失或带预发布后缀直接失败。显示名称采用LoreKeeper，标识和数据目录不变。不承诺从内部1.1.0版本降级的安装路径。
+Windows无证书签名；macOS仅ad-hoc、未开发者签名/公证。应用版本为1.0.0-beta.1，WiX数字版本由1.0.0.0递增至1.0.1.0（不能仅递增MSI忽略的第四段）；UpgradeCode固定为 `ed3e3199-4ddc-501a-a745-179a185e8dfb`。发布门禁 `releaseIdentity` 会调用 `assertWixVersion` 校验该字段：必须是 `major.minor.patch[.build]` 纯数字（主/次≤255，修订/构建≤65535），主次版本必须与应用版本相同、修订号不得低于应用版本修订号，缺失或带预发布后缀直接失败。显示名称采用LoreKeeper（本 fork 自有品牌，不跟随上游改名，见 `project-reference.md` 的「品牌与命名边界」），标识和数据目录不变。不承诺从内部1.1.0版本降级的安装路径。
 
 NSIS固定当前用户与SimpChinese；MSI为zh-CN。EXE卸载勾选框默认不选，保留项目；勾选后调用独立本机清理模式，不使用模板的AppData递归删除。手动选择目录及两次明确确认后才清理一个有效LoreKeeper项目；拒绝系统/程序/全局目录、链接、嵌套项目与Vela数据。静默、被动、升级和安装器维护调用一律不启动清理。安装位置/语言注册键无论是否保留项目都清，厂商键仅在空时移除，共享运行库不动。
 

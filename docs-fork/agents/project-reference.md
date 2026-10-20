@@ -166,6 +166,16 @@ fn chapter_finalize(chapter_id: String, body: String) -> Result<FinalizedReceipt
 - AI/Agent 辅助产出必须经人工逐项核验后提交。
 
 详细迁移开发指南见 `docs-fork/agents/pi-development.md`。
+## 品牌与命名边界（fork 自有，2026-10-20 固化）
+
+本 fork 使用**自有名称**，不跟随上游改名：
+
+- 中文名 `设定司`、英文名 `LoreKeeper`，唯一来源是 `tauri-app/src/shared/brand.ts` 的 `APP_BRAND`；产品标识 `com.tancan1998.lorekeeper`、全局根 `AI_NOVEL_LOREKEEPER_HOME` 或 `~/.lorekeeper`、项目目录 `.lore/` 同样属于本 fork 命名，不受上游影响。
+- 上游自 2026-10-18（`d21207c8` / PR #434）起把项目改名为「书童 Pagekin」。那只是上游历史，**不采纳**。
+- 合并上游时的口径仍然是「fork 增强保留 + 上游改动并入」，但**品牌类冲突一律保留本 fork 命名**：产品名、显示名、图标文案、README 标题、发布说明标题都不因为上游改名而跟随。
+- 上游若重构品牌表达方式（新增品牌常量、集中命名、改名脚本），按「机制采纳、命名保留」处理：拿它的结构，换回 `设定司` / `LoreKeeper`。
+- 不要为了减少冲突而把本 fork 改回上游名称；同名会与本 fork 的发布物、身份包和数据目录混淆。
+
 ## 上游同步时核查的 fork 增强
 
 保留 ui/Dialog.tsx 的弹窗 ESC 栈处理、SettingsModal.tsx 的 ESC 处理、TitleBar.tsx 的 data-tauri-drag-region；弹窗动画修复见提交 61ea32ad。commands/window.rs 已实现四个窗口命令及两段式关窗协议。同步上游时结合当前源码核查这些行为。
