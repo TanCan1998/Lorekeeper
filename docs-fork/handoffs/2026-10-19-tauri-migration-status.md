@@ -104,11 +104,21 @@
 
 - `msiexec /x {A9F7D83B-…} /qn` 退出码 0：安装目录、卸载注册表项、Appx 包、`Get-StartApps` 条目、公共桌面与开始菜单快捷方式全部清除，无残留进程；`~/.lorekeeper` 用户数据未被删除。
 
+**从快捷方式启动（同一轮，用户另行授权）**
+
+重装后走真实桌面快捷方式 `C:\Users\Public\Desktop\LoreKeeper.lnk`（解析结果：Target `C:\Program Files\LoreKeeper\lorekeeper-activate.exe`、Arguments 空、工作目录为安装目录）：
+
+- 2 秒内拉起 `lorekeeper-activate.exe` 与 `lorekeeper.exe`，两者 `Responding=True`。
+- 主窗口句柄非零，标题 `LoreKeeper`；WebView2 运行时进程 30 个，CDP 探到 1 个 `type=page` 目标，标题 `Lorekeeper 设定司`、URL `http://tauri.localhost/`，说明渲染器已完整加载而非仅进程存活。
+- `CloseMainWindow()` 后主程序与激活器都自行退出，无需强杀。
+- 本次运行 `~/.lorekeeper` 与 `~/.vela` 都没有今日写入（各 0 个文件），未出现跨栈数据污染；`~/.vela` 为 Electron 基线历史目录，时间戳未变。
+- 随后静默卸载退出码 0，目录、注册表、Appx、`Get-StartApps`、桌面与开始菜单快捷方式再次全部清除。
+
 **已知差异与未验收**
 
-- 注册表 `DisplayVersion=1.0.1.0`（WiX 数值版本）与可执行文件 `FileVersion=1.0.0-beta.1` 不同，属 WiX 版本字段限制，非缺陷。
+- 注册表 `DisplayVersion=1.0.1.0`（WiX 数值版本）与可执行文件 `FileVersion=1.0.0-beta.1` 不同：Windows Installer 的 `ProductVersion` 只接受纯数字点分格式（major/minor ≤ 255，patch/build ≤ 65535，Tauri schema 明确说明），`-beta.1` 不可用，故两项必须分开维护；该字段在 `44259fa3` 显式固定，未填时 Tauri 会尝试从产品版本推导。
 - `lorekeeper-activate.exe` 无文件版本资源（小体积启动器）。
-- 仍未验收：从快捷方式启动主程序的前台 GUI 行为（避免抢焦点）、旧版本升级路径、多用户 UAC 与本机全量注册/注销回归。
+- 仍未验收：旧版本升级路径（用户决定搁置到下个版本）、多用户 UAC 与本机全量注册/注销回归。
 
 ## 前轮更新：第124次项目文件系统错误文案双语迁移（未验收）
 
