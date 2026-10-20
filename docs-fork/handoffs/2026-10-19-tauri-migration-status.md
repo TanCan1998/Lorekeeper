@@ -77,6 +77,39 @@
 - README 与交接此前只写“未提交推送”，已在本次文档提交中更正；代码提交 `3e8101ba..12ef37f8` 之后未再改动源码。
 - 前端 vitest 的既存品牌大小写断言已随文档提交一并修正为引用品牌常量；云端 PR CI 只在 PR 上运行，本次推送未触发它。
 
+### MSI 正常入口真实安装验收（2026-10-20，用户授权）
+
+构建产物 `LoreKeeper_1.0.0-beta.1_x64_zh-CN.msi`（53 841 920 字节），在**未安装过 LoreKeeper 的干净状态**下完成全流程，全部退出码 0。
+
+**只读表检查（安装前）**
+
+- 开始菜单与桌面快捷方式 Target 均为 `[INSTALLDIR]lorekeeper-activate.exe`，Arguments 为空。
+- `Property` 表已无 `LAUNCHAPPARGS`；`LaunchApplication` 自定义动作 Target 为 `"[INSTALLDIR]lorekeeper-activate.exe"`，不带参数。
+- `RegisterIdentity` / `UnregisterIdentity` 仍按 `--register-identity` / `--unregister-identity --quiet` 接线。
+
+**静默安装（`/qn`）**
+
+- 文件：`lorekeeper.exe` 79 703 552 字节、`lorekeeper-activate.exe` 306 176 字节、`identity` 目录、卸载快捷方式。
+- 注册表：`DisplayName=LoreKeeper`、`DisplayVersion=1.0.1.0`、`InstallLocation=C:\Program Files\LoreKeeper\`、`UninstallString=MsiExec.exe /X{A9F7D83B-D0C5-4FA1-9BCB-369F70065CE7}`。
+- 快捷方式：公共桌面 `LoreKeeper.lnk` 与开始菜单 `LoreKeeper\LoreKeeper.lnk` 均指向 `lorekeeper-activate.exe`，Arguments 为空。
+- 身份：`com.tancan1998.lorekeeper_1.0.1.0_x64__e8hwe6njnc7fy` 已注册，`Get-StartApps` 显示 `LoreKeeper => com.tancan1998.lorekeeper`。
+- 安装期间未自动启动主程序（无 `lorekeeper` 进程），未抢焦点。
+
+**修复安装与身份重注册**
+
+- `REINSTALL=ALL REINSTALLMODE=vomus` 退出码 0，可执行文件与身份包版本不变。
+- `lorekeeper-activate.exe --register-identity --quiet` 重复执行退出码 0，包全名不变（幂等）。
+
+**卸载**
+
+- `msiexec /x {A9F7D83B-…} /qn` 退出码 0：安装目录、卸载注册表项、Appx 包、`Get-StartApps` 条目、公共桌面与开始菜单快捷方式全部清除，无残留进程；`~/.lorekeeper` 用户数据未被删除。
+
+**已知差异与未验收**
+
+- 注册表 `DisplayVersion=1.0.1.0`（WiX 数值版本）与可执行文件 `FileVersion=1.0.0-beta.1` 不同，属 WiX 版本字段限制，非缺陷。
+- `lorekeeper-activate.exe` 无文件版本资源（小体积启动器）。
+- 仍未验收：从快捷方式启动主程序的前台 GUI 行为（避免抢焦点）、旧版本升级路径、多用户 UAC 与本机全量注册/注销回归。
+
 ## 前轮更新：第124次项目文件系统错误文案双语迁移（未验收）
 
 - 用户在询问是否恢复EPUB最小验证时明确选择“继续迁移未迁移项”；不恢复测试/构建，转向残余子功能。蓝图作者恢复缺少规划恢复准入和持久回执链，涉及安全/恢复语义，未据泛授权擅自实现。
