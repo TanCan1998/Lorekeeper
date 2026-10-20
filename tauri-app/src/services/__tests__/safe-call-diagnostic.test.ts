@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatSafeCallDiagnostic, safeModelName } from '../safe-call-diagnostic'
+import { APP_BRAND } from '../../shared/brand'
 import type { LLMCallRecord } from '../stats-service'
 
 describe('formatSafeCallDiagnostic', () => {
@@ -57,7 +58,8 @@ describe('formatSafeCallDiagnostic', () => {
       },
     })
 
-    expect(diagnostic).toContain('# Lorekeeper safe diagnostics')
+    // 标题跟随品牌常量，避免品牌大小写变更后断言悄悄失效。
+    expect(diagnostic).toContain(`# ${APP_BRAND.enName} safe diagnostics`)
     expect(diagnostic).toContain('- Actual model: Grok 4')
     expect(diagnostic).toContain('- Model ID: 2f491640-c201-4c6e-922b-3103e8c2c5f7')
     expect(diagnostic).toContain('- Purpose: chapter-draft')

@@ -21,7 +21,7 @@
 - 本机仅脚本语法、YAML、链接与 diff 等轻量检查；新增单元回归尚未运行。完整新版本双端发布、首次缺失附件的 Node 上传路径仍待后续有授权的验收。
 - 这不更新主应用 Rust 全量基线、不清零切片累计，不解除资源操作与原生生命周期暂停；详见[镜像协议](../agents/atomgit-mirror.md)。
 
-## 本次更新：第125次剩余迁移合并实现（未验收）
+## 本次更新：第125次剩余迁移合并实现（已提交，云端验证通过）
 
 - 授权变化：用户明确「还没有迁移的一起迁移不切片，等最终一次性验证」，并在集中确认卡中选择「按上述范围合并迁移」+「最后再确认验证授权，本轮仅合并源码」。故本轮只写源码与用例声明，**不运行**测试/编译/格式器/前端检查，也不打包或安装 MSI。
 - **大纲作者恢复**：`ProjectCoreSynopsisCommitRequest` 补 `generationRunHandle` / `authorRecovery`（区分键缺失与显式 null），`db:project-core-synopsis-commit` 改为三分支信封（作者恢复 / 生成运行 / 普通提交），返回 `receipt`。命令层新增 `commit_plot_outline_author_edit`、`assert_synopsis_commit`、`plot_outline_target_current`：事务内校验会话租约、epoch、期望快照、回执幂等、源一致性与在途状态，成功才写台账并记录回执。
@@ -45,10 +45,10 @@
 | `pnpm typecheck` / `pnpm run lint` | **退出码 0** | `frontend.ps1` 输出 |
 | 安装合同 `node --test scripts/installer-contract.node-test.mjs` | **13 通过，0 失败** | 同上 |
 | 频道覆盖 `verify-channel-coverage.mjs` | 286 invoke / 7 事件 / 287 注册 / 285 计入迁移 / 1 明确不支持 / **缺失 0** | 同上 |
-| 前端 `vitest` | 2757 通过、1 skipped、**1 失败（既存）** | `vitest.log` |
+| 前端 `vitest` | 2758 通过、1 skipped、0 失败 | `vitest-full2.log` |
 
 - 修复记录（编译阶段）：`source_row` 闭包错误类型、`ImportGenerationContext`/`ProjectCoreData` 缺 `Deserialize`、`MainGenerationRunHandle` 误用 `is_null`、`AvatarCache` 缺 `Debug`（改为只打印作用域与条目数的自定义实现）；`installer-contract` 里模板字符串转义导致正则失配，改为 `indexOf` 切片断言。
-- 唯一失败项：`src/services/__tests__/safe-call-diagnostic.test.ts:60` 期望 `# Lorekeeper safe diagnostics`，实现已是 `# LoreKeeper safe diagnostics`（品牌大小写），本轮未改任何前端源码与测试，属既存失败，未修复。
+- 首轮 `vitest` 有 1 项既存失败：`src/services/__tests__/safe-call-diagnostic.test.ts:60` 硬编码期望 `# Lorekeeper safe diagnostics`，而实现取 `APP_BRAND.enName`（`LoreKeeper`）。已改为引用 `APP_BRAND.enName` 拼装期望，既修复断言又避免品牌再变时悄悄失效；复跑全套 2758 通过、1 skipped、0 失败，`pnpm typecheck` 与 `pnpm run lint` 仍为 0。
 - 未做：MSI 构建 / 安装 / 卸载 / 包注册 / 提权 / GUI 与原生文件选择器 / 真实模型·MCP·云业务 / 发布。
 
 ### 提交与云端验证（2026-10-19）
@@ -75,7 +75,7 @@
 | AtomGit mirror | [39282333525](https://github.com/TanCan1998/Lorekeeper/actions/runs/39282333525) | success |
 
 - README 与交接此前只写“未提交推送”，已在本次文档提交中更正；代码提交 `3e8101ba..12ef37f8` 之后未再改动源码。
-- 前端 vitest 的 1 项既存品牌大小写断言失败**未修复**，也未在本次提交中改动前端源码或测试；云端 PR CI 只在 PR 上运行，本次推送未触发它。
+- 前端 vitest 的既存品牌大小写断言已随文档提交一并修正为引用品牌常量；云端 PR CI 只在 PR 上运行，本次推送未触发它。
 
 ## 前轮更新：第124次项目文件系统错误文案双语迁移（未验收）
 

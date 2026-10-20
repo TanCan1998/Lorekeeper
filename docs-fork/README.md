@@ -14,7 +14,7 @@
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
-2026-10-19第125次：[剩余迁移合并实现，尚未验收](handoffs/2026-10-19-tauri-migration-status.md#本次更新第125次剩余迁移合并实现未验收)。用户要求不切片、最后统一验证；本轮完成大纲/蓝图作者恢复全链路、目录进度登记、合成前五个可变性守卫、头像双语与缓存、MSI 快捷方式与安装后启动改走激活器，并纠正陈旧注释。仅新增既有 `windows-sys` feature。用户随后授权完整验证：`cargo check --all-targets` 0 错误、`cargo test --lib` **1734 通过 0 失败**、定向 344 通过、rustfmt 与 `pnpm typecheck`/`lint` 通过、安装合同 13 通过、频道缺失 0；前端 vitest 2757 通过、1 项既存品牌大小写断言失败。随后按主题分成 7 个提交推送 `3e8101ba..011b4b0f`；云端同一 SHA 上 Tauri Rust CI、Commit message CI、Gitleaks 与 AtomGit mirror 全部 success。**仍未构建/安装 MSI、未注册提权、未发布**。升级/回滚与多用户验收未完成；新版发布继续暂停。精确状态以[当前交接](handoffs/CURRENT.md)为准。
+2026-10-19第125次：[剩余迁移合并实现，已提交且云端验证通过](handoffs/2026-10-19-tauri-migration-status.md#本次更新第125次剩余迁移合并实现已提交云端验证通过)。用户要求不切片、最后统一验证；本轮完成大纲/蓝图作者恢复全链路、目录进度登记、合成前五个可变性守卫、头像双语与缓存、MSI 快捷方式与安装后启动改走激活器，并纠正陈旧注释。仅新增既有 `windows-sys` feature。用户随后授权完整验证：`cargo check --all-targets` 0 错误、`cargo test --lib` **1734 通过 0 失败**、定向 344 通过、rustfmt 与 `pnpm typecheck`/`lint` 通过、安装合同 13 通过、频道缺失 0；前端 vitest 2758 通过、1 skipped、0 失败（既存品牌大小写断言已改为引用 `APP_BRAND.enName`）。随后按主题分成 7 个提交推送 `3e8101ba..011b4b0f`；云端同一 SHA 上 Tauri Rust CI、Commit message CI、Gitleaks 与 AtomGit mirror 全部 success。**仍未构建/安装 MSI、未注册提权、未发布**。升级/回滚与多用户验收未完成；新版发布继续暂停。精确状态以[当前交接](handoffs/CURRENT.md)为准。
 
 当前已公开的仍是第106次 **[Lorekeeper 1.0.0-beta 预发布与双源下载](releases/1.0.0-beta.md)**，提供Windows x64与macOS ARM64/Intel安装包及校验清单，旧版不设为最新版、不覆盖。
 
