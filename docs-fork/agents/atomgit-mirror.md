@@ -21,6 +21,12 @@ node tauri-app/scripts/sync-readme.mjs --check
 
 这两个命令只处理 README，不构建、不测试应用。验收要同时检查中文首页实际渲染内容和所选文件，不能只读 `README.md`。
 
+## 2026-10-21 beta.1 同步结果
+
+- 代码与标签同步成功；Release 与九个附件最终通过匿名 SHA256 读回，说明含双源表格。
+- 首次发布作业与第一次镜像重试均在单请求 600 秒上限超时（GitHub runner 跨境上传 AtomGit 存储）；按协议只补缺失附件后重跑镜像成功，未覆盖已有文件。超时上限未调整，后续大包发布需关注。
+- 中文首页只读抓取未出现「本 Fork 的目的」段落与新版本链接，首页完整渲染仍未验收。
+
 ## 代码自动同步
 
 工作流：`.github/workflows/atomgit-mirror.yml`。
