@@ -1,12 +1,12 @@
 # Tauri手动打包与预发布
 
-> **2026-10-21 当前授权**：用户确认先迁移本机 Skill，再发布 `1.0.0-beta.1`：`publish=true`、`prerelease=false`、`make_latest=true`，全部三平台四包，同步 GitHub 与 AtomGit。此具体授权取代本文下方历史暂停记录，不授权原生安装/卸载/注册、前台窗口或真实业务。最新证据与待验限制见[本轮快照](../handoffs/2026-10-21-upstream-merge-and-release.md)及[发布说明](../releases/1.0.0-beta.1.md)；新 SHA 云端全量成功前不得发布。
+> **2026-10-21 当前授权**：用户最终确认保留 beta.1，新发 `1.0.0-beta.2`：`publish=true`、`prerelease=false`、`make_latest=true`，全部三平台四包，同步 GitHub 与 AtomGit；不删除、不移动旧标签，不覆盖旧 Release 或附件。此具体授权取代历史暂停记录，不授权本次产物的原生安装/卸载/注册、前台窗口或真实业务。证据与待验限制见[本轮快照](../handoffs/2026-10-21-upstream-merge-and-release.md)及[发布说明](../releases/1.0.0-beta.2.md)；新 SHA 云端全量成功前不得发布。
 
 ## 边界
 
-首版 **1.0.0-beta**、标签 **lorekeeper-v1.0.0-beta** 使用预发布且不设最新版。后续已获准准备 **1.0.0-beta.1**：保留 beta 名称，允许普通 Release + Latest，正文明确预览/非正式版，不覆盖旧版。只修改Tauri版本，不改Electron根版本。
+首版 **1.0.0-beta** 使用预发布且不设最新版；beta.1 与 beta.2 采用普通 Release + Latest，但正文必须明确预览/非正式版，不能冒充完整原生验收。只修改 Tauri 版本，不改 Electron 根版本。
 
-进程归组仍未修复；用户最新明确**不接受带此缺陷先公开**，要求继续调研，因此新版发布暂停。配置就绪、提交或打包不代表发布成功，不再以旧方案授权请求缺陷豁免。后续优先按[研究矩阵](../research/webview-process-attribution.md)核验。
+包身份路线已有正向证据；beta.2 新增主程序包身份检查，无包身份时转交激活器。不能把探针、包身份读回或编译成功等同于新安装包真实任务管理器逐 PID 验收；所有入口、升级与多用户仍按[研究矩阵](../research/webview-process-attribution.md)区分证据。
 
 工作流 `.github/workflows/tauri-release-package.yml` 只接受 `workflow_dispatch`。默认 `publish=false` 仍仅打包；明确 `publish=true` 才允许独立发布作业写Release/标签。三平台为Windows x64（NSIS/MSI）、macOS ARM64/Intel（DMG），不提供Linux安装包。
 
@@ -36,7 +36,7 @@
 - 发布作业不再访问 AtomGit：代码与标签由 AtomGit 平台镜像拉取，GitHub 侧没有推送工作流或推送脚本。
 - 代码拉取完成后，用 `pnpm mirror:release` 手动上传原样附件；`ATOMGIT_ACCESS_TOKEN` 只供该工具使用。上传后匿名流式读回大小和 SHA256，再更新并读回两端相同下载表格。
 - 附件工具只补缺失文件，不覆盖已有附件；两端公开操作不是事务，失败保留现状。预发布属性保留，AtomGit Latest 语义不冒充 GitHub 独立 `make_latest`。
-- 本轮不触发打包、Rust 全量或 beta.1 发布，既有新版本暂停边界不变。
+- beta.2 已获明确打包与发布授权；附件工具不重建安装包，不代替独立 Rust 全量门禁。
 
 ## 离线自检
 
@@ -53,12 +53,12 @@ node --check tauri-app/scripts/publish-release.mjs
 
 ## 安装与版本限制
 
-Windows无证书签名；macOS仅ad-hoc、未开发者签名/公证。应用版本为1.0.0-beta.1，WiX数字版本由1.0.0.0递增至1.0.1.0（不能仅递增MSI忽略的第四段）；UpgradeCode固定为 `ed3e3199-4ddc-501a-a745-179a185e8dfb`。发布门禁 `releaseIdentity` 会调用 `assertWixVersion` 校验该字段：必须是 `major.minor.patch[.build]` 纯数字（主/次≤255，修订/构建≤65535），主次版本必须与应用版本相同、修订号不得低于应用版本修订号，缺失或带预发布后缀直接失败。显示名称采用LoreKeeper（本 fork 自有品牌，不跟随上游改名，见 `project-reference.md` 的「品牌与命名边界」），标识和数据目录不变。不承诺从内部1.1.0版本降级的安装路径。
+Windows无证书签名；macOS仅ad-hoc、未开发者签名/公证。应用版本为1.0.0-beta.2，WiX数字版本由1.0.1.0递增至1.0.2.0（不能仅递增MSI忽略的第四段）；UpgradeCode固定为 `ed3e3199-4ddc-501a-a745-179a185e8dfb`。发布门禁 `releaseIdentity` 会调用 `assertWixVersion` 校验该字段：必须是 `major.minor.patch[.build]` 纯数字（主/次≤255，修订/构建≤65535），主次版本必须与应用版本相同、修订号不得低于应用版本修订号，缺失或带预发布后缀直接失败。显示名称采用LoreKeeper（本 fork 自有品牌，不跟随上游改名，见 `project-reference.md` 的「品牌与命名边界」），标识和数据目录不变。不承诺从内部1.1.0版本降级的安装路径。
 
 NSIS固定当前用户与SimpChinese；MSI为zh-CN。EXE卸载勾选框默认不选，保留项目；勾选后调用独立本机清理模式，不使用模板的AppData递归删除。手动选择目录及两次明确确认后才清理一个有效LoreKeeper项目；拒绝系统/程序/全局目录、链接、嵌套项目与Vela数据。静默、被动、升级和安装器维护调用一律不启动清理。安装位置/语言注册键无论是否保留项目都清，厂商键仅在空时移除，共享运行库不动。
 
 MSI静默卸载/macOS拖拽卸载默认保留，卸载前可运行 `lorekeeper.exe --cleanup-project`，macOS为 `open -n -W -a LoreKeeper --args --cleanup-project`。清理模式不接收路径参数、不注册IPC，不加载最近项目或业务服务。macOS系统拖拽流程本身无法变成自定义中文卸载向导，包内提供中文说明。
 
-本机测试只验证清理守卫、配置/发布合同和NSIS编译语法，不执行真实删除、注册表清理或安装卸载。Windows任务管理器归组仍受[Tauri #15567](https://github.com/tauri-apps/tauri/issues/15567)与[WebView2 #5628](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5628)阻塞，macOS归属显示待真机核验；不能把名称/图标修改冒充归组修复。
+beta.1 已获独立授权并通过本机安装、修复、卸载、身份注册/注销与隔离项目清理验收；这不代表 beta.2 安装包验收。beta.2 目前仅有自动测试、探针与构建证据，macOS 归属显示待真机核验；不能把名称/图标修改冒充归组修复。
 
 发布不授权前台窗口、真实模型/MCP/业务云或安装实测，也不把历史495f5632安装包当作本次产物。具体限制必须写入版本发布说明。

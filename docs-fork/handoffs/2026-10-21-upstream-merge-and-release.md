@@ -1,4 +1,4 @@
-# 上游同步与 1.0.0-beta.1 发布
+# 上游同步与 1.0.0-beta.1 / beta.2 发布
 
 ## 授权与范围
 
@@ -51,11 +51,23 @@
 - **项目清理向导（NSIS 卸载）已通过**：用隔离 fixture（合法 .lore/project.json）勾选“清理所选项目”→ 卸载 → 目录选择对话框填入 fixture → 清理程序显示所选目录与删除范围 → 第一次「删除所选项目」→ 第二次确认 → 提示“所选项目已清理。其他项目和全局配置保持不变”。fixture 删除、快捷方式与卸载项清零、`~/.lorekeeper` 与全局配置保留。无效清单（缺 kind/storageFormat/storageVersion）会被拒绝并提示“只允许清理含有效 .lore/project.json 的 LoreKeeper 项目”。
 - **卸载残留已修复（源码）**：根因是启动器把错误日志写到 `%LOCALAPPDATA%\LoreKeeper\identity-launcher.log`，与 NSIS 当前用户安装目录相同；一次非管理员注销失败即把日志留在该目录，卸载后目录非空。已改为写 `%TEMP%\LoreKeeper\identity-launcher.log` 并更新提示文案；启动器 14 测试与安装合同 13 测试通过。**当前 beta.1 安装包仍是旧行为，修复需下次构建才生效。**
 - **无包身份启动门禁（源码）**：主程序在进入 Tauri 前检查 GetCurrentPackageFullName；无包身份时先尝试同目录 `lorekeeper-activate.exe --quiet`（无窗口），失败才弹提示退出。豁免 debug 构建、`LOREKEEPER_ALLOW_UNPACKAGED=1` 与 `--cleanup-project`；`LOREKEEPER_PACKAGED_LAUNCH_PROBE=1` 只检测不拉起，退出码 42。
-- 门禁验证：debug 构建 + 探针运行无包身份 exe → 退出码 42、无窗口、无残留进程；`cargo check --all-targets` 与门禁单测通过。云端 `dbaa9728` 的 Tauri Rust CI 全量与 all-targets success，Commit message 与 Gitleaks 通过。本机 release 构建受 rustc `0xc0000409`（内存/栈压力）限制，未能本地验证 release 行为；正常路径（激活器以包身份启动）在第118次已实测同组。
+- 门禁验证：debug 构建 + 探针运行无包身份 exe → 退出码 42、无窗口、无残留进程；`cargo check --all-targets` 与门禁单测通过。云端 `dbaa9728` 的 Tauri Rust CI 全量与 all-targets success，Commit message 与 Gitleaks 通过。本机 release 构建受 rustc `0xc0000409`（原因未定位）限制，未能本地验证 release 行为；正常路径（激活器以包身份启动）在第118次已实测同组。
 - 门禁与安装包同批生效需下次构建；当前 beta.1 安装包仍允许直接运行 exe 拆组。多用户 UAC 与旧版本升级仍未验收（需第二个登录账号 / 旧版安装包）。
+
+## 2026-10-21 后续：beta.2 发布
+
+- 用户先提出“撤销重发”，经两次选项确认，最终选择**保留两端 beta.1，只新发 beta.2**；不授权删除旧 Release、标签或附件。
+- 发布源码 `058ec9366afe9bd2acce50a492347403149d5e33`；包含无包身份启动门禁 `dbaa9728`、日志目录修复 `1241a1d6`、后处理/错误文案 `ed98934e`。应用版本 `1.0.0-beta.2`，MSI/身份数字版本 `1.0.2.0`；不改 Electron 根版本。
+- 同 SHA Rust CI [39555957392](https://github.com/TanCan1998/Lorekeeper/actions/runs/39555957392) **1750 通过 0 失败**、all-targets 通过；提交与 Gitleaks 通过。Node 发布/安装/镜像合同 39 通过。
+- 三平台打包发布 [39556656055](https://github.com/TanCan1998/Lorekeeper/actions/runs/39556656055) 全部 success。GitHub Release ID **419244854**，非草稿、非预发布、Latest；四安装包与五校验文件共九附件，标签指向精确发布源码。
+- GitHub 九附件已下载到 `D:\Temp\lorekeeper-beta2`，逐项大小和 SHA256 与远端 digest 相符；原 beta.1 的 Release ID、九附件 ID/大小/digest 未变。下载使用 fluxdown 与固定 GitHub 代理，校验后只移除下载记录，保留文件。
+- AtomGit 首次手动拉取遇到 14 分钟冷却；等候结束后于 **15:15 +08** 请求平台同步成功，发布时 master 与新标签均为 `058ec936`，失败数 0。随后独立上传同批原始九附件，**15:17 +08** 完成匿名流式大小/SHA256 读回；两端发布说明与双源表格一致。未使用 GitHub 推送式同步，未重构建或覆盖附件。
+- AtomGit beta.1 的目标 SHA、九附件与说明读回未变；两端 beta.1 保留，GitHub Latest 已转至 beta.2。后续交接文档提交仍由平台按自身时序拉取，不把发布标签同步当作后续 master 已追平。
+- 从新 MSI/NSIS 只读提取主程序（不执行安装器），分别运行真实 release 探针，均退出 **42**。MSI 主程序 SHA256 为 `aa785feb9f91e6f33d8c81b8e429e22f48b00ae9e935ba97fc6b29ccdbf35871`，NSIS 为 `7534e97750eb60e60505e5380d43f2d1adee0315eb2b09f10b81c41866aa6510`；两者仅 Tauri 包类型标记 MSI/NSS 的 2 字节不同。未安装、未注册、未启动 GUI；这补充了 release 身份检测证据，但不替代自动拉起激活器的交互验收。
+- [beta.2 发布说明](../releases/1.0.0-beta.2.md)披露原生验收限制；beta.1 原生安装/清理结论不能移记 beta.2。
 
 ## 仍未验收
 
-- 本次四包的首次启动身份注册、项目删除、注册表清理与提权/多用户 UAC 未执行（安装/修复/卸载本身已按上节通过）；历史 MSI 证据属于旧产物。
-- macOS 真机安装、活动监视器归属、签名公证未验收；Windows WebView2 任务管理器归组未修复。
+- beta.2 四包的原生安装/卸载/首次身份注册及“无身份主程序 → 激活器”的真实交互尚未执行；beta.1 的安装/修复/卸载、独立注册/注销及隔离项目清理已按上节通过。多用户 UAC 与旧版升级仍暂缓。
+- macOS 真机安装、活动监视器归属、签名公证未验收；包身份路线已有正向证据，但 beta.2 未重做任务管理器逐 PID 原生验收，不能把开发探针当作完整归组认证。
 - 真实模型、MCP、业务云与长期写作质量未认证；新版发布说明已披露。

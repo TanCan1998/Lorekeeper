@@ -4,7 +4,7 @@
 
 - 主仓库：https://github.com/TanCan1998/Lorekeeper
 - 镜像仓库：https://atomgit.com/TanCan1998/Lorekeeper
-- 下载表格：[已公开的 1.0.0-beta](../releases/1.0.0-beta.md)。中国大陆用户推荐 AtomGit，保留 GitHub 源。
+- 下载表格：[当前 beta.2](../releases/1.0.0-beta.2.md)；旧 beta.1 与 beta 保留。中国大陆用户推荐 AtomGit，保留 GitHub 源。
 - 两端共用相同 README。文件、图片和文档使用相对路径，分别由当前托管平台解析到当前仓库；Release 是平台路由，不把它当作仓库文件相对路径。
 - Release 和附件使用明确的两套绝对 URL；不在镜像仓库单独编辑 README，不用脚本做平台替换。
 
@@ -26,6 +26,13 @@ node tauri-app/scripts/sync-readme.mjs --check
 - 代码与标签同步成功；Release 与九个附件最终通过匿名 SHA256 读回，说明含双源表格。
 - 首次发布作业与第一次镜像重试均在单请求 600 秒上限超时（GitHub runner 跨境上传 AtomGit 存储）；按协议只补缺失附件后重跑镜像成功，未覆盖已有文件。旧流程已整体改为平台拉取 + 本机附件上传，不再依赖 GitHub 跨境上传。
 - 中文首页只读抓取未出现「本 Fork 的目的」段落与新版本链接，首页完整渲染仍未验收。
+
+## 2026-10-21 beta.2 同步结果
+
+- GitHub 标签与 AtomGit 平台拉取标签都指向 `058ec936`；平台 Pull 于 15:15 +08 完成，失败数 0，未使用 GitHub 推送。
+- 同一批九附件单独上传，15:17 +08 全部匿名大小/SHA256 读回通过，两端下载表格与说明一致。GitHub beta.2 为 Latest，AtomGit 不宣称等价 Latest 指针。
+- 两端 beta.1 保留，未删除或覆盖 Release、标签、附件。手动 Pull 冷却按平台提示等待，不反复点击；本次等候约 14 分钟后成功。
+- 发布后的交接文档提交等待平台后续拉取，不把源码标签一致扩写成所有后续提交已同步。
 
 ## 代码镜像：由 AtomGit 平台拉取
 
@@ -52,7 +59,7 @@ GitHub 仓库 Secret：`ATOMGIT_ACCESS_TOKEN`，从本机用户环境变量同�
    ```powershell
    cd tauri-app
    $env:ATOMGIT_ACCESS_TOKEN = '<token>'
-   $env:MIRROR_RELEASE_TAG = 'lorekeeper-v1.0.0-beta.1'
+   $env:MIRROR_RELEASE_TAG = 'lorekeeper-v1.0.0-beta.2'
    $env:GITHUB_REPOSITORY = 'TanCan1998/Lorekeeper'
    pnpm mirror:release
    ```
@@ -63,6 +70,6 @@ GitHub 仓库 Secret：`ATOMGIT_ACCESS_TOKEN`，从本机用户环境变量同�
 
 ## 资源和验收边界
 
-本轮用户只授权镜像配置、文档和已公开 beta 的说明更新；不构建、不重压缩、不发布 beta.1，也不解除安装器与真实原生验收门禁。仅脚本语法、YAML 和轻量差异检查不等于运行回归通过。镜像传输工作流不代替现有 CI。
+用户最新明确授权 beta.2 三平台打包发布和同批附件镜像，同时保留 beta.1；附件工具自身不构建、不重压缩、不删除或覆盖旧文件。发布授权不等于本次新包的安装器与真实原生验收授权。脚本语法、YAML 和轻量差异检查不等于运行回归通过，镜像传输不代替独立 Rust CI。
 
 参考：[AtomGit 镜像说明](https://docs.gitcode.com/v1-docs/docs/repo/mirrors)、[Release API](https://docs.gitcode.com/docs/apis/post-api-v-5-repos-owner-repo-releases)、[GitHub README 相对链接](https://docs.github.com/articles/relative-links-in-readmes)。
