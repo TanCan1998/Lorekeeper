@@ -33,6 +33,8 @@ mod manuscript_publisher;
 // + 官方主页弹窗拦截）。主窗口由 tauri.conf.json 声明（非 builder 创建），
 // 故以自有插件注册，经插件 store 的 on_navigation 钩子覆盖所有 webview。
 mod navigation_guard;
+// 启动门禁：主程序必须由应用身份启动（WebView2 归组依赖包身份）。
+mod packaged_launch;
 mod project_access;
 mod project_cleanup;
 // 批次 G2a/G2b：仓储层公开（与 `pub mod db` 一致）——
@@ -62,6 +64,10 @@ pub fn run() {
     if arguments.len() == 1 && arguments[0] == "--cleanup-project" {
         project_cleanup::run();
         return;
+    }
+    // 无包身份启动会拆散 WebView2 的进程组：先尝试经激活器重启，失败再提示退出。
+    if !packaged_launch::ensure_packaged_start() {
+        std::process::exit(0);
     }
     tauri::Builder::default()
         .manage(state::AppState::new())

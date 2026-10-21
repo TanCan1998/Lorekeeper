@@ -126,6 +126,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Globalization",
     # 已批准：当前 Windows 用户 DPAPI 云凭据保护（非机器范围）。
     "Win32_Security_Cryptography",
+    # 已批准：无包身份启动时的提示框（启动门禁）。
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # 按需引入（不提前加，避免无用编译）：
