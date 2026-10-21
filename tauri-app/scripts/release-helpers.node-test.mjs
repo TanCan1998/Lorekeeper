@@ -24,7 +24,8 @@ test('MSI 数字版本拒绝主次版本漂移、修订号落后与非法格式'
   assert.throws(() => assertWixVersion('1.0.0', '1.0.65536'), /不得超过65535/)
   assert.throws(() => assertWixVersion('1.0.0', undefined), /纯数字/)
 })
-const identity = { version: '1.0.0-beta.1', sha: 'a'.repeat(40), tag: 'lorekeeper-v1.0.0-beta.1', prerelease: true }
+const version = JSON.parse(fs.readFileSync(path.join(root, 'tauri-app/package.json'), 'utf8')).version
+const identity = { version, sha: 'a'.repeat(40), tag: `lorekeeper-v${version}`, prerelease: true }
 
 function fixture() {
   const dir = fs.mkdtempSync(path.join(root, '.pi/tmp/release-unit-'))
@@ -126,6 +127,6 @@ test('beta名称可作为普通Release并显式选择Latest，仍保留预览身
     assert.equal(result.preview, true)
     assert.equal(result.prerelease, false)
     assert.equal(result.makeLatest, makeLatest === 'true')
-    assert.equal(result.version, '1.0.0-beta.1')
+    assert.equal(result.version, identity.version)
   }
 })

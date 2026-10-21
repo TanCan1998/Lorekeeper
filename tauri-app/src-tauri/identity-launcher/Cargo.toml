@@ -1,6 +1,6 @@
 [package]
 name = "lorekeeper-identity-launcher"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 edition = "2021"
 publish = false
 description = "LoreKeeper 身份启动器：包内带身份启动主程序，包外只激活身份包"
