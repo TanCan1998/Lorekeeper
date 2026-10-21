@@ -74,6 +74,8 @@ pub struct AppState {
     /// （`sourceUrl` → `(contentSha256, resolvedUrl)`；进程内存态，重启即失效）。
     pub(crate) writing_skill_inspections:
         Mutex<std::collections::HashMap<String, (String, String)>>,
+    /// 本机 Skill 候选仅主进程持有路径；按窗口绑定且一次性使用。
+    pub(crate) local_skill_candidates: Mutex<crate::writing_skills::local::Candidates>,
     /// 批次 H（H3）：应用更新服务（进程内存态；在 `lib.rs` 的 `setup` 中装配）。
     ///
     /// 为 `None` 时代表更新运行时**未装配**（理论上不发生），命令层会回退为
@@ -122,6 +124,7 @@ impl AppState {
                 crate::import::inspection_store::ImportInspectionStore::new(),
             ),
             writing_skill_inspections: Mutex::new(std::collections::HashMap::new()),
+            local_skill_candidates: Mutex::new(crate::writing_skills::local::Candidates::default()),
             update: Mutex::new(None),
             mcp: Mutex::new(crate::mcp::McpManager::new()),
         }

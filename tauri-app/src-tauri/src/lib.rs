@@ -1,4 +1,4 @@
-﻿//! Tauri 2 后端入口 —— 迁移自 `electron/main.ts` + `electron/ipc-handlers.ts`。
+//! Tauri 2 后端入口 —— 迁移自 `electron/main.ts` + `electron/ipc-handlers.ts`。
 //!
 //! 迁移纪律（docs-fork/agents/pi-development.md）：
 //! - 每个 `src/shared/ipc-channels.ts` 频道对应一个 `#[tauri::command]`，契约唯一事实源不变；
@@ -78,6 +78,16 @@ pub fn run() {
         // 待 `window:resolve-close(proceed)` 将 `approved` 置位后才真正放行。
         .on_window_event(|window, event| {
             use tauri::{Emitter, Manager};
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Ok(mut candidates) = window
+                    .app_handle()
+                    .state::<state::AppState>()
+                    .local_skill_candidates
+                    .lock()
+                {
+                    candidates.clear(window.label());
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let (allow_close, request_id) = window
                     .app_handle()
@@ -390,6 +400,8 @@ pub fn run() {
             commands::skills_list_user,
             commands::skills_inspect_github,
             commands::skills_install_github,
+            commands::skills_pick_local,
+            commands::skills_install_local,
             commands::skills_uninstall_user,
             // 批次 H（H3）：应用更新（update:* 6 频道 + update:state 事件）
             commands::update_get_state,

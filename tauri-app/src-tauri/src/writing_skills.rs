@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod local;
+
 /// Writing Skill 可建议的阶段（对齐 `WRITING_SKILL_STAGES`）
 pub const WRITING_SKILL_STAGES: [&str; 4] = ["planning", "drafting", "review", "refinement"];
 /// SKILL.md 体积上限（对齐 `MAX_SKILL_BYTES = 64 KiB`）
@@ -75,17 +77,49 @@ pub struct GitHubWritingSkillLocation {
 
 /// frontmatter 字段行（对齐 `/^\s*([^:#][^:]*):\s*(.*?)\s*$/`，键统一小写）
 fn parse_frontmatter(raw: &str) -> (std::collections::HashMap<String, String>, String) {
+    parse_frontmatter_mode(raw, false)
+}
+
+fn parse_frontmatter_mode(
+    raw: &str,
+    block_scalars: bool,
+) -> (std::collections::HashMap<String, String>, String) {
     let block = regex::Regex::new(r"(?s)^---\s*\r?\n(.*?)\r?\n---\s*(?:\r?\n|$)").unwrap();
     let Some(captures) = block.captures(raw) else {
         return (std::collections::HashMap::new(), raw.trim().to_string());
     };
     let field_line = regex::Regex::new(r"^\s*([^:#][^:]*):\s*(.*?)\s*$").unwrap();
     let mut fields = std::collections::HashMap::new();
-    for line in captures[1].split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if let Some(field) = field_line.captures(line) {
-            fields.insert(field[1].trim().to_lowercase(), unquote(&field[2]));
+    let lines: Vec<&str> = captures[1].lines().collect();
+    let mut index = 0;
+    while index < lines.len() {
+        if let Some(field) = field_line.captures(lines[index]) {
+            let key = field[1].trim().to_lowercase();
+            let style = field[2].trim();
+            if block_scalars && matches!(style, ">" | ">-" | ">+" | "|" | "|-" | "|+") {
+                let mut block = Vec::new();
+                while index + 1 < lines.len()
+                    && (lines[index + 1].trim().is_empty()
+                        || lines[index + 1].starts_with(char::is_whitespace))
+                {
+                    index += 1;
+                    block.push(lines[index].trim());
+                }
+                let value = if style.starts_with('>') {
+                    block
+                        .into_iter()
+                        .filter(|line| !line.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    block.join("\n").trim().to_string()
+                };
+                fields.insert(key, value);
+            } else {
+                fields.insert(key, unquote(&field[2]));
+            }
         }
+        index += 1;
     }
     let matched = captures.get(0).map(|item| item.end()).unwrap_or(0);
     (fields, raw[matched..].trim().to_string())
@@ -158,6 +192,23 @@ fn matches_any(content: &str, patterns: &[&str]) -> bool {
 /// 对齐 `inspectWritingSkillMarkdown`
 pub fn inspect_writing_skill_markdown(raw: &str) -> Result<WritingSkillInspection, String> {
     let (fields, content) = parse_frontmatter(raw);
+    let relative = matches_any(
+        &content,
+        &[
+            r"(?i)\]\s*\(\s*(?:\.\.?[/\\]|(?:references?|assets?)[/\\])",
+            r#"(?im)(?:^|[\s`'"(])(?:references?|assets?)[/\\][^\s`'")]+"#,
+            r"(?i)\$\{skill_dir\}",
+        ],
+    );
+    inspect_skill(raw, fields, content, relative)
+}
+
+fn inspect_skill(
+    raw: &str,
+    fields: std::collections::HashMap<String, String>,
+    content: String,
+    relative: bool,
+) -> Result<WritingSkillInspection, String> {
     let name = fields
         .get("name")
         .map(|value| value.trim().to_string())
@@ -173,17 +224,10 @@ pub fn inspect_writing_skill_markdown(raw: &str) -> Result<WritingSkillInspectio
         .join(" ")
         .to_lowercase();
 
-    if byte_length > MAX_SKILL_BYTES {
+    if byte_length > MAX_SKILL_BYTES || content.len() > MAX_SKILL_BYTES {
         reasons.push("content-too-large".to_string());
     }
-    if matches_any(
-        &content,
-        &[
-            r"(?i)\]\s*\(\s*(?:\.\.?[/\\]|(?:references?|assets?)[/\\])",
-            r#"(?im)(?:^|[\s`'"(])(?:references?|assets?)[/\\][^\s`'")]+"#,
-            r"(?i)\$\{skill_dir\}",
-        ],
-    ) {
+    if relative {
         reasons.push("relative-reference".to_string());
     }
     if matches_any(

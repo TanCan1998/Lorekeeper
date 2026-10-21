@@ -13,6 +13,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod local;
+pub use local::*;
+
 use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
@@ -116,6 +119,7 @@ pub struct UserWritingSkill {
     pub content: String,
     pub base_dir: String,
     pub file_path: String,
+    pub bundle: crate::writing_skills::local::InstalledBundle,
 }
 
 // ===== 逻辑层（不依赖 Tauri State，便于单测）=====
@@ -354,6 +358,24 @@ pub fn list_user_skills_at(home: &Path) -> Result<Vec<UserWritingSkill>, String>
             if !lexically_contained(&canonical_root, &base_dir) {
                 return Err("写作 Skill 目标超出应用目录".to_string());
             }
+            if !base_dir
+                .join("SKILL.md")
+                .try_exists()
+                .map_err(|error| error.to_string())?
+                && base_dir
+                    .join(crate::writing_skills::local::BUNDLE_MANIFEST)
+                    .symlink_metadata()
+                    .is_ok()
+            {
+                // 中断安装保留损坏条目，作者可从设置页卸载后重试。
+                return Ok(UserWritingSkill {
+                    name,
+                    content: String::new(),
+                    base_dir: base_dir.to_string_lossy().to_string(),
+                    file_path: base_dir.join("SKILL.md").to_string_lossy().to_string(),
+                    bundle: crate::writing_skills::local::InstalledBundle::Damaged,
+                });
+            }
             let file_path = std::fs::canonicalize(base_dir.join("SKILL.md"))
                 .map_err(|error| error.to_string())?;
             if !lexically_contained(&base_dir, &file_path) {
@@ -367,7 +389,14 @@ pub fn list_user_skills_at(home: &Path) -> Result<Vec<UserWritingSkill>, String>
             }
             Ok(UserWritingSkill {
                 name,
-                content: std::fs::read_to_string(&file_path).map_err(|error| error.to_string())?,
+                content: String::from_utf8(
+                    crate::writing_skills::local::read_file(&base_dir, "SKILL.md")?
+                        .ok_or_else(|| "Skill 不存在".to_string())?,
+                )
+                .map_err(|error| error.to_string())?,
+                bundle: crate::writing_skills::local::read_installed_bundle(|relative| {
+                    crate::writing_skills::local::read_file(&base_dir, relative)
+                }),
                 base_dir: base_dir.to_string_lossy().to_string(),
                 file_path: file_path.to_string_lossy().to_string(),
             })
@@ -640,6 +669,10 @@ pub async fn skills_install_github(
         )));
     }
 
+    let _operation = state
+        .fs_lock
+        .lock()
+        .map_err(|_| "Skill operation lock poisoned".to_string())?;
     let home = app_paths::lorekeeper_home();
     let name = fetched.inspection.metadata.name.clone();
     let requested = match writing_skill_directory_at(&home, &name) {
@@ -677,7 +710,18 @@ pub async fn skills_install_github(
 
 /// `skills:uninstall-user`
 #[tauri::command]
-pub fn skills_uninstall_user(name: String) -> SimpleResult {
+pub fn skills_uninstall_user(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<SimpleResult, String> {
+    let _operation = state
+        .fs_lock
+        .lock()
+        .map_err(|_| "Skill operation lock poisoned".to_string())?;
+    Ok(skills_uninstall_user_result(&name))
+}
+
+fn skills_uninstall_user_result(name: &str) -> SimpleResult {
     // 注意：skills 频道失败**不带** `Error: ` 前缀（对齐基线 `error.message`）
     match uninstall_user_skill_at(&app_paths::lorekeeper_home(), &name) {
         Ok(()) => SimpleResult {
@@ -853,6 +897,27 @@ mod tests {
         ensure_owned_skill_target_at(&home, "new-skill").unwrap();
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn interrupted_local_install_remains_visible_for_uninstall() {
+        let home = temp_home("interrupted-skill");
+        let directory = home.join("skills").join("interrupted");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join(crate::writing_skills::local::BUNDLE_MANIFEST),
+            "{}",
+        )
+        .unwrap();
+        let skills = list_user_skills_at(&home).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert!(matches!(
+            skills[0].bundle,
+            crate::writing_skills::local::InstalledBundle::Damaged
+        ));
+        uninstall_user_skill_at(&home, "interrupted").unwrap();
+        assert!(list_user_skills_at(&home).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

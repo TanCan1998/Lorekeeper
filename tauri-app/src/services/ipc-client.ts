@@ -263,6 +263,8 @@ const CHANNEL_ARG_NAMES: Record<string, readonly string[]> = {
   'prompt:delete-global': ['key', 'writingLanguage'],
   'skills:inspect-github': ['sourceUrl'],
   'skills:install-github': ['sourceUrl'],
+  'skills:pick-local': ['kind'],
+  'skills:install-local': ['candidateId'],
   'skills:uninstall-user': ['name'],
   // 批次 H（H3）：应用更新（update:* 6 频道；仅 defer-reminder 带参）
   'update:defer-reminder': ['days'],

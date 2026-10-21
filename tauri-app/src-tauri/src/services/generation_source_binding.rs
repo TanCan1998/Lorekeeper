@@ -69,7 +69,8 @@ use crate::services::source_ref::{
     is_content_hash, ContextEstimate, ContextSnapshot, ContextSource, ContextSourceSlot,
     TransferAuthority,
 };
-use crate::writing_skills::{inspect_writing_skill_markdown, WRITING_SKILL_STAGES};
+use crate::writing_skills::local::{inspect_installed, read_installed_bundle, InstalledBundle};
+use crate::writing_skills::WRITING_SKILL_STAGES;
 
 // ============================================================================
 // 基线错误码（逐字对齐 electron 基线 throw 的 Error 消息）
@@ -2658,7 +2659,32 @@ pub fn build_generation_source_binding(
         let Some(text) = text else {
             return Err(fail(GENERATION_SKILL_MISSING));
         };
-        let inspected = inspect_writing_skill_markdown(&text)?;
+        let bundle = if scope == "user" {
+            read_installed_bundle(|relative| {
+                observer.observe(
+                    deps.global_data_root,
+                    &format!("skills/{name}/{relative}"),
+                    true,
+                )
+            })
+        } else {
+            InstalledBundle::None
+        };
+        if matches!(bundle, InstalledBundle::Damaged) {
+            return Err(fail("GENERATION_SKILL_BUNDLE_DAMAGED"));
+        }
+        let inspected = inspect_installed(&text, &bundle, name)?;
+        let skill_hash = match &bundle {
+            InstalledBundle::Intact { files } if !files.is_empty() => {
+                let mut parts = vec![text.clone()];
+                for file in files {
+                    parts.push(file.path.clone());
+                    parts.push(file.content.clone());
+                }
+                hash(&stringify(&parts))
+            }
+            _ => hash(&text),
+        };
         // 内置技能是既有产品能力，经 trusted pure getter 选择；
         // 外部导入保留更严格的门禁。
         if scope != "builtin"
@@ -2670,7 +2696,7 @@ pub fn build_generation_source_binding(
         skills.push(SkillEntry {
             stage: stage.clone(),
             identity: id.to_string(),
-            hash: hash(&text),
+            hash: skill_hash,
         });
     }
     for file in &observer.observed {

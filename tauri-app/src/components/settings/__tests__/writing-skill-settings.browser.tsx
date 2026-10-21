@@ -22,6 +22,13 @@ beforeEach(async () => {
   tauriInternals = installTauriInternals({
     commands: {
       skills_list_user: [],
+      skills_pick_local: { success: true, cancelled: false, inspection: {
+        candidateId: 'candidate-1', sourceKind: 'folder', sourceName: 'scene-voice',
+        contentSha256: 'a'.repeat(64), metadata: { name: 'scene-voice', description: 'Concrete voice', language: 'bilingual' },
+        compatible: true, reasons: [], suggestedStage: 'drafting', utf8Bytes: 256,
+        bundledFiles: ['references/voice.md'], unbundledReferences: [], skippedFiles: ['scripts/check.py'],
+      } },
+      skills_install_local: { success: true, skill: { name: 'scene-voice' } },
       fs_list_dir: [],
       fs_check_exists: false,
       fs_read_file: { success: false, content: '', error: 'missing' },
@@ -76,6 +83,27 @@ afterEach(async () => {
 })
 
 describe('writing skill settings', () => {
+  it('本机候选仅通过不透明 id 安装，展示附带文件与跳过项', async () => {
+    await act(async () => page.getByRole('button', { name: 'Choose folder' }).click())
+    await expect.element(page.getByText('scene-voice', { exact: true })).toBeVisible()
+    expect(container?.textContent).toContain('references/voice.md')
+    expect(container?.textContent).toContain('scripts/check.py')
+    expect(tauriInternals.invoke).toHaveBeenCalledWith('skills_pick_local', { kind: 'folder' }, undefined)
+    await act(async () => page.getByRole('button', { name: 'Confirm install' }).click())
+    await expect.element(page.getByRole('dialog')).toBeVisible()
+    expect(tauriInternals.invoke).not.toHaveBeenCalledWith('skills_install_local', expect.anything(), undefined)
+    await act(async () => page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click())
+    await vi.waitFor(() => expect(tauriInternals.invoke).toHaveBeenCalledWith('skills_install_local', { candidateId: 'candidate-1' }, undefined))
+  })
+
+  it('重选取消时撤销旧候选卡片，不复用失效授权', async () => {
+    await act(async () => page.getByRole('button', { name: 'Choose folder' }).click())
+    await expect.element(page.getByRole('button', { name: 'Confirm install' })).toBeEnabled()
+    tauriInternals.invoke.mockResolvedValueOnce({ success: true, cancelled: true })
+    await act(async () => page.getByRole('button', { name: 'Choose file' }).click())
+    await vi.waitFor(() => expect(page.getByRole('button', { name: 'Confirm install' }).query()).toBeNull())
+  })
+
   it('inspects a GitHub candidate before offering installation', async () => {
     await act(async () => {
       await page.getByLabelText('GitHub skill URL').fill('https://github.com/acme/scene-craft')
