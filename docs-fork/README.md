@@ -12,7 +12,9 @@
 
 ## 迁移进度入口
 
-**2026-10-21 当前**：[上游合并与后续发布](handoffs/2026-10-21-upstream-merge-and-release.md)。已发布 **LoreKeeper 1.0.0-beta.2**：源码 `058ec936`，包含 Windows 无包身份启动门禁、临时目录日志修复及后处理文案刷新；GitHub 普通 Release + Latest，三平台四包同源，Rust 全量 1750 通过、all-targets 通过。AtomGit 平台拉取同标签后，九附件均已匿名 SHA256 读回通过，两端下载说明一致。发布说明见 [beta.2](releases/1.0.0-beta.2.md)；新包原生安装、多用户 UAC、macOS 真机与真实业务仍未认证。
+**2026-10-22 维护**：[第126次历史临时产物与闲置依赖瘦身](handoffs/2026-10-22-tauri-migration-status.md)：按明确授权清理约649.2 MiB历史临时文件，移除7项Tauri闲置依赖（锁图522→403）。类型检查、lint、2827项前端测试与构建/产物体检通过；不改Electron基线，不改已发布安装包，不宣称等量缩小安装包。
+
+**最近发布（2026-10-21）**：[上游合并与后续发布](handoffs/2026-10-21-upstream-merge-and-release.md)。已发布 **LoreKeeper 1.0.0-beta.2**：源码 `058ec936`，包含 Windows 无包身份启动门禁、临时目录日志修复及后处理文案刷新；GitHub 普通 Release + Latest，三平台四包同源，Rust 全量 1750 通过、all-targets 通过。AtomGit 平台拉取同标签后，九附件均已匿名 SHA256 读回通过，两端下载说明一致。发布说明见 [beta.2](releases/1.0.0-beta.2.md)；新包原生安装、多用户 UAC、macOS 真机与真实业务仍未认证。
 
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
