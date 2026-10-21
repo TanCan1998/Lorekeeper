@@ -12,6 +12,8 @@
 
 ## 迁移进度入口
 
+**2026-10-21 当前**：[上游合并与 beta.1 发布](handoffs/2026-10-21-upstream-merge-and-release.md)。已合并上游 1.3.1 基线并迁移本机 Skill 能力；用户确认发布 `1.0.0-beta.1` 为普通 Release + Latest、三平台四包、双源。最新授权取代下方历史暂停记录；新 SHA 云端全量、发布与远端附件校验通过前不宣称完成。
+
 迁移进度的 README 展示仅在本文件维护；根 `README.md` 只保留 Fork 目的和文档入口，不再记录覆盖率、测试结果、待办或接续轮次。
 
 2026-10-19第125次：[剩余迁移合并实现，已提交且云端验证通过](handoffs/2026-10-19-tauri-migration-status.md#本次更新第125次剩余迁移合并实现已提交云端验证通过)。用户要求不切片、最后统一验证；本轮完成大纲/蓝图作者恢复全链路、目录进度登记、合成前五个可变性守卫、头像双语与缓存、MSI 快捷方式与安装后启动改走激活器，并纠正陈旧注释。仅新增既有 `windows-sys` feature。用户随后授权完整验证：`cargo check --all-targets` 0 错误、`cargo test --lib` **1734 通过 0 失败**、定向 344 通过、rustfmt 与 `pnpm typecheck`/`lint` 通过、安装合同 13 通过、频道缺失 0；前端 vitest 2758 通过、1 skipped、0 失败（既存品牌大小写断言已改为引用 `APP_BRAND.enName`）。随后按主题分成 7 个提交推送 `3e8101ba..011b4b0f`；云端同一 SHA 上 Tauri Rust CI、Commit message CI、Gitleaks 与 AtomGit mirror 全部 success。并在干净机器上完成 MSI 真实安装验收（静默安装、修复安装、身份重注册幂等、卸载清理全部退出码 0；快捷方式与安装后启动均走 `lorekeeper-activate.exe`）。**未发布**；从快捷方式启动已验收（激活器拉起主程序，WebView2 页面 `Lorekeeper 设定司` 加载完成，关闭后自行退出），旧版本升级路径搁置到下个版本，多用户 UAC 仍未验收；另新增 `assertWixVersion` 发布门禁，防止 `wix.version` 与应用版本主次版本漂移或修订号落后。升级/回滚与多用户验收未完成；新版发布继续暂停。精确状态以[当前交接](handoffs/CURRENT.md)为准。

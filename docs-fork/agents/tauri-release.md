@@ -1,5 +1,7 @@
 # Tauri手动打包与预发布
 
+> **2026-10-21 当前授权**：用户确认先迁移本机 Skill，再发布 `1.0.0-beta.1`：`publish=true`、`prerelease=false`、`make_latest=true`，全部三平台四包，同步 GitHub 与 AtomGit。此具体授权取代本文下方历史暂停记录，不授权原生安装/卸载/注册、前台窗口或真实业务。最新证据与待验限制见[本轮快照](../handoffs/2026-10-21-upstream-merge-and-release.md)及[发布说明](../releases/1.0.0-beta.1.md)；新 SHA 云端全量成功前不得发布。
+
 ## 边界
 
 首版 **1.0.0-beta**、标签 **lorekeeper-v1.0.0-beta** 使用预发布且不设最新版。后续已获准准备 **1.0.0-beta.1**：保留 beta 名称，允许普通 Release + Latest，正文明确预览/非正式版，不覆盖旧版。只修改Tauri版本，不改Electron根版本。
