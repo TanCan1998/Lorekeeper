@@ -34,7 +34,12 @@ pub const RECORD_SUBKEY: &str = r"Software\tancan1998\LoreKeeper";
 /// 不猜测、不搜索任意键。
 /// 候选同时带 PowerShell 可用的蜂巢前缀，注册助手据此写回同一位置。
 pub const RECORD_CANDIDATES: [(HKEY, &str, InstallScope, &str); 4] = [
-    (HKEY_LOCAL_MACHINE, RECORD_SUBKEY, InstallScope::Machine, "HKLM"),
+    (
+        HKEY_LOCAL_MACHINE,
+        RECORD_SUBKEY,
+        InstallScope::Machine,
+        "HKLM",
+    ),
     (
         HKEY_LOCAL_MACHINE,
         r"Software\WOW6432Node\tancan1998\LoreKeeper",
@@ -51,8 +56,7 @@ pub const RECORD_CANDIDATES: [(HKEY, &str, InstallScope, &str); 4] = [
 ];
 
 /// 当前用户已注册包的仓库键；用于判断本用户是否已获得包身份。
-const USER_PACKAGE_REPOSITORY: &str =
-    r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+const USER_PACKAGE_REPOSITORY: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
 
 /// 命中记录的位置：注册表蜂巢前缀 + 子键，用于把结果写回同一处。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +121,10 @@ pub fn current_package_full_name() -> Option<String> {
     if status != 0 {
         return None;
     }
-    let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
+    let end = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(buffer.len());
     Some(String::from_utf16_lossy(&buffer[..end]))
 }
 
@@ -186,8 +193,8 @@ fn record_from(
             crate::record::MAIN_EXECUTABLE_NAME
         )
     });
-    let package_name =
-        read_string(hive, subkey_path, "IdentityPackageName").ok_or(LauncherError::RecordMissing)?;
+    let package_name = read_string(hive, subkey_path, "IdentityPackageName")
+        .ok_or(LauncherError::RecordMissing)?;
     // 声明范围必须与实际命中的注册表位置一致，避免把用户级记录当成全机安装。
     let declared = InstallScope::parse(
         &read_string(hive, subkey_path, "InstallScope").ok_or(LauncherError::RecordMissing)?,
@@ -401,7 +408,8 @@ fn packaged_launcher_path(record: &InstallRecord) -> Result<String, LauncherErro
             "登记的身份启动器路径或包全名无效".to_string(),
         ));
     }
-    attributes(&launcher).ok_or_else(|| LauncherError::UnsafeFile("身份启动器不存在".to_string()))?;
+    attributes(&launcher)
+        .ok_or_else(|| LauncherError::UnsafeFile("身份启动器不存在".to_string()))?;
     Ok(launcher)
 }
 
@@ -410,7 +418,8 @@ fn registered_for_current_user(full_name: &str) -> bool {
     let subkey = wide(&format!("{USER_PACKAGE_REPOSITORY}\\{full_name}"));
     let mut key = std::ptr::null_mut();
     // SAFETY: 只读打开仓库键；成功时立即关闭。
-    let opened = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
+    let opened =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
     if opened != ERROR_SUCCESS {
         return false;
     }
@@ -463,7 +472,14 @@ fn register_for_current_user_once(self_exe: &str) -> Result<(), LauncherError> {
     let output = std::process::Command::new(format!(
         r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"
     ))
-    .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+    .args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ])
     .output()
     .map_err(|error| LauncherError::RecordInvalid(format!("无法请求管理员授权：{error}")))?;
     if !output.status.success() {
@@ -473,7 +489,7 @@ fn register_for_current_user_once(self_exe: &str) -> Result<(), LauncherError> {
                 "已取消管理员授权，LoreKeeper 需要一次授权才能加入应用组".to_string()
             } else {
                 format!(
-                    "身份组件注册未完成（退出码 {:?}）：{}；详情见 identity-launcher.log",
+                    "身份组件注册未完成（退出码 {:?}）：{}；详情见临时目录 LoreKeeper\\identity-launcher.log",
                     output.status.code(),
                     stderr.trim()
                 )
@@ -549,7 +565,9 @@ pub fn register_identity() -> Result<String, LauncherError> {
         record.install_location.trim_end_matches(['\\', '/'])
     );
     if attributes(&msix).is_none() {
-        return Err(LauncherError::UnsafeFile("安装包内缺少身份组件".to_string()));
+        return Err(LauncherError::UnsafeFile(
+            "安装包内缺少身份组件".to_string(),
+        ));
     }
     if !is_elevated() {
         return Err(LauncherError::RecordInvalid(
@@ -574,10 +592,19 @@ pub fn register_identity() -> Result<String, LauncherError> {
     let windir = std::env::var_os("WINDIR")
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| r"C:\Windows".to_string());
-    let output = std::process::Command::new(format!(r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"))
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
-        .output()
-        .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
+    let output = std::process::Command::new(format!(
+        r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"
+    ))
+    .args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ])
+    .output()
+    .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
     if !output.status.success() {
         let stderr = String::from_utf16_lossy(
             &String::from_utf8_lossy(&output.stderr)
@@ -611,14 +638,21 @@ pub fn unregister_identity() -> Result<(), LauncherError> {
     let windir = std::env::var_os("WINDIR")
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| r"C:\Windows".to_string());
-    let output = std::process::Command::new(format!(r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"))
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
-        .output()
-        .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
+    let output = std::process::Command::new(format!(
+        r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"
+    ))
+    .args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ])
+    .output()
+    .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
     if !output.status.success() {
-        return Err(LauncherError::RecordInvalid(
-            "注销身份组件失败".to_string(),
-        ));
+        return Err(LauncherError::RecordInvalid("注销身份组件失败".to_string()));
     }
     Ok(())
 }
@@ -632,10 +666,11 @@ pub fn set_quiet(value: bool) {
 
 fn log_error(message: &str) {
     use std::io::Write;
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+    // 日志写到系统临时目录：安装目录在卸载时会被删除，写在那里会让目录残留。
+    let Some(temp) = std::env::var_os("TEMP") else {
         return;
     };
-    let directory = std::path::Path::new(&local).join("LoreKeeper");
+    let directory = std::path::Path::new(&temp).join("LoreKeeper");
     if std::fs::create_dir_all(&directory).is_err() {
         return;
     }
@@ -664,6 +699,11 @@ pub fn report(message: &str) {
     let title = wide("LoreKeeper");
     // SAFETY: 两个字符串均在调用期间有效；父窗口为空，属应用自身错误提示。
     unsafe {
-        MessageBoxW(null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
     }
 }
