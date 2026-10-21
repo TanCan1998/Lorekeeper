@@ -33,7 +33,8 @@ node tauri-app/scripts/sync-readme.mjs --check
 
 - 已删除 `.github/workflows/atomgit-mirror.yml` 与 `tauri-app/scripts/sync-atomgit.mjs`；GitHub 侧没有推送代码或标签到 AtomGit 的工作流。
 - 在 AtomGit 仓库的镜像/同步设置里，把镜像源指向 `https://github.com/TanCan1998/Lorekeeper`，选择 `master` 与 `lorekeeper-v*` 标签；按平台能力设置定时或手动拉取。平台拉取是只读镜像，不会向 GitHub 回写。
-- 平台配置是 AtomGit 侧操作，本仓库无法用 API 代替；启用后需实测一次拉取结果（分支、标签 SHA 与 GitHub 一致）。
+- **已于 2026-10-21 启用并实测**：Pull 镜像 `mirroring_enabled=true`、`force=false`、`number_of_failures=0`；手动“立即同步”后 AtomGit `master` 与 GitHub HEAD 一致（`ccdb3664`），标签 `lorekeeper-v1.0.0-beta.1` 指向发布源码 `f01b027b`。平台侧每次 GitHub 提交会自动拉取。
+- 写配置没有公开 API：启用与“立即同步”通过仓库设置页完成（`/setting/mirror` → Pull）。本仓库脚本只读校验 SHA 与附件。
 - 附件不进入 Git，平台拉取不会带来安装包；Release 资产仍按下节单独上传。
 
 ## 令牌

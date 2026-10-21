@@ -36,7 +36,8 @@
 
 - 用户要求发布由 AtomGit 拉取，不再由 GitHub 推送。已删除 `.github/workflows/atomgit-mirror.yml` 与 `tauri-app/scripts/sync-atomgit.mjs`；`publish-release.mjs` 不再导入镜像模块、不要求 AtomGit Secret，发布作业只处理 GitHub。
 - Git 镜像只同步代码与标签，**不同步 Release 安装包**：附件改为代码拉取完成后单独运行 `pnpm mirror:release`（`mirror-published-release.mjs`），只补缺失文件并做匿名 SHA256 读回。
-- 平台拉取需在 AtomGit 仓库设置里配置镜像源与分支/标签；本仓库无可用 API 代配。启用后必须实测分支/标签 SHA 与 GitHub 一致，才能登记双端代码同步完成。
+- 平台配置已完成：AtomGit 仓库设置 → 仓库镜像 → Pull 启用（`mirroring_enabled=true`，`force=false`），并手动“立即同步”一次；实测 `master` = GitHub HEAD `ccdb3664`、标签 `lorekeeper-v1.0.0-beta.1` = `f01b027b`、失败数 0。平台会在后续 GitHub 提交进入时自动拉取，不再需要 GitHub 推送。
+- 拉取只更新代码与标签，不改动已上传的 Release；beta.1 九个附件与说明保持原样。
 - 已发布的 `lorekeeper-v1.0.0-beta.1` 是旧推送流程产物，两端九附件与 Latest 状态不变；新流程从下一次发布开始生效。
 - 本机验证：Node 合同 39 通过、脚本语法、Tauri typecheck/lint 通过。未新增依赖、schema 或权限。
 
