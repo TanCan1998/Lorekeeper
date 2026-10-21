@@ -10,6 +10,10 @@
 
 工作流 `.github/workflows/tauri-release-package.yml` 只接受 `workflow_dispatch`。默认 `publish=false` 仍仅打包；明确 `publish=true` 才允许独立发布作业写Release/标签。三平台为Windows x64（NSIS/MSI）、macOS ARM64/Intel（DMG），不提供Linux安装包。
 
+## 平台构建命令
+
+主配置的 `build.beforeBuildCommand` 为 Windows 生成身份小包；macOS 由 `src-tauri/tauri.macos.conf.json` 覆盖为 `pnpm build`，不执行 Windows 专用启动器、MakeAppx 或资源映射。发布合同测试同时锁定这两点。2026-10-21 首次发布尝试即因两平台共用一个 `beforeBuildCommand` 而中断，修复后需以新 SHA 重跑云端全量与四包打包。
+
 ## 流程
 
 1. prepare锁定完整源码SHA，核对package/Cargo/config/Cargo.lock项目版本、新标签命名与发布说明；已存在同名标签或Release立即失败。
