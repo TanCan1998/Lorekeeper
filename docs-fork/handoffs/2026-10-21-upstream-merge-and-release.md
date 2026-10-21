@@ -47,7 +47,8 @@
 
 - **MSI（`1.0.1.0`）**：提权静默安装 exit 0；HKLM 卸载项 `LoreKeeper 1.0.1.0`、`C:\Program Files\LoreKeeper` 含 `lorekeeper.exe` / `lorekeeper-activate.exe` / `identity\`；公共桌面快捷方式 1 个，指向激活器、无参数；Appx 身份 `com.tancan1998.lorekeeper 1.0.1.0` 注册成功。修复安装 `/famus` exit 0，版本与身份不变。静默卸载 exit 0：卸载项 0、安装目录删除、Appx 注销、快捷方式清理，`~/.lorekeeper` 保留。
 - **NSIS（`1.0.0-beta.1`）**：当前用户静默安装 exit 0，装入 `%LOCALAPPDATA%\LoreKeeper`（含激活器与 `identity\`）；用户桌面与开始菜单快捷方式均指向 `lorekeeper-activate.exe`，无参数；HKCU 卸载项版本 `1.0.0-beta.1`。静默卸载 exit 0：目录、卸载项、快捷方式清零，`~/.lorekeeper` 保留；安装后未注册 Appx（需首次经激活器启动，未测）。
-- 未启动主程序窗口；首次运行激活器注册、项目删除对话框、注册表清理向导、多用户 UAC 与旧版本升级仍未验收。
+- **首次激活器注册**（无需启动主程序）：`--unregister-identity --quiet` exit 0 → Appx 0；`--register-identity --quiet` exit 0 → Appx `com.tancan1998.lorekeeper 1.0.1.0`（WindowsApps 内启动器）。HKLM 安装记录含 schema 1、machine 范围、安装目录与身份启动器路径；HKCU 记录含桌面/开始菜单/卸载快捷方式计数。卸载后安装目录、Appx、HKLM/HKCU 记录全部清零。
+- 未启动主程序窗口；项目删除对话框、注册表清理向导、多用户 UAC 与旧版本升级仍未验收（前两者需前台 GUI 交互，多用户需第二个登录账号）。
 
 ## 仍未验收
 
