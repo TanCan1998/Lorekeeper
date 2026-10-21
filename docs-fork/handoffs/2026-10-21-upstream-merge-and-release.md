@@ -48,7 +48,9 @@
 - **MSI（`1.0.1.0`）**：提权静默安装 exit 0；HKLM 卸载项 `LoreKeeper 1.0.1.0`、`C:\Program Files\LoreKeeper` 含 `lorekeeper.exe` / `lorekeeper-activate.exe` / `identity\`；公共桌面快捷方式 1 个，指向激活器、无参数；Appx 身份 `com.tancan1998.lorekeeper 1.0.1.0` 注册成功。修复安装 `/famus` exit 0，版本与身份不变。静默卸载 exit 0：卸载项 0、安装目录删除、Appx 注销、快捷方式清理，`~/.lorekeeper` 保留。
 - **NSIS（`1.0.0-beta.1`）**：当前用户静默安装 exit 0，装入 `%LOCALAPPDATA%\LoreKeeper`（含激活器与 `identity\`）；用户桌面与开始菜单快捷方式均指向 `lorekeeper-activate.exe`，无参数；HKCU 卸载项版本 `1.0.0-beta.1`。静默卸载 exit 0：目录、卸载项、快捷方式清零，`~/.lorekeeper` 保留；安装后未注册 Appx（需首次经激活器启动，未测）。
 - **首次激活器注册**（无需启动主程序）：`--unregister-identity --quiet` exit 0 → Appx 0；`--register-identity --quiet` exit 0 → Appx `com.tancan1998.lorekeeper 1.0.1.0`（WindowsApps 内启动器）。HKLM 安装记录含 schema 1、machine 范围、安装目录与身份启动器路径；HKCU 记录含桌面/开始菜单/卸载快捷方式计数。卸载后安装目录、Appx、HKLM/HKCU 记录全部清零。
-- 未启动主程序窗口；项目删除对话框、注册表清理向导、多用户 UAC 与旧版本升级仍未验收（前两者需前台 GUI 交互，多用户需第二个登录账号）。
+- **项目清理向导（NSIS 卸载）已通过**：用隔离 fixture（合法 .lore/project.json）勾选“清理所选项目”→ 卸载 → 目录选择对话框填入 fixture → 清理程序显示所选目录与删除范围 → 第一次「删除所选项目」→ 第二次确认 → 提示“所选项目已清理。其他项目和全局配置保持不变”。fixture 删除、快捷方式与卸载项清零、`~/.lorekeeper` 与全局配置保留。无效清单（缺 kind/storageFormat/storageVersion）会被拒绝并提示“只允许清理含有效 .lore/project.json 的 LoreKeeper 项目”。
+- **发现卸载残留（未修复）**：NSIS 当前用户卸载调用激活器注销身份时因缺少管理员权限失败，把 `identity-launcher.log` 写进 `%LOCALAPPDATA%\LoreKeeper`，导致安装目录残留一个日志文件；Appx 身份与 HKLM/HKCU 记录最终均已清零。修复需改安装器钩子（日志写到临时目录或卸载时清理），属发布配置变更，待用户决定。
+- 多用户 UAC 与旧版本升级仍未验收（需第二个登录账号 / 旧版安装包）。
 
 ## 仍未验收
 
