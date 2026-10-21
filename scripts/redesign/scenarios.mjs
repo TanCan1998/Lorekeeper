@@ -381,17 +381,24 @@ export async function seedStageSample(context,
  * 对照用的旧构建落在第 3 章，不用切。
  */
 async function moveToChapter3(page) {
-  const chapter3 = stage.prose(page).getByText(firstLine(STAGE_SAMPLE.drafts[3].text))
+  const chapter3Text = firstLine(STAGE_SAMPLE.drafts[3].text)
+  const chapter3 = stage.prose(page).getByText(chapter3Text)
   await stage.prose(page).filter({ hasText: /\S/ }).first().waitFor({ state: 'visible', timeout: 20_000 })
-  const otherTabs = stage.tabList(page).getByRole('button', { name: /^关闭「(?!第 3 章 ·)/ })
+  const otherTabs = stage.closeOtherTabButtons(page, `第 3 章 · ${stageChapterTitle(3)}`)
   if (await chapter3.count() > 0 && await otherTabs.count() === 0) return
   await stage.chapterButton(page, 3).click()
-  await stage.waitForProse(page, firstLine(STAGE_SAMPLE.drafts[3].text))
-  for (let open = await otherTabs.count(); open > 0; open -= 1) {
-    await otherTabs.first().click()
-    await otherTabs.nth(open - 1).waitFor({ state: 'detached' })
+  await stage.waitForProse(page, chapter3Text)
+  while (await otherTabs.count() > 0) {
+    const closing = otherTabs.first()
+    const name = await closing.getAttribute('aria-label')
+    assert.ok(name, '标签的关闭按钮带 aria-label，才能等这一个消失')
+    await closing.click()
+    // 等刚点的这个标签消失，不等某个下标：关掉一个后下标会前移，旧下标的等待会立即通过。
+    await stage.tabList(page).getByRole('button', { name, exact: true }).waitFor({ state: 'detached' })
   }
+  // 只剩一个标签与一个都不剩时标签条都会收起，所以还要确认留下的是第 3 章。
   await stage.tabList(page).waitFor({ state: 'detached' })
+  assert.equal(await chapter3.isVisible(), true, '关掉其他标签后第 3 章仍开着')
 }
 
 /**
@@ -479,7 +486,7 @@ export async function msFromClickToProse(page, target, proseSelector, text, dead
 }
 
 /**
- * 文字与它实际落在的底色之间的对比度。checks 是 [选择器, 最低比值]：名称与正文类文字 4.5，说明文字 3；scope 是加在每个选择器前的祖先。
+ * 文字与它实际落在的底色之间的对比度。checks 是 [选择器, 最低比值]：普通字号的文字（说明文字也算）4.5，图标等非文字元素 3；scope 是加在每个选择器前的祖先。
  * 底色沿祖先逐层叠加半透明背景求出，与画面上的颜色一致。
  */
 export async function contrastFailures(page, checks, scope = '') {
@@ -517,17 +524,17 @@ export async function contrastFailures(page, checks, scope = '') {
 
 const CHROME_CONTRAST = [
   ['.stage-row-name', 4.5], ['.stage-row-label', 4.5], ['.stage-chapter:not([data-phase="todo"]) .stage-chapter-title', 4.5],
-  ['.stage-work-title', 4.5], ['.stage-row-meta', 3], ['.stage-chapter-status', 3], ['.stage-chapter[data-phase="todo"] .stage-chapter-title', 3],
-  ['.stage-crumb', 3], ['.stage-search-hint', 3], ['.stage-saved', 3], ['.stage-spine-label', 3], ['.stage-chapter-no', 3],
-  ['.stage-library-title', 4.5], ['.stage-eyebrow', 3], ['.stage-start-text > b', 4.5], ['.stage-start-text > span', 3],
-  ['.stage-shelf-title', 4.5], ['.stage-shelf-hint', 3], ['.stage-book-title', 4.5], ['.stage-book-name', 4.5], ['.stage-book-meta', 3],
-  ['.stage-ov-title', 4.5], ['.stage-ov-meta', 3], ['.stage-ov-bar-label', 3], ['.stage-ov .pi-stat-label', 3],
-  ['.stage-setup-title', 4.5], ['.stage-setup-lede', 4.5], ['.stage-setup-label', 4.5], ['.stage-setup-hint', 3], ['.stage-chip', 4.5],
-  ['.stage-setup-panel-title', 4.5], ['.stage-setup-panel-desc', 3], ['.stage-setup-outline-foot', 3],
-  ['.stage-set-title', 4.5], ['.stage-set-lede', 4.5], ['.stage-set-link', 4.5], ['.stage-set-group-label', 3], ['.stage-set-row-title', 4.5],
-  ['.stage-set-row-desc', 3], ['.stage-set-model-name', 4.5], ['.stage-set-model-meta', 3], ['.stage-badge', 4.5], ['.stage-set-theme-name', 4.5],
-  ['.stage-set-theme-desc', 3], ['.pi-empty-title', 4.5], ['.pi-empty-text', 3],
-  ['.stage-update-title', 4.5], ['.stage-update-text', 3], ['.stage-library .pi-btn:not(.pi-btn--icon)', 4.5], ['.stage-library .pi-btn--icon', 3], ['.pi-notice-title', 4.5], ['.pi-notice-text', 3],
+  ['.stage-work-title', 4.5], ['.stage-row-meta', 4.5], ['.stage-chapter-status', 4.5], ['.stage-chapter[data-phase="todo"] .stage-chapter-title', 4.5],
+  ['.stage-crumb', 4.5], ['.stage-search-hint', 4.5], ['.stage-saved', 4.5], ['.stage-spine-label', 4.5], ['.stage-chapter-no', 4.5],
+  ['.stage-library-title', 4.5], ['.stage-eyebrow', 4.5], ['.stage-start-text > b', 4.5], ['.stage-start-text > span', 4.5],
+  ['.stage-shelf-title', 4.5], ['.stage-shelf-hint', 4.5], ['.stage-book-title', 4.5], ['.stage-book-name', 4.5], ['.stage-book-meta', 4.5],
+  ['.stage-ov-title', 4.5], ['.stage-ov-meta', 4.5], ['.stage-ov-bar-label', 4.5], ['.stage-ov .pi-stat-label', 4.5],
+  ['.stage-setup-title', 4.5], ['.stage-setup-lede', 4.5], ['.stage-setup-label', 4.5], ['.stage-setup-hint', 4.5], ['.stage-chip', 4.5],
+  ['.stage-setup-panel-title', 4.5], ['.stage-setup-panel-desc', 4.5], ['.stage-setup-outline-foot', 4.5],
+  ['.stage-set-title', 4.5], ['.stage-set-lede', 4.5], ['.stage-set-link', 4.5], ['.stage-set-required', 4.5], ['.stage-set-group-label', 4.5], ['.stage-set-row-title', 4.5],
+  ['.stage-set-row-desc', 4.5], ['.stage-set-model-name', 4.5], ['.stage-set-model-meta', 4.5], ['.stage-badge', 4.5], ['.stage-set-theme-name', 4.5],
+  ['.stage-set-theme-desc', 4.5], ['.pi-empty-title', 4.5], ['.pi-empty-text', 4.5],
+  ['.stage-update-title', 4.5], ['.stage-update-text', 4.5], ['.stage-library .pi-btn:not(.pi-btn--icon)', 4.5], ['.stage-library .pi-btn--icon', 3], ['.pi-notice-title', 4.5], ['.pi-notice-text', 4.5],
 ]
 
 /** 新外壳里的文字对比度：checks 默认查外壳文字，页面场景传自己的选择器。 */
@@ -797,8 +804,8 @@ export const STAGE_SCENARIOS = {
   'stage-settings-groups': { model: false, shell: 'stage', setup: seedStageSample, run: async ({ page }) => {
     await stage.openSettings(page)
     assert.deepEqual(await stage.settingsGroups(page), [
-      { group: '常用', pages: ['AI 模型', '外观'] },
-      { group: '高级', pages: ['检索模型', '网络代理', '提示词模板', '写作 Skills'] },
+      { group: '常用', pages: ['AI 模型', '检索模型', '外观'] },
+      { group: '高级', pages: ['网络代理', '提示词模板', '写作 Skills'] },
       { group: '其他', pages: ['项目备份', '关于与更新'] },
     ], '设置按常用、高级、其他三组')
     assert.equal(await stage.currentSettingsPage(page), 'AI 模型', '从流程脊打开时落在 AI 模型')
@@ -815,6 +822,34 @@ export const STAGE_SCENARIOS = {
     await page.keyboard.press('Escape')
     await stage.settingsNav(page).waitFor({ state: 'detached' })
     await stage.waitForProse(page, firstLine(STAGE_SAMPLE.drafts[3].text))
+  } },
+  'stage-settings-required': { model: false, shell: 'stage', setup: seedStageSample, run: async ({ page, shoot }) => {
+    await stage.openSettings(page)
+    const mark = name => stage.settingsLink(page, name).locator('.stage-set-required').innerText()
+    assert.deepEqual([await mark('AI 模型'), await mark('检索模型')], ['必需', '未配置'], '导航标出必需页，检索模型还没配默认')
+    assert.equal(await stage.settingsLink(page, '检索模型').getAttribute('aria-description'), '未配置', '读屏能听到未配置')
+    await shoot('settings-llm-required')
+    await stage.showSettingsPage(page, '检索模型')
+    await stage.root(page).getByText('检索模型是必需配置', { exact: true }).waitFor({ state: 'visible' })
+    assert.deepEqual(await stage.primaryButtons(page), ['添加检索模型'], '没有检索模型时唯一的主按钮是添加')
+    assert.equal(await stage.root(page).getByRole('button', { name: '去 SiliconFlow 免费注册' }).isVisible(), true, '去注册是一枚完整按钮')
+    assert.deepEqual(await chromeContrastFailures(page), [], '检索模型页文字对比度不足')
+    await shoot('settings-embedding-missing')
+  }, after: async ({ page }) => {
+    await page.keyboard.press('Escape')
+    await stage.settingsNav(page).waitFor({ state: 'detached' })
+  } },
+  'stage-settings-about': { model: false, shell: 'stage', setup: seedStageSample, run: async ({ page }) => {
+    await stage.openSettings(page)
+    await stage.showSettingsPage(page, '关于与更新')
+    await stage.root(page).getByText('书童 Pagekin', { exact: true }).waitFor({ state: 'visible' })
+    await stage.root(page).getByText('原名「AI小说作家」', { exact: true }).waitFor({ state: 'visible' })
+    const marks = await page.evaluate(() => ['.stage-brand', '.stage-set-about-mark'].map(selector => {
+      const mark = document.querySelector(selector)
+      return mark ? getComputedStyle(mark, '::before').maskImage : 'missing'
+    }))
+    assert.ok(marks.every(image => image.includes('pagekin-mark')), `顶栏与关于页都用书页精灵标识：${marks.join(' | ')}`)
+    assert.deepEqual(await chromeContrastFailures(page), [], '关于页文字对比度不足')
   } },
   'stage-settings-dark': { model: false, shell: 'stage', setup: seedStageSample, run: async context => {
     await stage.openSettings(context.page)

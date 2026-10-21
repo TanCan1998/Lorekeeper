@@ -34,10 +34,11 @@ import {
 import { configureSingleInstanceRuntime } from './services/single-instance-runtime'
 import { installWindowCloseGuard } from './controllers/window-controller'
 import { registerStartupController } from './controllers/startup-controller'
-import { resolveGlobalDataRoots } from './services/app-data-locator'
+import { resolveDefaultUserData, resolveGlobalDataRoots } from './services/app-data-locator'
 import { runGlobalDataMigration, activateGlobalData } from './services/global-data-migration'
 import { ensureVelaHome } from './utils/config-utils'
 import type { StartupBlockedCode, StartupMigrationNotice } from '../src/shared/startup-contract'
+import { APP_BRAND } from '../src/shared/brand'
 
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
@@ -74,6 +75,9 @@ const explicitUserData = app.commandLine.getSwitchValue('user-data-dir')
 if (explicitUserData) {
   if (!path.isAbsolute(explicitUserData)) throw new Error('USER_DATA_PATH_MUST_BE_ABSOLUTE')
   app.setPath('userData', explicitUserData)
+} else {
+  // 必须早于下面的单实例锁：锁按 userData 路径区分，新旧版本要锁同一处才会互斥。
+  app.setPath('userData', resolveDefaultUserData(app.getPath('appData')))
 }
 
 // The installed-package vector qualification is deliberately opt-in and
@@ -134,7 +138,7 @@ function createWindow() {
     height: 900,
     minWidth: 1024,
     minHeight: 640,
-    title: startupBlockedCode ? 'AI Novel Writer' : mainT(app.getLocale(), 'app.windowTitle'),
+    title: startupBlockedCode ? APP_BRAND.enName : mainT(app.getLocale(), 'app.windowTitle'),
     icon: path.join(process.env.APP_ROOT!, 'build', 'icon.png'),
     // 使用应用内自绘标题栏，避免 Windows 原生标题栏与棕色标题栏重复显示。
     frame: Boolean(startupBlockedCode),
@@ -149,7 +153,8 @@ function createWindow() {
   // A diagnostic-only window has no editor and no business close responder.
   if (!startupBlockedCode) installWindowCloseGuard(win)
 
-  if (process.platform === 'darwin') {
+  // 打包后的 Dock 图标来自 icon.icns（按 macOS 网格留了边）；icon.png 是满版的，只在开发时顶上。
+  if (process.platform === 'darwin' && !app.isPackaged) {
     app.dock?.setIcon(path.join(process.env.APP_ROOT!, 'build', 'icon.png'))
   }
 

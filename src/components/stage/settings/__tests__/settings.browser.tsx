@@ -13,6 +13,7 @@ import { navigate } from '../../../../stores/navigation/navigation-intents'
 import { useStageStore } from '../../../../stores/navigation/stage-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import { useThemeStore } from '../../../../stores/theme-store'
+import { useWorkflowStore } from '../../../../stores/workflow-store'
 import { IS_MAC } from '../../shortcut-keys'
 import { useStageShortcuts } from '../../use-stage-shortcuts'
 import StageSettings from '../StageSettings'
@@ -28,7 +29,7 @@ function snapshot<T>(store: StoreApi<T>): () => void {
   const state = store.getState()
   return () => store.setState(state, true)
 }
-const restores = [snapshot(useLayoutStore), snapshot(useStageStore), snapshot(useLLMStore), snapshot(useThemeStore), snapshot(useProjectStore), snapshot(useEditorStore)]
+const restores = [snapshot(useLayoutStore), snapshot(useStageStore), snapshot(useLLMStore), snapshot(useThemeStore), snapshot(useProjectStore), snapshot(useEditorStore), snapshot(useWorkflowStore)]
 
 const MODEL = { id: 'flash', name: 'DeepSeek V4 Flash', provider: 'deepseek', protocol: 'openai', modelName: 'deepseek-v4-flash',
   apiKey: 'k', baseUrl: 'https://api.deepseek.com', temperature: 0.7, maxTokens: 4096, purposes: ['generation'] } as ModelProfile
@@ -101,11 +102,11 @@ describe('设置页', () => {
     await mount()
     const groups = [...host!.querySelectorAll('nav [role="group"]')].map(group => ({
       group: group.getAttribute('aria-label'),
-      pages: [...group.querySelectorAll('button')].map(button => button.textContent),
+      pages: [...group.querySelectorAll('.stage-set-link-name')].map(name => name.textContent),
     }))
     expect(groups).toEqual([
-      { group: '常用', pages: ['AI 模型', '外观'] },
-      { group: '高级', pages: ['检索模型', '网络代理', '提示词模板', '写作 Skills'] },
+      { group: '常用', pages: ['AI 模型', '检索模型', '外观'] },
+      { group: '高级', pages: ['网络代理', '提示词模板', '写作 Skills'] },
       { group: '其他', pages: ['项目备份', '关于与更新'] },
     ])
     expect(heading()).toBe('项目备份')
@@ -114,6 +115,24 @@ describe('设置页', () => {
     await click(byName('关于与更新'))
     expect(useLayoutStore.getState().settingsSection).toBe('about')
     expect(heading()).toBe('关于与更新')
+  })
+
+  it('AI 模型与检索模型标为必需，没配默认模型时导航和页头都标「未配置」', async () => {
+    await mount()
+    const mark = (name: string) => [...host!.querySelectorAll('.stage-set-link')]
+      .find(link => link.querySelector('.stage-set-link-name')?.textContent === name)
+      ?.querySelector('.stage-set-required')?.textContent ?? null
+    expect(mark('AI 模型')).toBe('必需')
+    expect(mark('检索模型')).toBe('未配置')
+    expect(mark('外观')).toBeNull()
+    expect(host!.querySelector('.stage-set-head .stage-set-required')?.textContent).toBe('必需')
+
+    await act(async () => useLLMStore.setState({ defaultModelId: null }))
+    expect(mark('AI 模型')).toBe('未配置')
+    expect(host!.querySelector('.stage-set-head .stage-set-required')?.textContent).toBe('未配置')
+
+    await act(async () => useLLMStore.setState({ defaultModelId: 'flash', defaultEmbeddingModelId: 'local' }))
+    expect(mark('检索模型')).toBe('必需')
   })
 
   it('检索模型页带当前作品的检索索引检查与重建', async () => {
@@ -195,6 +214,35 @@ describe('设置页', () => {
     expect(byName('保存配置')?.disabled).toBe(false)
     await click([...alert!.querySelectorAll('button')].find(button => button.textContent === '确定'))
     await expect.poll(() => document.querySelector('[role="alertdialog"]')).toBeNull()
+  })
+
+  it('有生成正在用这个模型时，保存前先提示：等它结束再保存就不保存、表单留着；仍然保存才保存；没在用的模型直接保存', async () => {
+    const saveModel = vi.fn(async () => true)
+    useLLMStore.setState({ saveModel })
+    // 架构生成没有单独选模型，用的是默认模型 flash。
+    useWorkflowStore.setState({ activeRuns: [{ id: '运行', title: '生成故事架构', type: 'architecture_generation', status: 'running' } as never] })
+    await mount()
+    await click(byName('编辑「DeepSeek V4 Flash」'))
+    await click(byName('保存配置'))
+    const prompt = () => document.querySelector('[role="dialog"]')
+    await expect.poll(() => prompt()?.textContent).toContain('保存后这次生成会在下一章停下')
+    expect(prompt()!.textContent).toContain('生成故事架构')
+    await click([...prompt()!.querySelectorAll('button')].find(button => button.textContent === '等生成结束再保存'))
+    await expect.poll(() => prompt()).toBeNull()
+    expect(saveModel).not.toHaveBeenCalled()
+    expect(byName('保存配置')?.disabled).toBe(false)
+
+    await click(byName('保存配置'))
+    await expect.poll(() => prompt()?.textContent).toContain('保存后这次生成会在下一章停下')
+    await click([...prompt()!.querySelectorAll('button')].find(button => button.textContent === '仍然保存'))
+    await expect.poll(() => saveModel.mock.calls.length).toBe(1)
+    expect(saveModel).toHaveBeenCalledWith(expect.objectContaining({ id: 'flash' }))
+
+    await expect.poll(() => byName('编辑「本机 Ollama」')).toBeTruthy()
+    await click(byName('编辑「本机 Ollama」'))
+    await click(byName('保存配置'))
+    await expect.poll(() => saveModel.mock.calls.length).toBe(2)
+    expect(prompt()).toBeNull()
   })
 
   it('没有模型时是空状态，唯一的主按钮是添加模型', async () => {

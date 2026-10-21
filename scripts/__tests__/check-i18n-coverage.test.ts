@@ -307,6 +307,38 @@ describe('i18n coverage boundary scanner', () => {
     }
   })
 
+  it('checks {name} placeholders filled from the params argument like template interpolations', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ai-novel-i18n-plural-placeholder-'))
+    try {
+      writeFixture(root, 'src/components/stage/Placeholders.tsx', `
+        const text = (zh: string, en: string, params?: Record<string, unknown>) => zh || en || params
+        const localize = (locale: string, zh: string, en: string, params?: Record<string, unknown>) => locale || zh || en || params
+        const pluralEn = (count: number, noun: string) => count === 1 ? noun : noun + 's'
+        export function Merge({ done, total, name }: { done: number; total: number; name: string }) {
+          return <p>
+            {text('已采用 {done}/{total} 处变更', '{done}/{total} changes applied', { done, total })}
+            {text('已采用 {done}/{total} 处变更', \`{done}/{total} \${pluralEn(total, 'change')} applied\`, { done, total })}
+            {text('共 {count} 处变更', '{count} {noun} applied', { count: total, noun: pluralEn(total, 'change') })}
+            {text('{count} 个文件未保存', '{count} {noun} have unsaved changes', { count: total, noun: pluralEn(total, 'file') })}
+            {localize('en-US', '已关闭 {count} 个文件', 'Closed {count} files', { count: total })}
+            {text('{name} 已保存', '{name} is saved', { name })}
+            {text('示例', 'Write {count} chapters literally')}
+          </p>
+        }
+      `)
+
+      const result = runChecker(root)
+
+      expect(result.status).toBe(1)
+      expect(result.output).toContain('Found 3 unlocalized visible strings')
+      expect(result.output).toContain("src/components/stage/Placeholders.tsx:7 [english-plural] '{done}/{total} changes applied'")
+      expect(result.output).toContain("src/components/stage/Placeholders.tsx:10 [english-plural] '{count} {noun} have unsaved changes'")
+      expect(result.output).toContain("src/components/stage/Placeholders.tsx:11 [english-plural] 'Closed {count} files'")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('checks visible copy in review-checklist.ts like the review report it was moved out of', () => {
     const root = mkdtempSync(join(tmpdir(), 'ai-novel-i18n-review-checklist-'))
     try {
@@ -323,6 +355,103 @@ describe('i18n coverage boundary scanner', () => {
       expect(result.status).toBe(1)
       expect(result.output).toContain("src/components/editor/review-checklist.ts:4 [workflow:label] '情节推进'")
       expect(result.output).not.toContain('人物声音')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects workflow command errors that reach the failure panel unlocalized, as raw codes, or as forwarded main-process text (#408)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ai-novel-i18n-command-errors-'))
+    try {
+      writeFixture(root, 'src/services/workflows/commands/legacy-character-roster-repair.command.ts', `
+        const text = (zh: string, en: string) => zh || en
+        export async function run(result: { success: boolean; error?: string }, mismatch: boolean) {
+          if (mismatch) throw new Error('LEGACY_ROSTER_PROJECT_MISMATCH')
+          if (!result.success) throw new Error(result.error || text('修复失败', 'The repair failed.'))
+          throw new Error('旧版角色名单已变更')
+        }
+        export function localized(cause: unknown) {
+          if (cause) throw cause
+          throw new Error(text('当前项目已切换', 'The project changed.'))
+        }
+      `)
+
+      const result = runChecker(root)
+
+      expect(result.status).toBe(1)
+      const lines = result.output.split(/\r?\n/).filter(line => line.includes('[thrown-error]'))
+      expect(lines).toHaveLength(3)
+      expect(lines.join(' ')).toContain('LEGACY_ROSTER_PROJECT_MISMATCH')
+      expect(lines.join(' ')).toContain('result.error')
+      expect(lines.join(' ')).toContain('旧版角色名单已变更')
+      expect(result.output).not.toContain('当前项目已切换')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects Chinese-only and forwarded errors in every workflow command file, while stable error codes stay to the error-code registry (#466)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ai-novel-i18n-all-command-errors-'))
+    try {
+      writeFixture(root, 'src/services/workflows/commands/generate-draft.command.ts', `
+        declare const context: { uiLocale: 'zh-CN' | 'en-US' }
+        declare function workflowUiText(context: unknown, zh: string, en: string): string
+        const uiText = (zh: string, en: string) => workflowUiText(context, zh, en)
+        export function run(result: { error?: string }, step: number) {
+          if (step === 1) throw new Error('定稿后处理缺少冻结工作流上下文')
+          if (step === 2) throw new Error(result.error || uiText('保存失败', 'Saving failed.'))
+          if (step === 3) throw new Error('GENERATION_DRAFT_RECEIPT_INVALID')
+          if (step === 4) throw new Error(workflowUiText(context, '工作流已取消', 'Workflow was cancelled.'))
+          throw new Error(uiText('当前项目已切换', 'The project changed.'))
+        }
+      `)
+      writeFixture(root, 'src/services/workflows/commands/__tests__/generate-draft.test.ts', `
+        throw new Error('测试里的中文不进界面')
+      `)
+
+      const result = runChecker(root)
+
+      expect(result.status).toBe(1)
+      const lines = result.output.split(/\r?\n/).filter(line => line.includes('[thrown-error]'))
+      expect(lines).toHaveLength(2)
+      expect(lines.join(' ')).toContain('定稿后处理缺少冻结工作流上下文')
+      expect(lines.join(' ')).toContain('result.error')
+      expect(result.output).not.toContain('GENERATION_DRAFT_RECEIPT_INVALID')
+      expect(result.output).not.toContain('测试里的中文')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects Chinese-only errors thrown anywhere under the workflows directory, translated or not (#471)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ai-novel-i18n-workflow-errors-'))
+    try {
+      writeFixture(root, 'src/services/workflows/directory-workflow.ts', `
+        declare function localeText(locale: string, zh: string, en: string): string
+        declare function textForLocale(locale: string, zh: string, en: string): string
+        export function run(result: { error?: string }, guard: { message?: string }, locale: string, step: number) {
+          if (step === 1) throw new Error('蓝图保存后验证失败')
+          if (step === 2) throw new Error(result.error || '提交章节蓝图失败')
+          if (step === 3) throw new Error(locale === 'en-US' ? 'Not ready.' : guard.message || '前置条件未满足')
+          if (step === 4) throw new Error(localeText(locale, '批量创作已取消', 'Batch writing was cancelled.'))
+          if (step === 5) throw new Error(textForLocale(locale, '当前项目已切换', 'The project changed.'))
+          if (step === 6) throw new Error(guard.message || localeText(locale, '前置条件未满足', 'Prerequisites are not met.'))
+          throw new Error('DIRECTORY_PROGRESS_NOT_FOUND')
+        }
+      `)
+      writeFixture(root, 'src/services/workflows/__tests__/directory-workflow.test.ts', `
+        throw new Error('测试里的中文不进界面')
+      `)
+
+      const result = runChecker(root)
+
+      expect(result.status).toBe(1)
+      const lines = result.output.split(/\r?\n/).filter(line => line.includes('[thrown-error]'))
+      expect(lines.map(line => line.replace(/^.*\[thrown-error\] /u, ''))).toEqual([
+        "'蓝图保存后验证失败'",
+        "result.error || '提交章节蓝图失败'",
+        "locale === 'en-US' ? 'Not ready.' : guard.message || '前置条件未满足'",
+      ])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

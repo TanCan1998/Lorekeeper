@@ -7,6 +7,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
 
 /* ================= 角色建议提示条 ================= */
@@ -78,6 +79,10 @@
   gap: var(--s-2);
 }
 
+.cast-suggestions > .cast-suggestion-error {
+  margin-left: var(--s-6);
+}
+
 .cast-suggestion-error .cast-suggestion-text {
   color: var(--warn);
   white-space: normal;
@@ -143,7 +148,7 @@
   gap: var(--s-2);
 }
 
-/* 中文两个按钮并排；英文的「Paste / import character cards」放不下时换到下一行，不再挤出按钮。 */
+/* 中文两个按钮并排；英文放不下时换到下一行。窄档名单栏内容只有 200px，英文文案要在一行内放下（#465）。 */
 .cast-roster-actions .pi-btn {
   flex: 1 1 auto;
   justify-content: center;
@@ -181,6 +186,11 @@
 .cast-row[aria-pressed='true'] {
   background: var(--accent-soft);
   color: var(--ink);
+}
+
+/* 选中行的黛蓝薄底比面板深，--ink-3 在上面不到 4.5:1，身份换成 --ink-2（与版本历史选中项的说明一致） */
+.cast-row[aria-pressed='true'] .cast-row-role {
+  color: var(--ink-2);
 }
 
 .cast-avatar {
@@ -246,21 +256,23 @@
   overflow: auto;
 }
 
+/*
+ * 按内容换行（同设置页标题，#440）：标题的弹性基准是名字那一行的完整宽度，一行放得下头像、名字与操作区就一行；
+ * 放不下（名字会被截断）时操作区换到下一行靠右，名字那一行再放不下才省略。
+ */
 .cast-profile-head {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--s-5);
+  --cast-avatar-size: 72px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--s-3) var(--s-5);
   padding: 28px 40px 16px;
 }
 
-.cast-profile-head-empty {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
 .cast-profile-avatar {
-  width: 72px;
-  height: 72px;
+  flex: none;
+  width: var(--cast-avatar-size);
+  height: var(--cast-avatar-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -273,6 +285,7 @@
 }
 
 .cast-profile-heading {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -304,6 +317,16 @@
   font: 500 var(--fs-11)/1.5 var(--font-ui);
 }
 
+/* 名字再长也和头像留在第一行：换行判断按的宽度不超过头像旁边的余量，超出的部分在这一行里省略。没有头像的空档案头不扣。 */
+.cast-profile-avatar + .cast-profile-heading {
+  max-width: calc(100% - var(--cast-avatar-size) - var(--s-5));
+}
+
+/* 名字下面的说明、头像操作与报错不撑宽标题：它们的固有宽度记为 0，换行判断只看名字那一行。 */
+.cast-profile-heading > :not(.cast-profile-titleline) {
+  contain: inline-size;
+}
+
 .cast-profile-sub,
 .cast-profile-note {
   margin: 0;
@@ -319,11 +342,14 @@
 
 .cast-avatar-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--s-1);
   margin-left: calc(-1 * var(--s-2));
 }
 
 .cast-profile-actions {
+  flex: none;
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--s-2);
@@ -334,8 +360,14 @@
   font-size: var(--fs-12);
 }
 
+/* 没有保存状态时不占位，连同它后面的间距一起收掉；留在无障碍树里，状态出现时照常播报。 */
+.cast-save-state:empty {
+  margin-right: calc(-1 * var(--s-2));
+}
+
 .cast-view-switch {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--s-4);
   margin: 0 40px;
@@ -373,6 +405,7 @@
 }
 
 .cast-grid {
+  container: cast-fields / inline-size;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: var(--s-5) var(--s-6);
@@ -381,8 +414,20 @@
 .cast-row-fields {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr);
+  /* 原生下拉框按选中项截断：定位一栏至少按最长的选项取宽（英文 Supporting character），不够时由其余三栏让出（#465）。 */
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(max-content, 1.4fr);
   gap: var(--s-4);
+}
+
+/* 一行放不下四栏时（窄窗口、开着运行侧页）姓名与定位各占一行，性别、年龄并排，每栏都留得出写字的地方（#465）。 */
+@container cast-fields (width < 520px) {
+  .cast-row-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cast-row-fields > :is(:first-child, :last-child) {
+    grid-column: 1 / -1;
+  }
 }
 
 .cast-field {
@@ -468,4 +513,36 @@
 
 .cast-import-consent {
   white-space: pre-line;
+}
+
+/* ================= 窄宽度（按角色页自身的宽度，运行侧页并排时也成立） ================= */
+@container (width < 760px) {
+  .cast-body {
+    grid-template-columns: 224px minmax(0, 1fr);
+  }
+
+  .cast-profile-head {
+    padding: 24px 24px 16px;
+  }
+
+  .cast-view-switch {
+    margin: 0 24px;
+  }
+
+  .cast-profile-body {
+    padding: var(--s-5) 24px 32px;
+  }
+}
+
+/* 名单与档案上下排：名单在上、限高滚动 */
+@container (width < 560px) {
+  .cast-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 2fr) minmax(0, 3fr);
+  }
+
+  .cast-roster {
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
 }

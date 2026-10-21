@@ -17,10 +17,10 @@ const pluralBeforeCount = /\b(?:these|those)\s$/i
 const pluralVerbAfterCount = /^ (?:have|are|were)\b/
 const pluralHint = "Write the noun with pluralEn(count, 'chapter'); pass irregular plurals explicitly, as in pluralEn(count, 'entry', 'entries'). Write a verb that follows the count the same way, as in pluralEn(count, 'has', 'have')."
 /**
- * 英文文案在哪个实参（从 0 数）：(locale, 中文, 英文) 形式的翻译函数与 projectError、artifactError（error, 中文兜底, 英文兜底）
- * 在第 3 个，其余在第 2 个。
+ * 英文文案在哪个实参（从 0 数）：(locale, 中文, 英文) 形式的翻译函数与 projectError、artifactError（error, 中文兜底, 英文兜底）、
+ * workflowUiText（context, 中文, 英文）与工作流文件里的 localeText、textForLocale（locale, 中文, 英文）在第 3 个，其余在第 2 个。
  */
-const englishArgumentIndex = new Map([['localize', 2], ['stepDesc', 2], ['mainText', 2], ['projectError', 2], ['artifactError', 2]])
+const englishArgumentIndex = new Map([['localize', 2], ['stepDesc', 2], ['mainText', 2], ['projectError', 2], ['artifactError', 2], ['workflowUiText', 2], ['localeText', 2], ['textForLocale', 2]])
 
 /**
  * The broad renderer roots preserve the existing visible-copy check.  The
@@ -41,6 +41,22 @@ export const I18N_COVERAGE_BOUNDARIES = Object.freeze({
   mainReturnErrorBoundaries: [
     // `artifact-open` receives fs:read-file failures through this controller.
     'electron/controllers/fs-controller.ts',
+  ],
+  // 工作流命令里 throw new Error(...) 的说明原样进运行卡片的失败说明：不能是只有中文的原文或主进程转来的原文。
+  // 整串的稳定错误码（GENERATION_DRAFT_RECEIPT_INVALID）不在这里拦：登记过的由失败面板按界面语言解释，
+  // 其余按 src/i18n/__tests__/generation-error-codes.test.ts 的约定原样留给反馈定位。
+  workflowCommandErrorBoundaries: [
+    'src/services/workflows/commands',
+  ],
+  // 命令目录以外的工作流文件抛出的说明同样进运行卡片的失败说明、启动报错或恢复对话框（#471）：不能写只有中文的原文。
+  // 这里不拦转出的 .error/.message：这些文件还转出渲染端已按界面语言写好的说明（前置条件守卫的 message、运行记录的 error），
+  // 语法上分不开；主进程原文转出由各处改用 workflowMainProcessError 处理。
+  workflowErrorBoundaries: [
+    'src/services/workflows',
+  ],
+  // 这些命令连错误码也不能直接抛（#408）：每条失败都要给作者能读的说明。
+  strictWorkflowCommandErrorBoundaries: [
+    'src/services/workflows/commands/legacy-character-roster-repair.command.ts',
   ],
 })
 
@@ -97,6 +113,12 @@ const localizationCallees = new Set([
   'artifactError',
   // Main-process colocated translator.
   'mainText',
+  // 工作流命令按运行上下文里冻结的界面语言选文案；uiText 是命令里绑好上下文的简写。
+  'workflowUiText',
+  'uiText',
+  // 批量创作与导入工作流里按冻结界面语言选文案的本地函数。
+  'localeText',
+  'textForLocale',
 ])
 
 function filesAt(target) {
@@ -227,26 +249,64 @@ function isUnsafeErrorForward(node, sourceFile, bindings, seen = new Set()) {
   return false
 }
 
-/** text(中文, 英文) 的英文一侧里，`${n} chapters` 这类数量后跟固定复数的模板。 */
-function inspectEnglishCounts(violations, root, file, sourceFile, node) {
+const isPluralEnCall = (expression, sourceFile) => expression.getText(sourceFile).startsWith('pluralEn(')
+
+/**
+ * 英文文案拆成文字与数量位交替的序列（texts 比 slots 多一段）。模板插值 ${n} 是数量位；带参数对象时，
+ * 文字里的 {name} 占位符也是（text(中文, '{n} chapters', { n })）。参数对象里写成 pluralEn(...) 的占位符记为已变形的名词。
+ */
+function englishSlots(node, sourceFile, params) {
+  const parts = ts.isTemplateExpression(node)
+    ? [node.head.text, ...node.templateSpans.flatMap(span => [{ pluralEn: isPluralEnCall(span.expression, sourceFile) }, span.literal.text])]
+    : [node.text]
+  const filled = params && ts.isObjectLiteralExpression(params)
+    ? new Map(params.properties.filter(property => property.name).map(property => [property.name.getText(sourceFile),
+      ts.isPropertyAssignment(property) ? property.initializer : undefined]))
+    : undefined
+  const texts = [], slots = []
+  let current = ''
+  for (const part of parts) {
+    if (typeof part !== 'string') {
+      texts.push(current)
+      slots.push(part)
+      current = ''
+      continue
+    }
+    let last = 0
+    for (const match of params ? part.matchAll(/\{(\w+)\}/g) : []) {
+      texts.push(current + part.slice(last, match.index))
+      const value = filled?.get(match[1])
+      slots.push({ pluralEn: Boolean(value && isPluralEnCall(value, sourceFile)) })
+      current = ''
+      last = match.index + match[0].length
+    }
+    current += part.slice(last)
+  }
+  texts.push(current)
+  return { texts, slots }
+}
+
+/** text(中文, 英文) 的英文一侧里，`${n} chapters` 与 '{n} chapters' 这类数量后跟固定复数的文案。 */
+function inspectEnglishCounts(violations, root, file, sourceFile, node, params) {
+  const { texts, slots } = ts.isTemplateExpression(node) || ts.isStringLiteralLike(node)
+    ? englishSlots(node, sourceFile, params)
+    : { texts: [], slots: [] }
   if (
-    ts.isTemplateExpression(node)
-    && node.templateSpans.some((span, index) => {
-      const before = index === 0 ? node.head.text : node.templateSpans[index - 1].literal.text
+    slots.some((slot, index) => {
+      const before = texts[index], after = texts[index + 1]
       // 「1–${n} chapters」里的数量是范围的终点，永远不是 1
       if (/[-–]$/.test(before)) return false
       // pluralEn(...) 是已经按数量变过的名词，不是数量；但它后面的 have/are 仍随数量变。
       // 数量所在分句里带 and 的是并列主语（the thread and its ${n} confirmed events are removed），本来就用复数动词
-      if (span.expression.getText(sourceFile).startsWith('pluralEn(')) {
-        const head = [node.head.text, ...node.templateSpans.slice(0, index).map(earlier => earlier.literal.text)].join(' ')
-        return pluralVerbAfterCount.test(span.literal.text) && !/\band\b[^.;:!?·—\n。：；！？]*$/i.test(head)
+      if (slot.pluralEn) {
+        return pluralVerbAfterCount.test(after) && !/\band\b[^.;:!?·—\n。：；！？]*$/i.test(texts.slice(0, index + 1).join(' '))
       }
-      return fixedPluralAfterCount.test(span.literal.text) || pluralBeforeCount.test(before) || pluralVerbAfterCount.test(span.literal.text)
+      return fixedPluralAfterCount.test(after) || pluralBeforeCount.test(before) || pluralVerbAfterCount.test(after)
     })
   ) {
     add(violations, root, file, sourceFile, node, node.getText(sourceFile), 'english-plural')
   }
-  ts.forEachChild(node, child => inspectEnglishCounts(violations, root, file, sourceFile, child))
+  ts.forEachChild(node, child => inspectEnglishCounts(violations, root, file, sourceFile, child, params))
 }
 
 function inspectVisibleExpression(violations, root, file, sourceFile, node, kind) {
@@ -314,8 +374,9 @@ function inspectRendererFile(violations, root, file, sourceFile) {
 
   const visit = (node) => {
     if (isLocalizedCall(node, sourceFile)) {
-      const english = node.arguments[englishArgumentIndex.get(callName(node, sourceFile)) ?? 1]
-      if (english) inspectEnglishCounts(violations, root, file, sourceFile, english)
+      const englishIndex = englishArgumentIndex.get(callName(node, sourceFile)) ?? 1
+      const english = node.arguments[englishIndex]
+      if (english) inspectEnglishCounts(violations, root, file, sourceFile, english, node.arguments[englishIndex + 1])
     }
     if (
       promptSettings
@@ -416,6 +477,24 @@ function inspectMainReturnErrors(violations, root, file, sourceFile) {
   visit(sourceFile)
 }
 
+const errorCode = /^[A-Z][A-Z0-9_]*$/
+
+/** mode：'command' 拦一切未翻译的文字与转出的原文；'chinese' 只拦翻译函数以外的汉字。 */
+function inspectThrownErrors(violations, root, file, sourceFile, mode, allowErrorCodes) {
+  const bindings = collectBindings(sourceFile)
+  const visit = (node) => {
+    const thrown = ts.isThrowStatement(node) && node.expression
+    const message = thrown && ts.isNewExpression(thrown) && thrown.expression.getText(sourceFile) === 'Error' && thrown.arguments?.[0]
+    if (message && mode === 'chinese') {
+      inspectVisibleExpression(violations, root, file, sourceFile, message, 'thrown-error')
+    } else if (message && !(allowErrorCodes && ts.isStringLiteralLike(message) && errorCode.test(message.text))) {
+      inspectBoundaryExpression(violations, root, file, sourceFile, message, 'thrown-error', bindings)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+}
+
 export function collectI18nCoverageViolations(root = process.cwd()) {
   const violations = []
   const rendererRoots = [
@@ -446,6 +525,15 @@ export function collectI18nCoverageViolations(root = process.cwd()) {
     const source = fs.readFileSync(file, 'utf8')
     const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
     inspectMainReturnErrors(violations, root, file, sourceFile)
+  }
+  const commandFiles = new Set(I18N_COVERAGE_BOUNDARIES.workflowCommandErrorBoundaries.flatMap(relative => filesAt(path.join(root, relative))))
+  const workflowFiles = new Set([...commandFiles, ...I18N_COVERAGE_BOUNDARIES.workflowErrorBoundaries.flatMap(relative => filesAt(path.join(root, relative)))])
+  for (const file of workflowFiles) {
+    const relativeFile = relativePath(root, file)
+    if (!file.endsWith('.ts') || relativeFile.split('/').includes('__tests__')) continue
+    const sourceFile = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const allowErrorCodes = !I18N_COVERAGE_BOUNDARIES.strictWorkflowCommandErrorBoundaries.includes(relativeFile)
+    inspectThrownErrors(violations, root, file, sourceFile, commandFiles.has(file) ? 'command' : 'chinese', allowErrorCodes)
   }
   return violations
 }

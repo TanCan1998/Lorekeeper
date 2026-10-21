@@ -6,7 +6,8 @@ import * as arch from './pages/architecture.mjs'
 import * as materials from './pages/materials.mjs'
 import * as runSheet from './pages/run-sheet.mjs'
 import * as stage from './pages/stage.mjs'
-import { seedStageSample } from './scenarios.mjs'
+import { FAKE_MODEL } from './fake-model.mjs'
+import { seedStageSample, untilGateHolds } from './scenarios.mjs'
 import { STAGE_SAMPLE, stageChapterTitle } from './stage-sample.mjs'
 
 const root = page => stage.root(page)
@@ -70,12 +71,12 @@ async function addCharacters({ page, invoke, path, session }, names) {
  * 落在第 4 章时进架构后关掉第 4 章的标签，只剩架构一页，与落在架构的版本截图一致。
  * 会话追踪先挂上，界面重载后打开作品的那次会话就能拿来读库。
  */
-function seedArch({ clear = [], totalChapters, characters = [] } = {}) {
+function seedArch({ clear = [], totalChapters, characters = [], core = {} } = {}) {
   return async context => {
     await trackOpenedSession(context.app)
     await seedStageSample(context, { totalChapters, landOnChapter3: clear.length === 0, beforeReload: async ({ page, invoke, path, session }) => {
-      if (clear.length > 0) {
-        const cleared = await invoke(page, 'db:project-core-update', Object.fromEntries(clear.map(key => [key, ''])), path, session)
+      if (clear.length > 0 || Object.keys(core).length > 0) {
+        const cleared = await invoke(page, 'db:project-core-update', { ...Object.fromEntries(clear.map(key => [key, ''])), ...core }, path, session)
         assert.equal(cleared.success, true, cleared.error)
       }
       if (characters.length > 0) await addCharacters({ page, invoke, path, session }, characters)
@@ -103,6 +104,70 @@ async function openArchitecture(page) {
   else await arch.waitReady(page)
 }
 
+/**
+ * #465：窗口 1024 与 1280 宽（后者另测开着运行侧页）、中英文界面下，角色名单页的导入按钮不超出名单栏，
+ * 定位下拉框放得下每个选项，档案首行的输入框文字区至少放得下三个字。截图停在角色名单页，返回实测的宽度。
+ */
+async function castFitAt({ page, invoke, reload }, locale, width, sheet) {
+  await page.setViewportSize({ width, height: 768 })
+  if (locale === 'en-US') {
+    assert.equal((await invoke(page, 'config:set', { locale: 'en-US' })).success, true)
+    await reload()
+    await stage.openFromLibraryEn(page, '灯塔')
+    await page.getByRole('navigation', { name: 'Writing flow' }).getByRole('button', { name: /^Architecture/ }).click()
+    await root(page).locator('.arch-page:not([data-loading]):not([data-cast-loading])').waitFor({ state: 'visible', timeout: 30_000 })
+    await root(page).getByRole('region', { name: 'Cast', exact: true }).getByRole('button', { name: 'Open cast' }).click()
+  } else {
+    await openArchitecture(page)
+    await arch.openCast(page)
+  }
+  await root(page).locator('.cast-select').waitFor({ state: 'visible' })
+  if (sheet) {
+    await page.keyboard.press('Control+K')
+    await page.getByRole('dialog').getByRole('combobox').waitFor({ state: 'visible' })
+    await page.keyboard.type(locale === 'en-US' ? 'Run sheet' : '运行侧页')
+    await page.keyboard.press('Enter')
+    await runSheet.sheet(page).waitFor({ state: 'visible' })
+    await page.waitForTimeout(400)
+  }
+  const measured = await page.evaluate(() => {
+    const roster = document.querySelector('.cast-roster').getBoundingClientRect()
+    const buttons = [...document.querySelectorAll('.cast-roster-actions .pi-btn')].map(button => {
+      const box = button.getBoundingClientRect()
+      return { label: button.textContent, left: Math.round(box.left), right: Math.round(box.right), height: Math.round(box.height) }
+    })
+    // 原生下拉框的箭头画在内容区里：同样样式、只含这一个选项、按内容取宽的副本有多宽，选中它时就要多宽才放得下。
+    const select = document.querySelector('.cast-select')
+    const needed = Object.fromEntries([...select.options].map(option => {
+      const probe = select.cloneNode(false)
+      probe.append(option.cloneNode(true))
+      probe.style.cssText = 'position: absolute; visibility: hidden; width: auto; min-width: 0'
+      select.parentElement.append(probe)
+      const width = Math.ceil(probe.getBoundingClientRect().width)
+      probe.remove()
+      return [option.textContent, width]
+    }))
+    const inputs = Object.fromEntries([...document.querySelectorAll('.cast-row-fields input')].map(input => {
+      const style = getComputedStyle(input)
+      return [input.closest('.cast-field').querySelector('label').textContent, {
+        text: Math.floor(input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+        needed: Math.ceil(3 * parseFloat(style.fontSize)),
+      }]
+    }))
+    return {
+      page: Math.round(document.querySelector('.cast-body').getBoundingClientRect().width),
+      rosterRight: Math.round(roster.right), buttons, role: { width: Math.round(select.getBoundingClientRect().width), needed }, inputs,
+    }
+  })
+  const problems = [
+    ...measured.buttons.filter(button => button.right > measured.rosterRight).map(button => `「${button.label}」超出名单栏`),
+    ...Object.entries(measured.role.needed).filter(([, needed]) => needed > measured.role.width).map(([option]) => `定位下拉框放不下「${option}」`),
+    ...Object.entries(measured.inputs).filter(([, input]) => input.text < input.needed).map(([label]) => `「${label}」输入框太窄`),
+  ]
+  assert.deepEqual(problems, [], JSON.stringify(measured))
+  return measured
+}
+
 /** RD-4 的运行侧页在工作流开始后自动打开；trunk 的旧运行面板没有「进行中」分页，调用方改为轮询数据库里的结果。 */
 async function waitForRunDone(page, timeout = 120_000) {
   const opened = await runSheet.tab(page, '进行中').waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
@@ -127,7 +192,7 @@ function outlineChapters(synopsis) {
 }
 
 /**
- * 对比用的文字对比度：名称与正文类至少 4.5:1，说明类至少 3:1，底色沿祖先叠加求出。
+ * 对比用的文字对比度：普通字号的文字（说明类也算）至少 4.5:1，底色沿祖先叠加求出。
  * 另核对分节卡片的底色来自纸墨令牌 --paper（计算值与令牌的计算值相同）。
  */
 async function archContrastFailures(page) {
@@ -156,7 +221,7 @@ async function archContrastFailures(page) {
       return (high + 0.05) / (low + 0.05)
     }
     const checks = [['.arch-title', 4.5], ['.arch-section-title', 4.5], ['.arch-section-summary', 4.5], ['.arch-lede', 4.5],
-      ['.arch-eyebrow', 3], ['.arch-badge', 3], ['.arch-section-num', 3], ['.pi-notice-title', 4.5], ['.pi-notice-text', 4.5]]
+      ['.arch-eyebrow', 4.5], ['.arch-badge', 4.5], ['.arch-section-num', 4.5], ['.pi-notice-title', 4.5], ['.pi-notice-text', 4.5]]
     const contrast = checks.flatMap(([selector, minimum]) => [...document.querySelectorAll(`[data-shell-presentation="stage"] ${selector}`)].map(element => {
       const value = ratio(parse(getComputedStyle(element).color), backdrop(element))
       return { selector, text: element.textContent.slice(0, 30), ratio: Math.round(value * 100) / 100, minimum }
@@ -173,7 +238,59 @@ async function archContrastFailures(page) {
   })
 }
 
+/** 作者写的短世界观（不足 50 字）与只有序章的大纲（#426、#417）。 */
+const SHORT_WORLD = '雾港的钟每晚早响一刻。'
+const PROLOGUE_ONLY = `# 情节大纲
+
+## 第0章：序章
+${'守塔人在风暴前夜听见第十三声钟，灯塔从那一夜起熄灭。'.repeat(3)}`
+const seedShortSections = seedArch({ clear: ['worldbuilding', 'synopsis'], totalChapters: 24, core: { worldbuilding: SHORT_WORLD, synopsis: PROLOGUE_ONLY } })
+
+/** 两个改模型场景共用：生成 1–5 章，续写第 6–to 章时卡在假模型门上，改名保存夹具模型后放行；返回「上一次运行」卡片。 */
+async function stallOutlineBatchAndChangeModel(context, to) {
+  const { page, invoke, fake } = context
+  await openArchitecture(page)
+  await arch.primary(page).click()
+  await arch.selectOnly(page, ['synopsis'])
+  await arch.setRange(page, 1, 5)
+  await arch.startGenerate(page)
+  await waitForRunDone(page)
+  await arch.badge(page, 'synopsis').filter({ hasText: '部分完成 · 5 / 24 章' }).waitFor({ timeout: 30_000 })
+  await arch.section(page, 'synopsis').getByRole('button', { name: '续写第 6 章起' }).click()
+  await arch.setRange(page, 6, to)
+  fake.gate.hold()
+  await arch.startGenerate(page)
+  await untilGateHolds(fake.gate, 60_000)
+  assert.equal((await invoke(page, 'llm:save-model', { ...FAKE_MODEL, modelName: 'gpt-4.1-mini' })).success, true)
+  fake.gate.release()
+  return runSheet.anyCard(page).filter({ hasText: /^上一次运行/ })
+}
+
 export const ARCH_SCENARIOS = {
+  /** 短世界观显示内容、徽标为不完整；只有序章的大纲徽标为待生成，页头只数已确认的两节。 */
+  'arch-short-sections': { model: false, shell: 'stage', setup: seedShortSections, run: async ({ page }) => {
+    await openArchitecture(page)
+    assert.equal(await arch.summary(page, 'worldbuilding').innerText(), SHORT_WORLD)
+    assert.deepEqual(await badges(page), { premise: '已确认', characters: '已确认', worldbuilding: '不完整', synopsis: '待生成' })
+    assert.match(await arch.summary(page, 'synopsis').innerText(), /守塔人在风暴前夜/)
+    assert.match(await arch.page(page).locator('.arch-eyebrow').innerText(), /2 \/ 4 已确认/, '页头只数已确认的节，短内容不算已确认')
+    assert.equal(await arch.primary(page).innerText(), '继续生成架构')
+  } },
+  /** 只有序章时生成对话框：默认接在序章之后写，起始章跳过第 1 章时说明要从第 1 章开始。 */
+  'arch-prologue-dialog': { model: false, shell: 'stage', setup: seedShortSections, run: async ({ page }) => {
+    await openArchitecture(page)
+    await arch.primary(page).click()
+    await arch.dialog(page).waitFor({ state: 'visible' })
+    // 默认勾选与范围在对话框打开后的 effect 里才设好，首帧大纲还显示「将覆盖」：等它变成「续写」再读。
+    await arch.mark(page, 'synopsis').filter({ hasText: /^续写$/ }).waitFor()
+    assert.equal(await arch.mark(page, 'worldbuilding').innerText(), '将覆盖')
+    assert.equal(await arch.dialog(page).locator('.arch-range-effect').innerText(), '接在序章之后写第 1–5 章，序章不动。')
+    await arch.dialog(page).getByRole('spinbutton', { name: '本次生成范围的起始章' }).fill('2')
+    assert.equal(await arch.dialog(page).locator('.arch-range-issue').innerText(), '已有大纲只有序章，不能跳到第 2 章开始。请从第 1 章起生成，序章会原样保留。')
+  }, after: async ({ page }) => {
+    await arch.dialog(page).getByRole('button', { name: '取消' }).click()
+    await arch.dialog(page).waitFor({ state: 'hidden' })
+  } },
   /** lane 1：trunk 与 head 都从架构页用夹具模型生成前提、世界观与大纲（角色名单已预置），记下四份文档。 */
   'arch-regression': { model: true, shell: 'stage', setup: seedArch({ clear: ['premise', 'worldbuilding', 'synopsis'] }), run: async context => {
     const { page } = context
@@ -281,6 +398,118 @@ export const ARCH_SCENARIOS = {
   } },
 
   /**
+   * #441 #442：续写第 6–10 章时卡住第 6 章，在设置里把同一个模型条目改名保存（与用户现场相同），放行后第 7 章被拒。
+   * 上一次运行写明是模型设置变了、停在第 7 章、第 6 章在大纲恢复稿里、正式大纲未被改动，有「打开架构页」，界面不出现原始错误码；
+   * 诊断里的 AI 调用记录与真实请求一致（1–5 章与第 6 章）。after 点「打开架构页」，大纲提示只能查看或复制恢复稿，点「从第 6 章重新生成」打开第 6–10 章的对话框，用新模型重新生成到第 10 章。
+   */
+  'arch-model-change': { model: true, shell: 'stage', setup: seedArch({ clear: ['synopsis'], totalChapters: 24 }), run: async context => {
+    const { page } = context
+    const last = await stallOutlineBatchAndChangeModel(context, 10)
+    await last.getByRole('button', { name: '打开架构页' }).waitFor({ state: 'visible', timeout: 60_000 })
+    const notice = await last.innerText()
+    assert.match(notice, /生成途中模型设置被修改，这批大纲已在第 7 章停止/)
+    assert.match(notice, /本批已生成的第 6 章保留在「大纲恢复稿」中，只能查看或复制，不能覆盖正式内容/)
+    assert.match(notice, /正式大纲未被改动。请到「架构」页重新生成情节大纲，从第 6 章开始/)
+    assert.doesNotMatch(notice, /GENERATION_SOURCE_CHANGED|Error invoking remote method/, '界面不出现原始错误码')
+    assert.equal(await last.getByRole('button', { name: '继续生成情节大纲' }).count(), 0, '不提供必然被拒的断点续写')
+    await runSheet.tab(page, '诊断').click()
+    const calls = runSheet.sheet(page).getByRole('table').getByRole('row')
+    await calls.nth(6).waitFor({ state: 'visible', timeout: 10_000 })
+    const rows = await calls.count() - 1
+    assert.equal(rows, 6, 'AI 调用记录：第 1–5 章各一次，第 6 章一次，第 7 章没有发出')
+    await runSheet.tab(page, '进行中').click()
+    return { notice, calls: rows }
+  }, after: async context => {
+    const { page } = context
+    await runSheet.anyCard(page).filter({ hasText: /^上一次运行/ }).getByRole('button', { name: '打开架构页' }).click()
+    await arch.waitReady(page)
+    const outline = arch.section(page, 'synopsis')
+    const restart = outline.getByRole('button', { name: '从第 6 章重新生成' })
+    await restart.waitFor({ state: 'visible', timeout: 10_000 })
+    const note = await outline.innerText()
+    assert.match(note, /只能查看或复制。请从第 6 章重新生成情节大纲/)
+    assert.doesNotMatch(note, /续写从停下的地方|可编辑并本地保存/, '恢复稿不能写回时不承诺续写或本地保存')
+    assert.equal(await outline.getByRole('button', { name: '编辑恢复稿' }).count(), 0)
+    await context.shoot('arch-model-change-architecture')
+    await restart.click()
+    assert.equal(await arch.dialog(page).getByRole('spinbutton', { name: '本次生成范围的起始章' }).inputValue(), '6', '生成对话框从第 6 章起')
+    assert.equal(await arch.dialog(page).getByRole('spinbutton', { name: '本次生成范围的结束章' }).inputValue(), '10', '生成对话框沿用本批范围')
+    await context.shoot('arch-model-change-dialog')
+    await arch.selectOnly(page, ['synopsis'])
+    await arch.startGenerate(page)
+    await waitForRunDone(page)
+    await arch.badge(page, 'synopsis').filter({ hasText: '部分完成 · 10 / 24 章' }).waitFor({ timeout: 30_000 })
+    assert.deepEqual(Object.keys(outlineChapters((await readCore(context)).synopsis)).map(Number), Array.from({ length: 10 }, (_, index) => index + 1))
+  } },
+
+  /**
+   * #441 后续与 #453 的 CodeRabbit 意见：同 arch-model-change-last，第 6 章（范围 6–6）生成完、正式保存被拒。
+   * 从架构页点「查看恢复稿」打开的恢复稿与运行侧页的恢复卡，标题都写「第 6 章」，说明不说已经生成完毕，叫作者从第 6 章重新生成。
+   */
+  'rst-outline-last-note': { model: true, shell: 'stage', setup: seedArch({ clear: ['synopsis'], totalChapters: 24 }), run: async context => {
+    const { page } = context
+    const last = await stallOutlineBatchAndChangeModel(context, 6)
+    await last.waitFor({ state: 'visible', timeout: 60_000 })
+    const card = runSheet.recovery(page).getByRole('article').filter({ hasText: /大纲恢复稿 · 第 6/ })
+    await card.waitFor({ state: 'visible', timeout: 10_000 })
+    const cardText = await card.innerText()
+    assert.match(cardText, /大纲恢复稿 · 第 6 章\n/, '运行侧页恢复卡标题不写「6–6」')
+    assert.match(cardText, /请从第 6 章重新生成情节大纲/)
+    assert.doesNotMatch(cardText, /已经生成完毕/)
+    const titles = await runSheet.recovery(page).getByRole('article').locator('h3').allInnerTexts()
+    assert.deepEqual(titles.filter(title => /大纲恢复稿/.test(title)), ['大纲恢复稿 · 第 6 章'], '已原样写进正式大纲的第 1–5 章不列为可恢复（#464）')
+    await openArchitecture(page)
+    await arch.waitReady(page)
+    await arch.section(page, 'synopsis').getByRole('button', { name: '查看恢复稿' }).click()
+    const tab = stage.tab(page, '大纲恢复稿 · 第 6 章')
+    await tab.waitFor({ state: 'visible', timeout: 10_000 })
+    const content = stage.root(page).locator('.stage-content')
+    await content.getByText(/请从第 6 章重新生成情节大纲/).waitFor({ state: 'visible', timeout: 10_000 })
+    const viewer = await content.innerText()
+    assert.doesNotMatch(viewer, /已经生成完毕/, '恢复稿页不说这批已生成完毕')
+    assert.match(viewer, /待完成第 6 章，每章目标/, '恢复稿页顶部的待完成范围只剩一章时写「第 6 章」')
+    assert.doesNotMatch(viewer, /第 6 至 6 章/)
+    return { card: cardText.replace(/\s+/g, ' ').slice(0, 200), viewer: viewer.replace(/\s+/g, ' ').slice(0, 300) }
+  } },
+
+  /**
+   * #441 双审计 P2：本批最后一章（第 6 章，范围 6–6）生成期间改模型，候选生成完、正式保存被来源检查拒绝。
+   * 上一次运行不出现原始错误码；架构页的大纲提示只能查看或复制并给「从第 6 章重新生成」，不再退回续写与「编辑恢复稿」。
+   */
+  'arch-model-change-last': { model: true, shell: 'stage', setup: seedArch({ clear: ['synopsis'], totalChapters: 24 }), run: async context => {
+    const { page } = context
+    const last = await stallOutlineBatchAndChangeModel(context, 6)
+    await last.waitFor({ state: 'visible', timeout: 60_000 })
+    const notice = await last.innerText()
+    assert.doesNotMatch(notice, /GENERATION_SOURCE_CHANGED|Error invoking remote method/, '界面不出现原始错误码')
+    assert.match(notice, /本批第 6 章大纲已生成完，但保存前[\s\S]*正式保存被拒绝/)
+    assert.match(notice, /这批大纲保留在「大纲恢复稿」中，只能查看或复制，不能覆盖正式内容/)
+    assert.match(notice, /请到「架构」页重新生成情节大纲，从第 6 章开始/)
+    assert.equal(await last.getByRole('button', { name: '继续生成情节大纲' }).count(), 0, '不提供必然被拒的断点续写')
+    await openArchitecture(page)
+    await arch.waitReady(page)
+    const outline = arch.section(page, 'synopsis')
+    const restart = outline.getByRole('button', { name: '从第 6 章重新生成' })
+    await restart.waitFor({ state: 'visible', timeout: 10_000 })
+    const note = await outline.innerText()
+    assert.match(note, /只能查看或复制。请从第 6 章重新生成情节大纲/)
+    assert.doesNotMatch(note, /续写从停下的地方|可编辑并本地保存|已经生成完毕/, '正式保存被拒时不承诺续写，也不说这批已生成完毕')
+    assert.equal(await outline.getByRole('button', { name: '编辑恢复稿' }).count(), 0)
+    assert.deepEqual(Object.keys(outlineChapters((await readCore(context)).synopsis)).map(Number), [1, 2, 3, 4, 5], '正式大纲仍停在第 5 章')
+    return { notice, note }
+  }, after: async context => {
+    const { page } = context
+    await arch.section(page, 'synopsis').getByRole('button', { name: '从第 6 章重新生成' }).click()
+    assert.equal(await arch.dialog(page).getByRole('spinbutton', { name: '本次生成范围的起始章' }).inputValue(), '6', '生成对话框从第 6 章起')
+    assert.equal(await arch.dialog(page).getByRole('spinbutton', { name: '本次生成范围的结束章' }).inputValue(), '6', '生成对话框沿用本批范围')
+    await arch.selectOnly(page, ['synopsis'])
+    await arch.startGenerate(page)
+    await waitForRunDone(page)
+    await arch.badge(page, 'synopsis').filter({ hasText: '部分完成 · 6 / 24 章' }).waitFor({ timeout: 30_000 })
+    assert.deepEqual(Object.keys(outlineChapters((await readCore(context)).synopsis)).map(Number), Array.from({ length: 6 }, (_, index) => index + 1))
+  } },
+
+  /**
    * 修复第 2 轮补的 lane：真实主进程下大纲分批写到 16 / 24 章后重写第 1–5 章，对话框标「将覆盖第 1–5 章」并能提交；
    * after 生成并核对第 6 章起的正文逐字不变，大纲仍是部分完成 16 / 24，页头、流程脊同为 3 / 4。
    */
@@ -384,6 +613,9 @@ export const ARCH_SCENARIOS = {
     await root(page).locator('.cast-roster-foot').filter({ hasText: '1 character · page 1 / 1' }).waitFor()
     return { regions }
   } },
+
+  ...Object.fromEntries(['zh-CN', 'en-US'].flatMap(locale => [[1024, false], [1280, false], [1280, true]].map(([width, sheet]) =>
+    [`cast-fit-${locale === 'en-US' ? 'en' : 'zh'}-${width}${sheet ? '-sheet' : ''}`, { model: false, shell: 'stage', setup: seedArch(), run: context => castFitAt(context, locale, width, sheet) }]))),
 
   /** lane 6：清空此节出现危险确认；after 取消，界面与数据库里的世界观都没变。 */
   'arch-clear': { model: false, shell: 'stage', setup: seedArch(), run: async context => {
