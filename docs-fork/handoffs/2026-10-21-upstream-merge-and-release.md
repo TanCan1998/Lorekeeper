@@ -40,8 +40,16 @@
 - 已发布的 `lorekeeper-v1.0.0-beta.1` 是旧推送流程产物，两端九附件与 Latest 状态不变；新流程从下一次发布开始生效。
 - 本机验证：Node 合同 39 通过、脚本语法、Tauri typecheck/lint 通过。未新增依赖、schema 或权限。
 
+## 2026-10-21 后续：本机安装验收（新产物）
+
+用户确认先补前端错误码同步，再授权本机安装验收（含一次 UAC）。下载的两个包与发布清单 SHA256 一致。
+
+- **MSI（`1.0.1.0`）**：提权静默安装 exit 0；HKLM 卸载项 `LoreKeeper 1.0.1.0`、`C:\Program Files\LoreKeeper` 含 `lorekeeper.exe` / `lorekeeper-activate.exe` / `identity\`；公共桌面快捷方式 1 个，指向激活器、无参数；Appx 身份 `com.tancan1998.lorekeeper 1.0.1.0` 注册成功。修复安装 `/famus` exit 0，版本与身份不变。静默卸载 exit 0：卸载项 0、安装目录删除、Appx 注销、快捷方式清理，`~/.lorekeeper` 保留。
+- **NSIS（`1.0.0-beta.1`）**：当前用户静默安装 exit 0，装入 `%LOCALAPPDATA%\LoreKeeper`（含激活器与 `identity\`）；用户桌面与开始菜单快捷方式均指向 `lorekeeper-activate.exe`，无参数；HKCU 卸载项版本 `1.0.0-beta.1`。静默卸载 exit 0：目录、卸载项、快捷方式清零，`~/.lorekeeper` 保留；安装后未注册 Appx（需首次经激活器启动，未测）。
+- 未启动主程序窗口；首次运行激活器注册、项目删除对话框、注册表清理向导、多用户 UAC 与旧版本升级仍未验收。
+
 ## 仍未验收
 
-- 本次四个安装包的原生安装/升级/卸载、Skill 原生文件选择器、项目删除、注册表清理、提权与多用户 UAC 未执行；历史 MSI 证据属于旧产物。
+- 本次四包的首次启动身份注册、项目删除、注册表清理与提权/多用户 UAC 未执行（安装/修复/卸载本身已按上节通过）；历史 MSI 证据属于旧产物。
 - macOS 真机安装、活动监视器归属、签名公证未验收；Windows WebView2 任务管理器归组未修复。
 - 真实模型、MCP、业务云与长期写作质量未认证；新版发布说明已披露。
