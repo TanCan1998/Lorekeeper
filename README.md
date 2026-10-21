@@ -6,7 +6,7 @@
 > - **上游同步**：通过 `git remote add upstream https://github.com/EthanYoQ/AI-Novel-Writer.git` 关联原仓库，定期 `git fetch upstream` 合并上游演进，避免功能分叉。
 > - **文档**：[Fork 文档入口](docs-fork/README.md)；迁移评估见 `docs-fork/research/2026-10-04-tauri-migration-evaluation.md`；pi agent 开发指南见 `docs-fork/agents/pi-development.md`。
 >
-> - **LoreKeeper 下载**：[安装包与 SHA256 校验](docs-fork/releases/1.0.0-beta.md)。**中国大陆用户推荐 AtomGit**，同时保留 GitHub 下载源；这是已有预览版，不是正式版。
+> - **LoreKeeper 下载**：[安装包与 SHA256 校验](docs-fork/releases/1.0.0-beta.1.md)。**中国大陆用户推荐 AtomGit**，同时保留 GitHub 下载源；这是 Latest 预览版，不是正式版。
 > - **代码与文档**：GitHub 与 AtomGit 共用同一份 README；[项目文档](docs-fork/README.md)、下载说明和图片均使用仓库内相对路径，在两端指向各自仓库。上游链接保留原地址。
 >
 > 下方保留上游 Pagekin 的产品说明；其版本记录和 Electron 安装示例不代表 LoreKeeper 的版本、安装方式或验收状态。

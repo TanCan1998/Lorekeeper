@@ -22,8 +22,17 @@
 - Node 发布/安装器/镜像合同 39 通过。存在既有 `ProjectCoreSynopsisExpected` 未用导入警告，不据此修改无关代码。
 - 初次前端检查暴露类型引用与已迁移集合问题，均修复并复验；初次浏览器检查缺少 Playwright 自带浏览器，改用本机 Edge 无头模式，Skill 设置页 7 测试通过（有 React act 告警），不安装浏览器、不抢焦点。
 
-## 发布门禁与待办
+## 发布结果（已完成）
 
-- 此快照提交时尚未推送，不能登记新 SHA 云端全量成功。按混合政策等待同一发布 SHA 的 Tauri Rust CI 全量与 all-targets 成功，再启动发布流程。
-- 发布必须核验同一 SHA 的三平台四包、精确九附件、摘要、GitHub Latest 与 AtomGit 读回；未完成前不宣称已发布。
-- 当前原生 Skill 选择器仍待人工验收；旧版本升级、多用户 UAC、macOS 真机、真实模型与长期写作质量未认证。历史 MSI 证据不能替代本轮产物。
+- 发布源码 `f01b027b3f89e216bc5e9cf5cf5f41b417ae3b2e`；该 SHA 的 Tauri Rust CI [39539246181](https://github.com/TanCan1998/Lorekeeper/actions/runs/39539246181) 全量 **1749 通过 0 失败**、all-targets 通过；Commit message 39539246213、Gitleaks 39539246182、AtomGit mirror 39539246168 均 success。
+- 打包发布 run [39539872741](https://github.com/TanCan1998/Lorekeeper/actions/runs/39539872741)：prepare 与三平台打包全部成功；发布作业在 GitHub 侧成功创建标签与九个资产并设为 Latest，随后因 AtomGit 同步超时退出非零。
+- 第一次发布 run [39537492636](https://github.com/TanCan1998/Lorekeeper/actions/runs/39537492636) 失败于 macOS 打包：主配置 `beforeBuildCommand` 在两平台都执行 Windows 身份小包脚本。用户选择拆分配置：新增 `src-tauri/tauri.macos.conf.json` 覆盖为 `pnpm build`，主配置保留 Windows 身份构建，发布合同测试锁定两者；该修复提交后重跑云端全量。
+- AtomGit 首次同步与第一次镜像重试均在 600 秒请求上限超时；两轮镜像 run 分别为 39542655304（失败）与补传后的 39544471952（success）。本机按"只补缺失附件"补齐九个附件（未覆盖已有文件），随后镜像工作流完成匿名读回、双源说明回写与两端一致性核验。
+- 最终远端状态：GitHub `lorekeeper-v1.0.0-beta.1` 非草稿、非预发布、**Latest**（Release ID 419140959），九个资产与 SHA256SUMS 一致；AtomGit 同标签、同源码、非预发布、九个 attach 附件，说明含双源表格，读回 SHA256 与 GitHub 相同。旧 beta 保持不变。
+- 发布说明：[docs-fork/releases/1.0.0-beta.1.md](../releases/1.0.0-beta.1.md)。
+
+## 仍未验收
+
+- 本次四个安装包的原生安装/升级/卸载、Skill 原生文件选择器、项目删除、注册表清理、提权与多用户 UAC 未执行；历史 MSI 证据属于旧产物。
+- macOS 真机安装、活动监视器归属、签名公证未验收；Windows WebView2 任务管理器归组未修复。
+- 真实模型、MCP、业务云与长期写作质量未认证；新版发布说明已披露。
