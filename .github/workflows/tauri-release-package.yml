@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     concurrency:
-      group: atomgit-release-${{ needs.prepare.outputs.tag }}
+      group: release-publish-${{ needs.prepare.outputs.tag }}
       cancel-in-progress: false
     permissions:
       contents: write
@@ -198,7 +198,6 @@ jobs:
       - name: 核验大小摘要并发布
         env:
           GH_TOKEN: ${{ github.token }}
-          ATOMGIT_ACCESS_TOKEN: ${{ secrets.ATOMGIT_ACCESS_TOKEN }}
           EXPECTED_SHA: ${{ needs.prepare.outputs.source_sha }}
           PUBLISH: ${{ inputs.publish }}
           PRERELEASE: ${{ inputs.prerelease }}

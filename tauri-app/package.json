@@ -19,6 +19,7 @@
     "check:channels": "node scripts/verify-channel-coverage.mjs",
     "check:channels:emit": "node scripts/verify-channel-coverage.mjs --quiet --emit",
     "build:identity": "node scripts/build-windows-identity.mjs",
+    "mirror:release": "node scripts/mirror-published-release.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

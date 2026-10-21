@@ -6,9 +6,9 @@
 
 ## 仓库与下载
 
-- [项目首页](../README.md) · [镜像与同步说明](agents/atomgit-mirror.md)。GitHub 与 AtomGit 共用同一份 README，本项目链接使用相对路径，上游链接保持原地址。
+- [项目首页](../README.md) · [镜像与附件上传说明](agents/atomgit-mirror.md)。GitHub 与 AtomGit 共用同一份 README，本项目链接使用相对路径，上游链接保持原地址。
 - [安装包与 SHA256 校验：AtomGit（国内推荐）/ GitHub 双源](releases/1.0.0-beta.1.md)。当前 Latest 预览版；旧 [1.0.0-beta](releases/1.0.0-beta.md) 保留不覆盖。
-- [自动代码同步、双平台 Release 与恢复说明](agents/atomgit-mirror.md)。两端共用 README，仓库内文档和图片使用相对路径。
+- [AtomGit 平台拉取代码、单独上传附件与恢复说明](agents/atomgit-mirror.md)。两端共用 README，仓库内文档和图片使用相对路径。
 
 ## 迁移进度入口
 

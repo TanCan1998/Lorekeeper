@@ -69,14 +69,16 @@ test('认证只发往固定官方 API，禁止自动重定向携带令牌', asyn
   assert.throws(() => createAtomgitClient(''))
 })
 
-test('镜像工作流不构建、不强推、不删除，现有发布显式调用镜像防止事件漏触发', () => {
-  const workflow = fs.readFileSync(path.join(root, '.github/workflows/atomgit-mirror.yml'), 'utf8')
-  const sync = fs.readFileSync(path.join(root, 'tauri-app/scripts/sync-atomgit.mjs'), 'utf8')
+test('GitHub 发布不再推送 AtomGit；代码由平台镜像拉取，附件上传保持为独立工具', () => {
   const publish = fs.readFileSync(path.join(root, 'tauri-app/scripts/publish-release.mjs'), 'utf8')
-  assert(workflow.includes('persist-credentials: false'))
-  assert(workflow.includes('ref: master'))
-  assert(!/cargo (?:build|test)|pnpm (?:build|test)|tauri build/.test(workflow))
-  assert(!/['"]--(?:force|mirror|prune|delete)['"]/.test(sync))
-  assert(publish.includes('await mirrorPublishedRelease(identity.tag, { directory: output })'))
-  assert(publish.indexOf('verifyUploadedAssets(published, expected)') < publish.indexOf('await mirrorPublishedRelease(identity.tag, { directory: output })'))
+  const workflowRoot = path.join(root, '.github/workflows')
+  // 代码同步已改为 AtomGit 平台拉取：GitHub 侧不留推送工作流与推送脚本。
+  assert(!fs.readdirSync(workflowRoot).some(name => name === 'atomgit-mirror.yml'))
+  assert(!fs.existsSync(path.join(root, 'tauri-app/scripts/sync-atomgit.mjs')))
+  assert(!publish.includes('mirrorPublishedRelease'))
+  assert(!publish.includes('sync-atomgit'))
+  // 附件不在 Git 镜像范围，仍保留只上传原样文件的手动工具，且不重新构建。
+  const mirror = fs.readFileSync(path.join(root, 'tauri-app/scripts/mirror-published-release.mjs'), 'utf8')
+  assert(mirror.includes('uploadMirrorAssets'))
+  assert(!/cargo (?:build|test)|pnpm (?:build|test)|tauri build/.test(mirror))
 })

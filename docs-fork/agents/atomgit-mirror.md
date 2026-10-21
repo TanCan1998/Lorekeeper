@@ -24,19 +24,17 @@ node tauri-app/scripts/sync-readme.mjs --check
 ## 2026-10-21 beta.1 同步结果
 
 - 代码与标签同步成功；Release 与九个附件最终通过匿名 SHA256 读回，说明含双源表格。
-- 首次发布作业与第一次镜像重试均在单请求 600 秒上限超时（GitHub runner 跨境上传 AtomGit 存储）；按协议只补缺失附件后重跑镜像成功，未覆盖已有文件。超时上限未调整，后续大包发布需关注。
+- 首次发布作业与第一次镜像重试均在单请求 600 秒上限超时（GitHub runner 跨境上传 AtomGit 存储）；按协议只补缺失附件后重跑镜像成功，未覆盖已有文件。旧流程已整体改为平台拉取 + 本机附件上传，不再依赖 GitHub 跨境上传。
 - 中文首页只读抓取未出现「本 Fork 的目的」段落与新版本链接，首页完整渲染仍未验收。
 
-## 代码自动同步
+## 代码镜像：由 AtomGit 平台拉取
 
-工作流：`.github/workflows/atomgit-mirror.yml`。
+2026-10-21 用户决定：**代码与标签由 AtomGit 平台从 GitHub 拉取，GitHub 不再推送同步**。
 
-- GitHub 的分支推送、LoreKeeper 标签推送、Release 公开或编辑触发；也可手动执行。
-- 只从 GitHub 抓取分支和标签，向 AtomGit 普通推送；不编译、不打包、不启用 AtomGit 自身的构建流水线。
-- 不强推、不自动删除远端引用。遇到 AtomGit 独立提交、标签冲突或非快进更新会失败，保留两端内容并人工处理。
-- GitHub 删除的分支不会自动删掉 AtomGit 分支，历史重写也不自动传播。这是防破坏同步，不是带删除能力的 `git push --mirror`。
-- 当前使用 GitHub 推送式同步，不声称 AtomGit 平台的定时拉取开关已开启。
-- 各工作流从可信主分支加载镜像脚本，不运行外部 PR 代码，不把 Secret 暴露给 Fork PR。
+- 已删除 `.github/workflows/atomgit-mirror.yml` 与 `tauri-app/scripts/sync-atomgit.mjs`；GitHub 侧没有推送代码或标签到 AtomGit 的工作流。
+- 在 AtomGit 仓库的镜像/同步设置里，把镜像源指向 `https://github.com/TanCan1998/Lorekeeper`，选择 `master` 与 `lorekeeper-v*` 标签；按平台能力设置定时或手动拉取。平台拉取是只读镜像，不会向 GitHub 回写。
+- 平台配置是 AtomGit 侧操作，本仓库无法用 API 代替；启用后需实测一次拉取结果（分支、标签 SHA 与 GitHub 一致）。
+- 附件不进入 Git，平台拉取不会带来安装包；Release 资产仍按下节单独上传。
 
 ## 令牌
 
@@ -44,17 +42,22 @@ GitHub 仓库 Secret：`ATOMGIT_ACCESS_TOKEN`，从本机用户环境变量同�
 
 令牌不写远端 URL、Git 配置、源文件、日志或提交；不导出本机全部环境变量。应限制为此镜像仓库所需权限，失效后在 Secret 中轮换。不将本机令牌发送给下载代理或附件存储域名。
 
-## 发布和恢复
+## 发布：GitHub 打包 → 平台拉取代码 → 单独上传附件
 
-1. 原打包流继续手动触发，沿用锁定源码、同 SHA Rust 全量、四个安装包和五个校验文件的门禁。
-2. GitHub 草稿与资产核验、公开逻辑不变；发布作业显式调用代码同步与 Release 镜像，避免 `GITHUB_TOKEN` 创建的事件不触发后续工作流。
-3. 已公开 Release 也可以由镜像工作流处理：手动填 `release_tag`，不再次打包。没有新标签或新版本授权。
-4. 检查原始发布清单、同 SHA 独立 Rust 成功记录、GitHub 原始附件 digest 和两端标签 SHA；仅原样传输，不重新压缩或签名。
-5. AtomGit 不提供已确认的草稿能力，传输期间明确显示未完成。上传后匿名流式读回全部九附件的大小和 SHA256，不仅检查附件列表。
-6. 校验通过后，两端更新为相同双源表格，并读回确认。国内源排在前面；保留版本限制、签名说明及预览身份。
-7. 两平台无法原子公开：一端失败，任务失败并保留现状，不删除另一端、不覆写冲突附件、不把半完成状态登记为双端成功。
-8. 重试只补缺失附件；已有附件必须读回核验，字节不符就失败，不自动替换。修复后重跑镜像工作流，不重跑打包/发布新标签流程。
-9. AtomGit 的 Release 状态接口与 GitHub 独立 `make_latest` 选项不同；保留预发布属性，不宣称两端 Latest 指针完全等价或自动更新分发已迁移。
+1. 打包流仍手动触发，沿用锁定源码、同 SHA Rust 全量、四个安装包和五个校验文件的门禁；发布作业只负责 GitHub 草稿、核验与公开，不再调用任何 AtomGit 同步。
+2. GitHub 公开后，确认 AtomGit 平台已拉取到同一标签与提交 SHA；拉取不到时先在平台手动同步，不重跑打包。
+3. 代码就绪后在本机或可信环境单独上传附件（不编译、不打包、不重新压缩）：
+   ```powershell
+   cd tauri-app
+   $env:ATOMGIT_ACCESS_TOKEN = '<token>'
+   $env:MIRROR_RELEASE_TAG = 'lorekeeper-v1.0.0-beta.1'
+   $env:GITHUB_REPOSITORY = 'TanCan1998/Lorekeeper'
+   pnpm mirror:release
+   ```
+   工具从 GitHub 下载已公开附件，校验发布清单、同 SHA Rust 记录、两端标签 SHA 与原始字节摘要，只补缺失附件，不覆盖已有文件。
+4. 上传后匿名流式读回全部九附件的大小和 SHA256，再写回双源下载表格并读回确认；国内源在前，保留预览身份与限制。
+5. 两平台无法原子公开：一头失败保留现状，不删除另一端、不覆写冲突附件、不把半完成状态登记为双端成功。
+6. AtomGit 不提供已确认的草稿能力；它的 Release 接口也没有与 GitHub `make_latest` 等价的独立指针，不宣称两端 Latest 完全等价。
 
 ## 资源和验收边界
 
