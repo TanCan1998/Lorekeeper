@@ -75,7 +75,7 @@
    - **云端全量已通过**：同一 SHA `6ba2bc8d` 的 Tauri Rust CI [39982608773](https://github.com/TanCan1998/Lorekeeper/actions/runs/39982608773) —— **1752 通过 0 失败**（166.31s），「运行全量测试与所有目标检查」步骤 success，Commit message CI 与 Gitleaks 亦 success。Rust 累计切片**清零**，最新全量基线更新为本 SHA。
 2. ~~`structured-contract-diagnostic.ts` 对齐~~ **已完成**（`54486fc7`）。Tauri 侧此前 3 处 catch 把诊断的 `error.message`（形如「结构化合同诊断 code=… path=… field=…」的技术串）直接显示给作者；现新增 `structuredContractDiagnosticText`（12 个码 × 双语、根路径 `$` 说成「整体内容」）并接入蓝图恢复稿的刷新、保存与续接三条失败路径。非诊断错误仍显示原始说明，行为不变。验证：`tauri-app` typecheck/lint 通过；新增 3 个单测通过；`planning-recovery-editor.browser.tsx`（本机 Edge 无头）66 通过；全量 vitest 226 文件 / 2830 通过 / 1 跳过 / 0 失败。
 3. 其余 4 个双实现 shared 文件的纯增量仍待评估：`plot-tree.ts`（+8）、`character-proposal-parser.ts`（+3）、`import-run.ts`（+2）、`legacy-roster-generation-pure.ts`（+1）。需先出行为差异清单。
-4. 诊断文案的**其余显示面**未接入：`tauri-app` 组件层仍有 20+ 处 `reason.message` 直显点，需先判定哪些会抛出 `StructuredContractDiagnostic`（作者手稿严格解析路径优先），再决定是否统一改用 `structuredContractDiagnosticText`。
+4. 诊断文案的**显示面已审计完毕**，清单见 [plans/2026-10-23-structured-diagnostic-display-audit.md](../plans/2026-10-23-structured-diagnostic-display-audit.md)。结论：抛出点集中在 3 个 shared/parse 文件（63 处）；作者手稿路径只有蓝图恢复稿一条（已修）；**模型输出路径有 3 处会把技术串给作者**（`DirectoryBlueprintContractError`、`import-novel.command` 中文分支、`architecture.command` 中文分支）。审计明确建议**不要**把 `structuredContractDiagnosticText` 套到模型输出（语气错位），应改为「生成失败 + 可读摘要」、技术码只进诊断日志；改造需同步 `directory.command.test.ts:1309` 断言。
 5. 上游新增的 `test(verify)` / `*.browser.tsx` 场景中可迁移给 Tauri 的用例（英文界面导入、模型连接、项目页报错等）。
 6. `check:i18n` 棘轮不搬入 `tauri-app/`（扫描对象是 Electron `src/` 结构）；Tauri 侧继续用自有双语检查。
 
