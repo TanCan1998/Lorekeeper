@@ -12,6 +12,7 @@ import { Label } from '../ui/Label'
 import { NativeSelect } from '../ui/NativeSelect'
 import { cn } from '../../lib/utils'
 import { useLocaleStore } from '../../stores/locale-store'
+import { displayedErrorMessage, englishWithReason } from '../../i18n/app-errors'
 import { ModelReasoningOverrideSettings, ModelCapabilitySources, ProjectCreativeStrategySettings } from './ReasoningPolicySettings'
 import { openModelProviderResource } from './model-provider-resource'
 
@@ -29,6 +30,7 @@ export function ModelForm({
   presets: ProviderPreset[]
 }) {
   const text = useLocaleStore(s => s.text)
+  const locale = useLocaleStore(s => s.locale)
   const [showKey, setShowKey] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   // 标记"模型标识"是否使用自定义输入模式
@@ -36,6 +38,7 @@ export function ModelForm({
 
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean, error?: string } | null>(null)
+  const testFailure = testResult && !testResult.success ? displayedErrorMessage(locale, testResult.error) : ''
   const testConnection = useLLMStore(s => s.testConnection)
   const discoverModels = useLLMStore(s => s.discoverModels)
   const [discovering, setDiscovering] = useState(false)
@@ -515,9 +518,9 @@ export function ModelForm({
                   </p>
                 </div>
                 <div>
-                  <Label>{text('最大输出 Token', 'Max output tokens')}</Label>
+                  <Label>{text('最大输出 Tokens', 'Max output tokens')}</Label>
                   <Input
-                    aria-label={text('最大输出 Token', 'Max output tokens')}
+                    aria-label={text('最大输出 Tokens', 'Max output tokens')}
                     type="number"
                     min={0}
                     value={model.maxTokens}
@@ -535,7 +538,7 @@ export function ModelForm({
                 </div>
               </div>
               <p className="text-xs text-[var(--color-text-secondary)]" data-effective-output-limit={effectiveOutputLimit}>
-                {text(`当前有效输出额度为 ${effectiveOutputLimit?.toLocaleString() ?? text('未设置', 'not configured')} Token。取作者设置、模型输出容量与已知服务商上限中的较小值；完整输入和本次剩余额度仍会影响请求。`, `Effective output allowance: ${effectiveOutputLimit?.toLocaleString() ?? text('未设置', 'not configured')} tokens. This uses the lowest configured or verified output limit. Prompt size and the remaining action allowance still affect each request.`)}
+                {text(`当前有效输出额度为 ${effectiveOutputLimit?.toLocaleString() ?? text('未设置', 'not configured')}。取作者设置、模型输出容量与已知服务商上限中的较小值；完整输入和本次剩余额度仍会影响请求。`, `Effective output allowance: ${effectiveOutputLimit?.toLocaleString() ?? text('未设置', 'not configured')}. This uses the lowest configured or verified output limit. Prompt size and the remaining action allowance still affect each request.`)}
               </p>
               {contextOutputConflict && (
                 <p
@@ -548,7 +551,7 @@ export function ModelForm({
                   }}
                 >
                   {text(
-                    '最大输出 Token 没有给提示词留下安全空间。生成前预算检查会阻止请求；请降低最大输出或增大上下文窗口。此提示不会阻止保存。',
+                    '最大输出 Tokens 没有给提示词留下安全空间。生成前预算检查会阻止请求；请降低最大输出或增大上下文窗口。此提示不会阻止保存。',
                     'Max output tokens leave no safe room for the prompt. The preflight budget check will block generation; lower the output limit or increase the context window. This warning does not block saving.',
                   )}
                 </p>
@@ -613,7 +616,9 @@ export function ModelForm({
       </div>
       {testResult && (
         <div className={`text-xs p-2 rounded ${testResult.success ? 'bg-green-500/10 text-[var(--color-success-text)] border border-green-500/20' : 'bg-red-500/10 text-[var(--color-error-text)] border border-red-500/20'} break-all`}>
-          {testResult.success ? text('连接成功', 'Connection succeeded') : text(`连接失败：${testResult.error}`, `Connection failed: ${testResult.error}`)}
+          {testResult.success
+            ? text('连接成功', 'Connection succeeded')
+            : text(`连接失败：${testFailure}`, englishWithReason('Connection failed', testFailure, ': '))}
         </div>
       )}
     </div>
