@@ -167,6 +167,27 @@
 4. C 档先不动；若要清，需先决定"这些未接入功能是否还要保留"。
 5. 预估 A 档收益：约 30 个导出、300–500 行代码（`knowledge-service` 与 `draft-index` 两组占大头）。
 
+## 执行结果（2026-10-23 夜间，A 档已清理）
+
+按 A 档实际执行，3 个提交：
+
+| 提交 | 内容 | 规模 |
+|---|---|---|
+| `7a4a8019` | 删除 `knowledge-service`(11)、`version-service`(5)、`draft-index`(6)、`style-presets`(3)、`project-templates`(2)、`prompt-templates`(1) 的无调用导出 | 7 文件 / −287 |
+| `52ec598c` | 删除 `chapter-workflow`(3)、`character-card-normalizer`(1 + 5 个连带内部声明)、`main-generation-transport`(5)、`creative-workflow-launcher`、`workflow-utils`、`intent-router`、`utils/time`、`utils/frontmatter`、`stores/character-rename-ledger`、`stores/agent-store`、`unsaved-settings`、`tokens/spacing` | 12 文件 / −209 |
+| `e93cc108` | 删除整文件 `project-templates.ts`、`style-presets.ts`，及 `draft-index.updateDraftStatus` | 3 文件 / −287 |
+
+合计删除 **50 个导出、2 个整文件、783 行**。
+
+复扫结果（同一方法）：导出 **1932 → 1882**，零引用 **87 → 43**，仅测试引用 **66 不变**。剩余 43 个零引用里 17 个是代码类，全部落在 B 档（契约常量与判据函数），按建议不动；其余 26 个是类型。
+
+**级联发现（方法的已知盲区）**：
+- `updateDraftStatus` 在 `chapter-workflow.ts` 与 `draft-index.ts` 各有一份，按名字计数时被同名函数的引用掩盖；删掉前者后才暴露，已一并删除。
+- `PROJECT_TEMPLATES` / `STYLE_PRESETS` 原本靠被删函数的内部引用"存活"，删函数后成为无人 import 的死文件，已整文件删除。
+- 结论：**同名导出会共享引用计数**，多轮收敛（删完再扫）比一次算完更可靠。
+
+验证：三次提交后各跑一遍 `pnpm typecheck`、`pnpm run lint`、全量 `pnpm test`，均 0 错误 / **227 文件、2833 通过、1 跳过、0 失败**。测试同步一处：`deletion-affordances.test.ts` 移除了对已删服务层函数的源码断言（UI 真实调用路径 `use-knowledge-base.ts` 的断言保留）。
+
 ## 未覆盖
 
 - 根 `src/`（Electron 基线）不在本审计范围。
