@@ -67,13 +67,3 @@ export function openProjectFolder(): void {
     return useProjectStore.getState().openProject(folder)
   }))
 }
-
-/**
- * 不经作者点击的自动导航（导入完成后打开作品）用：有没保存的输入时先问。left 时设置页已收起；
- * stayed 是作者选了继续编辑；busy 是另一个放弃确认还开着，这次不问也不走。
- * 书房与作品里的设置页是两个实例，作品一提交书房里那个就卸载，所以要在提交之前问。
- */
-export function confirmLeaveSettings(): Promise<'left' | 'stayed' | 'busy'> {
-  if (useSettingsLeave.getState().pending) return Promise.resolve('busy')
-  return new Promise(resolve => leaveSettingsThen(() => resolve('left'), () => resolve('stayed')))
-}

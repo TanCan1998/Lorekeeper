@@ -107,8 +107,3 @@ export function createMainGenerationTransport(captureSession = getActiveProjectS
   })
 }
 export const mainGenerationTransport = createMainGenerationTransport()
-export const beginMainGeneration = mainGenerationTransport.begin
-export const pauseMainGeneration = mainGenerationTransport.pause
-export const resumeMainGeneration = mainGenerationTransport.resume
-export const restartMainGeneration = mainGenerationTransport.restart
-export const discardMainGenerationCandidate = mainGenerationTransport.discard

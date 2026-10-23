@@ -116,13 +116,6 @@ export function searchSlashCommands(query: string, locale: Locale = 'zh-CN'): Sl
 }
 
 /**
- * 判断用户输入是否以 / 开头
- */
-export function isSlashCommand(input: string): boolean {
-  return input.trimStart().startsWith('/')
-}
-
-/**
  * 解析 / 命令
  */
 export function parseSlashCommand(input: string, locale: Locale = 'zh-CN'): {

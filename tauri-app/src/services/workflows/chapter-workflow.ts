@@ -1,8 +1,7 @@
 import { formatResourceUri } from '../../shared/project-paths'
-import { canonicalResourceUri, parseResourceUri, resourceWriteAllowed } from '../../shared/project-paths'
+import { canonicalResourceUri, parseResourceUri } from '../../shared/project-paths'
 import { workflowResourceKey, type WorkflowDefinition } from '../../stores/workflow-store'
 import type { DraftMeta } from '../draft-index'
-import { requireIpcSuccess } from '../ipc-result'
 import { ipc } from '../ipc-client'
 
 import type { DraftStatus } from '../../shared/draft-status'
@@ -102,18 +101,6 @@ export interface FinalizeOnlyParams {
   snapshot?: import('../finalization-snapshot').FinalizationSnapshot
 }
 
-// ==========================================
-// 2. 草稿文件工具函数 (供前端 UI 侧调用)
-// ==========================================
-
-export function getDraftDir(_projectPath: string, chapterNumber: number): string {
-  return `ai-novel://draft/ch${chapterNumber}`
-}
-
-export function getDraftPath(_projectPath: string, chapterNumber: number, version: number): string {
-  return `ai-novel://draft/ch${chapterNumber}/v${version}`
-}
-
 const CHAPTER_CONTEXT_READ_RESOURCE_KEYS = Object.freeze([
   workflowResourceKey('novel-config'),
   workflowResourceKey('architecture'),
@@ -200,29 +187,6 @@ export async function parseDraftMeta(
   )
   const d = drafts.find((draft) => draft.version === version)
   return d ? (d as unknown as DraftMeta) : null
-}
-
-export async function updateDraftStatus(
-  filePath: string,
-  newStatus: DraftStatus,
-  expectedProjectPath: string,
-  projectSession: ProjectSessionContext,
-): Promise<void> {
-  if (!resourceWriteAllowed(filePath)) throw new Error('资源只读或无效')
-  const meta = await parseDraftMeta(filePath, expectedProjectPath, projectSession)
-  if (meta) {
-    requireIpcSuccess(
-      await ipc.invokeWithProjectSession(
-        projectSession,
-        'db:draft-update-status',
-        meta.id,
-        newStatus,
-        undefined,
-        expectedProjectPath,
-      ),
-      '更新草稿状态',
-    )
-  }
 }
 
 // ==========================================

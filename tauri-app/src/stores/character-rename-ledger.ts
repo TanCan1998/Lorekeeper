@@ -34,23 +34,6 @@ export function setCharacterDraftRenames<T>(
   return setProjectEditorDraftMetadata(ledger, projectKey, { renames })
 }
 
-export function updateCharacterRename(
-  renames: CharacterRenameData[],
-  currentName: string,
-  newName: string,
-  persistedNames: ReadonlySet<string>,
-): CharacterRenameData[] {
-  const existing = renames.find(rename => rename.newName === currentName)
-  if (existing) {
-    const others = renames.filter(rename => rename !== existing)
-    return newName === existing.originalName
-      ? others
-      : [...others, { originalName: existing.originalName, newName }]
-  }
-  if (!persistedNames.has(currentName) || newName === currentName) return renames
-  return [...renames, { originalName: currentName, newName }]
-}
-
 /**
  * 角色改名尚未落盘时，base/remote 仍使用旧主键，draft 已使用新主键。
  * 先按改名账本统一身份，再对同一角色执行字段级三方合并。

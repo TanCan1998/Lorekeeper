@@ -167,16 +167,6 @@ export async function readPostProcessStatus(
   }
 }
 
-/** 快捷检查：所有关键步骤是否通过 */
-export async function isAllCriticalPassed(
-  projectPath: string,
-  scope: string,
-  projectSession?: ProjectSessionContext,
-): Promise<boolean> {
-  const { sourceType, sourceId } = parseScope(scope)
-  return await invokeForProjectSession(projectSession, 'db:post-process-is-all-passed', sourceType, sourceId, projectPath)
-}
-
 /** 提取失败步骤的展示标签列表 */
 export function getFailedStepLabels(status: PostProcessStatus): string[] {
   return Object.values(status.steps)

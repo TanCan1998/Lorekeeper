@@ -29,13 +29,6 @@ import { useLLMStore } from './llm-store'
 import { useEditorStore } from './editor-store'
 import type { Locale } from '../i18n/types'
 
-export const AGENT_GENERATION_BUDGET = Object.freeze({
-  maxAttempts: 8,
-  maxRequestedOutputTokens: 65_536,
-  maxRequestedOutputTokensPerAttempt: 8192,
-  deadlineMs: 20 * 60_000,
-})
-
 // 恢复只补齐导航，不重复追加同一登记；保留原收据状态及非工作流产物。
 function mergeAgentArtifacts(previous: readonly ToolArtifact[], incoming: readonly ToolArtifact[]): ToolArtifact[] {
   const merged: ToolArtifact[] = []

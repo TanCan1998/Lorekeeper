@@ -21,18 +21,3 @@ export const spacing = {
 } as const
 
 export type SpacingKey = keyof typeof spacing
-
-// Tailwind equivalent mapping for direct usage in classes
-export const tailwindSpacing: Record<SpacingKey, string> = {
-  '0': '0',
-  '1': '1',
-  '2': '2',
-  '3': '3',
-  '4': '4',
-  '5': '5',
-  '6': '6',
-  '8': '8',
-  '10': '10',
-  '12': '12',
-  '16': '16',
-}

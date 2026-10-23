@@ -37,15 +37,3 @@ export function extractFrontmatter(content: string): FrontmatterResult {
     body: content.slice(match[1].length),
   }
 }
-
-/**
- * 将 frontmatter 与正文拼接为完整文件内容
- * @param frontmatter frontmatter 字符串（含首尾 ---）
- * @param body 正文内容
- */
-export function mergeFrontmatterBody(frontmatter: string, body: string): string {
-  if (!frontmatter) return body
-  // 确保 frontmatter 以换行结尾再拼接正文
-  const fm = frontmatter.endsWith('\n') ? frontmatter : frontmatter + '\n'
-  return fm + body
-}

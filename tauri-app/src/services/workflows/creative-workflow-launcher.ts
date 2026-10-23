@@ -254,5 +254,3 @@ export async function launchCreativeWorkflow(
     status: registered.status,
   })
 }
-
-export const CreativeWorkflowLauncher = Object.freeze({ launch: launchCreativeWorkflow })
