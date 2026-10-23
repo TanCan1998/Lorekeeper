@@ -72,7 +72,7 @@
 1. ~~`httpFailure` 契约~~ **已落地**（`e44adbde`）。Rust 新增 `HttpFailure { status, body }` 并挂到 `LlmResponse.http_failure`，`openai`/`gemini` 非 2xx 时填充；`LlmTestConnectionResult` 透传为 `httpFailure`（`serde(rename)` + 缺省时省略）；渲染层新增 `modelTestFailureMessage` 按界面语言写「模型请求失败（HTTP 401）…服务返回：…」，正文为空时不留悬空「服务返回」。
    - **刻意差异**：基线把 `error` 也改成 `LLM_REQUEST_FAILED`；Tauri 保留原中文 `error` 文案，只**追加**结构化字段，避免影响共用的 `llm:generate` 失败提示（那部分仍与现状一致，不回归）。
    - 验证：`cargo check --all-targets` exit 0；定向 `cargo test --lib llm` **164 通过 0 失败**（含 2 个新增序列化用例）；5 个改动文件 `rustfmt --check` 通过；`tauri-app` typecheck/lint 通过；全量 vitest **227 文件 / 2833 通过 / 1 跳过 / 0 失败**；settings 四个 browser 用例 35 通过（Edge 无头）。
-   - Rust 累计：自最近全量 `058ec936` 起第 1 个语义切片（1/5），未跑全量。
+   - **云端全量已通过**：同一 SHA `6ba2bc8d` 的 Tauri Rust CI [39982608773](https://github.com/TanCan1998/Lorekeeper/actions/runs/39982608773) —— **1752 通过 0 失败**（166.31s），「运行全量测试与所有目标检查」步骤 success，Commit message CI 与 Gitleaks 亦 success。Rust 累计切片**清零**，最新全量基线更新为本 SHA。
 2. ~~`structured-contract-diagnostic.ts` 对齐~~ **已完成**（`54486fc7`）。Tauri 侧此前 3 处 catch 把诊断的 `error.message`（形如「结构化合同诊断 code=… path=… field=…」的技术串）直接显示给作者；现新增 `structuredContractDiagnosticText`（12 个码 × 双语、根路径 `$` 说成「整体内容」）并接入蓝图恢复稿的刷新、保存与续接三条失败路径。非诊断错误仍显示原始说明，行为不变。验证：`tauri-app` typecheck/lint 通过；新增 3 个单测通过；`planning-recovery-editor.browser.tsx`（本机 Edge 无头）66 通过；全量 vitest 226 文件 / 2830 通过 / 1 跳过 / 0 失败。
 3. 其余 4 个双实现 shared 文件的纯增量仍待评估：`plot-tree.ts`（+8）、`character-proposal-parser.ts`（+3）、`import-run.ts`（+2）、`legacy-roster-generation-pure.ts`（+1）。需先出行为差异清单。
 4. 诊断文案的**其余显示面**未接入：`tauri-app` 组件层仍有 20+ 处 `reason.message` 直显点，需先判定哪些会抛出 `StructuredContractDiagnostic`（作者手稿严格解析路径优先），再决定是否统一改用 `structuredContractDiagnosticText`。
