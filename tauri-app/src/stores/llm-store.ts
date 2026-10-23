@@ -62,7 +62,7 @@ interface LLMState {
   /** 取消生成 */
   cancelGeneration: (requestId: string) => Promise<void>
   /** 测试模型连接 */
-  testConnection: (model: ModelProfile) => Promise<{ success: boolean; error?: string }>
+  testConnection: (model: ModelProfile) => Promise<{ success: boolean; error?: string; httpFailure?: { status: number; body: string } }>
   /** 以当前表单中的端点和凭据主动发现 provider 模型。 */
   discoverModels: (request: ModelDiscoveryRequest) => Promise<ModelDiscoveryResult>
 }

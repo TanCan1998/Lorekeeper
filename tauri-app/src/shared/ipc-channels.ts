@@ -583,7 +583,7 @@ export interface LLMChannels {
   }
   'llm:test-connection': {
     args: [model: ModelProfile, creativeStrategy?: CreativeStrategy]
-    return: { success: boolean; error?: string }
+    return: { success: boolean; error?: string; httpFailure?: { status: number; body: string } }
   }
 }
 

@@ -14,6 +14,7 @@ import { cn } from '../../lib/utils'
 import { useLocaleStore } from '../../stores/locale-store'
 import { ModelReasoningOverrideSettings, ModelCapabilitySources, ProjectCreativeStrategySettings } from './ReasoningPolicySettings'
 import { openModelProviderResource } from './model-provider-resource'
+import { modelTestFailureMessage } from './model-test-message'
 
 /** 模型编辑表单 */
 export function ModelForm({
@@ -35,7 +36,7 @@ export function ModelForm({
   const [customModelName, setCustomModelName] = useState(false)
 
   const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ success: boolean, error?: string } | null>(null)
+  const [testResult, setTestResult] = useState<{ success: boolean, error?: string, httpFailure?: { status: number, body: string } } | null>(null)
   const testConnection = useLLMStore(s => s.testConnection)
   const discoverModels = useLLMStore(s => s.discoverModels)
   const [discovering, setDiscovering] = useState(false)
@@ -613,7 +614,7 @@ export function ModelForm({
       </div>
       {testResult && (
         <div className={`text-xs p-2 rounded ${testResult.success ? 'bg-green-500/10 text-[var(--color-success-text)] border border-green-500/20' : 'bg-red-500/10 text-[var(--color-error-text)] border border-red-500/20'} break-all`}>
-          {testResult.success ? text('连接成功', 'Connection succeeded') : text(`连接失败：${testResult.error}`, `Connection failed: ${testResult.error}`)}
+          {testResult.success ? text('连接成功', 'Connection succeeded') : modelTestFailureMessage(testResult, text)}
         </div>
       )}
     </div>

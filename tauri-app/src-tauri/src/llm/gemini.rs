@@ -240,6 +240,7 @@ async fn generate_inner(
             finish_reason: LlmFinishReason::Error,
             usage: None,
             error: Some(format!("Gemini API 调用失败 ({status}): {text}")),
+            http_failure: Some(crate::llm::chat::HttpFailure { status, body: text }),
         });
     }
 
@@ -258,6 +259,7 @@ async fn generate_inner(
             finish_reason,
             usage,
             error: None,
+            http_failure: None,
         });
     }
     Ok(LlmResponse {
@@ -266,6 +268,7 @@ async fn generate_inner(
         finish_reason,
         usage,
         error: Some("Gemini API 返回的文本未正常完成".to_string()),
+        http_failure: None,
     })
 }
 

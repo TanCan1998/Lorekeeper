@@ -33,7 +33,7 @@ use serde_json::Value;
 
 use crate::app_paths;
 use crate::llm::chat::{
-    build_client, is_gemini, provider_error_text, proxy_from_config, ChatMessage,
+    build_client, is_gemini, provider_error_text, proxy_from_config, ChatMessage, HttpFailure,
     LlmGenerateOptions,
 };
 use crate::llm::discovery::{
@@ -58,12 +58,17 @@ pub const CONNECTION_TEST_REASONING_STAGE: &str = "general";
 /// `creativeStrategy` 缺省值（对齐基线形参默认值 `'auto'`）。
 pub const DEFAULT_CREATIVE_STRATEGY: &str = "auto";
 
-/// `llm:test-connection` 响应（契约 `{ success: boolean; error?: string }`）。
+/// `llm:test-connection` 响应（契约
+/// `{ success: boolean; error?: string; httpFailure?: { status; body } }`）。
 #[derive(Debug, Serialize)]
 pub struct LlmTestConnectionResult {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 供应商非 2xx 时的状态码与正文：渲染层据此按界面语言写说明，
+    /// 不再把中文前缀塞进英文界面（对齐基线 `httpFailure`）。
+    #[serde(rename = "httpFailure", skip_serializing_if = "Option::is_none")]
+    pub http_failure: Option<HttpFailure>,
 }
 
 /// 探测失败信封（**无** `Error: ` 前缀，由各来源决定是否自带）。
@@ -71,6 +76,7 @@ fn failure(message: String) -> LlmTestConnectionResult {
     LlmTestConnectionResult {
         success: false,
         error: Some(message),
+        http_failure: None,
     }
 }
 
@@ -169,6 +175,7 @@ pub async fn llm_test_connection(
             Ok(_) => LlmTestConnectionResult {
                 success: true,
                 error: None,
+                http_failure: None,
             },
             Err(error) => failure(error.display_text()),
         };
@@ -183,6 +190,7 @@ pub async fn llm_test_connection(
     LlmTestConnectionResult {
         success: response.success,
         error: response.error,
+        http_failure: response.http_failure,
     }
 }
 
@@ -324,6 +332,39 @@ mod tests {
         assert_ne!(
             probe.reasoning, review.reasoning,
             "受控阶段必须影响推理指令（探测用 general，审阅用 review）"
+        );
+    }
+
+    #[test]
+    fn connection_result_serializes_provider_http_failure_test() {
+        let with_failure = LlmTestConnectionResult {
+            success: false,
+            error: Some(r#"API 调用失败 (401): {"error":"invalid api key"}"#.to_string()),
+            http_failure: Some(HttpFailure {
+                status: 401,
+                body: "{\"error\":\"invalid api key\"}".to_string(),
+            }),
+        };
+        let value = serde_json::to_value(&with_failure).unwrap();
+        assert_eq!(value["success"], false);
+        assert_eq!(value["httpFailure"]["status"], 401);
+        assert_eq!(
+            value["httpFailure"]["body"],
+            "{\"error\":\"invalid api key\"}"
+        );
+        assert_eq!(
+            value["error"], r#"API 调用失败 (401): {"error":"invalid api key"}"#,
+            "旧文案保留给生成链，渲染层优先用 httpFailure"
+        );
+    }
+
+    #[test]
+    fn connection_result_omits_http_failure_when_absent_test() {
+        let plain = failure("Error: 连接失败".to_string());
+        let value = serde_json::to_value(&plain).unwrap();
+        assert!(
+            value.get("httpFailure").is_none(),
+            "非供应商 HTTP 失败不得凭空产生 httpFailure"
         );
     }
 }

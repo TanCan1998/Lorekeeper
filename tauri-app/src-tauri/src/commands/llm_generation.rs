@@ -424,6 +424,7 @@ impl PrepareFailure {
                 finish_reason: LlmFinishReason::Error,
                 usage: None,
                 error: Some(MODEL_NOT_FOUND_ENVELOPE_MESSAGE.to_string()),
+                http_failure: None,
             },
             PrepareFailure::Error { message, .. } => {
                 LlmResponse::failure(provider_error_text(message))

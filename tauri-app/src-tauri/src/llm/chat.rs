@@ -148,7 +148,20 @@ pub struct ProviderUsageEvidence {
     pub protocol: UsageProtocol,
 }
 
-/// 非流式生成响应（对齐 `LLMResponse` 的 `{ success, content, finishReason, usage?, error? }`）。
+/// 供应商返回非 2xx 时的结构化证据（对齐 `LLMResponse.httpFailure`，
+/// `src/shared/ipc-channels.ts`）。
+///
+/// 保留原始状态码与响应正文：连接测试据此按界面语言写成说明，避免把中文
+/// 硬编码前缀塞进英文界面。`body` 可能是空串。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpFailure {
+    pub status: u16,
+    pub body: String,
+}
+
+/// 非流式生成响应（对齐 `LLMResponse` 的
+/// `{ success, content, finishReason, usage?, error?, httpFailure? }`）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmResponse {
@@ -159,6 +172,8 @@ pub struct LlmResponse {
     pub usage: Option<TokenUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_failure: Option<HttpFailure>,
 }
 
 impl LlmResponse {
@@ -170,6 +185,7 @@ impl LlmResponse {
             finish_reason: LlmFinishReason::Error,
             usage: None,
             error: Some(error),
+            http_failure: None,
         }
     }
 }
