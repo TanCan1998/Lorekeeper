@@ -64,16 +64,6 @@ export function getPromptSource(
   return promptCatalog.peek(key, projectSession, resolveWritingLanguage(writingLanguage))?.source ?? 'builtin'
 }
 
-/** 获取所有模板（合并自定义，保留三级覆盖优先级） */
-export function getAllPromptTemplates(
-  projectSession?: ProjectSessionContext,
-  writingLanguage: WritingLanguage = 'zh-CN',
-): PromptTemplate[] {
-  return BUILTIN_PROMPTS.map((template) => (
-    getPromptTemplate(template.key, projectSession, writingLanguage) ?? template
-  ))
-}
-
 /** 保存全局自定义 Prompt 到 ~/.lorekeeper/prompts/ */
 export async function saveCustomPrompt(template: PromptTemplate): Promise<boolean> {
   return promptCatalog.commit({ action: 'save', scope: 'global', template })

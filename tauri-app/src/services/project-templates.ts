@@ -106,14 +106,3 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     },
   },
 ]
-
-/** 获取所有模板 */
-export function getTemplates(): ProjectTemplate[] {
-  return PROJECT_TEMPLATES
-}
-
-/** 获取模板的 NovelConfig */
-export function getTemplateConfig(templateId: string): Partial<NovelConfig> {
-  const template = PROJECT_TEMPLATES.find((t) => t.id === templateId)
-  return template?.config ?? {}
-}

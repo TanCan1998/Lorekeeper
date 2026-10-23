@@ -138,25 +138,3 @@ export const STYLE_PRESETS: StylePreset[] = [
     },
   },
 ]
-
-/** 获取所有预设 */
-export function getPresets(): StylePreset[] {
-  return STYLE_PRESETS
-}
-
-/** 应用预设到当前配置（只注入 globalGuidance，不覆盖其他元数据） */
-export function applyPreset(presetId: string, config: NovelConfig): NovelConfig {
-  const preset = STYLE_PRESETS.find((p) => p.id === presetId)
-  if (!preset) return config
-  return {
-    ...config,
-    globalGuidance: preset.overrides.globalGuidance ?? config.globalGuidance,
-  }
-}
-
-/** 获取预设覆盖的字段名 */
-export function getOverrideFields(presetId: string): string[] {
-  const preset = STYLE_PRESETS.find((p) => p.id === presetId)
-  if (!preset) return []
-  return Object.keys(preset.overrides)
-}
