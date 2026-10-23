@@ -5,7 +5,6 @@
  * 保留原有函数名和数据接口结构，以便减少对 UI 层 (DraftEditor) 的破坏性修改。
  */
 import { ipc } from './ipc-client'
-import { requireIpcSuccess } from './ipc-result'
 import type { DraftStatus } from '../shared/draft-status'
 
 // 导入后端的类型定义
@@ -88,44 +87,6 @@ async function getDraftId(chapterNumber: number, version: number, expectedProjec
   const drafts = await ipc.invoke('db:draft-list', chapterNumber, expectedProjectPath)
   const match = drafts.find((d: DB_DraftMeta) => d.version === version)
   return match?.id ?? null
-}
-
-// ==========================================
-// 草稿操作
-// ==========================================
-
-export async function updateDraftStatus(
-  chapterDir: string,
-  version: number,
-  status: DraftStatus,
-  expectedProjectPath: string,
-  wordCount?: number,
-): Promise<void> {
-  // 从 chapterDir 倒推 chapterNumber（假设格式为 .../chNNN）
-  const match = chapterDir.match(/ch(\d+)$/)
-  if (!match) return
-  const chapterNumber = parseInt(match[1])
-
-  const draftId = await getDraftId(chapterNumber, version, expectedProjectPath)
-  if (!draftId) return
-
-  requireIpcSuccess(
-    await ipc.invoke('db:draft-update-status', draftId, status, wordCount, expectedProjectPath),
-    '更新草稿状态',
-  )
-
-  if (status === 'finalized') {
-    // DB 并没有自动把其他草稿归档，这里我们可以手动查出其他同章并归档
-    const list = await ipc.invoke('db:draft-list', chapterNumber, expectedProjectPath)
-    for (const d of list as DB_DraftMeta[]) {
-      if (d.version !== version && (d.status === 'draft' || d.status === 'revised')) {
-        requireIpcSuccess(
-          await ipc.invoke('db:draft-update-status', d.id, 'archived', undefined, expectedProjectPath),
-          '归档旧草稿',
-        )
-      }
-    }
-  }
 }
 
 export async function getPendingRevisions(
