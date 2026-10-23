@@ -1,4 +1,4 @@
-# 上游 1.3.2 同步（2026-10-22）
+# 上游 1.3.2 同步（2026-10-23）
 
 ## 授权与范围
 
@@ -82,3 +82,16 @@
 - 未跑 Rust 测试、`cargo check --all-targets`（本轮无 Rust 语义变更）；最近 Rust 全量仍为发布源码 `058ec936` / CI 39555957392（1750 通过），**不移记为当前 SHA**。
 - 未重打包、未发布、未改 beta.2 的 Release/标签/附件；未执行 GUI、安装、注册、提权。
 - 未派发子代理；`tmp-check/` 保持不动。
+
+## 2026-10-23 后续：beta.2 原生拉起与关闭验收
+
+用户授权后按推荐执行。验收前系统已处于 beta.2 **MSI 安装态**：`D:\Program Files\LoreKeeper` 内 `lorekeeper.exe` 的 SHA256 `AA785FEB9F91E6F33D8C81B8E429E22F48B00AE9E935BA97FC6B29CCDBF35871` 与 beta.2 MSI 产物一致；Appx `com.tancan1998.lorekeeper 1.0.2.0` 已注册；公共桌面快捷方式指向 `lorekeeper-activate.exe` 且无参数；`identity\LoreKeeper.msix` 载荷存在。
+
+- **探针（不建窗口）**：`LOREKEEPER_PACKAGED_LAUNCH_PROBE=1` 直接运行安装目录 `lorekeeper.exe` → 退出码 **42**，2 秒后无残留进程。
+- **真实拉起**：直接运行 `lorekeeper.exe`（无包身份）。1 秒内出现 `lorekeeper` / `lorekeeper-activate` / `lorekeeper-identity-launcher` 三个进程，最初直接运行的那个 PID 已退出；WebView2 CDP 读到 `type=page title="Lorekeeper 设定司" url=http://tauri.localhost/`；Appx 版本前后一致。**门禁 → 激活器 → 以包身份重启主程序**这条链路成立。
+- **干净关闭复验**（不设 CDP 端口，只向主窗口句柄发 `WM_CLOSE`）：三个进程在 **1 秒内全部自行退出**，无残留。
+- 首轮验证时我先用 CDP `/json/close/{target}` 关闭页面，随后进程 35 秒未退出；上面的对照复验说明这是**验证手段干扰**（关闭 WebView2 page target 破坏了正常退出流程），不是产品缺陷。强制结束只用于清理那一次实例，不作为关闭行为证据。
+- 数据根无新写入：两次启动前后 `~/.lorekeeper` 最新仍为 `recent-projects.json @ 2026-10-23 02:17`，`~/.vela` 最新仍为 `config.json @ 2026-10-16 21:38`。
+- 身份启动器日志写在 `%TEMP%\LoreKeeper\identity-launcher.log`（`1241a1d6` 修复生效，未再落到安装目录）；日志尾部三条为 beta.1 时期历史记录（缺少管理员权限注册/注销）。
+- 验证期间未置顶、未发送键鼠、未切前台；窗口由应用自身启动，关闭只用 `WM_CLOSE`。
+- 仍未验收：多用户 UAC（需第二登录账号）、旧版本升级路径、卸载/重装、NSIS 包的原生安装与拉起、macOS 真机、真实模型/MCP/业务云。
