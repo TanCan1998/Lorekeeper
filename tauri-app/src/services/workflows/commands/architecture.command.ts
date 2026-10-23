@@ -1185,10 +1185,18 @@ export class GenerateCharactersCommand extends BaseWorkflowCommand<string> {
           : []),
         `attempts=${attempts}`,
       ].join(' ')
-      throw new Error(text(
-        `${detailExecution.failure.message}；角色详情失败收据：${failureReceipt}`,
-        `Character details failed structural validation and were not saved. Receipt: ${failureReceipt}`,
-      ))
+      // 有诊断码时说明模型输出不合契约（技术串只进收据）；没有诊断码时
+      // `failure.message` 本身就是给作者的字段级说明，必须保留。
+      throw new Error(diagnostic
+        ? text(
+          `角色详情不符合要求，未写入角色列表。可重试；技术诊断：${failureReceipt}`,
+          `Character details did not match the expected structure and were not saved. Retry; diagnostics: ${failureReceipt}`,
+        )
+        : text(
+          `角色详情未写入角色列表：${detailExecution.failure.message}；技术诊断：${failureReceipt}`,
+          // 英文界面不得嵌中文说明（既有测试断言无 CJK 字符），改用与诊断分支同构的通用句。
+          `Character details were not saved because the model output did not match the expected structure; diagnostics: ${failureReceipt}`,
+        ))
     }
     if (detailExecution.items.length !== manifest.length) {
       throw new Error(text(

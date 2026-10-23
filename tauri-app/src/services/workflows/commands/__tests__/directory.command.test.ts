@@ -1306,7 +1306,7 @@ describe('GenerateDirectoryCommand', () => {
     }).then(() => null, error => error as Error & { diagnostic?: unknown })
 
     expect(failure?.message).not.toMatch(/[\u3400-\u9fff]/u)
-    expect(failure?.message).toContain('Structured contract diagnostic')
+    expect(failure?.message).toContain('do not match the expected structure')
     expect(failure?.message).toContain('code=missing_field')
     expect(failure?.message).toContain('path=blueprints[0].relationships')
     expect(failure?.diagnostic).toMatchObject({ code: 'missing_field', path: 'blueprints[0].relationships' })

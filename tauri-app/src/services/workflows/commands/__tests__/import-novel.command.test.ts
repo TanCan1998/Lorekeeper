@@ -322,7 +322,7 @@ describe('InferBlueprintsPerChapterCommand', () => {
       context: createContext(),
       callbacks,
     })).rejects.toThrow(
-      'code=missing_field path=blueprints[0].relationships[0].relation field=relation',
+      'diagnosticCode=missing_field diagnosticPath=blueprints[0].relationships[0].relation diagnosticField=relation',
     )
 
     expect(generateStream).toHaveBeenCalledOnce()

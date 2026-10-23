@@ -737,10 +737,23 @@ export class InferBlueprintsPerChapterCommand extends BaseWorkflowCommand<void> 
       limits: { maxBatchItems: InferBlueprintsPerChapterCommand.MAX_ITEMS_PER_BATCH },
       signal: execution.signal,
     })
-    if (!batch.ok) throw new Error(text(
-      `蓝图推演失败：${batch.failure.message}`,
-      `Blueprint inference failed (${batch.failure.reason}).`,
-    ))
+    if (!batch.ok) {
+      // 作者改不了模型返回的 JSON：正文只给可读摘要，技术键值收在「技术诊断」里供复制。
+      const diagnostic = batch.failure.diagnostic
+      const receipt = `code=${batch.failure.code} reason=${batch.failure.reason ?? 'unknown'}`
+        + (diagnostic
+          ? ` diagnosticCode=${diagnostic.code} diagnosticPath=${diagnostic.path} diagnosticField=${diagnostic.field}`
+          : '')
+      throw new Error(diagnostic
+        ? text(
+          `模型返回的蓝图结构不合要求，已保留原有内容。可重试；技术诊断：${receipt}`,
+          `The model returned blueprints that do not match the expected structure; existing content was kept. Retry; diagnostics: ${receipt}`,
+        )
+        : text(
+          `蓝图推演失败：${batch.failure.message}；技术诊断：${receipt}`,
+          `Blueprint inference failed (${batch.failure.reason ?? 'unknown'}); diagnostics: ${receipt}`,
+        ))
+    }
 
     this.assertNotCancelled(context)
     const commitRequest: BlueprintRangeCommitRequest = {

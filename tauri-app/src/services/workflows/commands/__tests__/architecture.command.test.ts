@@ -2306,7 +2306,7 @@ describe('GenerateCharactersCommand structured roster seam', () => {
       novelConfig: { genre: '玄幻', totalChapters: 100, wordsPerChapter: 3000 } as never,
     })
     await expect(command.execute({ step: {}, context, callbacks }))
-      .rejects.toThrow('结构化输出无法按合同解码；角色详情失败收据：code=invalid_output reason=invalid_item')
+      .rejects.toThrow('角色详情未写入角色列表：结构化输出无法按合同解码；技术诊断：code=invalid_output reason=invalid_item')
 
     expect(generateStream).toHaveBeenCalledTimes(4)
     expect(generateStream.mock.calls[3]?.[0].find(message => message.role === 'user')?.content)

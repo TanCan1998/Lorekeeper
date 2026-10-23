@@ -112,11 +112,13 @@ export class DirectoryBlueprintContractError extends Error {
       && diagnostic.maxCharacters !== undefined
       ? ` actualCharacters=${diagnostic.actualCharacters} maxCharacters=${diagnostic.maxCharacters}`
       : ''
+    // 作者改不了模型返回的 JSON：正文给可读摘要，诊断键值收在「技术诊断」里供复制。
+    const receipt = `code=${diagnostic.code} path=${diagnostic.path} field=${diagnostic.field}${characterCounts}`
     super(
       uiLocale === 'en-US'
-        ? `Structured contract diagnostic code=${diagnostic.code} path=${diagnostic.path} field=${diagnostic.field}${characterCounts}`
+        ? `The model returned blueprints that do not match the expected structure; existing content was kept. Retry; diagnostics: ${receipt}`
           + (generationSummary ? `; ${generationSummary}` : '')
-        : `结构化合同诊断 code=${diagnostic.code} path=${diagnostic.path} field=${diagnostic.field}${characterCounts}`
+        : `模型返回的蓝图结构不合要求，已保留原有内容。可重试；技术诊断：${receipt}`
           + (generationSummary ? `；${generationSummary}` : ''),
     )
     this.name = 'DirectoryBlueprintContractError'
