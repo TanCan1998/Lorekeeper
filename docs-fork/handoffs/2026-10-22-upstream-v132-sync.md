@@ -60,6 +60,13 @@
 - `pnpm test` exit 0：**225 文件、2827 通过、1 跳过、0 失败**，与第 126 次记录一致。
 - 未跑 `test:browser`（上游新增 4 个 `*.browser.tsx`，普通 `vitest run` 不匹配其文件名）；本机缺 Playwright 自带浏览器，如需执行沿用本机 Edge 无头，不安装浏览器。
 
+## 远端 CI（推送 `d0c9b32b` 后）
+
+- Commit message CI [39979222625](https://github.com/TanCan1998/Lorekeeper/actions/runs/39979222625)：success。
+- Gitleaks [39979222600](https://github.com/TanCan1998/Lorekeeper/actions/runs/39979222600)：success。
+- Tauri Rust CI 未触发（本轮 `tauri-app/`、`src-tauri/` 无改动），符合预期，不据此登记 Rust 全量。
+- AtomGit 走平台 Pull，本机未推送镜像；未核验平台是否已拉取 `d0c9b32b`。
+
 ## 合并后遗留（另开切片，不阻塞本次合并）
 
 1. `ipc-channels.ts` 的 `httpFailure?`：Tauri 连接测试是否消费该字段，涉及 Rust 侧`llm_connection_test`返回值，需单独设计。
