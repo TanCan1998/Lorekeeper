@@ -1,6 +1,8 @@
 # 结构化合同诊断的显示面审计（2026-10-23）
 
-只读审计，未改动代码。目的是弄清 `StructuredContractDiagnostic` 从抛出到作者可见的完整路径，判断还有多少处会把 `code=… path=… field=…` 直接暴露。
+> **状态更新**：审计后已按建议改造 B1–B3（提交 `e3ead6b1`）：`DirectoryBlueprintContractError` 与 `import-novel.command`、`architecture.command` 的失败文案改为可读摘要，诊断键值收在「技术诊断」/收据里；英文侧不得嵌中文说明（既有测试有此断言）。本文件保留审计时的原始判定，供后续对照。
+
+只读审计当时的结论如下（未改动代码）。目的是弄清 `StructuredContractDiagnostic` 从抛出到作者可见的完整路径，判断还有多少处会把 `code=… path=… field=…` 直接暴露。
 
 ## 一、抛出点分布（非测试文件）
 
@@ -48,9 +50,12 @@
    - `services/workflows/commands/__tests__/directory.command.test.ts:1309`（断言 `failure.message` 含 `Structured contract diagnostic`，**改造 B1 时必须一起改**）
 4. 优先级：B2、B3 只动中文分支与英文保持对称，风险低；B1 需要连带调整 `DirectoryBlueprintContractError` 的 message 生成并保留 `diagnostic` 字段（上层仍可能要判类型）。
 
-## 五、附带发现（不在本审计范围）
+## 五、附带发现（已核查，结论：无生产调用面）
 
-- `services/workflows/character-card-normalizer.ts` 有 9 处 `throw new Error('中文…')`（如「角色卡包含重复角色名，未写入角色列表」）。这些不带诊断码，属**双语文案覆盖**问题而非诊断显示问题；是否显示给作者取决于上游包装，需另立切片确认。
+- `services/workflows/character-card-normalizer.ts` 有 9 处 `throw new Error('中文…')`（L302/344/350/356/364/374/395/463/471），分别位于 `assertModelCardsMatchSource`、`assertCompleteCharacterCards`、`extractCompleteCharacterCards`。
+- 这三个函数的唯一调用者是 `mergeExtractedCharacterCardsWithExisting`（L434，**无任何调用方**，连测试都没有）与 `extractCompleteCharacterCards`（L459，**只有测试在用**）。
+- 生产路径 `planning-material.command` → `normalizeCharacterCardsForPersistence` 只经 `normalizeRelationships` / `normalizeCharacterRelationshipEdges`，**不在那 9 处之内**，不会抛这些中文。
+- 结论：不构成作者可见的双语缺陷；登记为**死代码清理候选**（清理属删除代码，需单独授权），本轮不动。
 
 ## 六、未覆盖
 
