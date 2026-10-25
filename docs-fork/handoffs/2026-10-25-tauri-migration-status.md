@@ -70,6 +70,13 @@
 - **未回灌（后续切片）**：8 个文件——`ModelForm.tsx`（模型发现重构，需与 `ipc-channels` 的 discovery 契约和新增 `ModelNameField.tsx` 一起搬）、`chapter-workflow.ts`（按当前状态重算可重试步骤，需先给 `finalize-chapter.command` 加 `stepKeys` 参数）、以及 5 个依赖 `displayedErrorMessage` 的「显示时取语言」改造（`CharacterCardImportButton`、`use-draft-actions`、`use-run-recovery`、`use-blueprint-recovery`、`use-knowledge-base`）——Tauri 侧无该函数，需先定等价收敛方案。
 - **分支清理**：删除已合并的本地 `chore/merge-upstream-20261021`、`chore/merge-upstream-20261025` 与远端 `origin/chore/merge-upstream-20261025`；现在只剩 `master`。
 
+## 本次更新（第 142 次）：报错文案改在显示时取语言（A2）
+
+- **新增 Tauri 侧等价辅助**：`i18n/app-errors.ts` 补 `displayedErrorMessage(locale, error, fallback?)`、`englishWithReason(summary, reason)` 与 `DISPLAY_PREFIX`（去掉调用通道与 `Error:` 类名前缀）。语义与上游一致：登记过的码按语言说明，认不出的保留原文，完全空时用调用方兜底。
+- **5 个文件改为显示时取语言**：`CharacterCardImportButton`、`use-draft-actions`、`use-run-recovery`、`use-blueprint-recovery`、`use-knowledge-base`——把订阅来的 `locale` 换成 `useLocaleStore.getState().locale`，并从依赖数组移除，结果晚到时也能按切换后的语言显示。
+- **验证**：`typecheck` 0、`lint` 0、全量 vitest **227 文件 / 2863 通过 / 1 跳过 / 0 失败**。提交 `0c997e55`，无 Rust 与依赖变更（不触发 Rust CI）。
+- **A1 本轮回滚（结论记录）**：`chapter-workflow` 的「按当前状态重算可重试步骤」+ `finalize-chapter.command` 的 `stepKeys` 参数本身可编译，但上游把重试语义与 `RunFinalizePostProcessCommand` 的 `explicit` 映射重构、`#502/#512` 的提交期数据变化判定绑在一起；只搬一半会让 `repair-finalize-workflow`、`finalize-postprocess-character.integration` 两个契约测试（Tauri 副本为旧断言）失败。已整体回滚，登记为需要连同上游 finalize 重构一起搬的独立切片。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。

@@ -1,6 +1,12 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第141次）**：同步上游 2026-10-25 增量（151 提交 / 123 文件），并把其中 37 个文件的改动回灌到 Tauri 副本。
+- **最新维护（2026-10-25 第142次）**：A2 完成——报错文案改在显示时取界面语言；A1 评估后回滚（与上游 finalize 重构强耦合）。
+  - **新增辅助**：Tauri `i18n/app-errors.ts` 补 `displayedErrorMessage(locale, error, fallback?)`、`englishWithReason()`、`DISPLAY_PREFIX`，语义与上游一致（登记码按语言说明 → 认不出的保留原文 → 空时用兜底）。
+  - **5 个文件改造**：`CharacterCardImportButton`、`use-draft-actions`、`use-run-recovery`、`use-blueprint-recovery`、`use-knowledge-base` 改用 `useLocaleStore.getState().locale`，并从依赖数组移除，结果晚到时按当前语言显示。
+  - **验证**：`typecheck`/`lint` 0、全量 vitest **227 文件 / 2863 通过 / 1 跳过**；提交 `0c997e55`（无 Rust/依赖变更，不触发 Rust CI）。
+  - **A1 回滚结论**：`chapter-workflow` + `finalize-chapter.command` 的 `stepKeys` 可编译，但上游把重试语义与 `RunFinalizePostProcessCommand` 的 `explicit` 映射重构及 `#502/#512` 提交期判定绑在一起；半搬会让两个契约测试（Tauri 副本仍是旧断言）失败，已整体回滚，登记为独立切片。
+  - **仍待回灌（更新后 3 项）**：① 上面的 finalize 重试整链；② `ModelForm` 模型发现重构 + `ipc-channels` discovery 契约 + 新增 `ModelNameField.tsx`；③ `src/commands/generation.rs:66` 未使用导入。
+- **上轮（2026-10-25 第141次）**：同步上游 2026-10-25 增量（151 提交 / 123 文件），并把其中 37 个文件的改动回灌到 Tauri 副本。
   - **上游**：`305ee755` → `05f180f0`；主题为定稿后处理步骤错误码与重试边界、reasoning policy / provider presets、verify 快照稳健性。上游未动 `package.json` / `pnpm-lock.yaml` / `.npmrc` / `vite.config.ts`，**无需装包**。
   - **合并**：`chore/merge-upstream-20261025` 零冲突（本地根目录 17 个改动文件与上游 123 个文件交集 0），已快进到 `master`：**`23f6899e`**。根 `typecheck`/`lint`/`check:i18n` 均 0。
   - **回灌**：45 个非测试文件中 37 个已回灌（13 个逐字节相同直接套补丁，其余按上下文或「取上游版本 + 重贴 fork 差异」）＋7 个镜像测试。要点：`containsHan()` 统一汉字判断（14 个 agent 工具 + ShelfBook）、`pluralEn` 英文复数（10 处）、`provider-presets` 取上游版本（Gemini 3 预设/retiredModels/本地端点判定，数据根仍 `~/.lorekeeper`）、角色当前状态按字段三方合并、两个角色状态冲突码接上可读文案。
