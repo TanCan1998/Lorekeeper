@@ -505,7 +505,8 @@ export type ModelDiscoveryErrorCode =
   | 'unsupported'
   | 'network'
   | 'invalid_response'
-  | 'empty'
+  | 'no_models'
+  | 'no_suitable_models'
 
 export type ModelDiscoveryResult =
   | { success: true; models: DiscoveredModel[] }
@@ -514,7 +515,7 @@ export type ModelDiscoveryResult =
 /** Unsaved endpoint fields required to request a provider's model list. */
 export type ModelDiscoveryRequest = Pick<
   ModelProfile,
-  'provider' | 'protocol' | 'baseUrl' | 'apiKey'
+  'provider' | 'protocol' | 'baseUrl' | 'apiKey' | 'purposes'
 >
 
 export interface LLMChannels {

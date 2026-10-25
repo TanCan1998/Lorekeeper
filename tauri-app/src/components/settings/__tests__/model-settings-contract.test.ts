@@ -8,7 +8,8 @@ function source(file: string): string {
 
 describe('model settings contract', () => {
   it('keeps the user-facing field vocabulary and provider options in the model form', () => {
-    const settingsModal = source('src/components/settings/ModelForm.tsx')
+    // 模型名输入与候选列表拆到 ModelNameField，字段词汇要连同它一起核对。
+    const settingsModal = source('src/components/settings/ModelForm.tsx') + source('src/components/settings/ModelNameField.tsx')
 
     for (const field of [
       ['model（模型名称）', 'model'],
@@ -21,7 +22,7 @@ describe('model settings contract', () => {
 
     expect(settingsModal).toContain("text('高级设置', 'Advanced settings')")
     expect(settingsModal).toContain("text('温度', 'Temperature')")
-    expect(settingsModal).toContain("text('最大输出 Token', 'Max output tokens')")
+    expect(settingsModal).toContain("text('最大输出 Tokens', 'Max output tokens')")
     expect(settingsModal).toContain("text('恢复默认值', 'Restore defaults')")
 
     for (const provider of ['xai', 'siliconflow']) {

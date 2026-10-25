@@ -26,6 +26,7 @@
 //! | 3 | `URL.toString()` | [`url::Url::to_string()`]（URL 规范化实现不同，端点语义一致） |
 //! | 4 | 代理经 `process.env.HTTP_PROXY` 隐式生效 | 显式 `reqwest::Proxy`（见 [`build_discovery_client`]） |
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::ser::SerializeMap;
@@ -67,8 +68,10 @@ pub enum ModelDiscoveryErrorCode {
     Network,
     /// 载荷形状不符（含未通过安全清洗）。
     InvalidResponse,
-    /// 载荷合法但模型列表为空。
-    Empty,
+    /// 端点一个模型都没列出。
+    NoModels,
+    /// 端点列出了模型，但没有适合当前用途的（例如检索模型列表里全是对话模型）。
+    NoSuitableModels,
 }
 
 impl ModelDiscoveryErrorCode {
@@ -79,7 +82,8 @@ impl ModelDiscoveryErrorCode {
             ModelDiscoveryErrorCode::Unsupported => "unsupported",
             ModelDiscoveryErrorCode::Network => "network",
             ModelDiscoveryErrorCode::InvalidResponse => "invalid_response",
-            ModelDiscoveryErrorCode::Empty => "empty",
+            ModelDiscoveryErrorCode::NoModels => "no_models",
+            ModelDiscoveryErrorCode::NoSuitableModels => "no_suitable_models",
         }
     }
 }
@@ -294,8 +298,83 @@ pub fn parse_openai_models(payload: &Value, credential: &str) -> Option<Vec<Disc
     Some(models)
 }
 
-/// 对齐 `parseGeminiModels()`：`{ models: [...] }`；`value` 去掉 `models/` 前缀。
-pub fn parse_gemini_models(payload: &Value, credential: &str) -> Option<Vec<DiscoveredModel>> {
+/// 发现用途：决定哪些模型算「适合」当前用途。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryPurpose {
+    Generation,
+    Embedding,
+}
+
+impl DiscoveryPurpose {
+    /// 从契约的 `purposes` 数组判断：含 `embedding` 就按检索模型筛。
+    pub fn from_request(model: &Value) -> Self {
+        let embedding = model
+            .get("purposes")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("embedding")));
+        if embedding {
+            DiscoveryPurpose::Embedding
+        } else {
+            DiscoveryPurpose::Generation
+        }
+    }
+}
+
+/// TTS、图像（Nano Banana）、转写、音乐（Lyria）、音频，以及电脑操作、深度研究、Antigravity、机器人这类代理模型，
+/// 在 Gemini 的 models 接口里同样声明 generateContent，只能按命名区分；它们不是用来写正文的。
+fn gemini_non_writing_model(value: &str) -> bool {
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        regex::RegexBuilder::new(
+            r"(?:^|[-_.])(?:tts|image|live|transcribe|audio|lyria|nano-banana|computer-use|deep-research|antigravity|robotics)(?:$|[-_.])",
+        )
+        .case_insensitive(true)
+        .build()
+        .expect("静态正则合法")
+    });
+    pattern.is_match(value)
+}
+
+/// Gemini 条目是否服务当前用途：方法列表不符就排除；写正文时再按命名排除非写作模型。
+/// 自建网关可能不返回方法字段，这时无法判断用途，保留给作者自己选。
+fn gemini_model_serves_purpose(item: &Value, value: &str, purpose: DiscoveryPurpose) -> bool {
+    let wanted = match purpose {
+        DiscoveryPurpose::Embedding => "embedContent",
+        DiscoveryPurpose::Generation => "generateContent",
+    };
+    if let Some(methods) = item
+        .get("supportedGenerationMethods")
+        .and_then(Value::as_array)
+    {
+        if !methods.iter().any(|method| method.as_str() == Some(wanted)) {
+            return false;
+        }
+    }
+    match purpose {
+        DiscoveryPurpose::Embedding => true,
+        DiscoveryPurpose::Generation => !gemini_non_writing_model(value),
+    }
+}
+
+/// OpenAI 兼容接口不说明模型用途，只能按名字认出向量模型。
+fn openai_embedding_model(value: &str) -> bool {
+    static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
+    let pattern = PATTERN.get_or_init(|| {
+        regex::RegexBuilder::new("embed|bge")
+            .case_insensitive(true)
+            .build()
+            .expect("静态正则合法")
+    });
+    pattern.is_match(value)
+}
+
+/// 对齐 `parseGeminiModels()`：返回（适合该用途的模型, 端点列出的模型数）。
+/// 列出总数用来区分「端点没有模型」与「没有适合当前用途的模型」。
+pub fn parse_gemini_models_for(
+    payload: &Value,
+    credential: &str,
+    purpose: DiscoveryPurpose,
+) -> Option<(Vec<DiscoveredModel>, usize)> {
     let entries = payload.get("models")?.as_array()?;
     if entries.len() > MAX_DISCOVERED_MODEL_ENTRIES {
         return None;
@@ -323,9 +402,17 @@ pub fn parse_gemini_models(payload: &Value, credential: &str) -> Option<Vec<Disc
             continue;
         }
         seen.push(value.clone());
-        models.push(DiscoveredModel { id, name, value });
+        if gemini_model_serves_purpose(item, &value, purpose) {
+            models.push(DiscoveredModel { id, name, value });
+        }
     }
-    Some(models)
+    Some((models, seen.len()))
+}
+
+/// 兼容入口：只关心写正文的模型列表，丢掉列出总数。
+pub fn parse_gemini_models(payload: &Value, credential: &str) -> Option<Vec<DiscoveredModel>> {
+    parse_gemini_models_for(payload, credential, DiscoveryPurpose::Generation)
+        .map(|(models, _listed)| models)
 }
 
 // ===== 传输层与解释 =====
@@ -362,6 +449,21 @@ pub fn interpret_discovery_response(
     credential: &str,
     transport: DiscoveryTransport,
 ) -> ModelDiscoveryResult {
+    interpret_discovery_response_for(
+        protocol,
+        credential,
+        DiscoveryPurpose::Generation,
+        transport,
+    )
+}
+
+/// 同 [`interpret_discovery_response`]，按用途判定「没有模型」与「没有适合的模型」。
+pub fn interpret_discovery_response_for(
+    protocol: &str,
+    credential: &str,
+    purpose: DiscoveryPurpose,
+    transport: DiscoveryTransport,
+) -> ModelDiscoveryResult {
     match transport {
         DiscoveryTransport::Rejected => {
             ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::Network)
@@ -378,15 +480,30 @@ pub fn interpret_discovery_response(
                     ModelDiscoveryErrorCode::InvalidResponse
                 });
             };
-            let parsed = if protocol == "gemini" {
-                parse_gemini_models(&payload, credential)
-            } else {
-                parse_openai_models(&payload, credential)
-            };
-            match parsed {
+            if protocol == "gemini" {
+                return match parse_gemini_models_for(&payload, credential, purpose) {
+                    None => ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::InvalidResponse),
+                    Some((_models, 0)) => {
+                        ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::NoModels)
+                    }
+                    Some((models, _listed)) if models.is_empty() => {
+                        ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::NoSuitableModels)
+                    }
+                    Some((models, _listed)) => ModelDiscoveryResult::Found(models),
+                };
+            }
+            match parse_openai_models(&payload, credential) {
                 None => ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::InvalidResponse),
                 Some(models) if models.is_empty() => {
-                    ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::Empty)
+                    ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::NoModels)
+                }
+                // 兼容接口不说明用途：检索模型排前面，其余保持端点顺序，作者仍能选到别的。
+                Some(models) if purpose == DiscoveryPurpose::Embedding => {
+                    let (mut fits, rest): (Vec<_>, Vec<_>) = models
+                        .into_iter()
+                        .partition(|candidate| openai_embedding_model(&candidate.value));
+                    fits.extend(rest);
+                    ModelDiscoveryResult::Found(fits)
                 }
                 Some(models) => ModelDiscoveryResult::Found(models),
             }
@@ -521,7 +638,12 @@ pub async fn discover_models(client: &reqwest::Client, model: &Value) -> ModelDi
         &prepared.api_key,
     )
     .await;
-    interpret_discovery_response(&prepared.protocol, &prepared.api_key, transport)
+    interpret_discovery_response_for(
+        &prepared.protocol,
+        &prepared.api_key,
+        DiscoveryPurpose::from_request(model),
+        transport,
+    )
 }
 
 #[cfg(test)]
@@ -791,7 +913,7 @@ mod tests {
                 }
             )
             .error_code(),
-            Some(ModelDiscoveryErrorCode::Empty)
+            Some(ModelDiscoveryErrorCode::NoModels)
         );
         assert_eq!(
             interpret_discovery_response(
@@ -823,12 +945,94 @@ mod tests {
             "成功分支不得出现 errorCode"
         );
 
-        let failure =
-            serde_json::to_value(ModelDiscoveryResult::Failed(ModelDiscoveryErrorCode::Empty))
-                .unwrap();
+        let failure = serde_json::to_value(ModelDiscoveryResult::Failed(
+            ModelDiscoveryErrorCode::NoModels,
+        ))
+        .unwrap();
         assert_eq!(failure["success"], json!(false));
-        assert_eq!(failure["errorCode"], json!("empty"));
+        assert_eq!(failure["errorCode"], json!("no_models"));
+        assert_eq!(
+            ModelDiscoveryErrorCode::NoSuitableModels.as_str(),
+            "no_suitable_models",
+            "两种「空」必须给作者不同的处置建议"
+        );
         assert!(failure.get("models").is_none(), "失败分支不得出现 models");
+    }
+
+    #[test]
+    fn gemini_models_distinguish_no_models_from_no_suitable_models_test() {
+        let empty = interpret_discovery_response_for(
+            "gemini",
+            "sk",
+            DiscoveryPurpose::Generation,
+            DiscoveryTransport::Payload {
+                json: Some(json!({ "models": [] })),
+                timed_out: false,
+            },
+        );
+        assert_eq!(empty.error_code(), Some(ModelDiscoveryErrorCode::NoModels));
+
+        // 只列出图像与语音模型：端点有模型，但没有能写正文的。
+        let unsuitable = interpret_discovery_response_for(
+            "gemini",
+            "sk",
+            DiscoveryPurpose::Generation,
+            DiscoveryTransport::Payload {
+                json: Some(json!({ "models": [
+                    { "name": "models/gemini-2.5-flash-image", "supportedGenerationMethods": ["generateContent"] },
+                    { "name": "models/gemini-2.5-flash-preview-tts", "supportedGenerationMethods": ["generateContent"] }
+                ] })),
+                timed_out: false,
+            },
+        );
+        assert_eq!(
+            unsuitable.error_code(),
+            Some(ModelDiscoveryErrorCode::NoSuitableModels)
+        );
+
+        // 同一个端点按检索模型查询时，这两个模型都不声明 embedContent。
+        let embedding = interpret_discovery_response_for(
+            "gemini",
+            "sk",
+            DiscoveryPurpose::Embedding,
+            DiscoveryTransport::Payload {
+                json: Some(json!({ "models": [
+                    { "name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"] },
+                    { "name": "models/gemini-embedding-001", "supportedGenerationMethods": ["embedContent"] }
+                ] })),
+                timed_out: false,
+            },
+        );
+        let models = embedding.models().expect("应有检索模型");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].value, "gemini-embedding-001");
+    }
+
+    #[test]
+    fn openai_embedding_discovery_puts_embedding_models_first_test() {
+        let result = interpret_discovery_response_for(
+            "openai",
+            "sk",
+            DiscoveryPurpose::Embedding,
+            DiscoveryTransport::Payload {
+                json: Some(json!({ "data": [
+                    { "id": "gpt-4o" },
+                    { "id": "text-embedding-3-small" },
+                    { "id": "bge-large-zh" }
+                ] })),
+                timed_out: false,
+            },
+        );
+        let values: Vec<&str> = result
+            .models()
+            .expect("应有模型")
+            .iter()
+            .map(|m| m.value.as_str())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["text-embedding-3-small", "bge-large-zh", "gpt-4o"]
+        );
     }
 
     #[test]

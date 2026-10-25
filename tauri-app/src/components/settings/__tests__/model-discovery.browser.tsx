@@ -509,12 +509,12 @@ describe('model discovery settings flow', () => {
       expected: 'The endpoint returned an invalid model list. Continue with a manual model ID.',
     },
     {
-      errorCode: 'empty' as const,
+      errorCode: 'no_models' as const,
       locale: 'zh-CN' as const,
       expected: '端点返回了空模型列表。请继续手工填写模型 ID。',
     },
     {
-      errorCode: 'empty' as const,
+      errorCode: 'no_models' as const,
       locale: 'en-US' as const,
       expected: 'The endpoint returned an empty model list. Continue with a manual model ID.',
     },
