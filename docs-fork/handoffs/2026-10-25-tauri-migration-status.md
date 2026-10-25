@@ -59,6 +59,17 @@
 - **启动与关闭**：经桌面快捷方式拉起，三进程链正常，窗口标题 `LoreKeeper`，CDP `Lorekeeper 设定司` / `http://tauri.localhost/`；`WM_CLOSE` 2.04s 内全部退出；数据根无新写入；未置顶、未激活、未用键鼠。
 - **提醒**：开发树 `wix.version` 现为 1.0.4.0，下次发布须继续递增。
 
+## 本次更新（第 141 次）：上游 2026-10-25 同步并回灌 Tauri 副本
+
+- **上游**：`305ee755` → `05f180f0`（151 提交 / 123 文件 / +6659 −1350，PR #507/#509/#510/#511/#514 等），主题是定稿后处理步骤错误码与重试边界、reasoning policy / provider presets、verify 快照稳健性。
+- **合并**：分支 `chore/merge-upstream-20261025`，合并零冲突（本地根目录改动 17 个文件与上游 123 个文件交集 0）；`package.json` / `pnpm-lock.yaml` / `.npmrc` / `vite.config.ts` 上游均未改，**无需装包**。已快进合入 `master` 并推送，最终 `23f6899e`。
+- **根验证**：`typecheck` 0、`lint` 0、`check:i18n` 0。
+- **Tauri 回灌**：45 个非测试文件中 **37 个已回灌**（13 个逐字节相同直接套补丁，其余按 hunk 上下文与「取上游版本 + 重贴 fork 差异」处理），另套用 7 个镜像测试。要点：新增 `containsHan()` 统一汉字判断（替换 14 个 agent 工具的裸正则与 ShelfBook 的 CJK 常量）、`pluralEn` 处理英文复数（10 处）、`provider-presets` 取上游版本（Gemini 3 系列预设、retiredModels、本地端点判定）并把数据根改回 `~/.lorekeeper`、角色当前状态按字段三方合并（`character-rename-ledger`）、两个新的角色状态冲突码接上可读文案。
+- **Tauri 验证**：`typecheck` 0、`lint` 0、`check:channels` 288/7/未迁移 0、`test:contract` 56 通过、全量 vitest **227 文件 / 2863 通过 / 1 跳过 / 0 失败**（合并前 2833，净增 30）。
+- **云端**：分支 `23f6899e` Rust CI [40169235788](https://github.com/TanCan1998/Lorekeeper/actions/runs/40169235788) **1752 通过 0 失败** + all-targets success；Tauri contract tests、Gitleaks 亦 success。
+- **未回灌（后续切片）**：8 个文件——`ModelForm.tsx`（模型发现重构，需与 `ipc-channels` 的 discovery 契约和新增 `ModelNameField.tsx` 一起搬）、`chapter-workflow.ts`（按当前状态重算可重试步骤，需先给 `finalize-chapter.command` 加 `stepKeys` 参数）、以及 5 个依赖 `displayedErrorMessage` 的「显示时取语言」改造（`CharacterCardImportButton`、`use-draft-actions`、`use-run-recovery`、`use-blueprint-recovery`、`use-knowledge-base`）——Tauri 侧无该函数，需先定等价收敛方案。
+- **分支清理**：删除已合并的本地 `chore/merge-upstream-20261021`、`chore/merge-upstream-20261025` 与远端 `origin/chore/merge-upstream-20261025`；现在只剩 `master`。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。

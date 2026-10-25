@@ -1,6 +1,14 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第140次）**：把 wix 版本升到 **1.0.4.0** 重打包并覆盖安装，确认小尺寸图标在真实安装态生效。
+- **最新维护（2026-10-25 第141次）**：同步上游 2026-10-25 增量（151 提交 / 123 文件），并把其中 37 个文件的改动回灌到 Tauri 副本。
+  - **上游**：`305ee755` → `05f180f0`；主题为定稿后处理步骤错误码与重试边界、reasoning policy / provider presets、verify 快照稳健性。上游未动 `package.json` / `pnpm-lock.yaml` / `.npmrc` / `vite.config.ts`，**无需装包**。
+  - **合并**：`chore/merge-upstream-20261025` 零冲突（本地根目录 17 个改动文件与上游 123 个文件交集 0），已快进到 `master`：**`23f6899e`**。根 `typecheck`/`lint`/`check:i18n` 均 0。
+  - **回灌**：45 个非测试文件中 37 个已回灌（13 个逐字节相同直接套补丁，其余按上下文或「取上游版本 + 重贴 fork 差异」）＋7 个镜像测试。要点：`containsHan()` 统一汉字判断（14 个 agent 工具 + ShelfBook）、`pluralEn` 英文复数（10 处）、`provider-presets` 取上游版本（Gemini 3 预设/retiredModels/本地端点判定，数据根仍 `~/.lorekeeper`）、角色当前状态按字段三方合并、两个角色状态冲突码接上可读文案。
+  - **Tauri 验证**：`typecheck`/`lint` 0、`check:channels` 288/7/未迁移 0、`test:contract` 56、全量 vitest **227 文件 / 2863 通过 / 1 跳过**（合并前 2833，净增 30）。
+  - **云端**：`23f6899e` 上 Rust CI [40169235788](https://github.com/TanCan1998/Lorekeeper/actions/runs/40169235788) **1752 通过 0 失败** + all-targets；contract tests、Gitleaks success。
+  - **未回灌（8 个文件，后续切片）**：`ModelForm.tsx` + `ipc-channels` 的 discovery 契约 + 新增 `ModelNameField.tsx`；`chapter-workflow.ts`（需先给 `finalize-chapter.command` 加 `stepKeys`）；5 个依赖 `displayedErrorMessage` 的「显示时取语言」改造（`CharacterCardImportButton`、`use-draft-actions`、`use-run-recovery`、`use-blueprint-recovery`、`use-knowledge-base`）。
+  - **分支**：已删除合并完的 `chore/merge-upstream-20261021`、`chore/merge-upstream-20261025`（本地与远端），仓库只剩 `master`。
+- **上轮（2026-10-25 第140次）**：把 wix 版本升到 **1.0.4.0** 重打包并覆盖安装，确认小尺寸图标在真实安装态生效。
   - **安装**：`msiexec /i … /qn` 退出码 **0**；ARP 单条 **v1.0.4.0**（`{163F9777-…}`，旧 1.0.3.0 已被升级移除）；Appx 重注册 1.0.4.0；桌面/开始菜单快捷方式仍为 `lorekeeper-activate.exe` 无参数。
   - **图标**：安装后 exe 的 32px 图标与新 `icon.ico` 32px 简化帧**逐像素一致（0.0）**，与上一版整图缩放帧差 23.6 → 简化帧已在安装态生效。
   - **启动**：桌面快捷方式拉起三进程链、标题 `LoreKeeper`、CDP `Lorekeeper 设定司` / `http://tauri.localhost/`；`WM_CLOSE` 2.04s 内全退；数据根无新写入；未置顶/未激活/未用键鼠。
