@@ -5,6 +5,7 @@
   - **覆盖安装**：`msiexec /i … /qn` 退出码 **0**；旧 1.0.2.0 条目被升级移除，ARP 只剩单条 **v1.0.3.0**（ProductCode `{88025DBA-…}`）；Appx 重注册为 **1.0.3.0**；桌面与开始菜单快捷方式均指向 `lorekeeper-activate.exe` 且无参数，图标取自 MSI `ProductIcon`。
   - **图标核验**：安装后 `lorekeeper.exe` 的 32px 图标与新 `icons/icon.ico` 逐像素一致（差异 0.0），与旧 PageKin 图标差异 132.27 → 打包链用的是新星芒图标。**发现的真问题**：16/24/32px 帧是整图等比缩小，低分辨率下「司」与星芒糊成文档状，需小尺寸专用简化稿（未做，待定）。
   - **后台启动**：经真实桌面快捷方式拉起 → `lorekeeper` + `lorekeeper-activate` + `lorekeeper-identity-launcher`，窗口标题 `LoreKeeper`，CDP 探到 `Lorekeeper 设定司` / `http://tauri.localhost/`；仅发 `WM_CLOSE` 后 2.04s 内三进程全部退出；`~/.lorekeeper`（10-23）与 `~/.vela`（10-16）均无新写入；未置顶、未激活、未用键鼠。
+  - **云端全量（新基线）**：`9eb064a8` 上 Tauri Rust CI [40160190800](https://github.com/TanCan1998/Lorekeeper/actions/runs/40160190800) **1752 通过 0 失败** + all-targets 通过；同 SHA 的 contract tests、Commit message CI、Gitleaks 均 success。Rust 基线由 `6ba2bc8d` 更新为 `9eb064a8`。
   - **未做**：卸载/重装、NSIS 原生安装、多用户 UAC、旧版升级、macOS 真机；未发布，beta.2 的 Release/标签/附件未动。证据：`.pi/tmp/repack-2026-10-25/evidence.json`（不入库）。
 - **上轮（2026-10-25 第137次）**：把安装器/发布契约测试接上自动入口，并清掉交接口径里已被推翻的过时条目。把安装器/发布契约测试接上自动入口，并清掉交接口径里已被推翻的过时条目。
   - **契约测试入口**：新增 `test:contract`（`tauri-app/package.json`），一次跑完 installer-contract / release-helpers / windows-identity / artifact-retention / atomgit-release 五个 `node --test` 脚本；新增 `.github/workflows/tauri-contract-ci.yml`（fork 独有、Node-only、windows-2022，路径过滤 `tauri-app/scripts/**`、`src-tauri/installer/**`、`tauri.conf.json`、`package.json`）。此前这批测试只写在 [发布说明](../agents/tauri-release.md) 里，靠人手逐条敲。
@@ -26,7 +27,7 @@
 
 - **最近发布**：[2026-10-21 上游合并与 beta.2 发布](./2026-10-21-upstream-merge-and-release.md#2026-10-21-后续beta2-发布)。用户最终确认保留 beta.1，只新发 `1.0.0-beta.2`（普通 Release + Latest、三平台四包、双源），不删除或覆盖旧版。**GitHub 已发布**：源码 `058ec936`，Rust CI `39555957392` 全量 **1750 通过**及 all-targets 通过，打包发布 `39556656055` success；Release ID `419244854`、九附件、Latest 与标签 SHA 已核验。AtomGit 已平台拉取同一标签/源码并独立上传九附件、匿名读回大小/SHA256；beta.1 保留。beta.2 实际重启链路与数据根只读已验收；多用户 UAC、macOS 真机与真实业务仍未认证。
 
-- **当前基线**：`tauri-app` typecheck/lint 0、`check:channels` 288/7/未迁移 0、`test:contract` 51 通过；全量 vitest **227 文件 / 2833 通过 / 1 跳过 / 0 失败**（2026-10-23 实测，其后仅图标与 shared 改动，未重跑全量）；根 typecheck/lint/`check:i18n` 0，根 vitest 6173 通过 + 17 条环境类失败（symlink 权限、并发超时、macOS 夹具缺失、fork README 与 `AGENTS.md` 既存断言，已逐条归因）；Rust 全量以 `6ba2bc8d` 的 1752 通过为基线。
+- **当前基线**：`tauri-app` typecheck/lint 0、`check:channels` 288/7/未迁移 0、`test:contract` 51 通过；全量 vitest **227 文件 / 2833 通过 / 1 跳过 / 0 失败**（2026-10-23 实测，其后仅图标与 shared 改动，未重跑全量）；根 typecheck/lint/`check:i18n` 0，根 vitest 6173 通过 + 17 条环境类失败（symlink 权限、并发超时、macOS 夹具缺失、fork README 与 `AGENTS.md` 既存断言，已逐条归因）；Rust 全量基线 **`9eb064a8` / CI 40160190800：1752 通过 0 失败 + all-targets**（2026-10-25，切片累计清零）。
 
 - **未解除阻塞**：
   - **需真机/后续包**：卸载与重装验收、NSIS 原生安装包验收、macOS 真机；小尺寸（16–32px）图标辨识度需专用简化稿（当前是整图缩放）。

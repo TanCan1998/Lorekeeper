@@ -36,6 +36,7 @@
 - **覆盖安装**：`msiexec /i … /qn /norestart` 退出码 0；ARP 由 1.0.2.0（`{0D60D879-…}`）升级为单条 1.0.3.0（`{88025DBA-…}`），未出现并存安装；Appx 重注册 1.0.3.0；桌面与开始菜单快捷方式目标均为 `D:\Program Files\LoreKeeper\lorekeeper-activate.exe` 且无参数。
 - **图标**：MSI 的 `ProductIcon` 与 exe 资源均为新星芒；安装后 exe 的 32px 图标与 `icons/icon.ico` 32px 帧逐像素一致（差异 0.0），与旧 PageKin 图标差异 132.27。**遗留设计问题**：16/24/32px 帧由整图缩放生成，「司」与星芒在极小尺寸糊成文档状，建议后续做小尺寸专用简化稿。
 - **启动与关闭**：真实桌面快捷方式启动 → 三进程链正常，窗口标题 `LoreKeeper`，CDP `Lorekeeper 设定司` / `http://tauri.localhost/`；`WM_CLOSE` 后 2.04s 内全部退出；数据根无新写入；全程未置顶、未激活、未用键鼠。
+- **云端全量（新基线）**：提交 `9eb064a8` 上 Tauri Rust CI [40160190800](https://github.com/TanCan1998/Lorekeeper/actions/runs/40160190800) **1752 通过 0 失败**（260.83s）+ all-targets 通过；同 SHA 的 Tauri contract tests、Commit message CI、Gitleaks 均 success。Rust 全量基线由 `6ba2bc8d` 更新为 **`9eb064a8`**，切片累计清零。
 - **未做**：卸载/重装、NSIS 原生安装、多用户 UAC、旧版升级、macOS 真机；未发布。
 - 证据：`.pi/tmp/repack-2026-10-25/{evidence.json,build.log,build.err.log,install.log,exe-icon.png,installed-exe-icon.png}`（不入库）。
 
