@@ -25,12 +25,12 @@ if (asEntryPoint) try { assertNodeRunsTypeScript(process.version, process.featur
 }
 const [
   { ARCH_SCENARIOS }, { RUN_SCENARIOS }, { BLUEPRINT_SCENARIOS }, { CHAPTER_SCENARIOS }, { REFS_SCENARIOS },
-  { VISUAL_SCENARIOS }, { X1_SCENARIOS }, { X2_SCENARIOS }, { RDX3_SCENARIOS }, { RD10_SCENARIOS }, { README_SCENARIOS }, { CONTRAST_SCENARIOS },
+  { VISUAL_SCENARIOS }, { X1_SCENARIOS }, { X2_SCENARIOS }, { RDX3_SCENARIOS }, { RD10_SCENARIOS }, { README_SCENARIOS }, { CONTRAST_SCENARIOS }, { F491_SCENARIOS }, { F484_SCENARIOS }, { ST504_SCENARIOS }, { F512_SCENARIOS },
   { BASELINE_SESSIONS, EXTRA_SCENARIOS, SCENARIOS: BASELINE_SCENARIOS, STAGE_SCENARIOS },
 ] = await Promise.all([
   import('./arch-scenarios.mjs'), import('./run-scenarios.mjs'), import('./blueprint-scenarios.mjs'), import('./chapter-scenarios.mjs'),
   import('./refs-scenarios.mjs'), import('./visual-scenarios.mjs'), import('./x1-scenarios.mjs'), import('./x2-scenarios.mjs'),
-  import('./rdx3-scenarios.mjs'), import('./rd10-scenarios.mjs'), import('./readme-scenarios.mjs'), import('./contrast-scenarios.mjs'), import('./scenarios.mjs'),
+  import('./rdx3-scenarios.mjs'), import('./rd10-scenarios.mjs'), import('./readme-scenarios.mjs'), import('./contrast-scenarios.mjs'), import('./f491-scenarios.mjs'), import('./f484-scenarios.mjs'), import('./st504-scenarios.mjs'), import('./f512-scenarios.mjs'), import('./scenarios.mjs'),
 ])
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -40,7 +40,7 @@ const VIEWPORT = { width: 1440, height: 900 }
 const THEMES = ['light', 'dark']
 const SHELLS = ['writer', 'stage']
 const ROOT_NAMES = ['legacy', 'canonical', 'userData', 'home', 'appData', 'localAppData', 'temp', 'projects']
-const SCENARIOS = { ...BASELINE_SCENARIOS, ...EXTRA_SCENARIOS, ...STAGE_SCENARIOS, ...RUN_SCENARIOS, ...ARCH_SCENARIOS, ...BLUEPRINT_SCENARIOS, ...CHAPTER_SCENARIOS, ...REFS_SCENARIOS, ...VISUAL_SCENARIOS, ...X1_SCENARIOS, ...X2_SCENARIOS, ...RDX3_SCENARIOS, ...RD10_SCENARIOS, ...README_SCENARIOS, ...CONTRAST_SCENARIOS }
+const SCENARIOS = { ...BASELINE_SCENARIOS, ...EXTRA_SCENARIOS, ...STAGE_SCENARIOS, ...RUN_SCENARIOS, ...ARCH_SCENARIOS, ...BLUEPRINT_SCENARIOS, ...CHAPTER_SCENARIOS, ...REFS_SCENARIOS, ...VISUAL_SCENARIOS, ...X1_SCENARIOS, ...X2_SCENARIOS, ...RDX3_SCENARIOS, ...RD10_SCENARIOS, ...README_SCENARIOS, ...CONTRAST_SCENARIOS, ...F491_SCENARIOS, ...F484_SCENARIOS, ...ST504_SCENARIOS, ...F512_SCENARIOS }
 /** 计时会话：先在同一隔离目录预启动一次写好外观（书房计时另建 20 部作品），再计之后那次冷启动。 */
 const TIMED_SESSIONS = new Set(['startup-timing', 'library-timing'])
 /** 空闲内存：与启动计时同样先预启动一次，第二次冷启动到可交互后静置，再按间隔采样全部进程的内存。 */
@@ -103,34 +103,50 @@ function scratchParent() {
   return path.join(base, 'VibeCodingScratch', 'an', 'drive')
 }
 
-/** 用户真实配置目录。运行前后比较最新修改时间，证明隔离目录之外没有写入。 */
+/** 用户真实配置目录。运行前后逐个比较其中的条目，证明隔离目录之外没有写入。 */
 function realProfileDirectories() {
   const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming')
   return [path.join(os.homedir(), '.vela'), path.join(appData, 'ai-novel-writer'), path.join(appData, 'AI小说作家')]
 }
 
-function newestWrite(directory, budget = { entries: 50_000 }) {
-  let newest = 0
+/** 本机开着的书童约每 5 分钟刷新一次这几个 Chromium 缓存里文件的修改时间，所以它们的变化不能说明隔离失效，只列进 externalWritesIgnored。 */
+const RUNNING_INSTANCE_CACHES = new Set(['GPUCache', 'DawnWebGPUCache', 'DawnGraphiteCache'])
+
+/** 路径到「大小:修改时间」，目录只记存在，不存在的路径不记。超过 limit 个条目时报错：截断的快照会漏掉写入。 */
+function profileEntries(target, entries, limit) {
   let stat
-  try { stat = fs.lstatSync(directory) } catch { return null }
-  newest = stat.mtimeMs
-  if (!stat.isDirectory()) return newest
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (--budget.entries < 0) break
-    const child = path.join(directory, entry.name)
-    const value = entry.isDirectory() ? newestWrite(child, budget) : fs.lstatSync(child).mtimeMs
-    if (value !== null && value > newest) newest = value
+  try { stat = fs.lstatSync(target) } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return entries
+    throw error
   }
-  return newest
+  if (entries.size >= limit) throw new Error(`真实配置目录的条目超过 ${limit} 个，外部写入没法完整比较（停在 ${target}）`)
+  if (!stat.isDirectory()) return entries.set(target, `${stat.size}:${stat.mtimeMs}`)
+  let names
+  try { names = fs.readdirSync(target) } catch (error) {
+    // 运行中的书童可能在 lstat 与 readdir 之间删掉缓存目录
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return entries
+    throw error
+  }
+  entries.set(target, 'dir')
+  for (const name of names) profileEntries(path.join(target, name), entries, limit)
+  return entries
 }
 
-function snapshotRealProfiles() {
-  return Object.fromEntries(realProfileDirectories().map(directory => [directory, newestWrite(directory)]))
+export function snapshotRealProfiles(directories = realProfileDirectories(), limit = 50_000) {
+  return Object.fromEntries(directories.map(directory => [directory, profileEntries(directory, new Map(), limit)]))
 }
 
-function externalWrites(before) {
-  const after = snapshotRealProfiles()
-  return Object.keys(before).filter(directory => before[directory] !== after[directory])
+export function profileWrites(before) {
+  const after = snapshotRealProfiles(Object.keys(before))
+  const changed = Object.keys(before).flatMap(directory => {
+    const previous = before[directory]
+    const current = after[directory]
+    return [...new Set([...previous.keys(), ...current.keys()])]
+      .filter(entry => previous.get(entry) !== current.get(entry))
+      .map(entry => ({ entry, ignored: RUNNING_INSTANCE_CACHES.has(path.relative(directory, entry).split(path.sep)[0]) }))
+  })
+  const entries = ignored => changed.filter(change => change.ignored === ignored).map(change => change.entry).sort()
+  return { externalWrites: entries(false), externalWritesIgnored: entries(true) }
 }
 
 /** 以 --user-data-dir 匹配仍存活的 Electron 主进程与子进程。 */
@@ -209,6 +225,8 @@ async function launch({ roots, appRoot, fakeModelPort, diagnostics, failureBase,
       globalThis.__driveExternalRequests = []
       globalThis.fetch = async (input, options) => {
         const url = new URL(String(input instanceof Request ? input.url : input))
+        // 本机检索模型直接把 base_url 配成假服务的本机地址，这类请求原样放行。
+        if (port !== null && url.origin === `http://127.0.0.1:${port}`) return originalFetch(input, options)
         if (port === null || url.origin !== 'https://api.openai.com' || !url.pathname.startsWith('/v1/')) {
           globalThis.__driveExternalRequests.push(url.origin)
           throw new Error('DRIVE_EXTERNAL_FETCH_REFUSED')
@@ -407,8 +425,8 @@ const messageOf = error => error instanceof Error ? error.message : String(error
 
 /** 一个会话一次冷启动：先跑首个截图点的 setup，再依次 run、截图、after。隔离与进程检查按会话做，结果抄进每一项。 */
 async function runSession(sessionName, names, options) {
-  const roots = createIsolatedRoots(scratchParent())
   const before = snapshotRealProfiles()
+  const roots = createIsolatedRoots(scratchParent())
   const diagnostics = []
   const fake = names.some(name => SCENARIOS[name]?.model) ? await startFakeModel(diagnostics) : null
   const base = name => path.join(options.out, `${name}-${options.theme}`)
@@ -420,6 +438,7 @@ async function runSession(sessionName, names, options) {
   let launched
   let recording = null
   const restartRequests = []
+  let currentAppRoot = options.appRoot
   const shell = names.map(name => SCENARIOS[name]?.shell).find(Boolean) ?? options.shell
   try {
     const shelfBooks = sessionName === 'library-timing' ? SHELF_BOOKS : 0
@@ -439,13 +458,14 @@ async function runSession(sessionName, names, options) {
         /** 场景中途多拍一张图，与收尾截图放在同一目录。 */
         shoot: name => shoot(context.page, `${base(name)}.png`),
         reload: () => context.page.reload().then(() => waitForShell(context.page, TIMEOUT)),
-        /** 退出应用再用同一隔离目录冷启动（真正的重启，不重写外观），context 换成新的 app 与 page。 */
-        restart: async () => {
+        /** 退出应用再用同一隔离目录冷启动（真正的重启，不重写外观），context 换成新的 app 与 page。appRoot 换成另一份构建（旧版本造数据、新版本接着打开），之后不传时沿用上次启动的构建。 */
+        restart: async ({ appRoot = currentAppRoot } = {}) => {
           restartRequests.push(...await launched.app.evaluate(() => globalThis.__driveExternalRequests))
           await recording?.pause()
           const exited = await quit(launched.app)
           assert.equal(exited.forced, false, '重启前应用没有正常退出')
-          launched = await launch({ roots, appRoot: options.appRoot, fakeModelPort: fake?.port, diagnostics, failureBase })
+          launched = await launch({ roots, appRoot, fakeModelPort: fake?.port, diagnostics, failureBase })
+          currentAppRoot = appRoot
           Object.assign(context, launched)
           await recording?.resume(context.page)
         },
@@ -486,7 +506,7 @@ async function runSession(sessionName, names, options) {
   }
   try {
     shared.residualProcesses = await residualProcesses(roots.userData)
-    shared.externalWrites = externalWrites(before)
+    Object.assign(shared, profileWrites(before))
   } catch (error) { sessionErrors.push(messageOf(error)) }
   const clean = sessionIsClean({ failedAt, sessionErrors, residualProcesses: shared.residualProcesses, externalWrites: shared.externalWrites })
   if (clean) fs.rmSync(roots.root, { recursive: true, force: true })

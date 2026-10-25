@@ -74,14 +74,17 @@ RD-10 删除旧外壳之后，场景分三类：
 
 - `<场景>-<主题>.png`：场景截图，1440×900（`stage-1280` 为 1280×900）。
 - `--video` 时另有 `<场景>-<主题>.mp4`，结果项的 `video` 字段指向它。
-- `<场景>-<主题>.json`：本次运行的结果数组，每个截图点一项。`scenario`、`screenshot` 属于这个截图点；`session`（会话名，单跑时等于场景名）、`timing`、`shell`（外壳的 `data-shell-presentation`，`writer` 或 `stage`：`startup-timing` 取计时那次启动显示的外壳，其余场景取写好外观、重载之后的外壳，用来确认测的就是要测的外壳）、`externalRequests`、`residualProcesses`、`externalWrites`、`quit`、`isolationRoot` 属于整个会话，会话里每一项都抄一份；会话用了夹具模型时另含 `modelRequests`（整个会话里假服务收到的全部请求数，嵌入请求也计入，与 `--console` 里的 `[fake-model]` 行一一对应）。失败时含 `error`：截图点自己的失败写在该项；同一会话里排在失败点之后的截图点不再运行，`error` 写明是被哪个场景拖住；会话级失败（启动、外部请求、退出、进程枚举）写进该会话的每一项。
+- `<场景>-<主题>.json`：本次运行的结果数组，每个截图点一项。`scenario`、`screenshot` 属于这个截图点；`session`（会话名，单跑时等于场景名）、`timing`、`shell`（外壳的 `data-shell-presentation`，`writer` 或 `stage`：`startup-timing` 取计时那次启动显示的外壳，其余场景取写好外观、重载之后的外壳，用来确认测的就是要测的外壳）、`externalRequests`、`residualProcesses`、`externalWrites`、`externalWritesIgnored`、`quit`、`isolationRoot` 属于整个会话，会话里每一项都抄一份；会话用了夹具模型时另含 `modelRequests`（整个会话里假服务收到的全部请求数，嵌入请求也计入，与 `--console` 里的 `[fake-model]` 行一一对应）。失败时含 `error`：截图点自己的失败写在该项；同一会话里排在失败点之后的截图点不再运行，`error` 写明是被哪个场景拖住；会话级失败（启动、外部请求、退出、进程枚举）写进该会话的每一项。
 - 失败时额外写 `<失败场景>-<主题>.failure.png`、`.dom.html`、`.aria.yml` 和 `<会话>-<主题>.console.log`，隔离目录保留以便排查。
 
 每个会话结束后，驱动检查三件事，任一不满足即退出码 1：
 
 - `externalRequests` 为空。每个会话都在 Electron 启动后替换主进程的 `globalThis.fetch`：用夹具模型的会话只放行 `https://api.openai.com/v1/*` 并改道到本机假服务，其余会话一律不放行。被拒的请求记下来源并抛错。检查范围只有主进程 `fetch`，且从 `electron.launch` 返回后才生效；更早的请求、渲染进程的请求和 Electron `net` 模块的请求都不在内。
 - `residualProcesses` 为空：应用关闭后，以 `--user-data-dir` 匹配不到存活进程。子进程退出需要时间，驱动最多查 10 次、间隔 300 ms。
-- `externalWrites` 为空：`~/.vela`、`%APPDATA%\ai-novel-writer`、`%APPDATA%\AI小说作家` 的最新修改时间不变。
+- `externalWrites` 为空：`~/.vela`、`%APPDATA%\ai-novel-writer`、`%APPDATA%\AI小说作家` 里没有新增或删除的条目，文件的大小与修改时间也不变。列出的是变了的具体路径。
+  - 这几个目录第一层的 `GPUCache`、`DawnWebGPUCache`、`DawnGraphiteCache` 不算：本机开着的书童会自己刷新里面文件的修改时间。它们的变化列进 `externalWritesIgnored`，不影响退出码。
+  - 驱动真的写进真实配置目录时，Chromium 还会写 `Preferences`、`Local State`、`Local Storage` 等条目，这些照样报出来。
+  - 一个目录超过 5 万个条目，或者有条目读不了（`ENOENT`、`ENOTDIR` 两种「不存在」除外）时，快照直接报错，不拿截断的快照判通过：运行前的快照出错时驱动在启动应用前退出，退出码 1；运行后的快照出错时原因写进 `error`。
 
 枚举或结束进程本身失败时，原因写进该会话每一项的 `error`，结果 JSON 照常写出。
 
@@ -318,6 +321,8 @@ node scripts/redesign/drive.mjs --scenario blueprint-timing --shell stage --out 
 | `chapter-write-after-edited-chain` | 预置第 4 章 v2 以第 3 章候选稿为前驱，再改第 3 章正文；3、4 章逐章定稿后写第 5 章：假模型收到 1 次正文请求，正文保存，运行侧页没有原始 IPC 错误 | 第 5 章与运行侧页 | 是 | #438 |
 | `chapter-rereview-legacy` | 第 3 章（旧版本留下的 reviewed 稿）点「重新审稿」：假模型收到 1 次审稿请求，运行侧页没有原始 IPC 错误；恢复卡里的审稿候选显示「1 条意见」摘要，不显示原始 JSON | 第 3 章与运行侧页 | 是 | #411、#455 |
 | `chapter-rereview-legacy-en` | 同上重新审稿后切到英文界面重开作品，从 Ctrl K「Run sheet」打开运行侧页：审稿候选显示「1 item」摘要，不显示原始 JSON | 英文运行侧页 | 是 | #455 |
+| `chapter-recheck-digest` | 第 4 章审稿（带正文证据的本章目标意见）、按意见修稿、全部用修稿合并，`fake.replyReview` 传函数让合并后的复验回一份合法复核 JSON：运行侧页的复验候选显示结论、条数与「待核实」要点，不显示原始 JSON；切到英文重开后显示「1 item」与「Needs verification」；中途拍 `chapter-recheck-digest-zh` | 英文的复验摘要 | 是 | #484 |
+| `run-usage-en` | 同 `chapter-rereview-legacy` 重新审稿后切到英文重开：只请求一次的审稿候选写「1 request used」，不写成复数 | 英文运行侧页 | 是 | #484 |
 | `chapter-finalize-gone-en` | 切到英文界面后定稿第 3 章，主进程的 `finalization:commit` 先卡住，期间按卡住的请求里的稿 id 与会话删掉这一稿再放行：定稿仓储只交 `DRAFT_NOT_FOUND`，运行卡片的失败说明是英文、不带汉字 | 英文运行卡片的失败说明 | 是 | #474 |
 | `chapter-retry` | 角色状态更新失败后点「重试失败步骤」：之后假模型只收到角色状态请求，后处理回到 4 / 4 | 重试后的定稿视图 | 是 | lane 7 |
 | `chapter-retry-stream` | 角色状态请求两次断流（`fake.dropCharacterState(2)`）：自动后处理只请求一次，失败说明不含错误码；重开应用后点「重试失败步骤」恰好再请求一次，说明换成「没有返回完整结果」（中途截图 `chapter-retry-stream-failed`）；再点这一步的「重试」第三次请求成功，回到 3 / 3（重开后不列正文文件） | 重试成功后的定稿视图 | 是 | #420 |
@@ -424,7 +429,7 @@ node scripts/redesign/drive.mjs --scenario refs-timing --shell stage --out <目�
 
 ## 外部审查修复（RD-X2）
 
-场景在 `scripts/redesign/x2-scenarios.mjs`，都走新外壳，复用 RD-X1 的 `holdChannel`、`untilHeld`、`releaseChannel` 与 `seedHarbor`。每个场景把作者看到的值收进 `measured` 最后一次断言，对 RD-X1 栈顶的构建（`--app-root`）跑一次应失败，失败消息里能看到每一项的值。假模型另有 `fake.replyReview(json)`：之后的审稿（含合并后的复验）回这份 JSON；复验只覆盖带正文证据区间的本章目标意见，默认审稿只有文学类意见，合并后不会复验。主进程没有默认检索模型时退回默认生成模型，所以要演示「没有检索模型」得先删掉生成模型。
+场景在 `scripts/redesign/x2-scenarios.mjs`，都走新外壳，复用 RD-X1 的 `holdChannel`、`untilHeld`、`releaseChannel` 与 `seedHarbor`。每个场景把作者看到的值收进 `measured` 最后一次断言，对 RD-X1 栈顶的构建（`--app-root`）跑一次应失败，失败消息里能看到每一项的值。假模型另有 `fake.replyReview(json)`：之后的审稿（含合并后的复验）回这份 JSON；也可传函数，它对任意提示词返回非空文本时就回这段文本（复验提示里带着确认的修稿清单，要按「需复核的原始证据锚点」认出复验），返回空值时照常作答；复验只覆盖带正文证据区间的本章目标意见，默认审稿只有文学类意见，合并后不会复验。`fake.acceptKeylessEmbeddings()` 之后不带 Key 的嵌入请求也回向量，收到的 `Authorization` 记进 `fake.embeddingAuthorizations`；驱动对假服务自己的本机地址（`http://127.0.0.1:<端口>`）原样放行，本机检索模型直接配这个地址。主进程没有默认检索模型时退回默认生成模型，所以要演示「没有检索模型」得先删掉生成模型。
 
 | 名称 | 检查 | 截图停在 | 夹具模型 | 对应 |
 |---|---|---|---|---|
@@ -433,6 +438,7 @@ node scripts/redesign/drive.mjs --scenario refs-timing --shell stage --out <目�
 | `x2-library-overview` | 书房预览港口后点「回到《灯塔》」，概览不再是读取中、显示摘录；再预览港口并从最近项目移除它，灯塔概览照常 | 书房 | 否 | #380 C3、O23 |
 | `x2-history` | 版本历史再点第 3 章各稿还在；读第 4 章各稿卡住时显示「正在读取…」；版本历史与单章版本切换器的时间等于库里 UTC 时刻换成本地时间 | 第 3 章 | 否 | #388 T2、T12、T8 |
 | `x2-index-model` | 有检索模型并导入资料后去掉生成模型，在设置「检索模型」页删掉检索模型：索引区回到「配置并启用检索模型后…」，没有重建按钮 | 检索模型页 | 是 | #388 T3 |
+| `kb-local-keyless` | 检索模型的 base_url 是假服务的本机地址、不填 Key，导入资料后在设置「检索模型」页点「检查并重建向量索引」：索引区给出这个按钮，补全后标题回到「检查当前模型的向量索引」，没有报错；假服务收到的嵌入请求都不带 Key（`Authorization` 为空或只有 `Bearer`） | 补全后的检索模型页 | 是 | #484 |
 | `x2-kb-limit` | 查找「守塔人」后在框里改字不提交，「最多显示」改成 5：主进程收到 `[守塔人,10]`、`[守塔人,5]` 两次查找 | 知识库 | 是 | #388 T15 |
 | `x2-cast` | 角色档案三个视图里只有基础设定有头像按钮；粘贴角色卡的全文框至少 9 行高 | 角色名单 | 否 | #389 X1、O#2 |
 | `x2-recheck` | `replyReview` 让审稿回第 4 章关键事件未完成（带证据）；审稿、按意见修稿、全部用修稿合并，自动复验跑完：提示「复验完成：x / y 项意见已解决」，审稿报告逐项标复验结果 | 审稿报告 | 是 | #392 T3 |
@@ -485,3 +491,43 @@ node scripts/redesign/drive.mjs --scenario refs-timing --shell stage --out <目�
 | 名称 | 检查 | 截图停在 | 夹具模型 | 对应 |
 |---|---|---|---|---|
 | `caption-contrast` | 依次停在第 3 章外壳、写下一章时的运行侧页（进行中、完成、历史）、架构、角色名单、设置的 AI 模型与外观、书房与预览，每处收集颜色等于 `--ink-3` 的全部文字，按类名留最低的对比度写进 `measured`（底色沿祖先叠加求出）；普通字号不低于 4.5:1，24px 起或 18.66px 起粗体不低于 3:1，禁用控件豁免。量完再断言，失败信息里带全部数值；每处截一张 `caption-<位置>` | 书房预览 | 是 | #382 |
+
+## 备份往返后的角色派生状态（#491）
+
+场景在 `scripts/redesign/f491-scenarios.mjs`。必须用 `--app-root` 指向已构建好的 1.3.2（master 305ee755）工作树：旧版本负责造出损坏，场景中途用 `context.restart({ appRoot })` 换成本工作树的构建打开同一份数据。直接对本工作树跑会失败，因为新构建打开项目时就修好了，旧版本那一步的来源冲突断言不成立。假模型的 `fake.replyCharacterState(build)` 让定稿后处理的角色状态更新回 `build(提示词)` 给出的 JSON。
+
+| 名称 | 检查 | 截图停在 | 夹具模型 | 对应 |
+|---|---|---|---|---|
+| `f491-backup-roundtrip` | 旧版本里定稿第 3 章写入林岚的地点、道具、近况，用界面同一组 IPC 导出 .ainovel 再恢复、两轮后按 Ctrl O 打开第二个副本：「当前状态」三项是「历史派生（非当前）」、输入框为空（`f491-1-damaged-historical`）；定稿第 4 章，角色状态更新报 `FINALIZED_CHARACTER_SOURCE_CONFLICT` 原始错误（`f491-2-damaged-finalize-error`）。换新构建重启打开同一副本：失败说明是可读中文（`f491-3-fixed-readable-error`），点「重试失败步骤」后 3 / 3 完成（`f491-4-fixed-finalize-done`）；三项回到「定稿派生」并带第 4 章的新值，改「关键道具」后保存成功、该项变为「作者输入」 | 角色名单的当前状态 | 是 | #491 |
+
+## 定稿后处理的角色状态字段冲突（#484）
+
+场景在 `scripts/redesign/f484-scenarios.mjs`。主进程里卡住本流程第 2 次 `finalization-generation:commit`（第 1 次是章节要点，第 2 次是角色状态），卡住期间驱动在角色页改林岚的「当前位置」并保存，再放行，提交按 `FINALIZED_CHARACTER_FIELD_CONFLICT` 拒写。
+
+| 名称 | 检查 | 截图停在 | 夹具模型 | 对应 |
+|---|---|---|---|---|
+| `f484-field-conflict` | 第 3 章定稿后，角色状态更新这一步失败：中文说明以「正文定稿已保存，但角色卡没有自动更新：生成期间」开头（`f484-field-conflict-zh`）；切到英文后说明是英文、不带汉字（`f484-field-conflict-en`）；两种语言都不显示 `Error invoking` 与错误码，定稿后处理卡上也没有「重试」与「重试失败步骤」（#502） | 英文的定稿后处理 | 是 | #484 |
+| `f484-deleted-source-roundtrip` | 定稿第 3 章写入林岚的地点、道具、近况，重开作品确认「当前位置」是「定稿派生」的「灯塔顶层灯室」，再从章节「更多操作」删除第 3 章正文，再用界面同一组 IPC 导出恢复两轮、按 Ctrl O 打开第二个副本，定稿第 4 章：定稿后处理正好 4 步且都完成（`f484-deleted-source-finalize`）；重新打开作品后「当前位置」是「定稿派生」的「守塔人的屋子」（`f484-deleted-source-character-state`）。两次都先重开作品再读，读到的是库里存下的值 | 角色名单的当前状态 | 是 | #484 |
+
+## 定稿后角色页刷新与草稿合并（#504）
+
+场景在 `scripts/redesign/st504-scenarios.mjs`。假模型的 `fake.replyCharacterState(build)` 让第 3 章定稿后处理给林岚写入新的地点、道具、近况。场景先打开角色页的「当前状态」，再去定稿，定稿完成后回到角色页立即读一次。`measured.timing` 用页面时钟记下「角色状态更新」一行变成成功、整个定稿结束、回到角色页、新地点出现的时刻，`stepToNewValueShownMs` 为 `null` 表示 15 秒内没出现。数字包含切回角色页的导航，是上界。
+
+| 名称 | 检查 | 截图停在 | 夹具模型 | 对应 |
+|---|---|---|---|---|
+| `st504-finalize-refreshes-cast` | 定稿前在「心理状态」填一句不保存。定稿完成后立即读：地点、道具是新值且标「定稿派生」，心理状态仍是作者那句、标「作者输入」（`st504-draft-zh`）；切到英文后地点同样是新值（`st504-draft-en`） | 英文的角色名单当前状态 | 是 | #504 |
+| `st504-finalize-refreshes-cast-nodraft` | 不改任何字段。定稿完成后立即读：地点、道具是新值，心理状态与定稿前相同（`st504-nodraft-zh`、`st504-nodraft-en`） | 英文的角色名单当前状态 | 是 | #504 |
+
+## 定稿后处理提交期数据变化与旧版本步骤（#512）
+
+场景在 `scripts/redesign/f512-scenarios.mjs`。
+
+`f512-retired-character` 在主进程里替换 `finalization-generation:commit`：本流程第 2、3 次提交（角色状态这一步的前两次自动尝试）按断线失败，第 4 次（最后一次自动尝试）卡住，期间驱动在角色页删掉林岚，再放行。前两次断线是为了让变化落在最后一次自动尝试上：更早发生的变化，之后的自动尝试会先按来源已变拒绝，卡上记下的是 `FINALIZATION_GENERATION_SOURCE_CHANGED`。
+
+`f512-legacy-step` 先正常定稿第 3 章，再由驱动自己打开作品拿会话，用应用同一组 IPC（`db:post-process-create-run`、`db:post-process-mark-step-ok`、`db:post-process-mark-step-failed`）写一份旧版本的跑批：多一步「文风自动学习」（`style_analysis`），`f512-legacy-step` 里它失败，`f512-legacy-step-done` 里它成功。之后重载并按 Ctrl O 重新打开作品。
+
+| 名称 | 检查 | 截图停在 | 夹具模型 | 对应 |
+|---|---|---|---|---|
+| `f512-retired-character` | 角色状态更新失败：中英文说明（`f512-retired-character-zh`、`f512-retired-character-en`）不带 `Error invoking` 与错误码，提到重新定稿本章；这一行与卡片上都没有「重试」「重试失败步骤」 | 英文的定稿后处理 | 是 | #512 |
+| `f512-legacy-step` | 「文风自动学习」当时失败：一行仍列出，状态是 `retired`（灰点），说明「来自旧版本」（`f512-legacy-step-zh`、`f512-legacy-step-en`）；没有任何重试按钮；完成数是「3 / 3 完成」 | 英文的定稿后处理 | 是 | #512 |
+| `f512-legacy-step-done` | 「文风自动学习」当时成功：同上，不显示「完成」也不算进完成数（`f512-legacy-step-done-zh`、`f512-legacy-step-done-en`） | 英文的定稿后处理 | 是 | #512 |

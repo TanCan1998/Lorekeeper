@@ -31,6 +31,7 @@ import type { StepCallbacks, WorkflowContext } from '../../../../stores/workflow
 import { useLLMStore } from '../../../../stores/llm-store'
 import { useProjectStore } from '../../../../stores/project-store'
 import { RunFinalizePostProcessCommand } from '../finalize-chapter.command'
+import { globalEventBus } from '../../../../shared/event-bus'
 import { GenerateDraftCommand } from '../generate-draft.command'
 type ModelMessages = Parameters<ReturnType<typeof useLLMStore.getState>['generateStream']>[0]
 
@@ -45,6 +46,9 @@ const commitRequests: unknown[] = []
 let commitFailures = 0
 let characterExecuteFailures = 0
 let changeFieldBeforeCommit = false
+/** 每次提交前按步骤与第几次提交调用，用来制造提交失败或生成期间的数据变化。 */
+let onCommit: ((stepKey: string | undefined, nth: number) => void) | undefined
+const commitsByStep = new Map<string | undefined, number>()
 let actualOwner: ReturnType<typeof createMainGenerationOwner> | undefined
 const stageByRun = new Map<string, string>()
 function owner() {
@@ -196,7 +200,10 @@ function installRealRepositoryIpc(): void {
           case 'finalization-generation:cancel': return owner().cancelFinalizationGeneration(args[0] as Parameters<ReturnType<typeof owner>['cancelFinalizationGeneration']>[0])
           case 'finalization-generation:commit': {
             const request = args[0] as Parameters<ReturnType<typeof owner>['commitFinalizationGeneration']>[0]
-            if (stageByRun.get(request.handle.runId) === 'character_cards') {
+            const stage = stageByRun.get(request.handle.runId), nth = (commitsByStep.get(stage) ?? 0) + 1
+            commitsByStep.set(stage, nth)
+            onCommit?.(stage, nth)
+            if (stage === 'character_cards') {
               commitRequests.push(structuredClone(request))
               if (commitFailures-- > 0) throw new Error('network error: synthetic temporary commit failure')
               if (changeFieldBeforeCommit) { changeFieldBeforeCommit = false; getProjectDb()!.prepare('UPDATE characters SET cs_location=? WHERE character_id=?').run('作者后来设置', characterId) }
@@ -304,7 +311,7 @@ function installModel(): void {
   })
 }
 
-function command(draftContent: string, overrides: { onlyFailed?: boolean; stepKey?: string; retryInvalidResult?: boolean } = {}) {
+function command(draftContent: string, overrides: { onlyFailed?: boolean; stepKeys?: readonly string[]; retryInvalidResult?: boolean; stopOnFailure?: boolean } = {}) {
   insertFinalizedDraft(7, 2, draftContent)
   const db = getProjectDb()!
   if (!db.prepare('SELECT 1 FROM character_identity_proposals WHERE proposal_id=?').get('fcs:finalization-7')) {
@@ -332,7 +339,7 @@ beforeEach(() => {
   const cache = path.resolve('.runtime/.cache/novel-quality-modernization/s09b-finalize-consumer')
   fs.mkdirSync(cache, { recursive: true })
   projectPath = fs.mkdtempSync(path.join(cache, 'case-'))
-  actualOwner = undefined; stageByRun.clear(); selections.length = 0; commitRequests.length = 0; commitFailures = 0; characterExecuteFailures = 0; changeFieldBeforeCommit = false
+  actualOwner = undefined; stageByRun.clear(); selections.length = 0; commitRequests.length = 0; commitFailures = 0; characterExecuteFailures = 0; changeFieldBeforeCommit = false; onCommit = undefined; commitsByStep.clear()
   initProjectDatabase(projectPath)
   const db = CharacterRosterRepository.read()
   expect(db.status).toBe('empty')
@@ -437,7 +444,7 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
     })
     const freshRun = await command(content, {
       onlyFailed: true,
-      stepKey: 'chapter_notes',
+      stepKeys: ['chapter_notes'],
     }).execute({ step: {}, context: workflowContext, callbacks: callbacks() })
     expect(freshRun.steps.chapter_notes).toMatchObject({ ok: false })
     expect(useLLMStore.getState().generateStream).not.toHaveBeenCalled()
@@ -676,7 +683,7 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
 
     const status = await command('第二章定稿：林岚准备交出黄铜钥匙。', {
       onlyFailed: true,
-      stepKey: 'character_cards',
+      stepKeys: ['character_cards'],
     }).execute({ step: {}, context: workflowContext, callbacks: callbacks() })
 
     expect(status.steps.character_cards).toMatchObject({
@@ -832,7 +839,7 @@ describe('RunFinalizePostProcessCommand character-state persistence', () => {
 
     const repaired = await command('The brass key changes hands.', {
       onlyFailed: true,
-      stepKey: 'character_cards',
+      stepKeys: ['character_cards'],
     }).execute({ step: {}, context: workflowContext, callbacks: callbacks() })
 
     expect(generateStream).not.toHaveBeenCalled()
@@ -855,7 +862,7 @@ it('一次显式修复固定失败目标，withRetry 不得把第四份坏结果
    evidence: { text: correct ? content : 'Lin Lan says, the inspection is still pending.' } }] }), undefined, 'stop')
   return 'synthetic-request'
  }) })
- const execute = (retryInvalidResult = false) => command(content, { onlyFailed: true, stepKey: 'character_cards', retryInvalidResult })
+ const execute = (retryInvalidResult = false) => command(content, { onlyFailed: true, stepKeys: ['character_cards'], retryInvalidResult })
   .execute({ step: {}, context: workflowContext, callbacks: callbacks() })
  expect((await execute()).steps.character_cards.ok).toBe(false)
  expect(calls).toBe(3)
@@ -1026,4 +1033,132 @@ it('#420 断流后重试拿到坏 JSON 时，同一次点击里自动修正一�
  expect(repaired.steps.character_cards).toMatchObject({ ok: true })
  expect(characterCalls).toBe(3)
  expect(CharacterRepository.getById(characterId)?.currentState?.location).toBe('harbor')
+})
+
+describe('cast refresh after the character-state step', () => {
+  const harbor = JSON.stringify({ updates: [{ name: 'Lin Lan', currentState: { location: 'harbor' } }] })
+  let refreshes: Array<{ resources: string[]; projectSession: unknown; storedLocation?: string }> = []
+  let stopListening = () => {}
+  beforeEach(() => {
+    refreshes = []
+    stopListening = globalEventBus.on('REFRESH_RESOURCE', ({ resources, projectSession }) => refreshes.push({
+      resources, projectSession, storedLocation: CharacterRosterRepository.read().entries[0]?.currentState?.location,
+    }))
+  })
+  afterEach(() => stopListening())
+
+  it.each([
+    ['a single-chapter finalization', {}],
+    ['a batch-creation chapter', { stopOnFailure: true }],
+  ])('asks the open cast to reload once %s has written the new state', async (_path, overrides) => {
+    cardResponse = harbor
+    const status = await command('Lin Lan arrives at the harbor.', overrides).execute({ step: {}, context: workflowContext, callbacks: callbacks() })
+
+    expect(status.steps.character_cards).toMatchObject({ ok: true })
+    expect(refreshes).toEqual([{ resources: ['characterCards'], projectSession: workflowContext.projectSession, storedLocation: 'harbor' }])
+  })
+
+  it('asks the cast to reload after a retried character step succeeds and never after it fails', async () => {
+    let interrupted = false
+    useLLMStore.setState({ defaultModelId: 'test-model', generateStream: vi.fn(async (messages, streamCallbacks) => {
+      const system = messages.find((message: { role: string; content: string }) => message.role === 'system')?.content ?? ''
+      if (!system.includes('character records')) streamCallbacks.onDone?.('The handoff is complete.', undefined, 'stop')
+      else if (!interrupted) { interrupted = true; streamCallbacks.onError?.('synthetic stream interrupted') }
+      else streamCallbacks.onDone?.(modelFixtureResponse(harbor), undefined, 'stop')
+      return 'synthetic-request'
+    }) })
+    const initial = await command('Lin Lan arrives at the harbor.').execute({ step: {}, context: workflowContext, callbacks: callbacks() })
+    expect(initial.steps.character_cards.ok).toBe(false)
+    expect(refreshes).toEqual([])
+
+    const retried = await command('Lin Lan arrives at the harbor.', { onlyFailed: true, stepKeys: ['character_cards'], retryInvalidResult: true })
+      .execute({ step: {}, context: workflowContext, callbacks: callbacks() })
+
+    expect(retried.steps.character_cards).toMatchObject({ ok: true })
+    expect(refreshes).toEqual([{ resources: ['characterCards'], projectSession: workflowContext.projectSession, storedLocation: 'harbor' }])
+  })
+
+  it('#502 a step key the current version no longer has does not block retrying the steps that still exist', async () => {
+    let interrupted = false
+    useLLMStore.setState({ defaultModelId: 'test-model', generateStream: vi.fn(async (messages, streamCallbacks) => {
+      const system = messages.find((message: { role: string; content: string }) => message.role === 'system')?.content ?? ''
+      if (!system.includes('character records')) streamCallbacks.onDone?.('The handoff is complete.', undefined, 'stop')
+      else if (!interrupted) { interrupted = true; streamCallbacks.onError?.('synthetic stream interrupted') }
+      else streamCallbacks.onDone?.(modelFixtureResponse(harbor), undefined, 'stop')
+      return 'synthetic-request'
+    }) })
+    expect((await command('Lin Lan arrives at the harbor.').execute({ step: {}, context: workflowContext, callbacks: callbacks() })).steps.character_cards.ok).toBe(false)
+
+    const retried = await command('Lin Lan arrives at the harbor.', { onlyFailed: true, stepKeys: ['style_analysis', 'character_cards'], retryInvalidResult: true })
+      .execute({ step: {}, context: workflowContext, callbacks: callbacks() })
+
+    expect(retried.steps.character_cards).toMatchObject({ ok: true })
+    await expect(command('Lin Lan arrives at the harbor.', { onlyFailed: true, stepKeys: ['style_analysis'] })
+      .execute({ step: {}, context: workflowContext, callbacks: callbacks() })).rejects.toThrow('style_analysis')
+  })
+
+  it('#502 an empty step selection runs nothing instead of reporting success', async () => {
+    const generateStream = vi.fn()
+    useLLMStore.setState({ defaultModelId: 'test-model', generateStream })
+    await expect(command('Lin Lan arrives at the harbor.', { stepKeys: [] })
+      .execute({ step: {}, context: workflowContext, callbacks: callbacks() })).rejects.toThrow()
+    expect(generateStream).not.toHaveBeenCalled()
+  })
+})
+
+describe('#512 自动重试的最后一次提交时项目状态已变：作者再点重试会怎样', () => {
+  const content = 'Lin Lan arrives at the harbor.'
+  /** 前两次提交断线，第三次（自动重试的最后一次）提交前发生 change。 */
+  const lastAutomaticCommit = (stepKey: string, change: () => void) => {
+    onCommit = (stage, nth) => {
+      if (stage !== stepKey) return
+      if (nth <= 2) throw new Error('network error: synthetic temporary commit failure')
+      if (nth === 3) change()
+    }
+  }
+  const finalize = () => command(content).execute({ step: {}, context: workflowContext, callbacks: callbacks() })
+  /** 与卡片上的重试同一套参数。 */
+  const retry = (stepKeys: readonly string[]) => command(content, { onlyFailed: true, retryInvalidResult: true, stepKeys })
+    .execute({ step: {}, context: workflowContext, callbacks: callbacks() })
+
+  beforeEach(() => { cardResponse = JSON.stringify({ updates: [{ name: 'Lin Lan', currentState: { location: 'harbor' } }] }) })
+
+  it('章节要点生成期间作者改了本章要点：重试在新运行里重新生成并写入，替换作者改的要点', async () => {
+    getProjectDb()!.prepare("INSERT INTO blueprints (chapter_number, title, notes) VALUES (2, 'The Handoff', '')").run()
+    lastAutomaticCommit('chapter_notes', () => getProjectDb()!.prepare('UPDATE blueprints SET notes=? WHERE chapter_number=2').run('Author-edited notes'))
+    const initial = await finalize()
+    expect(initial.steps.chapter_notes).toMatchObject({ ok: false, error: 'GENERATION_FINALIZATION_NOTES_CHANGED' })
+    expect(initial.steps.character_cards).toMatchObject({ ok: false, error: 'GENERATION_FINALIZATION_PREDECESSOR_REQUIRED' })
+
+    const retried = await retry(['chapter_notes', 'character_cards'])
+    expect(retried.steps.chapter_notes).toMatchObject({ ok: true })
+    expect(retried.steps.character_cards).toMatchObject({ ok: true })
+    expect(getProjectDb()!.prepare('SELECT notes FROM blueprints WHERE chapter_number=2').pluck().get()).toBe('Lin Lan hands the brass key to Zhou Yan.')
+  })
+
+  // FINALIZED_CHARACTER_CONTEXT_CHANGED 比对的字段，提交前的来源校验已经整组比过，同一条件在这里先以 IDENTITY_CHANGED 拒写。
+  it.each(['chapter_notes', 'character_cards'])('%s 生成期间别的章节重新定稿或被删除：重试过不去，角色卡保持原样', async stepKey => {
+    lastAutomaticCommit(stepKey, () => invalidateContinuityProjectionFrom(getProjectDb()!, 1))
+    const initial = await finalize()
+    expect(initial.steps[stepKey]).toMatchObject({ ok: false, error: 'GENERATION_FINALIZATION_IDENTITY_CHANGED' })
+
+    const retried = await retry(stepKey === 'chapter_notes' ? ['chapter_notes', 'character_cards'] : ['character_cards'])
+    expect(retried.steps[stepKey]).toMatchObject({ ok: false, error: 'FINALIZATION_GENERATION_SOURCE_CHANGED' })
+    expect(CharacterRepository.getById(characterId)?.currentState?.location).toBe('old station')
+  })
+
+  it.each(['chapter_notes', 'character_cards'])('%s 生成期间作者删掉了本章定稿时在场的角色：重试过不去', async stepKey => {
+    const db = getProjectDb()!
+    lastAutomaticCommit(stepKey, () => {
+      const revision = db.prepare("SELECT revision FROM character_identity_meta WHERE id='main'").pluck().get() as number
+      commitCharacterIdentities(db, { approval: { operationId: 'retire-lin-lan', expectedRevision: revision, action: 'author-edit',
+        source: { kind: 'author', source: { projectId: 'test', epoch: 'lease-test', sourceId: 'retire-fixture', revision, contentHash: 'b'.repeat(64) } } },
+      creations: [], changes: [], retireIds: [characterId], relationships: [], resolutions: [] }, () => true)
+    })
+    const initial = await finalize()
+    expect(initial.steps[stepKey]).toMatchObject({ ok: false, error: 'FINALIZED_CHARACTER_ID_RETIRED' })
+
+    const retried = await retry(stepKey === 'chapter_notes' ? ['chapter_notes', 'character_cards'] : ['character_cards'])
+    expect(retried.steps[stepKey]).toMatchObject({ ok: false, error: 'FINALIZATION_GENERATION_SOURCE_CHANGED' })
+  })
 })
