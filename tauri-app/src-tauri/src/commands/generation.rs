@@ -63,7 +63,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::repositories::generation_run_repository::{
     MainGenerationRunHandle, PhysicalAttempt, PlotOutlineCursor, PlotOutlineProgress,
-    PlotOutlineRange, ProjectCoreSynopsisExpected,
+    PlotOutlineRange,
 };
 use crate::repositories::project_core_repository as project_core;
 use crate::security::ProjectSessionContext;
