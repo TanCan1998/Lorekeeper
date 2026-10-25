@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest'
 const read = (path: string) => readFileSync(resolve(process.cwd(), path))
 describe('定稿单星图标', () => {
   it.each([
-    ['light', '52ba2b020e139e9dfda4a272945bb975bc8290907802eb04377d2735c200877b'],
-    ['dark', 'ef45ace7cb2a8bc4f5c3ea74ad1a49221ea5684eb32ae33733c6636d86a821b3'],
+    ['light', 'b68d5faec977bd49ea58ffa0fd8971d84be6af4945b0023886d0c64d05d06289'],
+    ['dark', 'd5f90f2099cd95d22762bbf41af10bcd7b95845439585bd3f3e3985282ccb5d3'],
   ])('保留用户确认的%s源图，不混入候选或远程资源', (theme, hash) => {
     const bytes = read(`public/branding/app-icon-${theme}.svg`)
     const svg = bytes.toString('utf8')
