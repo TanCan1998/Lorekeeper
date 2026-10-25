@@ -1,6 +1,12 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第150次）**：本轮收口 + 完整本机基线；上游已追平，无待办代码项。
+- **最新维护（2026-10-25 第151次）**：beta.3 版本位点升级完成，三平台打包预热（`publish=false`）全绿并核对产物；**未发布**。
+  - **版本**：`package.json` / `tauri.conf.json` / `Cargo.toml` / `Cargo.lock` / launcher 全部到 `1.0.0-beta.3`，`wix.version` **1.0.4.0 → 1.0.5.0**（`test:contract` 56 通过，`assertWixVersion` 满足）。
+  - **踩到的坑**：`identity-launcher/Cargo.lock` 还写着 beta.2，构建身份包时被 cargo 改写 → Rust CI 的「工作区不干净」门禁失败（`5e5ece3e`）。补提交 `f39249d0` 后 Rust CI success。
+  - **预热**：run `40188547546`（SHA `f39249d0`，`publish=false`）三平台作业全 success，发布作业 skipped；Windows 产物 MSI 53,989,376 B（**ProductVersion 1.0.5.0**）/ NSIS 50,217,907 B，两份 SHA256 与 `manifest.json` 一致（`version=1.0.0-beta.3`、`commit=f39249d0…`、`published=false`）。
+  - **文档**：新增 [beta.3 发布说明草稿](../releases/1.0.0-beta.3.md)（已按门禁要求写明「预览」与「非正式版」）与 [发布清单](../plans/2026-10-25-beta3-release-checklist.md)（含预热记录）。
+  - **待授权**：正式发布需 `publish=true`（建议 `prerelease=false` + `make_latest=true`，与 beta.2 一致），之后再做 AtomGit 镜像与装机验收。
+- **上轮（2026-10-25 第150次）**：本轮收口 + 完整本机基线；上游已追平，无待办代码项。
   - **本机全量（HEAD `67718389`）**：`typecheck` 0、`lint` 0、`check:channels` 288/7/**未迁移 0**、`test:contract` **56**、单测 **227 文件 / 2873 通过 / 1 跳过**、浏览器套件 **77 文件 / 983 通过**。
   - **云端**：`aac0985d` 的 Rust CI **1754 通过 0 失败** + all-targets（其后仅文档提交）。
   - **上游**：`05f180f0` 已追平（领先 0）。

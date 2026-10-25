@@ -67,3 +67,15 @@
 - [ ] 回填发布说明里的双源链接与最终份额。
 - [ ] 记录未解除阻塞：多用户 UAC、macOS 真机、真实模型/MCP/业务云。
 - [ ] 不删除、不移动、不覆盖任何旧标签、Release 或附件。
+
+## 附：2026-10-25 预热记录（publish=false）
+
+- 首次尝试 SHA `5e5ece3e`：Rust CI 失败——`identity-launcher/Cargo.lock` 仍写 `1.0.0-beta.2`，构建身份包时被 cargo 改写，触发 `test-rust-ci.ps1` 的「工作区不干净」门禁。已补提交 `f39249d0`。
+- 正式预热：SHA **`f39249d0`**、run **40188547546**（attempt 1）、`publish=false`。
+- 三平台作业全 success（Windows x64 / macOS ARM64 / macOS x64），发布作业按预期 skipped。
+- Windows 产物与清单核对：
+  - `LoreKeeper_1.0.0-beta.3_x64_zh-CN.msi` 53,989,376 B，SHA256 `14badadbfa1b34ff…`，**ProductVersion 1.0.5.0**，UpgradeCode 未变；
+  - `LoreKeeper_1.0.0-beta.3_x64-setup.exe` 50,217,907 B，SHA256 `cf9df8259f8d9b34…`；
+  - `manifest.json`：`version=1.0.0-beta.3`、`commit=f39249d0…`、`runId=40188547546`、`runAttempt=1`、`signed=false`、`published=false`；两份产物的字节数与 SHA256 与清单一致。
+- macOS 两个 DMG 仅在产物归档内（各约 91 MB），本轮未下载；由发布作业的清单校验兜底。
+- **待办**：正式发布（`publish=true`）需用户明确授权；届时 `prerelease=false` + `make_latest=true` 与 beta.2 一致。
