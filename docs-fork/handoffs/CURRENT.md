@@ -1,6 +1,11 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第144次）**：补完后处理重试整链——重试按当前状态重算可重试步骤（此前的 A1 遗留）。
+- **最新维护（2026-10-25 第145次）**：设置页浏览器测试跑通并修正口径（之前「缺 chromium」的待办不再需要装浏览器）。
+  - **复用系统 Edge**：`vitest.browser.config.ts` 支持 `AI_NOVEL_VITEST_CHROMIUM`，指向本机 Edge 156 即可，**不下载 Playwright chromium**；用法已写进 [开发指南 §7](../agents/pi-development.md)。
+  - **首跑抓到 9 个真失败**（前两轮改动口径没跟上）：`model-discovery.browser.tsx` 8 个、`advanced-model-settings.browser.tsx` 1 个。
+  - **修正**：`model-discovery` 取上游版（combobox locator、`purposes` 参数、两档 no_models 文案）+ 改 `installTauriChannelFixture`；`advanced-model-settings` 断言按新措辞 `/Effective output allowance: 6,000\. /`。
+  - **结果**：全量浏览器套件 **77 文件 / 983 用例全通过**（exit 0）。注：`AgentMessage.browser.tsx` 整包并发下偶发 act 超时，单文件复跑通过，已记入快照而非当回归。
+- **上轮（2026-10-25 第144次）**：补完后处理重试整链——重试按当前状态重算可重试步骤（此前的 A1 遗留）。
   - **源码取上游**：`finalize-chapter.command.ts` / `chapter-workflow.ts` 换上游版本：`stepKeys` 取代单 `stepKey`（旧版本遗留步骤不再挡住重试）、`explicit` 按步骤映射重试来源、成功后刷新 `characterCards`；重试前 `readPostProcessStatus` + `planFinalizationRetry`，无可重试步骤时明确报错。
   - **补齐依赖**：Rust `finalization_recovery` 增 `latestAttempt`（id/在飞/结束原因/失败码）、`shared/finalization-generation.ts` 同步字段、`workflow-project-session.ts` 补 `workflowMainProcessError()`。
   - **测试**：`repair-finalize-workflow` 取上游版（含 #502 三个新场景，改用 `installTauriChannelFixture`）；`finalize-postprocess-character.integration` 保留 Tauri 版并把 `stepKey` 桥接成 `stepKeys`。

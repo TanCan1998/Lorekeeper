@@ -99,6 +99,15 @@
 - **云端**：`2b8649fe` 的 Rust CI [40175871769](https://github.com/TanCan1998/Lorekeeper/actions/runs/40175871769) **1754 通过 0 失败** + all-targets；Commit message CI、Gitleaks success。
 - **仍待验证**：settings 浏览器测试（缺 Playwright chromium）；`#512` 的四个「提交期数据变化」场景只在 Electron 侧上游测试里存在，Tauri 副本未搬（属上游 electron 服务行为，Rust 侧需另行对齐）。
 
+## 本次更新（第 145 次）：设置页浏览器测试跑通并修正口径
+
+- **发现**：`vitest.browser.config.ts` 支持 `AI_NOVEL_VITEST_CHROMIUM` 指定现成浏览器，本机 Edge 156 可直接复用——**不需要下载 Playwright chromium**（10-22 瘦身清掉的只是那份缓存）。已把用法写进[开发指南 §7](../agents/pi-development.md)。
+- **首跑结果**：77 文件 / 943 用例中 9 失败，全是前两轮改动的口径没跟上：`model-discovery.browser.tsx` 8 个（还在按旧模型名输入框与旧 `invoke` 参数形状断言）、`advanced-model-settings.browser.tsx` 1 个（`Effective output allowance` 措辞已变）。
+- **修正**：`model-discovery.browser.tsx` 取上游版本（combobox locator、`purposes` 参数、`no_models`/`no_suitable_models` 两档文案），并把 Electron 的 `window.aiNovelAPI` 赋值换成 `installTauriChannelFixture`；`advanced-model-settings` 断言改为 `/Effective output allowance: 6,000\. /`。
+- **结果**：全量浏览器套件 **77 文件 / 983 用例全通过**（exit 0）。
+- **已知偶发**：`AgentMessage.browser.tsx` 在整包并发下偶发 act 超时（单文件复跑通过），已在交接注明，不作为回归。
+- **未提交真实失败**：本轮只改测试与文档，无产品代码变更，未触发 Rust CI。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。
