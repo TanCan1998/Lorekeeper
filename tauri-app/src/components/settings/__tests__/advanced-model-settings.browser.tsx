@@ -147,7 +147,7 @@ describe('advanced model settings', () => {
     await expect.element(page.getByLabelText('Max output tokens')).toBeVisible()
     await expect.element(page.getByLabelText('Model reasoning override')).toBeVisible()
     await expect.element(page.getByLabelText('Effective reasoning effort')).toBeVisible()
-    await expect.element(page.getByText(/Effective output allowance: 6,000 tokens/)).toBeVisible()
+    await expect.element(page.getByText(/Effective output allowance: 6,000\. /)).toBeVisible()
   })
 
   it('resets an unlisted model to the common 65536 allowance without changing it before the explicit reset', async () => {

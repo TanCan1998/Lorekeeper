@@ -191,6 +191,7 @@ pub async fn chapter_finalize(
 ## 7. 测试约定
 
 - **前端/TS**：vitest，`*.test.ts` 与源同目录；必跑 `pnpm typecheck` + 相关 `pnpm test` + `pnpm run lint`（零告警）。
+- **浏览器测试（`*.browser.tsx`）**：`pnpm run test:browser`（在 `tauri-app/`）用 Playwright 驱动 headless chromium 跑真实 DOM 交互。本机若没有 Playwright 的 chromium 缓存，可直接复用系统 Edge：`$env:AI_NOVEL_VITEST_CHROMIUM='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'; pnpm run test:browser`（配置见 `vitest.browser.config.ts`，不需要下载浏览器）。该套件约 77 文件 / 980+ 用例，全量跑一次约 3.5 分钟；个别用例（如 `AgentMessage.browser.tsx`）在整包并发下偶发 act 超时，单文件复跑通过即视为偶发，但仍需在交接里注明。
 - **Rust（2026-10-14 用户授权降频）**：在 `tauri-app/src-tauri/` 按以下分层验证执行，不再把全量 `cargo test` 作为每个普通切片提交/推送的固定前置：
   1. **日常切片**：完成一组有语义关联的修改后，运行 `cargo test <模块路径或测试过滤词>`，覆盖修改模块、直接调用方及相关回归；对修改文件做定向 `rustfmt --edition 2021 --check <文件>`，并运行 `git diff --check`。不对每次小编辑重复编译，不用过窄过滤词漏掉既有同域回归；摘要须列明实际测试范围及数量。
   2. **扩大编译检查**：公共签名、命令注册/接线、跨模块、feature 或构建目标改变，或定向测试未覆盖受影响目标时，追加 `cargo check --all-targets`；纯内部改动已由相关测试完成编译时不机械重复 check。
