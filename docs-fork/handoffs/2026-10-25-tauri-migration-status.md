@@ -87,6 +87,18 @@
 - **未验证**：settings 的浏览器测试本轮没跑——本机 Playwright chromium 在 10-22 瘦身时被清掉，`pnpm test:browser` 报可执行文件缺失。需要时先 `pnpm exec playwright install chromium`（会下载，属新装工具，另行确认）。
 - **同轮附带**：清掉 `commands/generation.rs` 未使用的 `ProjectCoreSynopsisExpected` 导入（`e54bc7a5`）。
 
+## 本次更新（第 144 次）：后处理重试按当前状态重算（补完 A1）
+
+- **源码取上游**：`finalize-chapter.command.ts` 与 `chapter-workflow.ts` 整份换成上游版本——引入 `stepKeys`（替代单 `stepKey`，旧版本遗留步骤不再挡住重试）、`explicit` 按步骤映射的重试来源、成功后按角色卡刷新 `characterCards` 资源；`createRepairFinalizeWorkflow` 重试前先 `readPostProcessStatus` + `planFinalizationRetry`，没有可重试步骤时明确报错，而不是空跑一次。
+- **补齐被依赖的缺口**：
+  - Rust `finalization_recovery` 新增 `latestAttempt`（最近一次物理尝试的 id、是否在飞、结束原因、失败码）——上游 `explicit` 逻辑靠它决定 `recoverFrom`；
+  - `shared/finalization-generation.ts` 同步该字段；
+  - `workflows/workflow-project-session.ts` 补 `workflowMainProcessError()`（登记码按语言说明、未登记码保留并挂 `code`）。
+- **测试**：`repair-finalize-workflow.test.ts` 取上游版本（含 #502 的三个新场景），把 `vi.stubGlobal('window', …)` 换成 `installTauriChannelFixture`；`finalize-postprocess-character.integration.test.ts` 保留 Tauri 版并在 `command()` 里把 `stepKey` 桥接成 `stepKeys`，让旧断言继续成立。
+- **验证**：`typecheck`/`lint` 0、`check:channels` 288/7/未迁移 0、定向 rustfmt 通过、Rust `llm::discovery` 14 通过、全量 vitest **227 文件 / 2870 通过 / 1 跳过**（较上一轮 +7）。
+- **云端**：`2b8649fe` 的 Rust CI [40175871769](https://github.com/TanCan1998/Lorekeeper/actions/runs/40175871769) **1754 通过 0 失败** + all-targets；Commit message CI、Gitleaks success。
+- **仍待验证**：settings 浏览器测试（缺 Playwright chromium）；`#512` 的四个「提交期数据变化」场景只在 Electron 侧上游测试里存在，Tauri 副本未搬（属上游 electron 服务行为，Rust 侧需另行对齐）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。

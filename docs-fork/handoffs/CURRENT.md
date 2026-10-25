@@ -1,6 +1,13 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第143次）**：模型发现按用途筛选 + 模型名候选控件落地（剩余的「模型发现」切片）。
+- **最新维护（2026-10-25 第144次）**：补完后处理重试整链——重试按当前状态重算可重试步骤（此前的 A1 遗留）。
+  - **源码取上游**：`finalize-chapter.command.ts` / `chapter-workflow.ts` 换上游版本：`stepKeys` 取代单 `stepKey`（旧版本遗留步骤不再挡住重试）、`explicit` 按步骤映射重试来源、成功后刷新 `characterCards`；重试前 `readPostProcessStatus` + `planFinalizationRetry`，无可重试步骤时明确报错。
+  - **补齐依赖**：Rust `finalization_recovery` 增 `latestAttempt`（id/在飞/结束原因/失败码）、`shared/finalization-generation.ts` 同步字段、`workflow-project-session.ts` 补 `workflowMainProcessError()`。
+  - **测试**：`repair-finalize-workflow` 取上游版（含 #502 三个新场景，改用 `installTauriChannelFixture`）；`finalize-postprocess-character.integration` 保留 Tauri 版并把 `stepKey` 桥接成 `stepKeys`。
+  - **验证**：`typecheck`/`lint` 0、`check:channels` 288/7/未迁移 0、定向 rustfmt 通过、全量 vitest **227 文件 / 2870 通过 / 1 跳过**（+7）。
+  - **云端**：`2b8649fe` 上 Rust CI [40175871769](https://github.com/TanCan1998/Lorekeeper/actions/runs/40175871769) **1754 通过 0 失败** + all-targets；Commit message CI、Gitleaks success。
+  - **剩余待办**：① settings 浏览器测试（缺 Playwright chromium，需装）；② `#512` 四个「提交期数据变化」场景需在 Rust 侧对齐后再搬测试；③ 真机类：卸载/重装、NSIS、多用户 UAC、旧版升级、macOS。
+- **上轮（2026-10-25 第143次）**：模型发现按用途筛选 + 模型名候选控件落地（剩余的「模型发现」切片）。
   - **Rust**：`empty` 拆成 `no_models` / `no_suitable_models`；新增 `DiscoveryPurpose`，按 `purposes` 判断用途，Gemini 用 `supportedGenerationMethods` + 命名黑名单筛，OpenAI 兼容接口把向量模型排前；保留旧函数签名作兼容入口。
   - **契约**：`ModelDiscoveryErrorCode` 两档、`ModelDiscoveryRequest` 加 `purposes`。
   - **前端**：新增 `ModelNameField.tsx`（可输入 + 候选 combobox，键盘导航 / 输入法合成保护 / 刷新与状态行）；`ModelForm` 改用它 + 发现状态机（端点多停 500ms 自动取、手动刷新保留旧列表）+ 六档提示。
