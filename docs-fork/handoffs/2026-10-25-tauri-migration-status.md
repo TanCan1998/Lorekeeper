@@ -150,6 +150,8 @@
   - NSIS 安装：退出码 0、采样 1274 次、**可见控制台窗口 0**；首启：采样 1800 次、**0**，Appx 按需注册 1.0.4.0、三进程链正常。
   - MSI 安装：退出码 0、采样 320 次、**0**，ARP 与 Appx 均 1.0.4.0。
 - **机器现状**：已回到 MSI 1.0.4.0（新构建，含修复后的激活器）。
+- **云端**：`aac0985d` 的 Tauri Rust CI **1754 通过 0 失败** + all-targets（含重编身份启动器）；Commit message CI、Gitleaks success。
+
 - 证据：`.pi/tmp/console-hide-2026-10-25/{evidence.json, build.log, msi-install.log, msi-uninstall.log}`（不入库）。
 
 ## 交接给下次会话
