@@ -1,6 +1,12 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第148次）**：卸载/重装与 NSIS 安装包验收完成；「不支持降级」等安装约束写入指南。
+- **最新维护（2026-10-25 第149次）**：修掉安装与首次启动时闪出的 PowerShell 控制台窗口。
+  - **根因**：`identity-launcher` 是 GUI 子系统，但 3 处调 `powershell.exe` 未加 `CREATE_NO_WINDOW`，子进程被分配控制台；触发路径是 NSIS 钩子 `ExecShell runas --register-identity` 与首次启动按需注册。NSIS 其它钩子（`nsExec`）、MSI 自定义动作（`WixQuietExec`）、Wix WebView2 bootstrap 本来就是隐藏的。
+  - **修复**：`identity-launcher/src/win.rs` 加 `CREATE_NO_WINDOW` 常量与 `CommandExt` 导入，3 处调用追加 `.creation_flags(CREATE_NO_WINDOW)`。
+  - **验证**：启动器 `cargo test` 14 通过；重打包 MSI 53,997,568 B / NSIS 50,222,001 B；用 150ms 采样 `powershell/conhost/cmd` 的窗口句柄与标题——NSIS 安装（1274 次采样）、首次启动（1800 次）、MSI 安装（320 次）**可见控制台窗口均为 0**，且 Appx 按需注册、进程链正常。
+  - **机器现状**：MSI 1.0.4.0（新构建，含修复）。
+  - **剩余**：多用户 UAC（用户明确先不做）、macOS 真机（无设备）。
+- **上轮（2026-10-25 第148次）**：卸载/重装与 NSIS 安装包验收完成；「不支持降级」等安装约束写入指南。
   - **链路**：卸 MSI 1.0.4.0 → 装 NSIS → 启动/关闭 → 卸 NSIS → 重装 MSI → 启动/关闭，每步退出码 0。
   - **MSI 卸载**：ARP/Appx/安装目录/快捷方式全清，数据根无写入。
   - **NSIS**：currentUser 模式**不需提权**、12s 装到 `%LOCALAPPDATA%\LoreKeeper`；ARP 在 HKCU 显示 `1.0.0-beta.2`；**装完 Appx 为空，首次启动由激活器按需注册 1.0.4.0**；三进程链与 CDP 正常，`WM_CLOSE` 2.03s 全退；卸载清理干净，仅留 `identity-launcher.log`。

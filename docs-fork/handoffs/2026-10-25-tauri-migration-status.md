@@ -140,6 +140,18 @@
 - **四条写入指南的事实**：①NSIS 装完 Appx 为空、首次启动按需注册；②NSIS 卸载保留启动器日志；③MSI 卸载再装回默认目录；④NSIS 的 ARP 版本是应用版本，两套包产品项独立、不应并存安装。后两条已补进 [安装指南](../agents/tauri-release.md)，「不支持降级」也写在那里（beta.2 发布说明属已发布记录，不改正文，下个版本带上）。
 - 证据：`.pi/tmp/install-cycle-2026-10-25/{evidence.json, msi-uninstall.log, msi-reinstall.log, reinstalled-32.png}`（不入库）。
 
+## 本次更新（第 149 次）：安装与首次启动不再闪控制台窗口
+
+- **根因**：`identity-launcher` 自身是 GUI 子系统（`windows_subsystem = "windows"`），但它有 **3 处** `std::process::Command` 调用 `powershell.exe` 时没加 `CREATE_NO_WINDOW`，Windows 给子进程分配了控制台窗口。触发路径正是安装与首启：NSIS 钩子 `ExecShell "runas" … --register-identity`，以及首次启动按需注册。
+- **本来就是隐藏的**：NSIS 钩子的其它 PowerShell 走 `nsExec::ExecToStack`；MSI 自定义动作走 `WixQuietExec`（`BinaryKey="WixCA"`）；Wix 的 WebView2 bootstrap 自带 `-windowstyle hidden`。所以只有激活器这一条会闪。
+- **修复**：`identity-launcher/src/win.rs` 增加 `const CREATE_NO_WINDOW: u32 = 0x0800_0000`、导入 `std::os::windows::process::CommandExt`，3 处调用追加 `.creation_flags(CREATE_NO_WINDOW)`。
+- **验证**（每 150ms 采样 `powershell/conhost/cmd` 的 `MainWindowHandle` 与标题，窗口可见即 hwnd≠0 且有标题）：
+  - 启动器单测 `cargo test` **14 通过**；重新打包 MSI 53,997,568 B / NSIS 50,222,001 B。
+  - NSIS 安装：退出码 0、采样 1274 次、**可见控制台窗口 0**；首启：采样 1800 次、**0**，Appx 按需注册 1.0.4.0、三进程链正常。
+  - MSI 安装：退出码 0、采样 320 次、**0**，ARP 与 Appx 均 1.0.4.0。
+- **机器现状**：已回到 MSI 1.0.4.0（新构建，含修复后的激活器）。
+- 证据：`.pi/tmp/console-hide-2026-10-25/{evidence.json, build.log, msi-install.log, msi-uninstall.log}`（不入库）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。

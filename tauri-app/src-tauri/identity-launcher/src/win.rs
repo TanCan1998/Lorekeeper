@@ -10,8 +10,12 @@ use crate::record::{
 };
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::process::CommandExt;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_SUCCESS};
+
+/// 子进程不分配控制台窗口（`CREATE_NO_WINDOW`）。
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileAttributesW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     INVALID_FILE_ATTRIBUTES,
@@ -480,6 +484,8 @@ fn register_for_current_user_once(self_exe: &str) -> Result<(), LauncherError> {
         "-Command",
         &script,
     ])
+    // 激活器是 GUI 子系统：不给子进程建控制台，否则安装/首次启动会闪一下 PowerShell 窗口。
+    .creation_flags(CREATE_NO_WINDOW)
     .output()
     .map_err(|error| LauncherError::RecordInvalid(format!("无法请求管理员授权：{error}")))?;
     if !output.status.success() {
@@ -603,6 +609,8 @@ pub fn register_identity() -> Result<String, LauncherError> {
         "-Command",
         &script,
     ])
+    // 激活器是 GUI 子系统：不给子进程建控制台，否则安装/首次启动会闪一下 PowerShell 窗口。
+    .creation_flags(CREATE_NO_WINDOW)
     .output()
     .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
     if !output.status.success() {
@@ -649,6 +657,8 @@ pub fn unregister_identity() -> Result<(), LauncherError> {
         "-Command",
         &script,
     ])
+    // 激活器是 GUI 子系统：不给子进程建控制台，否则安装/首次启动会闪一下 PowerShell 窗口。
+    .creation_flags(CREATE_NO_WINDOW)
     .output()
     .map_err(|error| LauncherError::RecordInvalid(format!("无法调用 PowerShell：{error}")))?;
     if !output.status.success() {
