@@ -1,6 +1,6 @@
 [package]
 name = "lorekeeper"
-version = "1.0.0-beta.2"
+version = "1.0.0-beta.3"
 description = "LoreKeeper / 设定司 — 本地优先的长篇小说创作工作台"
 edition = "2021"
 
