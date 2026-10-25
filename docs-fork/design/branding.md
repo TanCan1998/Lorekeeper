@@ -9,13 +9,13 @@
 - `tauri-app/src-tauri/icons/`：从亮色源图生成的五份 PNG、Windows ICO、macOS ICNS，沿用现有配置路径。
 - 启动页、顶栏、关于页复用上述 SVG；应用内随亮暗主题切换，桌面安装图标默认亮色。
 
-口部星芒以原中心 `(106.5, 163)` 等比放大 1.5 倍，宽高由 28 增至 42；渐变随轮廓同步缩放，星芒上下与口部边缘各留 3 个源图单位。亮暗源图与桌面资源保持一致。
+口部星芒以原中心 `(106.5, 163)` 等比放大 2.5 倍，宽高由 28 增至 70；渐变随轮廓同步缩放，上下尖角各超出口部 11 个源图单位。亮暗源图与桌面资源保持一致。
 
 源图 SHA256：
 
 ```text
-b68d5faec977bd49ea58ffa0fd8971d84be6af4945b0023886d0c64d05d06289  app-icon-light.svg
-d5f90f2099cd95d22762bbf41af10bcd7b95845439585bd3f3e3985282ccb5d3  app-icon-dark.svg
+711d257aec83dfc06e7426222cc247e196e02701c053ee4332b6e622bc6bd8c5  app-icon-light.svg
+63e84a92f2534bfdc9df7cfc6ea36dea5ca5bb692d8fcaa6aef6a0853d214fa8  app-icon-dark.svg
 ```
 
 ## 生成与验证
