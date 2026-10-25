@@ -16,6 +16,7 @@ import { ReviewChapterCommand as RuntimeReviewChapterCommand } from '../review-c
 import { savePartialData } from '../architecture.command'
 import { runPostProcessPipeline } from '../../workflow-utils'
 import { createBoundedCompletionError } from '../../bounded-completion'
+import { planFinalizationRetry } from '../../../../shared/finalization-step-error'
 import { workflowRuntimeDependencies } from './workflow-generation-runtime.fixture'
 import type { CommandExecuteParams } from '../base-command'
 import { ReviewRevisionRuntimeFixture, reviewFixtureBackend, installReviewConsumerTransport } from './review-revision-runtime.fixture'
@@ -1503,5 +1504,14 @@ describe('workflow mutation failure boundaries', () => {
 
     expect(generateStream).toHaveBeenCalledTimes(2)
     expect(invoke.mock.calls.map(([channel]) => channel)).not.toContain('db_review_create')
+  })
+})
+
+// #512：现在流程里有的步骤才能重试；旧版本留下、流程已没有的步骤（如 style_analysis）要单独列出而不是排进重试。
+describe('#512 finalization retry planning', () => {
+  it('every step finalization runs today can be retried after an ordinary failure, and no other step name can', () => {
+    const keys = buildFinalizePostProcessSteps({ path: PROJECT_PATH }, 1, '第一章', '正文', { complete: vi.fn() }).map(step => step.key)
+    const plan = planFinalizationRetry(Object.fromEntries([...keys, 'style_analysis'].map(key => [key, { ok: false, error: '模型长时间没有响应' }])))
+    expect({ card: plan.card, retired: [...plan.retired] }).toEqual({ card: keys, retired: ['style_analysis'] })
   })
 })
