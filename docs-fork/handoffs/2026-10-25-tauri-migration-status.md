@@ -40,6 +40,16 @@
 - **未做**：卸载/重装、NSIS 原生安装、多用户 UAC、旧版升级、macOS 真机；未发布。
 - 证据：`.pi/tmp/repack-2026-10-25/{evidence.json,build.log,build.err.log,install.log,exe-icon.png,installed-exe-icon.png}`（不入库）。
 
+## 本次更新（第 139 次）：16–32px 图标专用帧
+
+- **问题**：安装核验时发现整图缩放出的 16/24/32px 帧与旧 PageKin 图标肉眼难分——「司」与四色星芒在极小尺寸糊成文档状。
+- **方案**：新增 `public/branding/app-icon-light-small.svg`（星芒改四块实色并放大到 `scale(3.2)`，「司」放大 1.1 倍，去掉径向渐变）；`scripts/compose-icon-frames.mjs` 把两套源图生成的 ICO 按尺寸拼成一份，`icon.ico` 的 16/24/32 取简化稿、48/64/256 取完整稿，`icons/32x32.png` 同步换用简化稿。
+- **可重复性**：`pnpm icons:compose`，组合结果与提交的 `icon.ico` 逐字节一致（SHA256 `821cf027…`）。新增 `scripts/icon-frames.node-test.mjs`（5 项，覆盖解析/组合/缺帧回落/坏帧拒绝），`pnpm test:contract` 由 51 增至 **56 通过**。
+- **重打包核验**：重建 MSI/NSIS 后，exe 的 32px 图标与新 `icon.ico` 32px 帧**逐像素一致（差异 0.0）**，与旧帧差异 23.6；说明打包链确实取用简化帧。
+- **验证**：`typecheck`/`lint` 0；`app-icon.test.ts` **11 通过**（含小尺寸源图摘要、无渐变、四色实色、放大倍数断言）。
+- **云端**：`5bdaf7b7` 上 Tauri Rust CI [40161780975](https://github.com/TanCan1998/Lorekeeper/actions/runs/40161780975) **1752 通过 0 失败** + all-targets、contract tests、Commit message CI、Gitleaks 全 success。
+- **未做**：本机已装的 1.0.3.0 仍是旧帧；要看任务栏/资源管理器效果需把 `wix.version` 升到 1.0.4.0 再重装（未执行）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。

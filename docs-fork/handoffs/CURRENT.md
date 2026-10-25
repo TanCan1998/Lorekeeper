@@ -1,6 +1,13 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第138次）**：重打包并完成覆盖安装与后台启动验收，桌面图标与安装入口落地。
+- **最新维护（2026-10-25 第139次）**：补齐 16–32px 小尺寸专用图标帧（覆盖安装核验发现整图缩放的小图标与旧 PageKin 图标肉眼难分）。
+  - **源图**：新增 `public/branding/app-icon-light-small.svg`——星芒改四块实色并放大到 `scale(3.2)`，「司」放大 1.1 倍，不再用径向渐变（极小尺寸会被插值糊掉）。
+  - **组合**：`scripts/compose-icon-frames.mjs` 按尺寸拼 ICO：16/24/32 取简化稿、48/64/256 取完整稿；`pnpm icons:compose` 可复现，产物与提交的 `icon.ico` 逐字节一致（`821cf027…`）；`icons/32x32.png` 同步换用简化稿。
+  - **测试**：新增 `scripts/icon-frames.node-test.mjs`（5 项）→ `test:contract` **56 通过**；`app-icon.test.ts` **11 通过**（含小尺寸源图摘要、无渐变、四色实色、放大倍数）。
+  - **重打包核验**：重建后 exe 的 32px 图标与新 `icon.ico` 32px 帧逐像素一致（差异 0.0），与旧帧差 23.6 → 打包链确实取用简化帧。
+  - **云端**：`5bdaf7b7` 上 Tauri Rust CI [40161780975](https://github.com/TanCan1998/Lorekeeper/actions/runs/40161780975) **1752 通过 0 失败** + all-targets；contract tests、Commit message CI、Gitleaks 均 success。
+  - **未做**：本机已装的 1.0.3.0 仍是旧帧；要在任务栏/资源管理器看到效果，需把 `wix.version` 升到 1.0.4.0 再重装（待确认）。
+- **上轮（2026-10-25 第138次）**：重打包并完成覆盖安装与后台启动验收，桌面图标与安装入口落地。
   - **打包**：`wix.version` 1.0.2.0 → **1.0.3.0**（同版本 MSI 会被当「修复」而不刷新文件，必须递增；UpgradeCode 保持 `{ED3E3199-…}`）。本地 `pnpm tauri build --bundles msi,nsis`：MSI 53,923,840 B / NSIS 50,166,023 B，SHA256 见证据文件。
   - **覆盖安装**：`msiexec /i … /qn` 退出码 **0**；旧 1.0.2.0 条目被升级移除，ARP 只剩单条 **v1.0.3.0**（ProductCode `{88025DBA-…}`）；Appx 重注册为 **1.0.3.0**；桌面与开始菜单快捷方式均指向 `lorekeeper-activate.exe` 且无参数，图标取自 MSI `ProductIcon`。
   - **图标核验**：安装后 `lorekeeper.exe` 的 32px 图标与新 `icons/icon.ico` 逐像素一致（差异 0.0），与旧 PageKin 图标差异 132.27 → 打包链用的是新星芒图标。**发现的真问题**：16/24/32px 帧是整图等比缩小，低分辨率下「司」与星芒糊成文档状，需小尺寸专用简化稿（未做，待定）。
