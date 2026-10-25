@@ -28,7 +28,11 @@ const version = JSON.parse(fs.readFileSync(path.join(root, 'tauri-app/package.js
 const identity = { version, sha: 'a'.repeat(40), tag: `lorekeeper-v${version}`, prerelease: true }
 
 function fixture() {
-  const dir = fs.mkdtempSync(path.join(root, '.pi/tmp/release-unit-'))
+  // 夹具目录是仓库内的本机暂存区：干净检出里并不存在，必须先建父目录，
+  // 否则 mkdtempSync 会以 ENOENT 失败（2026-10-25 CI 首跑即如此）。
+  const tempRoot = path.join(root, '.pi/tmp')
+  fs.mkdirSync(tempRoot, { recursive: true })
+  const dir = fs.mkdtempSync(path.join(tempRoot, 'release-unit-'))
   const specs = [
     ['windows-x64', 'Windows', 'X64', [['nsis', 'x64-setup.exe'], ['msi', 'x64_zh-CN.msi']]],
     ['macos-arm64', 'macOS', 'ARM64', [['dmg', 'aarch64.dmg']]],

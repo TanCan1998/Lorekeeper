@@ -204,7 +204,9 @@ const compiler = process.platform === 'win32'
 test('真实NSIS编译器验证挂钩语法（仅编译，不执行安装卸载）', {
   skip: !compiler || !fs.existsSync(compiler),
 }, () => {
-  const dir = fs.mkdtempSync(path.join(root, '.pi/tmp/installer-syntax-'))
+  const tempRoot = path.join(root, '.pi/tmp')
+  fs.mkdirSync(tempRoot, { recursive: true })
+  const dir = fs.mkdtempSync(path.join(tempRoot, 'installer-syntax-'))
   const source = path.join(dir, 'syntax.nsi')
   fs.writeFileSync(source, [
     'Unicode true',
