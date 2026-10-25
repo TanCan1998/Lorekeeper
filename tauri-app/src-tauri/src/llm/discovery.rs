@@ -409,7 +409,8 @@ pub fn parse_gemini_models_for(
     Some((models, seen.len()))
 }
 
-/// 兼容入口：只关心写正文的模型列表，丢掉列出总数。
+/// 兼容入口：只关心写正文的模型列表，丢掉列出总数（仅测试与旧调用面使用）。
+#[cfg(test)]
 pub fn parse_gemini_models(payload: &Value, credential: &str) -> Option<Vec<DiscoveredModel>> {
     parse_gemini_models_for(payload, credential, DiscoveryPurpose::Generation)
         .map(|(models, _listed)| models)
@@ -444,6 +445,7 @@ pub enum DiscoveryTransport {
 }
 
 /// 解释传输结果（对齐 `discoverModels()` 的判定顺序）。
+#[cfg(test)]
 pub fn interpret_discovery_response(
     protocol: &str,
     credential: &str,

@@ -299,7 +299,8 @@ function installModel(): void {
   })
 }
 
-function command(draftContent: string, overrides: { onlyFailed?: boolean; stepKey?: string; retryInvalidResult?: boolean } = {}) {
+/** 上游把「只重试某一步」改成 `stepKeys`；这里保留 `stepKey` 书写方式，便于逐个用例对照。 */
+function command(draftContent: string, overrides: { onlyFailed?: boolean; stepKey?: string; stepKeys?: string[]; retryInvalidResult?: boolean } = {}) {
   insertFinalizedDraft(7, 2, draftContent)
   const db = getProjectDb()!
   if (!db.prepare('SELECT 1 FROM character_identity_proposals WHERE proposal_id=?').get('fcs:finalization-7')) {
@@ -320,6 +321,7 @@ function command(draftContent: string, overrides: { onlyFailed?: boolean; stepKe
     },
     sourceLabel: 'Chapter 2 finalization',
     ...overrides,
+    ...(overrides.stepKey ? { stepKeys: [overrides.stepKey] } : {}),
   })
 }
 

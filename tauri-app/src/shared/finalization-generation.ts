@@ -32,6 +32,8 @@ export interface FinalizationGenerationRecovery {
   context: FinalizationGenerationContext
   sourceStatus: 'current' | 'conflict'
   effect?: FinalizationGenerationEffect
+  /** 最近一次物理尝试：界面按它的结束状态判断这次重试还能不能改结果。 */
+  latestAttempt?: { attemptId: string; inFlight: boolean; finishReason: string | null; failureCode: string | null }
 }
 export interface FinalizationGenerationChannels {
   'finalization-generation:read': { args: [{ slot: FinalizationGenerationSlot }]; return: FinalizationGenerationRecovery | null }

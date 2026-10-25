@@ -6217,6 +6217,31 @@ impl MainGenerationOwner {
         if let Some(eff) = effect {
             res["effect"] = eff;
         }
+        // 最近一次物理尝试：界面据此判断这次重试还能不能改结果（对齐基线 latestAttempt）。
+        let latest_attempt_id: Option<String> = conn
+            .query_row(
+                "SELECT attempt_id FROM generation_attempts WHERE run_id=? ORDER BY rowid DESC LIMIT 1",
+                [&run.run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some(attempt_id) = latest_attempt_id {
+            if let Ok(receipt) = self.repository.receipt(conn, &attempt_id, None) {
+                res["latestAttempt"] = json!({
+                    "attemptId": receipt.attempt.attempt_id,
+                    "inFlight": matches!(
+                        receipt.attempt.status.as_str(),
+                        "reserved" | "dispatch-marked"
+                    ),
+                    "finishReason": receipt
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.finish_reason.clone()),
+                    "failureCode": receipt.failure_code.clone(),
+                });
+            }
+        }
         Ok(res)
     }
 

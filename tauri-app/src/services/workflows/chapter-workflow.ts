@@ -101,6 +101,18 @@ export interface FinalizeOnlyParams {
   snapshot?: import('../finalization-snapshot').FinalizationSnapshot
 }
 
+// ==========================================
+// 2. 草稿文件工具函数 (供前端 UI 侧调用)
+// ==========================================
+
+export function getDraftDir(_projectPath: string, chapterNumber: number): string {
+  return `ai-novel://draft/ch${chapterNumber}`
+}
+
+export function getDraftPath(_projectPath: string, chapterNumber: number, version: number): string {
+  return `ai-novel://draft/ch${chapterNumber}/v${version}`
+}
+
 const CHAPTER_CONTEXT_READ_RESOURCE_KEYS = Object.freeze([
   workflowResourceKey('novel-config'),
   workflowResourceKey('architecture'),
@@ -146,7 +158,11 @@ export async function parseDraftMeta(
   if (!resource || !['draft', 'manuscript', 'chapter'].includes(resource.kind)) return null
   filePath = canonicalResourceUri(filePath)!
   if (!sameProjectPathKey(projectSession.projectPath, expectedProjectPath)) {
-    throw new Error('读取草稿元数据时项目会话与目标路径不匹配')
+    throw new Error(localize(
+      chapterWorkflowLocale(),
+      '读取草稿元数据时项目会话与目标路径不匹配',
+      'The project session does not match the target path, so the draft metadata was not read.',
+    ))
   }
 
   // 优先处理 ai-novel://draft/{id} 纯数字 ID 格式（DB 化后的标准路径）
@@ -519,6 +535,17 @@ export function createRepairFinalizeWorkflow(
             if (Array.isArray(bp?.characters)) chapterEntities = bp.characters
           } catch { /* 蓝图读取失败时使用默认标题 */ }
 
+          // 按行与整卡重试都按当前状态重算卡上的安排：界面可能还拿着旧状态，重试结果也一样的失败不重跑。
+          const { getChapterFinalizeScope, readPostProcessStatus } = await import('./workflow-utils')
+          const { planFinalizationRetry } = await import('../../shared/finalization-step-error')
+          const current = await readPostProcessStatus(projectPath, getChapterFinalizeScope(chapterNumber), projectSession)
+          const plan = current && planFinalizationRetry(current.steps)
+          const stepKeys = !plan ? [] : stepKey ? [stepKey].filter(key => plan.rows.has(key)) : plan.card
+          if (stepKeys.length === 0) throw new Error(text(
+            '没有可以重试的失败步骤，请按各步骤的说明处理。',
+            'No failed step can be retried. Follow the note on each step.',
+          ))
+
           // 修复运行也冻结一次模型租约，全部 LLM 后处理共享一个预算。
           const { RunFinalizePostProcessCommand } = await import('./commands/finalize-chapter.command')
           const status = await new RunFinalizePostProcessCommand({
@@ -534,19 +561,19 @@ export function createRepairFinalizeWorkflow(
             ),
             onlyFailed: true,
             retryInvalidResult: true,
-            stepKey,
+            stepKeys,
             chapterEntities,
           }).execute({ step: {}, context, callbacks })
 
           // 后处理修复不会产生新定稿快照，只请求项目资源刷新。
           const { globalEventBus } = await import('../../shared/event-bus')
           globalEventBus.emit('REFRESH_RESOURCE', {
-            resources: ['fileTree', 'characterCards', 'drafts'],
+            resources: ['fileTree', 'drafts'],
             projectPath,
             projectSession,
           })
           const failedSteps = Object.entries(status.steps)
-            .filter(([key, result]) => (!stepKey || key === stepKey) && !result.ok)
+            .filter(([key, result]) => stepKeys.includes(key) && !result.ok)
             .map(([, result]) => result.label)
           if (failedSteps.length > 0) {
             throw new Error(text(
