@@ -129,6 +129,17 @@
 - **Issue #515**：确认它在上游仓库（`EthanYoQ/AI-Novel-Writer`），本 fork 的 issues 已关闭，故不改上游 issue；按用户决定记入本仓库交接——**本项目不迁移该 DSH 插件**，其 critical 告警不处理，将来若纳入维护再移植到 DSH ≥0.1.2-rc.1。
 - 证据：`.pi/tmp/upgrade-2026-10-25/{evidence.json, install-beta2.log, install-beta1.log, upgrade-to-1.0.4.0.log, *.png}`（不入库）。
 
+## 本次更新（第 148 次）：卸载/重装 + NSIS 安装包验收
+
+- **链路**：卸载 MSI 1.0.4.0 → 装 NSIS 包 → 启动/关闭 → 卸 NSIS → 重装 MSI → 启动/关闭（每步退出码 0）。
+- **MSI 卸载干净**：ARP 清除、Appx 0 个、`D:\Program Files\LoreKeeper` 目录删除、公共桌面与开始菜单快捷方式删除；`~/.lorekeeper`(10-23)、`~/.vela`(10-16) 无写入。
+- **NSIS（currentUser）**：**不需要提权**，12s 装完，落 `%LOCALAPPDATA%\LoreKeeper`（`lorekeeper.exe` 79,958,528 B、activator、`uninstall.exe`、`identity/`）；ARP 在 HKCU，显示应用版本 `1.0.0-beta.2`；用户级开始菜单与桌面快捷方式均指向 activator 且无参数。
+- **按需注册生效**：NSIS 安装后 **Appx 为空**，首次启动由激活器注册成功（`1.0.4.0`）；三进程链、标题 `LoreKeeper`、CDP `Lorekeeper 设定司`；`WM_CLOSE` 2.03s 全退。
+- **NSIS 卸载**：ARP、快捷方式、Appx 全部清理，程序文件删除；**残留 `identity-launcher.log`（1,110 B 诊断日志）**；数据根未变。
+- **MSI 重装**：回到默认目录 **`C:\Program Files\LoreKeeper`**（不记忆上次自定义的 `D:\Program Files`），ARP 单条 1.0.4.0、Appx 1.0.4.0、快捷方式指向 activator、32px 图标与新简化帧**逐像素一致（0.0）**；启动与关闭正常（2.04s）。
+- **四条写入指南的事实**：①NSIS 装完 Appx 为空、首次启动按需注册；②NSIS 卸载保留启动器日志；③MSI 卸载再装回默认目录；④NSIS 的 ARP 版本是应用版本，两套包产品项独立、不应并存安装。后两条已补进 [安装指南](../agents/tauri-release.md)，「不支持降级」也写在那里（beta.2 发布说明属已发布记录，不改正文，下个版本带上）。
+- 证据：`.pi/tmp/install-cycle-2026-10-25/{evidence.json, msi-uninstall.log, msi-reinstall.log, reinstalled-32.png}`（不入库）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。
