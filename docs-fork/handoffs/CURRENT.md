@@ -1,6 +1,14 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第142次）**：A2 完成——报错文案改在显示时取界面语言；A1 评估后回滚（与上游 finalize 重构强耦合）。
+- **最新维护（2026-10-25 第143次）**：模型发现按用途筛选 + 模型名候选控件落地（剩余的「模型发现」切片）。
+  - **Rust**：`empty` 拆成 `no_models` / `no_suitable_models`；新增 `DiscoveryPurpose`，按 `purposes` 判断用途，Gemini 用 `supportedGenerationMethods` + 命名黑名单筛，OpenAI 兼容接口把向量模型排前；保留旧函数签名作兼容入口。
+  - **契约**：`ModelDiscoveryErrorCode` 两档、`ModelDiscoveryRequest` 加 `purposes`。
+  - **前端**：新增 `ModelNameField.tsx`（可输入 + 候选 combobox，键盘导航 / 输入法合成保护 / 刷新与状态行）；`ModelForm` 改用它 + 发现状态机（端点多停 500ms 自动取、手动刷新保留旧列表）+ 六档提示。
+  - **验证**：Rust `llm::discovery` **14 通过**（+2 新用例）、定向 rustfmt 通过；`typecheck`/`lint` 0、`check:channels` 288/7/未迁移 0、`test:contract` 56、全量 vitest **227 文件 / 2863 通过 / 1 跳过**。
+  - **云端**：`5337b3a2` 上 Rust CI [40171928682](https://github.com/TanCan1998/Lorekeeper/actions/runs/40171928682) **1754 通过 0 失败** + all-targets；Commit message CI、Gitleaks success。
+  - **未验证**：settings 浏览器测试未跑（Playwright chromium 在 10-22 瘦身时清掉）；需要时先装 chromium（属新装工具，另确认）。
+  - **剩余待办（更新后 2 项）**：① finalize 重试整链（与上游 `explicit` 映射重构、#502/#512 语义绑定）；② 桌面图标/安装入口之外的真机项（卸载重装、NSIS、UAC、旧版升级、macOS）。
+- **上轮（2026-10-25 第142次）**：A2 完成——报错文案改在显示时取界面语言；A1 评估后回滚（与上游 finalize 重构强耦合）。
   - **新增辅助**：Tauri `i18n/app-errors.ts` 补 `displayedErrorMessage(locale, error, fallback?)`、`englishWithReason()`、`DISPLAY_PREFIX`，语义与上游一致（登记码按语言说明 → 认不出的保留原文 → 空时用兜底）。
   - **5 个文件改造**：`CharacterCardImportButton`、`use-draft-actions`、`use-run-recovery`、`use-blueprint-recovery`、`use-knowledge-base` 改用 `useLocaleStore.getState().locale`，并从依赖数组移除，结果晚到时按当前语言显示。
   - **验证**：`typecheck`/`lint` 0、全量 vitest **227 文件 / 2863 通过 / 1 跳过**；提交 `0c997e55`（无 Rust/依赖变更，不触发 Rust CI）。

@@ -77,6 +77,16 @@
 - **验证**：`typecheck` 0、`lint` 0、全量 vitest **227 文件 / 2863 通过 / 1 跳过 / 0 失败**。提交 `0c997e55`，无 Rust 与依赖变更（不触发 Rust CI）。
 - **A1 本轮回滚（结论记录）**：`chapter-workflow` 的「按当前状态重算可重试步骤」+ `finalize-chapter.command` 的 `stepKeys` 参数本身可编译，但上游把重试语义与 `RunFinalizePostProcessCommand` 的 `explicit` 映射重构、`#502/#512` 的提交期数据变化判定绑在一起；只搬一半会让 `repair-finalize-workflow`、`finalize-postprocess-character.integration` 两个契约测试（Tauri 副本为旧断言）失败。已整体回滚，登记为需要连同上游 finalize 重构一起搬的独立切片。
 
+## 本次更新（第 143 次）：模型发现按用途筛选 + 模型名候选控件
+
+- **Rust（`llm/discovery.rs`）**：`ModelDiscoveryErrorCode` 把笼统的 `empty` 拆成 **`no_models`**（端点一个模型都没列）与 **`no_suitable_models`**（列了模型但没有适合当前用途的）；新增 `DiscoveryPurpose`，从请求的 `purposes` 判断用途：Gemini 按 `supportedGenerationMethods` + 命名黑名单（tts/image/live/transcribe/audio/lyria/nano-banana/computer-use/deep-research/antigravity/robotics）筛，OpenAI 兼容接口按名字认向量模型并排在前面。保留 `parse_gemini_models` / `interpret_discovery_response` 兼容入口，旧测试不用改签名。
+- **契约**：`ipc-channels` 的 `ModelDiscoveryErrorCode` 同步为两档，`ModelDiscoveryRequest` 加 `purposes`。
+- **前端**：新增 `components/settings/ModelNameField.tsx`（可输入 + 候选列表的 combobox，含键盘导航、输入法合成保护、刷新与状态行）；`ModelForm` 改用该控件 + `ModelDiscoveryState` 状态机（端点多停 500ms 自动取列表，旧列表在手动刷新时保留）+ 六档提示文案。
+- **验证**：Rust `cargo test --lib llm::discovery` **14 通过**（含 2 个新用例：无模型/无适合模型区分、检索模型排序），定向 rustfmt 通过；`typecheck`/`lint` 0、`check:channels` 288/7/未迁移 0、`test:contract` 56、全量 vitest **227 文件 / 2863 通过 / 1 跳过**。
+- **云端**：`5337b3a2` 的 Rust CI [40171928682](https://github.com/TanCan1998/Lorekeeper/actions/runs/40171928682) **1754 通过 0 失败**（+2 为新用例）+ all-targets success；Commit message CI、Gitleaks success。
+- **未验证**：settings 的浏览器测试本轮没跑——本机 Playwright chromium 在 10-22 瘦身时被清掉，`pnpm test:browser` 报可执行文件缺失。需要时先 `pnpm exec playwright install chromium`（会下载，属新装工具，另行确认）。
+- **同轮附带**：清掉 `commands/generation.rs` 未使用的 `ProjectCoreSynopsisExpected` 导入（`e54bc7a5`）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。
