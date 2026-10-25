@@ -9,6 +9,7 @@ import { plotOutlineSourceInvalidText } from '../../shared/plot-outline-contract
 import type { RecoveryCandidate } from '../../shared/recovery-candidate'
 import type { ReviewRevisionRecovery } from '../../shared/review-revision-generation'
 import { workflowResourceKey, type WorkflowRun } from '../../stores/workflow-store'
+import { pluralEn } from '../../shared/plural-en'
 
 /**
  * 运行中断后可以接着做的事。运行侧页从这里取标题、提示、可复制的文字与动作是否可用，
@@ -127,7 +128,7 @@ function usageOf(view: Pick<MainGenerationRunView, 'budgetDiagnostics' | 'ledger
   const t = lang(locale)
   return {
     budget: view.budgetDiagnostics,
-    usage: view.ledger ? t(`已用 ${view.ledger.physicalRequests} 次请求`, `${view.ledger.physicalRequests} requests used`) : undefined,
+    usage: view.ledger ? t(`已用 ${view.ledger.physicalRequests} 次请求`, `${view.ledger.physicalRequests} ${pluralEn(view.ledger.physicalRequests, 'request')} used`) : undefined,
   }
 }
 

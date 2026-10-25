@@ -4,6 +4,7 @@
 import { buildAgentTool } from '../tool-registry'
 import { ipc } from '../../ipc-client'
 import { unwrapKnowledgeValue } from '../../knowledge-service'
+import { containsHan } from '../../../i18n/app-errors'
 import { agentToolText, assertAgentProjectCurrent, requireAgentProject } from './project-context'
 
 export const searchKnowledgeTool = buildAgentTool({
@@ -54,7 +55,7 @@ export const searchKnowledgeTool = buildAgentTool({
       return {
         success: false,
         content: '',
-        error: context?.writingLanguage === 'en-US' && /[\u3400-\u9fff]/u.test(detail)
+        error: context?.writingLanguage === 'en-US' && containsHan(detail)
           ? text('知识库搜索失败', 'Could not search the knowledge base')
           : detail,
       }

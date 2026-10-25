@@ -134,8 +134,9 @@ const ERROR_KEYS = {
   GENERATION_MATERIAL_PROMPT_UNVERIFIED: 'error.generationSourceChanged',
   GENERATION_KNOWLEDGE_SOURCE_STALE: 'error.generationSourceChanged',
   FINALIZED_CHARACTER_STATE_INVALID: 'error.generationSourceChanged',
-  FINALIZED_CHARACTER_SOURCE_CONFLICT: 'error.generationSourceChanged',
-  FINALIZED_CHARACTER_FIELD_CONFLICT: 'error.generationSourceChanged',
+  // 定稿后处理提交角色状态时，来源对不上或有更晚章节写过该字段（#484/#491）：按实测分别说明能否重试。
+  FINALIZED_CHARACTER_SOURCE_CONFLICT: 'error.characterStateSourceConflict',
+  FINALIZED_CHARACTER_FIELD_CONFLICT: 'error.characterStateFieldConflict',
   LEGACY_ROSTER_PROJECT_MISMATCH: 'error.generationSourceChanged',
   LEGACY_ROSTER_SOURCE_MODE_CHANGED: 'error.generationSourceChanged',
   GENERATION_RUNTIME_UNAVAILABLE: 'error.generationStopped',
@@ -176,6 +177,11 @@ function readMessage(error: unknown): string {
 export function knownAppErrorMessage(locale: Locale, error: unknown): string | undefined {
   const code = readCode(error)
   return code ? translate(locale, ERROR_KEYS[code]) : undefined
+}
+
+/** 文字里有没有汉字，含扩展区与兼容区；判断原因能否拼进英文句子都用它。 */
+export function containsHan(value: string): boolean {
+  return /\p{Script=Han}/u.test(value)
 }
 
 export function appErrorMessage(locale: Locale, error: unknown): string {

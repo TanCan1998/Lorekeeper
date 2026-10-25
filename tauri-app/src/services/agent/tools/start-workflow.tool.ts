@@ -6,6 +6,7 @@ import { launchCreativeWorkflow, type CreativeIntent } from '../../workflows/cre
 import { assertAgentToolActive, requireAgentProject } from './project-context'
 import { DEFAULT_WRITING_LANGUAGE, writingLanguageText } from '../../../shared/writing-language'
 import { APP_BRAND } from '../../../shared/brand'
+import { containsHan } from '../../../i18n/app-errors'
 
 export const startWorkflowTool = buildAgentTool({
   name: 'start_workflow',
@@ -108,7 +109,7 @@ export const startWorkflowTool = buildAgentTool({
       return {
         success: false,
         content: '',
-        error: writingLanguage === 'en-US' && /[\u3400-\u9fff]/u.test(detail)
+        error: writingLanguage === 'en-US' && containsHan(detail)
           ? `Could not start the ${displayName}${chapterInfo} workflow.`
           : detail,
       }

@@ -37,6 +37,8 @@ export const enUS = {
   'error.generationSkillUnavailable': 'A selected writing Skill was removed or is not compatible with this book (for example, it is in another language). Choose the Skills again in Settings, then generate.',
   'error.generationSkillBundleDamaged': 'Files bundled with a selected writing Skill were changed or are missing, so nothing was generated. Re-import the Skill in Settings, then generate.',
   'error.generationFinalizationRecoveryUnavailable': "This step's generation record changed, so it was not generated again.",
+  'error.characterStateSourceConflict': "The finalized chapter text is saved, but the character card was not updated: some of this character's current state was already updated by a later finalized chapter, or its recorded source no longer matches the current finalized text, so nothing was written to avoid overwriting newer state. If this project was restored from a backup and the failure happened before you updated the app, opening the project in this version already repaired its source records, so you can select Retry. If Retry still fails, or this is not your case, open the character's Current state view, check those fields, and edit them by hand if needed.",
+  'error.characterStateFieldConflict': "The finalized chapter text is saved, but the character card was not updated: this character's current state changed while this step was running (for example, it was edited on the Characters page or a character state suggestion was accepted), so nothing was written to avoid overwriting that change. Retrying gives the same result. The change is kept. Open the character's Current state view, check it, and edit it by hand if this chapter should change it.",
 } as const
 
 export type MessageKey = keyof typeof enUS

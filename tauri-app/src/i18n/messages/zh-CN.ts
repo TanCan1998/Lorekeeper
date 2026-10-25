@@ -39,4 +39,6 @@ export const zhCN = {
   'error.generationSkillUnavailable': '选用的写作 Skill 已被删除，或与这本书不兼容（例如语言不同）。请在设置里重新选择后再生成。',
   'error.generationSkillBundleDamaged': '选用的写作 Skill 附带的文件被改动或缺失，结果没有生成。请在设置里重新导入这个 Skill 后再生成。',
   'error.generationFinalizationRecoveryUnavailable': '这一步的生成记录已变化，本次没有重新生成。',
+  'error.characterStateSourceConflict': '正文定稿已保存，但角色卡没有自动更新：这个角色的当前状态里有字段已由后面章节的定稿更新过，或它记录的来源与现在的定稿对不上，为免旧内容覆盖较新的状态，本次没有写入。如果这个项目是从备份恢复的、失败发生在升级前，新版本打开项目时已修复来源记录，可以点「重试」；重试仍失败，或不属于这种情况时，请到角色页的「当前状态」查看这些字段，需要时直接手动修改。',
+  'error.characterStateFieldConflict': '正文定稿已保存，但角色卡没有自动更新：生成期间这个角色的当前状态被改动过（例如在角色页手动修改，或采纳了角色状态建议），为免覆盖这次改动，本次没有写入，再点「重试」结果也一样。这次改动已保留，请到角色页的「当前状态」查看这个角色，需要本章带来的变化时直接手动修改。',
 } satisfies Record<MessageKey, string>

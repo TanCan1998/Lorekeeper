@@ -3,6 +3,7 @@
  */
 import { buildAgentTool } from '../tool-registry'
 import { ipc } from '../../ipc-client'
+import { containsHan } from '../../../i18n/app-errors'
 import { agentToolText, assertAgentProjectCurrent, requireAgentProject } from './project-context'
 
 
@@ -59,7 +60,7 @@ export const readBlueprintTool = buildAgentTool({
       return {
         success: false,
         content: '',
-        error: context?.writingLanguage === 'en-US' && /[\u3400-\u9fff]/u.test(detail)
+        error: context?.writingLanguage === 'en-US' && containsHan(detail)
           ? text('读取蓝图失败', 'Could not read blueprints')
           : text(`读取蓝图失败：${detail}`, `Could not read blueprints: ${detail}`),
       }

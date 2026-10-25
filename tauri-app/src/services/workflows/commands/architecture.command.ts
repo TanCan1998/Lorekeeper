@@ -37,6 +37,7 @@ import { hashAuthorText } from '../../../shared/source-ref'
 import type { WorkflowContext, StepCallbacks } from '../../../stores/workflow-store'
 import type { GenerationAttemptReceipt } from '../../generation/generation-harness'
 import type { NovelConfig, ProjectSessionContext } from '../../../shared/ipc-channels'
+import { pluralEn } from '../../../shared/plural-en'
 import type { ProjectCoreSynopsisExpected } from '@baseline/repositories/project-core-repository'
 import type { WritingLanguage } from '../../../shared/writing-language'
 import { createStructuredBatchExecutor, type StructuredBatchContract } from '../structured-batch-executor'
@@ -1952,7 +1953,7 @@ export class GeneratePlotArchitectureCommand extends BaseWorkflowCommand<string>
       )
       callbacks.log(text(
         `已完成部分（约 ${partialBody.length} 字）已保存，可点击「继续生成情节大纲」从断点续写`,
-        `The completed part (about ${partialBody.length} characters) was saved. Click “Continue plot outline” to resume from the break point.`,
+        `The completed part (about ${partialBody.length} ${pluralEn(partialBody.length, 'character')}) was saved. Click “Continue plot outline” to resume from the break point.`,
       ))
       throw new PlotOutlineResumeAvailableError(text(
         `情节大纲生成在完成前中断：${cause instanceof Error ? cause.message : String(cause)}。已完成部分（约 ${partialBody.length} 字）已自动保存为不完整状态，没有白费。\n点击「继续生成情节大纲」可续写本批（第 ${from}–${to} 章）；如本批范围仍偏大，可先在「AI 生成架构」缩小每批章节数后重试。`,

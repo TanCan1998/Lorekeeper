@@ -1,5 +1,6 @@
 import { ipc } from '../../ipc-client'
 import { buildAgentTool } from '../tool-registry'
+import { containsHan } from '../../../i18n/app-errors'
 import { agentToolText } from './project-context'
 
 export const inspectWritingSkillTool = buildAgentTool({
@@ -33,7 +34,7 @@ export const inspectWritingSkillTool = buildAgentTool({
       return {
         success: false,
         content: '',
-        error: context?.writingLanguage === 'en-US' && /[\u3400-\u9fff]/u.test(detail ?? '')
+        error: context?.writingLanguage === 'en-US' && containsHan(detail ?? '')
           ? text('Skill 检查失败', 'Could not inspect the writing Skill')
           : detail ?? text('Skill 检查失败', 'Could not inspect the writing Skill'),
       }

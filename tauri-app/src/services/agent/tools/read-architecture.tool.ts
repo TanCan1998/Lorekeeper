@@ -3,6 +3,8 @@
  */
 import { buildAgentTool } from '../tool-registry'
 import { ipc } from '../../ipc-client'
+import { containsHan } from '../../../i18n/app-errors'
+import { pluralEn } from '../../../shared/plural-en'
 import { agentToolText, assertAgentProjectCurrent, requireAgentProject } from './project-context'
 
 
@@ -63,13 +65,13 @@ export const readArchitectureTool = buildAgentTool({
         return { success: true, content: text('⚠️ 架构为空，暂无架构文件。建议通过工作流生成故事架构。', '⚠️ The architecture is empty. Generate the story architecture with the workflow first.') }
       }
 
-      return { success: true, content: text(`📐 故事架构（${contents.length} 个文件）\n\n${contents.join('\n\n---\n\n')}`, `📐 Story architecture (${contents.length} files)\n\n${contents.join('\n\n---\n\n')}`) }
+      return { success: true, content: text(`📐 故事架构（${contents.length} 个文件）\n\n${contents.join('\n\n---\n\n')}`, `📐 Story architecture (${contents.length} ${pluralEn(contents.length, 'file')})\n\n${contents.join('\n\n---\n\n')}`) }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       return {
         success: false,
         content: '',
-        error: context?.writingLanguage === 'en-US' && /[\u3400-\u9fff]/u.test(detail)
+        error: context?.writingLanguage === 'en-US' && containsHan(detail)
           ? text('读取架构失败', 'Could not read the architecture')
           : text(`读取架构失败：${detail}`, `Could not read the architecture: ${detail}`),
       }

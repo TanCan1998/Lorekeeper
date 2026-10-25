@@ -1,6 +1,7 @@
 import { ipc } from '../../ipc-client'
 import { skillRegistry } from '../skill-registry'
 import { buildAgentTool } from '../tool-registry'
+import { containsHan } from '../../../i18n/app-errors'
 import { agentToolText } from './project-context'
 
 export const installWritingSkillTool = buildAgentTool({
@@ -38,7 +39,7 @@ export const installWritingSkillTool = buildAgentTool({
       return {
         success: false,
         content: '',
-        error: context?.writingLanguage === 'en-US' && /[\u3400-\u9fff]/u.test(detail ?? '')
+        error: context?.writingLanguage === 'en-US' && containsHan(detail ?? '')
           ? text('Skill 安装失败', 'Could not install the writing Skill')
           : detail ?? text('Skill 安装失败', 'Could not install the writing Skill'),
       }

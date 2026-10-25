@@ -3,6 +3,7 @@
  */
 import { buildAgentTool } from '../tool-registry'
 import { ipc } from '../../ipc-client'
+import { containsHan } from '../../../i18n/app-errors'
 import { agentToolText, assertAgentProjectCurrent, requireAgentProject } from './project-context'
 
 
@@ -72,7 +73,7 @@ export const readCharactersTool = buildAgentTool({
       return {
         success: false,
         content: '',
-        error: context?.writingLanguage === 'en-US' && /[\u3400-\u9fff]/u.test(detail)
+        error: context?.writingLanguage === 'en-US' && containsHan(detail)
           ? text('读取角色列表失败', 'Could not read the character list')
           : text(`读取角色列表失败：${detail}`, `Could not read the character list: ${detail}`),
       }

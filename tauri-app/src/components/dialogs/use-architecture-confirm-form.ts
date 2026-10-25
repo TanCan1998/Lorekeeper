@@ -46,7 +46,6 @@ export function useArchitectureConfirmForm({
 }: ArchitectureConfirmFormOptions) {
   const currentProject = useProjectStore(s => s.currentProject)
   const text = useLocaleStore(s => s.text)
-  const locale = useLocaleStore(s => s.locale)
 
   // 默认：未确认的全部勾选；或使用 initialSelectedSteps 覆盖
   const [checked, setChecked] = useState<Record<ArchStepKey, boolean>>(() => {
@@ -205,7 +204,7 @@ export function useArchitectureConfirmForm({
 
       // 前置校验 2：如果勾选了角色名单（意味着将重新生成角色卡），则必须确保蓝图为空
       if (selectedSteps.includes('characters') && archStatus.characters) {
-        const charGuard = await guardCharacterRegeneration(undefined, locale)
+        const charGuard = await guardCharacterRegeneration()
         if (!charGuard.ok) {
           setGuardError(charGuard.message || text('角色卡不可重新生成', 'Character cards cannot be regenerated.'))
           return
