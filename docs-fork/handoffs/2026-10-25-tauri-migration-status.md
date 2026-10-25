@@ -29,6 +29,16 @@
 - **交接口径纠偏**：CURRENT 删除「迁移资源操作仍暂缓（不编译/测试/打包/安装/卸载/提权）」「MSI 仅源码修改、未构建未安装」「等最终验证授权后本机一次性跑 cargo test」等已被后续轮次推翻的段落，改为按 [混合验证说明](../agents/tauri-rust-ci.md) 记录口径，并把未解除阻塞归成「需重打包/真机」「缺外部条件」「未授权」「待决策」「按审计不动」五类。
 - 未改：Rust、schema、依赖、锁文件、权限；未重打包、未发布、未派发子代理。
 
+## 本次更新（第 138 次）：重打包与覆盖安装验收
+
+- **版本门禁**：`tauri.conf.json` 的 `bundle.windows.wix.version` 1.0.2.0 → 1.0.3.0。同版本 MSI 会被 Windows Installer 视作修复而不替换文件，覆盖验收必须递增；`test:contract` 的 `assertWixVersion` 用例在该版本下 51 项全通过。
+- **构建**：本机 `pnpm tauri build --bundles msi,nsis`（Rust release 增量 3m55s，产物见下表）。构建告警：`src/commands/generation.rs:66` 未使用导入 `ProjectCoreSynopsisExpected`（既有，未处理）。
+- **覆盖安装**：`msiexec /i … /qn /norestart` 退出码 0；ARP 由 1.0.2.0（`{0D60D879-…}`）升级为单条 1.0.3.0（`{88025DBA-…}`），未出现并存安装；Appx 重注册 1.0.3.0；桌面与开始菜单快捷方式目标均为 `D:\Program Files\LoreKeeper\lorekeeper-activate.exe` 且无参数。
+- **图标**：MSI 的 `ProductIcon` 与 exe 资源均为新星芒；安装后 exe 的 32px 图标与 `icons/icon.ico` 32px 帧逐像素一致（差异 0.0），与旧 PageKin 图标差异 132.27。**遗留设计问题**：16/24/32px 帧由整图缩放生成，「司」与星芒在极小尺寸糊成文档状，建议后续做小尺寸专用简化稿。
+- **启动与关闭**：真实桌面快捷方式启动 → 三进程链正常，窗口标题 `LoreKeeper`，CDP `Lorekeeper 设定司` / `http://tauri.localhost/`；`WM_CLOSE` 后 2.04s 内全部退出；数据根无新写入；全程未置顶、未激活、未用键鼠。
+- **未做**：卸载/重装、NSIS 原生安装、多用户 UAC、旧版升级、macOS 真机；未发布。
+- 证据：`.pi/tmp/repack-2026-10-25/{evidence.json,build.log,build.err.log,install.log,exe-icon.png,installed-exe-icon.png}`（不入库）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。
