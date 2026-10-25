@@ -45,6 +45,9 @@ node tauri-app/scripts/sync-readme.mjs --check
 - 写配置没有公开 API：启用与“立即同步”通过仓库设置页完成（`/setting/mirror` → Pull）。本仓库脚本只读校验 SHA 与附件。
 - 附件不进入 Git，平台拉取不会带来安装包；Release 资产仍按下节单独上传。
 
+
+- **2026-10-25 beta.3**：GitHub 发布后平台已拉取标签 `lorekeeper-v1.0.0-beta.3` → `f39249d0`、`master` → `b67fcda8`；用 `MIRROR_ASSET_DIR` 指向本地已下载的九附件执行 `pnpm mirror:release`，AtomGit Release（`target_commitish=f39249d0`）由脚本创建并逐个上传，**匿名读回大小/SHA256 全部一致**；两端说明写入双源表格并读回相同。AtomGit 另有平台生成的四个源码归档，合计 13 项展示、附件 9 个。旧版本 Release/标签/附件未删除未覆盖。
+
 ## 令牌
 
 GitHub 仓库 Secret：`ATOMGIT_ACCESS_TOKEN`，从本机用户环境变量同名项通过标准输入交给 GitHub CLI 加密保存。

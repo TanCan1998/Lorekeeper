@@ -179,6 +179,16 @@
 - **未验证**：多用户 UAC（用户先不做）、macOS 真机（无设备）。
 - 证据：`.pi/tmp/beta3-release/{evidence.json, install-published.log, installed-beta3-32.png, SHA256SUMS.txt, release-manifest.json, LoreKeeper_1.0.0-beta.3_x64_zh-CN.msi}`（不入库）。
 
+## 本次更新（第 153 次）：beta.3 AtomGit 镜像完成
+
+- 用户选择「平台拉取代码 + 本机上传附件」：AtomGit 平台已把 `master` 同步到 `b67fcda8`、并拉取标签 `lorekeeper-v1.0.0-beta.3` → **`f39249d0`**。
+- 九个附件先在 GitHub 侧下载到本地（`.pi/tmp/beta3-mirror/`，约 250 MB），再用 `MIRROR_ASSET_DIR` 执行 `pnpm mirror:release`：不重复下载、不重打包、不重压缩。
+- **遇到并修掉的两个拦截**：① AtomGit 直接建 Release 报 `f39249d0 is not exist`（代码未同步，非附件问题）；② 首次运行因日志文件混进附件目录被「本地附件集合不一致」拦下，移出后通过。
+- **结果**：AtomGit Release `target_commitish=f39249d0`、`prerelease=false`；九个附件（MSI 53,989,376 / NSIS 50,223,097 / 两个 DMG 91,915,101 与 91,918,117 / 三份清单 / release-manifest / SHA256SUMS）**匿名读回大小与 SHA256 全部一致**；两端发布说明均写入双源表格并读回核验。AtomGit 另有平台生成的四个源码归档，合计 13 项展示。
+- 未删除、未覆盖旧版本（beta / beta.1 / beta.2）的任何 Release、标签或附件。
+- 文档：`docs-fork/releases/1.0.0-beta.3.md` 补 AtomGit 链接与镜像记录；`docs-fork/agents/atomgit-mirror.md` 记录本轮镜像做法与结果。
+- 证据：`.pi/tmp/beta3-mirror-logs/mirror2.{log,err.log}`、`.pi/tmp/beta3-mirror/`（不入库）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。

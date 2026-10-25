@@ -1,6 +1,13 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第152次）**：**1.0.0-beta.3 已发布**（GitHub，Latest），并用发布产物完成本机装机验收；AtomGit 待平台拉取标签。
+- **最新维护（2026-10-25 第153次）**：**beta.3 双源发布完成**——AtomGit 镜像九个附件并匿名读回核验，两端说明写入双源下载表格。
+  - **代码同步**：AtomGit 平台已拉取（`master` → `b67fcda8`，标签 `lorekeeper-v1.0.0-beta.3` → `f39249d0`）。
+  - **附件上传**：先本地下载九个附件（约 250 MB），再以 `MIRROR_ASSET_DIR` 跑 `pnpm mirror:release`（不重复下载、不重打包、不重压缩）；AtomGit Release 由脚本按 `target_commitish=f39249d0` 创建。
+  - **核验**：九个附件匿名读回大小与 SHA256 全部一致；两端发布说明都写入双源表格并读回相同；GitHub 保持 Latest，AtomGit 不宣称等价 Latest。AtomGit 另有平台生成的四个源码归档（合计 13 项展示）。
+  - **两个拦截（已解决）**：① 平台未同步时建 Release 报 `f39249d0 is not exist`；② 日志文件混入附件目录触发「本地附件集合不一致」。
+  - **未删未覆盖**：旧版本 beta / beta.1 / beta.2 的 Release、标签、附件全部保留。
+  - **未验证**：多用户 UAC（先不做）、macOS 真机（无设备）。
+- **上轮（2026-10-25 第152次）**：1.0.0-beta.3 已发布（GitHub，Latest），并用发布产物完成本机装机验收；AtomGit 待平台拉取标签。
   - **发布事实**：标签 `lorekeeper-v1.0.0-beta.3` → 源码 `f39249d0`；Release `423392746`，非草稿/非预发布/已 Latest；run [40192325548](https://github.com/TanCan1998/Lorekeeper/actions/runs/40192325548) 全作业 success。
   - **九附件**：MSI 53,989,376 B（ProductVersion **1.0.5.0**）/ NSIS 50,223,097 B / macos-aarch64 DMG 91,915,101 B / macos-x64 DMG 91,918,117 B + 三份平台清单 + `release-manifest.json` + `SHA256SUMS.txt`；下载 MSI 复算 SHA256 与清单一致。
   - **发布产物验收**：1.0.4.0 → 发布版 MSI（退出码 0）→ ARP/Appx 均 `1.0.5.0`、快捷方式指向 activator 无参数、32px 图标与仓库 `icon.ico` 一致（0.0）、启动采样 1050 次无可见控制台、CDP 正常、`WM_CLOSE` 2.03s 全退、数据根无写入。
