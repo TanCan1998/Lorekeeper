@@ -1,6 +1,12 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第149次）**：修掉安装与首次启动时闪出的 PowerShell 控制台窗口。
+- **最新维护（2026-10-25 第150次）**：本轮收口 + 完整本机基线；上游已追平，无待办代码项。
+  - **本机全量（HEAD `67718389`）**：`typecheck` 0、`lint` 0、`check:channels` 288/7/**未迁移 0**、`test:contract` **56**、单测 **227 文件 / 2873 通过 / 1 跳过**、浏览器套件 **77 文件 / 983 通过**。
+  - **云端**：`aac0985d` 的 Rust CI **1754 通过 0 失败** + all-targets（其后仅文档提交）。
+  - **上游**：`05f180f0` 已追平（领先 0）。
+  - **本日共 15 轮**：LLM 契约补齐 → 上游 1.3.2 尾巴 → 图标放大与 16–32px 专用帧 → wix 1.0.4.0 重打包/覆盖安装 → 上游 2026-10-25 增量（151 提交）合并与回灌 → 报错文案显示时取语言 → 模型发现按用途筛选 + 模型名控件 → 后处理重试按当前状态重算 → 浏览器测试跑通（复用 Edge）→ `#512` 覆盖补齐 → 旧版升级验收 → 卸载/重装与 NSIS 验收 → 激活器隐藏控制台。
+  - **未做**：多用户 UAC（用户明确先不做）、macOS 真机（无设备）、发新版本（`wix.version` 1.0.4.0，发布需另行授权）。
+- **上轮（2026-10-25 第149次）**：修掉安装与首次启动时闪出的 PowerShell 控制台窗口。
   - **根因**：`identity-launcher` 是 GUI 子系统，但 3 处调 `powershell.exe` 未加 `CREATE_NO_WINDOW`，子进程被分配控制台；触发路径是 NSIS 钩子 `ExecShell runas --register-identity` 与首次启动按需注册。NSIS 其它钩子（`nsExec`）、MSI 自定义动作（`WixQuietExec`）、Wix WebView2 bootstrap 本来就是隐藏的。
   - **修复**：`identity-launcher/src/win.rs` 加 `CREATE_NO_WINDOW` 常量与 `CommandExt` 导入，3 处调用追加 `.creation_flags(CREATE_NO_WINDOW)`。
   - **验证**：启动器 `cargo test` 14 通过；重打包 MSI 53,997,568 B / NSIS 50,222,001 B；用 150ms 采样 `powershell/conhost/cmd` 的窗口句柄与标题——NSIS 安装（1274 次采样）、首次启动（1800 次）、MSI 安装（320 次）**可见控制台窗口均为 0**，且 Appx 按需注册、进程链正常。
