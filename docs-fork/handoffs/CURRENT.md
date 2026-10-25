@@ -1,13 +1,19 @@
 # 当前交接入口
 
-- **最新维护（2026-10-23 收口）**：本轮四件事全部落地；仓库 `master` = `origin/master` = `56abaa4d`，零未推送。
+- **最新维护（2026-10-25 第136次）**：收掉上轮遗留的最后一项源码级事项——上游 1.3.2 的 shared 尾巴已对齐。
+  - **LLM 契约补齐**：`tauri-app/src/shared/ipc-channels.ts` 的 `LLMResponseBase` 新增可选 `httpFailure?: { status: number; body: string }`；Rust `llm::chat::LlmResponse.http_failure` 早已序列化该字段，此前 Tauri 契约副本缺声明属漂移。生成链仍按 `error` 判定，该字段只作连接测试证据，不改变成功语义。
+  - **shared 注释增量**：`character-proposal-parser`(3)、`import-run`(2)、`legacy-roster-generation-pure`(1)、`plot-tree`(8) 共 14 处 `// i18n-exempt:` 与上游逐字同步，纯注释。
+  - **缺口复核**：逐文件比对 `src/`(466) 与 `tauri-app/src/`(461)——相对路径缺口仅 8 个 Storybook 故事 + 2 个已按死代码审计删除的服务；175 个同名差异抽样为「类型走 `@baseline`」「覆盖说明/恢复信号按 Tauri 语义重写」等刻意差异化，非未迁移。功能迁移仍 **287/288、未迁移 0**。
+  - **验证（本轮定向）**：`check:channels` 288 invoke / 7 事件 / 未迁移 0；`typecheck`/`lint` exit 0；`pnpm test src/shared` **32 文件 / 540 通过 / 0 失败**。本轮零 Rust 改动，Rust 全量基线仍为 `6ba2bc8d` / CI 39982608773（1752 通过 + all-targets），不记为本轮结果。
+  - **下一步候选**：①下次上游同步；②低层 provider 失败文案仍是中文句子（`API 调用失败 (status)` 等），上游 a71bbcb3 已码化为 `LLM_REQUEST_FAILED` / `LLM_STREAM_*`，对齐需同时动 Rust 分类、契约与展示面，属独立切片；③桌面图标与安装入口需重打包后验收。详见[快照](./2026-10-25-tauri-migration-status.md)。
+- **上轮收口（2026-10-23）**：本轮四件事全部落地；仓库 `master` = `origin/master` = `56abaa4d`，零未推送。
   - **上游同步**：`7e6b827f` → `305ee755`（124 提交 / 27 PR / 274 文件），合并 `c4583267`，零冲突（合并前本地 1190 改文件与上游 274 改文件交集 0）；根依赖随上游升 vite 8.2.4 / Storybook 10.6.2 / js-yaml 4.3.2 + source-map-js override，三份根清单 install 后未被改写。详见[快照](./2026-10-23-upstream-v132-sync.md)。
   - **beta.2 原生拉起**：安装目录主程序 SHA256 与 beta.2 MSI 一致；无包身份 `lorekeeper.exe` 1 秒内交棒 `lorekeeper-activate` + identity-launcher、以包身份重启并加载 `http://tauri.localhost/`；仅发 `WM_CLOSE` 时三进程 1 秒内自行退出；数据根无新写入、启动器日志落 `%TEMP%`。首轮 CDP `/json/close` 导致的「不退出」经对照复验确认为验证手段干扰。
   - **诊断与失败文案**：`54486fc7` 蓝图恢复稿接 `structuredContractDiagnosticText`；`e3ead6b1` 模型输出 3 处失败文案改可读摘要、技术码进收据；`character-card-normalizer` 的 9 处中文 `throw` 经核查无生产调用面。详见[诊断审计](../plans/2026-10-23-structured-diagnostic-display-audit.md)。
   - **httpFailure 契约**：`e44adbde` Rust 新增 `HttpFailure{status,body}` 并透传，连接测试按界面语言写状态码与服务返回；刻意保留原 `error` 文案以免影响 `llm:generate`。云端 Tauri Rust CI [39982608773](https://github.com/TanCan1998/Lorekeeper/actions/runs/39982608773) **1752 通过 0 失败**、all-targets 通过，Rust 累计切片清零。
   - **死代码清理**：审计 1932 个导出（87 零引用 / 66 仅测试）；A 档 `7a4a8019` + `52ec598c` + `e93cc108` 共删 50 个导出、2 个整文件、783 行；复扫零引用 87 → 43（余 17 个代码类全在 B 档，未动）。详见[导出审计](../plans/2026-10-23-dead-export-audit.md)。
   - **当前基线**：`tauri-app` typecheck/lint 0、全量 vitest **227 文件 / 2833 通过 / 1 跳过 / 0 失败**；根 typecheck/lint/`check:i18n` 0，根 vitest 6173 通过 + 17 条环境类失败（symlink 权限、并发超时、macOS 夹具缺失、fork README 与 `AGENTS.md` 既存断言，已逐条归因）；Rust 全量以 `6ba2bc8d` 的 1752 通过为基线。远端 `56abaa4d` 的 Commit message CI 与 Gitleaks 均 success。
-  - **遗留**：beta.2 多用户 UAC（需第二账号）、旧版升级（需旧安装包）、卸载/重装、NSIS 原生安装、macOS 真机、真实模型/MCP/业务云（未授权）；上游 4 个 shared 小增量并入下次同步；B 档 17 个契约常量/判据函数与 C 档 66 个仅测试引用按审计结论不动。
+  - **遗留**：beta.2 多用户 UAC（需第二账号）、旧版升级（需旧安装包）、卸载/重装、NSIS 原生安装、macOS 真机、真实模型/MCP/业务云（未授权）；上游 1.3.2 的 shared 尾巴已由第136次收掉（见上方最新条目）；B 档 17 个契约常量/判据函数与 C 档 66 个仅测试引用按审计结论不动。
   - **未做**：未重打包、未发布、beta.2 的 Release/标签/附件未动、未改 `docs/`、未派发子代理；`tmp-check/` 保持未跟踪；本轮临时脚本与日志留在 `.pi/tmp/{dead-code,upstream-132-sync}/`（未入库）。
 
 - **上轮维护**：[第126次：历史临时产物与闲置依赖瘦身（2026-10-22）](./2026-10-22-tauri-migration-status.md)。用户明确确认后清理约649.2 MiB历史临时文件，未清正式构建缓存；另移除Tauri的7项闲置依赖，应用锁图522→403，无保留包升级或根锁变更。类型检查、lint、前端全量 **2827通过、1跳过**、构建和产物体检通过；没有重打包或修改beta.2。Rust代码未改，最近全量仍为下方发布源码，不能移记当前SHA。后续字体/构建配置优化需另行确认。

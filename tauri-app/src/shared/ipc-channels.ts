@@ -762,6 +762,13 @@ interface LLMResponseBase {
   content: string
   usage?: TokenUsage
   error?: string
+  /**
+   * 供应商返回非 2xx 时的状态码与响应正文；`error` 由连接测试按界面语言写进说明。
+   *
+   * 对齐 Rust `llm::chat::LlmResponse.http_failure`（serde 缺省省略）。生成链仍消费
+   * `error`，因此这里是可选的补充证据，不参与成功判定。
+   */
+  httpFailure?: { status: number; body: string }
 }
 
 /** Every non-stream response carries explicit terminal evidence. */
