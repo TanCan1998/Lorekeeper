@@ -70,7 +70,7 @@ export function CharacterCardImportButton(props: Props) {
 }
 
 function SessionImportButton({ session, disabled }: Props & { session: ProjectSessionContext }) {
-  const { locale, text } = useLocaleStore()
+  const { text } = useLocaleStore()
   const sessionKey = importSessionKey(session)
   const draft = useSyncExternalStore(
     subscribeImportDraft,
@@ -92,7 +92,7 @@ function SessionImportButton({ session, disabled }: Props & { session: ProjectSe
         writeImportDraft(sessionKey, { source: draftWhenSelected.source, files: selected })
       }
     } catch (error) {
-      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(locale, error))
+      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     } finally {
       if (isProjectSessionCurrent(session)) setBusy(false)
     }
@@ -127,10 +127,10 @@ function SessionImportButton({ session, disabled }: Props & { session: ProjectSe
       toast.warning(text('模型配置已改变，请重新确认后发送。', 'The model configuration changed. Confirm again before sending.'))
       return
     }
-    const workflow = createPlanningMaterialCharacterExtractionWorkflow({ projectSession: session, materials, generationModelId: model.id }, locale)
+    const workflow = createPlanningMaterialCharacterExtractionWorkflow({ projectSession: session, materials, generationModelId: model.id }, useLocaleStore.getState().locale)
     const conflict = useWorkflowStore.getState().getResourceConflict(workflow)
     if (conflict) {
-      toast.warning(workflowResourceConflictMessage(locale, conflict.title))
+      toast.warning(workflowResourceConflictMessage(useLocaleStore.getState().locale, conflict.title))
       return
     }
     setOpen(false)
@@ -159,7 +159,7 @@ function SessionImportButton({ session, disabled }: Props & { session: ProjectSe
     } catch (error) {
       if (isProjectSessionCurrent(session)) {
         setOpen(true)
-        toast.error(appErrorMessage(locale, error))
+        toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
       }
     } finally {
       if (isProjectSessionCurrent(session)) setBusy(false)

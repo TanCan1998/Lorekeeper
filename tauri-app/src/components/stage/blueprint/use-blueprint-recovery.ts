@@ -15,7 +15,6 @@ import { currentProjectSessionForPath, isCurrentProjectSession } from '../../edi
  */
 export function useBlueprintRecovery(tab: EditorTab, projectKey: string) {
   const text = useLocaleStore(state => state.text)
-  const locale = useLocaleStore(state => state.locale)
   const [session] = useState(() => currentProjectSessionForPath(projectKey))
   const currentProject = useProjectStore(state => state.currentProject)
   const sessionCurrent = sameProjectSessionContext(session, projectSessionContextFromProject(currentProject))
@@ -29,8 +28,8 @@ export function useBlueprintRecovery(tab: EditorTab, projectKey: string) {
   /** 作者稿不合蓝图契约时说明哪个字段出了什么问题；其余错误仍显示其原始说明。 */
   const failureText = useCallback((reason: unknown) => {
     const diagnostic = structuredContractDiagnostic(reason)
-    return diagnostic ? structuredContractDiagnosticText(locale, diagnostic) : reason instanceof Error ? reason.message : String(reason)
-  }, [locale])
+    return diagnostic ? structuredContractDiagnosticText(useLocaleStore.getState().locale, diagnostic) : reason instanceof Error ? reason.message : String(reason)
+  }, [])
 
   const refresh = useCallback(async () => {
     const expectedSession = session

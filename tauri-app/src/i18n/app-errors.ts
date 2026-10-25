@@ -1,4 +1,4 @@
-import { translate } from './core'
+import { localize, translate } from './core'
 import type { Locale } from './types'
 
 /**
@@ -177,6 +177,35 @@ function readMessage(error: unknown): string {
 export function knownAppErrorMessage(locale: Locale, error: unknown): string | undefined {
   const code = readCode(error)
   return code ? translate(locale, ERROR_KEYS[code]) : undefined
+}
+
+/** 显示处去掉的前缀：调用通道，以及 "Error: "、"TypeError: " 这类类名。 */
+const DISPLAY_PREFIX = /^(?:Error invoking remote method '[^']+': )?(?:[A-Za-z]*Error: )?/u
+
+/**
+ * 把报错交给作者看的统一入口（toast、提示框、内联提示）：主进程的 result.error、IPC 抛出的错误
+ * 与渲染端按界面语言写好的说明都可以直接传进来。登记过的码按界面语言说明；认不出的去掉通道与类名前缀后
+ * 保留原文，不吞掉信息；完全没有内容时用该处的兜底说明（调用方用 text(zh, en) 写好）。
+ */
+export function displayedErrorMessage(locale: Locale, error: unknown, fallback?: string): string {
+  const known = knownAppErrorMessage(locale, error)
+  if (known) return known
+  return displayedRaw(error).trim().replace(DISPLAY_PREFIX, '') || fallback || localize(locale, '未知错误', 'Unknown error')
+}
+
+/** 报错里能给作者看的原文：字符串本身、Error 或普通对象的字符串 message；别的对象没有可读内容，交给兜底。 */
+function displayedRaw(error: unknown): string {
+  if (typeof error === 'string') return error
+  if (typeof error === 'object' && error !== null) {
+    const message = (error as { message?: unknown }).message
+    return typeof message === 'string' ? message : ''
+  }
+  return error == null ? '' : String(error)
+}
+
+/** 英文句子后附上原因；原因里仍有汉字（未登记的中文原文）时只给英文概述，不把中文拼进英文句子。 */
+export function englishWithReason(summary: string, reason: string, separator = ' '): string {
+  return !reason.trim() || containsHan(reason) ? summary : `${summary}${separator}${reason}`
 }
 
 /** 文字里有没有汉字，含扩展区与兼容区；判断原因能否拼进英文句子都用它。 */

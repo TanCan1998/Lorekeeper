@@ -82,7 +82,6 @@ export interface RunRecovery {
  * 换了作品或重开过就什么也不做，不把旧会话的恢复写进新会话。
  */
 export function useRunRecovery(): RunRecovery {
-  const locale = useLocaleStore(s => s.locale)
   const project = useProjectStore(s => s.currentProject)
   const session = useMemo(() => projectSessionContextFromProject(project), [project])
   const endedRuns = useWorkflowStore(s => s.history.length)
@@ -129,16 +128,16 @@ export function useRunRecovery(): RunRecovery {
     void loadGenerationSources(session).then(({ sources, partial }) => {
       if (!active) return
       setGeneration({ session, value: sources })
-      setGenerationError(partial ? (locale === 'en-US' ? 'Some tasks could not be loaded; the other candidates remain available.' : '部分任务暂时无法读取，其他候选仍可恢复。') : '')
+      setGenerationError(partial ? (useLocaleStore.getState().locale === 'en-US' ? 'Some tasks could not be loaded; the other candidates remain available.' : '部分任务暂时无法读取，其他候选仍可恢复。') : '')
     }).catch(reason => { if (active) setGenerationError(reason instanceof Error ? reason.message : String(reason)) })
     return () => { active = false }
-  }, [session, endedRuns, locale, snapshotTick])
+  }, [session, endedRuns, snapshotTick])
 
   const entries = useMemo(() => {
     if (!session) return []
     const ofSession = <T,>(loaded: Loaded<T>, empty: T) => sameProjectSessionContext(loaded.session, session) ? loaded.value : empty
-    return buildRecoveryEntries({ ...ofSession(generationList, EMPTY_RECOVERY_SOURCES), candidates: ofSession(candidateList, []) }, locale)
-  }, [session, generationList, candidateList, locale])
+    return buildRecoveryEntries({ ...ofSession(generationList, EMPTY_RECOVERY_SOURCES), candidates: ofSession(candidateList, []) }, useLocaleStore.getState().locale)
+  }, [session, generationList, candidateList])
 
   const stillCurrent = useCallback(() => session !== null && sameProjectSessionContext(session, currentSession()), [session])
 
@@ -168,8 +167,8 @@ export function useRunRecovery(): RunRecovery {
   const failCandidate = useCallback((error: unknown) => {
     if (!stillCurrent()) return
     const message = error instanceof Error ? error.message : error ? String(error) : ''
-    setCandidateError(message || (locale === 'en-US' ? 'Recovery candidate action failed' : '恢复候选操作失败'))
-  }, [locale, stillCurrent])
+    setCandidateError(message || (useLocaleStore.getState().locale === 'en-US' ? 'Recovery candidate action failed' : '恢复候选操作失败'))
+  }, [stillCurrent])
 
   return {
     entries,
@@ -198,7 +197,7 @@ export function useRunRecovery(): RunRecovery {
           const candidate = result.candidate
           useEditorStore.getState().openFile({
             id: `recovery:${candidate.candidateId}`,
-            name: locale === 'en-US'
+            name: useLocaleStore.getState().locale === 'en-US'
               ? `Recovery candidate · Chapter ${candidate.chapterNumber} ${candidate.chapterTitle}`
               : `恢复候选 · 第${candidate.chapterNumber}章 ${candidate.chapterTitle}`,
             type: 'chapter',
@@ -224,7 +223,7 @@ export function useRunRecovery(): RunRecovery {
     openPlanning: entry => void act(async current => {
       const fresh = await ipc.invokeWithProjectSession(current, 'generation:read-context', { handle: entry.recovery.handle })
       if (!stillCurrent()) return
-      openPlanningRecoveryDraft(fresh, current.projectPath, planningTitle(fresh, locale))
+      openPlanningRecoveryDraft(fresh, current.projectPath, planningTitle(fresh, useLocaleStore.getState().locale))
     }),
     continueEditor: entry => void act(async current => {
       await ipc.invokeWithProjectSession(current, 'editor-inline:execute', { handle: entry.recovery.view.handle })

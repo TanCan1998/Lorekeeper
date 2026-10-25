@@ -42,7 +42,6 @@ export function isImportedDocument(document: KBDocument): boolean {
  * 状态检查只读本地数据，重建会按当前检索模型补全或重建。
  */
 export function useKnowledgeIndex() {
-  const locale = useLocaleStore(s => s.locale)
   const text = useLocaleStore(s => s.text)
   const [status, setStatus] = useState<VectorRebuildStatus | null>(null)
   const [statusError, setStatusError] = useState('')
@@ -61,9 +60,9 @@ export function useKnowledgeIndex() {
       setStatus(unwrapKnowledgeValue(result))
       setStatusError('')
     } catch (error) {
-      if (latest()) setStatusError(appErrorMessage(locale, error))
+      if (latest()) setStatusError(appErrorMessage(useLocaleStore.getState().locale, error))
     }
-  }, [locale])
+  }, [])
 
   // 状态检查的唯一自动触发：挂载、换了作品或重新打开，以及模型配置变了（设置里保存或删除检索模型只改模型仓库，
   // 设置页与后台挂着的知识库页都不会重新挂载）。资料增删由各自的操作与资源刷新事件显式重读。
@@ -92,14 +91,14 @@ export function useKnowledgeIndex() {
       }
     } catch (error) {
       if (!isProjectSessionCurrent(projectSession)) return
-      toast.error(appErrorMessage(locale, error))
+      toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     } finally {
       if (isProjectSessionCurrent(projectSession)) {
         setBackfilling(false)
         globalEventBus.emit('REFRESH_RESOURCE', { resources: ['all'], projectPath: expectedProjectPath, projectSession })
       }
     }
-  }, [locale, text])
+  }, [text])
 
   const reset = useCallback(() => {
     setStatus(null)
@@ -118,7 +117,6 @@ export function useKnowledgeIndex() {
 export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
   const projectPath = useProjectStore(s => s.currentProject?.path)
   const sessionLease = useProjectStore(s => s.currentProject?.sessionLease)
-  const locale = useLocaleStore(s => s.locale)
   const text = useLocaleStore(s => s.text)
   const index = useKnowledgeIndex()
   const { loadStatus, reset: resetIndex } = index
@@ -183,10 +181,10 @@ export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
       setLoadError('')
     } catch (error) {
       if (!isProjectSessionCurrent(projectSession)) return
-      setLoadError(appErrorMessage(locale, error))
+      setLoadError(appErrorMessage(useLocaleStore.getState().locale, error))
     }
     setDocumentsLoaded(true)
-  }, [locale])
+  }, [])
 
   /** 打开一份资料的项目副本。有未保存的修改时调用方须先征得作者同意。 */
   const openDocument = async (docId: string, reload = false) => {
@@ -202,7 +200,7 @@ export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
       if (!isProjectSessionCurrent(session) || readDraft() !== loading) return
       // 读不出来就回到没选资料的样子：不留「正在读取」，作者再点这一份会重读。
       setDraft(EMPTY_DRAFT)
-      toast.error(appErrorMessage(locale, error))
+      toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     }
   }
   const openDocumentRef = useRef(openDocument)
@@ -280,7 +278,7 @@ export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
       clearResults()
       toast.success(text('项目副本已保存；更新检索后，写作时才能查到新内容', 'Project copy saved. Update search so writing can find the new text.'))
     } catch (error) {
-      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(locale, error))
+      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     } finally {
       replaceDraft(saving, current)
     }
@@ -302,7 +300,7 @@ export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
       clearResults()
       toast.success(text('检索已更新，写作时能查到新内容', 'Search updated. Writing can now find the new text.'))
     } catch (error) {
-      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(locale, error))
+      if (isProjectSessionCurrent(session)) toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     } finally {
       replaceDraft(reindexing, current)
     }
@@ -324,7 +322,7 @@ export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
     } catch (error) {
       if (!latest()) return
       resetResults()
-      toast.error(appErrorMessage(locale, error))
+      toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     } finally {
       if (latest()) setSearching(false)
     }
@@ -360,7 +358,7 @@ export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
       }
     } catch (error) {
       if (!isProjectSessionCurrent(projectSession)) return
-      toast.error(appErrorMessage(locale, error))
+      toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     } finally {
       if (isProjectSessionCurrent(projectSession)) setClearing(false)
     }
@@ -396,13 +394,13 @@ export function useKnowledgeBase(draftSlot?: KnowledgeDraftSlot) {
       const extractionWorkflow = createPlanningMaterialCharacterExtractionWorkflow({ projectSession, materials, generationModelId: model.id })
       const conflict = useWorkflowStore.getState().getResourceConflict(extractionWorkflow)
       if (conflict) {
-        toast.warning(workflowResourceConflictMessage(locale, conflict.title))
+        toast.warning(workflowResourceConflictMessage(useLocaleStore.getState().locale, conflict.title))
         return
       }
       navigate({ kind: 'run', facet: 'tasks' })
       await useWorkflowStore.getState().startWorkflow(extractionWorkflow, true)
     } catch (error) {
-      if (isProjectSessionCurrent(projectSession)) toast.error(appErrorMessage(locale, error))
+      if (isProjectSessionCurrent(projectSession)) toast.error(appErrorMessage(useLocaleStore.getState().locale, error))
     } finally {
       setImporting(false)
     }

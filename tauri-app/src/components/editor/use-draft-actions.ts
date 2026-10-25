@@ -69,7 +69,6 @@ export function useDraftActions({ tabId, filePath, content, projectKey }: DraftT
   )
   const currentProject = useProjectStore(s => s.currentProject)
   const text = useLocaleStore(s => s.text)
-  const locale = useLocaleStore(s => s.locale)
   const projectMatches = currentProject?.path === projectKey
   const tabDraftStatus = editorTab?.draftStatus
   const [pendingRevisions, setPendingRevisions] = useState<RevisionEntry[]>([])
@@ -413,7 +412,7 @@ export function useDraftActions({ tabId, filePath, content, projectKey }: DraftT
       const guard = await guardRepairPostProcess(meta.chapterNumber, projectKey, projectSession)
       if (!isProjectSessionCurrent(projectSession)) return
       if (!guard.ok) {
-        toast.error(locale === 'zh-CN'
+        toast.error(useLocaleStore.getState().locale === 'zh-CN'
           ? (guard.message || text('无法执行修复', 'Could not run the repair.'))
           : text('无法执行修复', 'Could not run the repair.'))
         return
@@ -428,7 +427,7 @@ export function useDraftActions({ tabId, filePath, content, projectKey }: DraftT
       if (!isProjectSessionCurrent(projectSession)) return
       toast.error(text(`修复启动失败：${e}`, 'Could not start the repair.'))
     }
-  }, [currentProject, isChapterBusy, locale, meta, projectKey, projectMatches, text])
+  }, [currentProject, isChapterBusy, meta, projectKey, projectMatches, text])
 
   /** 读出待合并修稿与它的真实冻结源，交给合并视图；正文有未保存修改或读取期间变了就不打开。 */
   const openPendingRevision = async (rev: RevisionEntry) => {
