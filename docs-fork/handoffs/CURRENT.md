@@ -1,34 +1,33 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第136次）**：收掉上轮遗留的最后一项源码级事项——上游 1.3.2 的 shared 尾巴已对齐。
+- **最新维护（2026-10-25 第137次）**：把安装器/发布契约测试接上自动入口，并清掉交接口径里已被推翻的过时条目。
+  - **契约测试入口**：新增 `test:contract`（`tauri-app/package.json`），一次跑完 installer-contract / release-helpers / windows-identity / artifact-retention / atomgit-release 五个 `node --test` 脚本；新增 `.github/workflows/tauri-contract-ci.yml`（fork 独有、Node-only、windows-2022，路径过滤 `tauri-app/scripts/**`、`src-tauri/installer/**`、`tauri.conf.json`、`package.json`）。此前这批测试只写在 [发布说明](../agents/tauri-release.md) 里，靠人手逐条敲。
+  - **实测**：`npm run test:contract` 在当前 HEAD **51 通过 / 0 失败 / EXIT=0**（安装器合同、wix 版本门禁、身份清单、产物保留、发布附件校验）。CURRENT 旧条目「新增回归用例未执行」据此销号。
+  - **口径纠偏**：删除「迁移资源操作仍暂缓（不编译/测试/打包/安装/卸载/提权）」「MSI 仅源码修改、未构建未安装」「等最终验证授权后本机一次性跑 cargo test」等已被后续轮次推翻的段落；验证口径以 [混合验证说明](../agents/tauri-rust-ci.md) 为准（本机定向 + 云端全量），安装/卸载/打包类操作仍逐次取用户确认。
+- **上轮（2026-10-25 第136次）**：收掉上游 1.3.2 的最后一项源码级遗留。
   - **LLM 契约补齐**：`tauri-app/src/shared/ipc-channels.ts` 的 `LLMResponseBase` 新增可选 `httpFailure?: { status: number; body: string }`；Rust `llm::chat::LlmResponse.http_failure` 早已序列化该字段，此前 Tauri 契约副本缺声明属漂移。生成链仍按 `error` 判定，该字段只作连接测试证据，不改变成功语义。
   - **shared 注释增量**：`character-proposal-parser`(3)、`import-run`(2)、`legacy-roster-generation-pure`(1)、`plot-tree`(8) 共 14 处 `// i18n-exempt:` 与上游逐字同步，纯注释。
-  - **缺口复核**：逐文件比对 `src/`(466) 与 `tauri-app/src/`(461)——相对路径缺口仅 8 个 Storybook 故事 + 2 个已按死代码审计删除的服务；175 个同名差异抽样为「类型走 `@baseline`」「覆盖说明/恢复信号按 Tauri 语义重写」等刻意差异化，非未迁移。功能迁移仍 **287/288、未迁移 0**。
-  - **验证（本轮定向）**：`check:channels` 288 invoke / 7 事件 / 未迁移 0；`typecheck`/`lint` exit 0；`pnpm test src/shared` **32 文件 / 540 通过 / 0 失败**。本轮零 Rust 改动，Rust 全量基线仍为 `6ba2bc8d` / CI 39982608773（1752 通过 + all-targets），不记为本轮结果。
-  - **下一步候选**：①下次上游同步；②低层 provider 失败文案仍是中文句子（`API 调用失败 (status)` 等），上游 a71bbcb3 已码化为 `LLM_REQUEST_FAILED` / `LLM_STREAM_*`，对齐需同时动 Rust 分类、契约与展示面，属独立切片；③桌面图标与安装入口需重打包后验收。详见[快照](./2026-10-25-tauri-migration-status.md)。
-- **上轮收口（2026-10-23）**：本轮四件事全部落地；仓库 `master` = `origin/master` = `56abaa4d`，零未推送。
+  - **缺口复核**：逐文件比对 `src/`(466) 与 `tauri-app/src/`(461)——相对路径缺口仅 8 个 Storybook 故事 + 2 个已按死代码审计删除的服务；175 个同名差异抽样为「类型走 `@baseline`」「覆盖说明/恢复信号按 Tauri 语义重写」等刻意差异化，非未迁移。功能迁移 **287/288、未迁移 0**。
+  - **验证（定向）**：`check:channels` 288 invoke / 7 事件 / 未迁移 0；`typecheck`/`lint` exit 0；`pnpm test src/shared` **32 文件 / 540 通过 / 0 失败**。零 Rust 改动，Rust 全量基线仍为 `6ba2bc8d` / CI 39982608773（1752 通过 + all-targets），未记作该轮结果。详见[快照](./2026-10-25-tauri-migration-status.md)。
+- **上轮收口（2026-10-23）**：仓库 `master` = `origin/master` = `56abaa4d`，零未推送。
   - **上游同步**：`7e6b827f` → `305ee755`（124 提交 / 27 PR / 274 文件），合并 `c4583267`，零冲突（合并前本地 1190 改文件与上游 274 改文件交集 0）；根依赖随上游升 vite 8.2.4 / Storybook 10.6.2 / js-yaml 4.3.2 + source-map-js override，三份根清单 install 后未被改写。详见[快照](./2026-10-23-upstream-v132-sync.md)。
   - **beta.2 原生拉起**：安装目录主程序 SHA256 与 beta.2 MSI 一致；无包身份 `lorekeeper.exe` 1 秒内交棒 `lorekeeper-activate` + identity-launcher、以包身份重启并加载 `http://tauri.localhost/`；仅发 `WM_CLOSE` 时三进程 1 秒内自行退出；数据根无新写入、启动器日志落 `%TEMP%`。首轮 CDP `/json/close` 导致的「不退出」经对照复验确认为验证手段干扰。
   - **诊断与失败文案**：`54486fc7` 蓝图恢复稿接 `structuredContractDiagnosticText`；`e3ead6b1` 模型输出 3 处失败文案改可读摘要、技术码进收据；`character-card-normalizer` 的 9 处中文 `throw` 经核查无生产调用面。详见[诊断审计](../plans/2026-10-23-structured-diagnostic-display-audit.md)。
   - **httpFailure 契约**：`e44adbde` Rust 新增 `HttpFailure{status,body}` 并透传，连接测试按界面语言写状态码与服务返回；刻意保留原 `error` 文案以免影响 `llm:generate`。云端 Tauri Rust CI [39982608773](https://github.com/TanCan1998/Lorekeeper/actions/runs/39982608773) **1752 通过 0 失败**、all-targets 通过，Rust 累计切片清零。
   - **死代码清理**：审计 1932 个导出（87 零引用 / 66 仅测试）；A 档 `7a4a8019` + `52ec598c` + `e93cc108` 共删 50 个导出、2 个整文件、783 行；复扫零引用 87 → 43（余 17 个代码类全在 B 档，未动）。详见[导出审计](../plans/2026-10-23-dead-export-audit.md)。
-  - **当前基线**：`tauri-app` typecheck/lint 0、全量 vitest **227 文件 / 2833 通过 / 1 跳过 / 0 失败**；根 typecheck/lint/`check:i18n` 0，根 vitest 6173 通过 + 17 条环境类失败（symlink 权限、并发超时、macOS 夹具缺失、fork README 与 `AGENTS.md` 既存断言，已逐条归因）；Rust 全量以 `6ba2bc8d` 的 1752 通过为基线。远端 `56abaa4d` 的 Commit message CI 与 Gitleaks 均 success。
-  - **遗留**：beta.2 多用户 UAC（需第二账号）、旧版升级（需旧安装包）、卸载/重装、NSIS 原生安装、macOS 真机、真实模型/MCP/业务云（未授权）；上游 1.3.2 的 shared 尾巴已由第136次收掉（见上方最新条目）；B 档 17 个契约常量/判据函数与 C 档 66 个仅测试引用按审计结论不动。
-  - **未做**：未重打包、未发布、beta.2 的 Release/标签/附件未动、未改 `docs/`、未派发子代理；`tmp-check/` 保持未跟踪；本轮临时脚本与日志留在 `.pi/tmp/{dead-code,upstream-132-sync}/`（未入库）。
 
-- **上轮维护**：[第126次：历史临时产物与闲置依赖瘦身（2026-10-22）](./2026-10-22-tauri-migration-status.md)。用户明确确认后清理约649.2 MiB历史临时文件，未清正式构建缓存；另移除Tauri的7项闲置依赖，应用锁图522→403，无保留包升级或根锁变更。类型检查、lint、前端全量 **2827通过、1跳过**、构建和产物体检通过；没有重打包或修改beta.2。Rust代码未改，最近全量仍为下方发布源码，不能移记当前SHA。后续字体/构建配置优化需另行确认。
+- **更早维护**：[第125次剩余迁移合并](./2026-10-19-tauri-migration-status.md#本次更新第125次剩余迁移合并实现已提交云端验证通过)（云端 `011b4b0f` 全 success；MSI 已构建并完成静默安装/修复/卸载与真实快捷方式启动验收，快捷方式与安装后启动均指向 `lorekeeper-activate.exe` 且无 `LAUNCHAPPARGS`）；[第126次产物瘦身与依赖裁剪](./2026-10-22-tauri-migration-status.md)；[AtomGit 独立镜像](../agents/atomgit-mirror.md)（2026-10-21 起改为平台拉取代码 + 附件单独上传）。
 
-- **最近发布**：[2026-10-21 上游合并与 beta.2 发布](./2026-10-21-upstream-merge-and-release.md#2026-10-21-后续beta2-发布)。用户最终确认保留 beta.1，只新发 `1.0.0-beta.2`（普通 Release + Latest、三平台四包、双源），不删除或覆盖旧版。**GitHub 已发布**：源码 `058ec936`，Rust CI `39555957392` 全量 **1750 通过**及 all-targets 通过，打包发布 `39556656055` success；Release ID `419244854`、九附件、Latest 与标签 SHA 已核验，包含启动门禁与日志修复。AtomGit 已经平台拉取同一标签/源码，再独立上传九附件并匿名读回大小/SHA256；两端说明一致，beta.1 保留。beta.1 安装/修复/卸载、独立身份注册/注销与隔离清理向导已验收，不代表 beta.2 原生验收；beta.2 实际重启链路、多用户 UAC、macOS 真机与真实业务仍未认证。下方旧暂停状态仅为历史，当前发布授权及证据以本条与最新快照为准。
+- **最近发布**：[2026-10-21 上游合并与 beta.2 发布](./2026-10-21-upstream-merge-and-release.md#2026-10-21-后续beta2-发布)。用户最终确认保留 beta.1，只新发 `1.0.0-beta.2`（普通 Release + Latest、三平台四包、双源），不删除或覆盖旧版。**GitHub 已发布**：源码 `058ec936`，Rust CI `39555957392` 全量 **1750 通过**及 all-targets 通过，打包发布 `39556656055` success；Release ID `419244854`、九附件、Latest 与标签 SHA 已核验。AtomGit 已平台拉取同一标签/源码并独立上传九附件、匿名读回大小/SHA256；beta.1 保留。beta.2 实际重启链路与数据根只读已验收；多用户 UAC、macOS 真机与真实业务仍未认证。
 
-- 最新：[第125次：剩余迁移合并实现，已提交且云端验证通过](./2026-10-19-tauri-migration-status.md#本次更新第125次剩余迁移合并实现已提交云端验证通过)。用户要求「一起迁移不切片、最后统一验证」并确认合并范围；本轮完成大纲/蓝图作者恢复全链路、目录进度登记、`compose_visible` 五个可变性守卫、头像双语与缓存、MSI 快捷方式/安装后启动改走激活器、陈旧注释纠正。仅新增既有 `windows-sys` feature；无新 crate/schema/锁/权限变更。用户随后授权完整验证：`cargo check --all-targets` 0 错误、`cargo test --lib` **1734 通过 0 失败**、定向 344 通过、24 文件 rustfmt 通过、`pnpm typecheck`/`lint` 通过、安装合同 13 通过、频道缺失 0；前端 vitest 2757 通过、1 项既存品牌大小写断言失败（前端源码与测试均未改）。证据 `.pi/tmp/migration-batch-125/static-check.json`。
-- **已提交并推送**：`3e8101ba..011b4b0f`（7 个主题提交），云端同一 SHA `011b4b0f` 上 Tauri Rust CI [39282333603](https://github.com/TanCan1998/Lorekeeper/actions/runs/39282333603) **success**、Commit message CI `39282333517` success、Gitleaks `39282333549` success、AtomGit mirror `39282333525` success。云端全量通过，本轮 Rust 切片累计清零。**MSI 已构建并完成真实安装验收**（`LoreKeeper_1.0.0-beta.1_x64_zh-CN.msi`，干净机器）：静默安装、修复安装、身份重注册幂等、卸载清理全部退出码 0；快捷方式与安装后启动均指向 `lorekeeper-activate.exe` 且无 `LAUNCHAPPARGS`；安装未自动启动主程序；随后经真实桌面快捷方式启动，2 秒内拉起激活器与主程序，主窗口标题 `LoreKeeper`，WebView2 CDP 探到 `Lorekeeper 设定司` 页面（渲染器完整加载），关闭窗口后自行退出，且 `~/.lorekeeper` 与 `~/.vela` 均无今日写入。已加 `assertWixVersion` 发布门禁（主次版本一致、修订号不低于产品版本、纯数字点号与段位上限），保留 `wix.version=1.0.1.0`。仍未验收：旧版本升级路径（搁置到下个版本）、多用户 UAC。**未发布。**前轮[第124次 fs 文案](./2026-10-19-tauri-migration-status.md#前轮更新第124次项目文件系统错误文案双语迁移未验收)与[第123次 EPUB](./2026-10-19-tauri-migration-status.md#前轮更新第123次-epub-静态迁移未验收)仍待验证。
-- **独立镜像维护已落地**：`467029c5` 已推送 GitHub；新增 GitHub 推送式 AtomGit 同步、同批附件发布与双源表格。既有 beta 两端说明相同，AtomGit 九附件已匿名读回大小/SHA256；配置与证据见[镜像说明](../agents/atomgit-mirror.md)。最终提交纯代码同步 [39228758897](https://github.com/TanCan1998/Lorekeeper/actions/runs/39228758897) 成功，发布作业跳过；未触发构建。**2026-10-21 后续已改为 AtomGit 平台拉取代码、附件单独上传，推送式同步工作流与脚本已删除。**
-- **迁移资源操作仍暂缓**：上一轮身份启动器/安装器切片未提交；不编译、测试、打包、启动/安装/卸载、注册包或提权。前轮镜像专项授权仅允许镜像配置提交、已有 beta 说明更新和纯传输工作流；后续仅恢复EPUB与普通残余子功能源码迁移，不恢复资源验证或安装器变更授权，未触发构建 CI、未发布 beta.1。HEAD/origin 为中文首页修复提交 `3e8101ba`；纯同步 `39230233145` 成功。实测 AtomGit 中文首页选择短版 `README_zh.md`，已将其生成成与完整 `README.md` 相同的副本；但目前平台返回 `REVIEW`、正文为空，首页完整展示仍待审核后验收。证据见本机 `homepage-check.json`，不把源码同步当作渲染通过。
-- **已编辑、未验收**：构建版本与清单同源；旧包虽存在且已注册，只要版本不符仍需刷新，注册后重读并复核版本。MSI 安装/升级/修复刷新，只有非升级的完整卸载才注销，移到删除文件前调用。补齐 `--quiet` 传递和自选路径字面量转义；新增回归用例未执行。
-- **MSI 正常入口**：本轮新增 `installer/main.wxs` 并让桌面/开始菜单快捷方式与安装结束启动指向 `[INSTALLDIR]lorekeeper-activate.exe`（`tauri.conf.json` 已接 `wix.template`）。**仅源码修改，未构建、未安装**；旧生成产物仍是旧模板，前轮手动激活器验证不能替代这些入口验收。
-- 用户方案 A 不变：MSI 全机安装 + 每用户首次按需提权注册，不引入签名，不要求装完自动覆盖所有用户。真实第二账号、不同凭据 UAC、SYSTEM 上下文均未验收；此前同账号无注册状态自愈不等同跨用户测试。
-- 历史证据仅属于旧代码：第121次记录 `05b740b5` 的三个 CI 成功、Node 39 / 启动器 10 / clippy 通过；同账号缺包自愈后主程序与采样 WebView2 同包身份；MSI 卸载目录/记录/包清零。**本轮未重跑，不能给新工作区记成功**；真实产品全部 WebView2 的旧证据见研究§12，Taskmgr 机制证据见§9。
-- 主应用 Rust 全量：**`011b4b0f` / CI 39282333603 云端 Windows 全量 success**；本机同工作区 `cargo test --lib` 1734 通过 0 失败、`cargo check --all-targets` 0 错误。历史基线 `44259fa3 / 39148045359`（1689）保留作对照，最新有效基线为 `011b4b0f`。
-- 下一步：①**等用户给出最终验证授权**后一次性执行：`cargo test commands::config::tests`、`commands::fs::tests`、`import::epub::tests`、`commands::import::tests`、`services::blueprint_author_payload::tests`、`commands::character_avatar`、`commands::db::tests`、`services::generation_run_service` / owner 相关回归，定向 `rustfmt --check`，`cargo check --all-targets`，前端 `pnpm typecheck|test|lint`；未通过前不登记验收、不清零切片累计；②MSI 模板已改**未构建未安装**，构建/安装/注册/提权需单独授权，之后才能验收快捷方式与安装后启动；③升级/修复/失败回滚/卸载/UAC 仍按具体授权验证。任务与暂缓项在 `.pi/tmp/pipeline-state.md`。
-- 其余未完成：最低 Windows 门禁、外部工具 breakaway、macOS 真机、真实账号和数据/权限生命周期；新版发布继续暂停，仅镜像已公开 beta，不创建 beta.1 标签/Release/Latest。
-- 禁止子代理、抢焦点、修改 Electron/根构建锁文件或上游 `docs/`；本轮未新增依赖、改系统配置或文件权限。
+- **当前基线**：`tauri-app` typecheck/lint 0、`check:channels` 288/7/未迁移 0、`test:contract` 51 通过；全量 vitest **227 文件 / 2833 通过 / 1 跳过 / 0 失败**（2026-10-23 实测，其后仅图标与 shared 改动，未重跑全量）；根 typecheck/lint/`check:i18n` 0，根 vitest 6173 通过 + 17 条环境类失败（symlink 权限、并发超时、macOS 夹具缺失、fork README 与 `AGENTS.md` 既存断言，已逐条归因）；Rust 全量以 `6ba2bc8d` 的 1752 通过为基线。
+
+- **未解除阻塞**：
+  - **需重打包或真机**：桌面图标（2026-10-25 两次放大星芒后只换了源图与 `src-tauri/icons/`，需新包才可见）、MSI 快捷方式与安装后启动、卸载/重装、NSIS 原生安装、macOS 真机。
+  - **缺外部条件**：beta.2 多用户 UAC（需第二个登录账号）、旧版升级路径（需旧版安装包）。
+  - **未授权**：真实模型 / MCP / 业务云验收。
+  - **待维护者决策**：[Issue #515](https://github.com/TanCan1998/Lorekeeper/issues/515) DSH 插件 2 条 critical 告警（本地 HTTP 控制面可绕过认证，修复版 npm 不存在）+ 11 条 devDependency/锁文件告警。
+  - **按审计结论不动**：B 档 17 个契约常量/判据函数、C 档 66 个仅测试引用。
+- **下一步候选**：①重打包并验收桌面图标与安装入口（安装/卸载类操作逐次确认）；②下次上游同步；③provider 失败文案码化（对齐上游 a71bbcb3，需同时动 Rust 分类、契约与展示面）；④`tauri-app` 全量 vitest 复核。
+
+- 禁止子代理、抢焦点、修改 Electron/根构建锁文件或上游 `docs/`；本轮未新增依赖、未改系统配置或文件权限。

@@ -1,0 +1,59 @@
+name: Tauri contract tests
+
+# 安装器、发布身份与产物保留的契约测试只依赖 Node，不需要 Rust 工具链或安装包。
+# 这些脚本长期靠人工逐条 `node --test` 调用，容易漏跑；此作业把它们放进每次相关改动的必跑集合。
+on:
+  push:
+    paths:
+      - 'tauri-app/scripts/**'
+      - 'tauri-app/src-tauri/installer/**'
+      - 'tauri-app/src-tauri/tauri.conf.json'
+      - 'tauri-app/package.json'
+      - '.github/workflows/tauri-contract-ci.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'tauri-app/scripts/**'
+      - 'tauri-app/src-tauri/installer/**'
+      - 'tauri-app/src-tauri/tauri.conf.json'
+      - 'tauri-app/package.json'
+      - '.github/workflows/tauri-contract-ci.yml'
+  workflow_dispatch:
+
+# 只读公开源码与合成夹具，不接触仓库写入、发布凭据或用户数据。
+permissions:
+  contents: read
+
+concurrency:
+  group: tauri-contract-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-contracts:
+    name: Node contract tests (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: 'true'
+
+    steps:
+      - name: 检出待验证版本
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      # 与 Tauri Rust CI 及桌面 PR CI 保持同一 Node 版本，避免两套运行时口径。
+      - name: 设置 Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.23.1'
+
+      # 契约脚本只用 Node 内置模块，不需要安装依赖；经 npm 调用保持与本地同一入口。
+      - name: 运行契约测试
+        working-directory: tauri-app
+        run: |
+          npm run test:contract
+          exit $LASTEXITCODE

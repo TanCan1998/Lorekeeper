@@ -10,6 +10,7 @@
 | 事件覆盖 | 7 | 同上 | 2026-10-25 11:33 +08 | 同上 |
 | 前端 typecheck / lint | 0 / 0 | `tauri-app` 全量 | 2026-10-25 11:33 +08 | `pnpm run typecheck`、`pnpm run lint`（exit 0） |
 | 定向 vitest | 32 文件 / **540 通过** / 0 失败 | `pnpm test src/shared` | 2026-10-25 11:33 +08 | 同上 |
+| 安装器/发布契约 `node --test` | **51 通过 / 0 失败** | 五个 `*.node-test.mjs`（installer-contract、release-helpers、windows-identity、artifact-retention、atomgit-release） | 2026-10-25 11:44 +08 | `npm run test:contract`（EXIT=0） |
 | Rust 全量 | 未重跑（本轮零 Rust 改动） | 基线 `6ba2bc8d` / CI 39982608773：1752 通过 + all-targets | 2026-10-23 | 引用原验证，不记为本轮结果 |
 | GUI/双栈隔离 | 未做 | — | — | 本轮不涉界面与运行时 |
 
@@ -20,6 +21,13 @@
 - 注释增量：`character-proposal-parser`（3）、`import-run`（2）、`legacy-roster-generation-pure`（1）、`plot-tree`（8）共 14 处 `// i18n-exempt:` 与上游逐字同步，说明这些中文 `throw` 只在调用处被改写或仅进日志、作者看不到。仅注释，无行为变化。
 - 判定依据：逐文件比对 `src/`（466 文件）与 `tauri-app/src/`（461 文件）——相对路径缺口只有 8 个 Storybook 故事与 2 个已按死代码审计删除的服务；175 个同名文件差异抽样核对为「类型走 `@baseline` 复用」「覆盖说明/恢复信号按 Tauri 语义重写」等刻意差异化，非未迁移。
 - 未改：Rust 代码、schema、依赖、锁文件、权限；未重打包、未发布、未改 `docs/`、未派发子代理。
+
+## 本次更新（第 137 次）
+
+- **契约测试有了自动入口**：`tauri-app/package.json` 新增 `test:contract`，一次跑完五个 `node --test` 契约脚本；新增 `.github/workflows/tauri-contract-ci.yml`（fork 独有、Node-only、windows-2022、只读权限），路径过滤 `tauri-app/scripts/**`、`src-tauri/installer/**`、`tauri.conf.json`、`package.json` 与自身。
+- **背景**：这批脚本（安装器合同 13 项、wix 版本门禁、身份清单、产物保留、发布附件校验）此前只在 [发布说明](../agents/tauri-release.md) 写着手工命令，`pnpm test`（vitest 默认匹配 `*.test.mjs`）与现有 CI 都不覆盖，属长期漏跑风险；CURRENT 的「新增回归用例未执行」由此销号。
+- **交接口径纠偏**：CURRENT 删除「迁移资源操作仍暂缓（不编译/测试/打包/安装/卸载/提权）」「MSI 仅源码修改、未构建未安装」「等最终验证授权后本机一次性跑 cargo test」等已被后续轮次推翻的段落，改为按 [混合验证说明](../agents/tauri-rust-ci.md) 记录口径，并把未解除阻塞归成「需重打包/真机」「缺外部条件」「未授权」「待决策」「按审计不动」五类。
+- 未改：Rust、schema、依赖、锁文件、权限；未重打包、未发布、未派发子代理。
 
 ## 交接给下次会话
 
