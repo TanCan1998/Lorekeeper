@@ -1,6 +1,12 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第146次）**：`#512` 提交期数据变化收尾——产品面早已对齐，补齐了覆盖。
+- **最新维护（2026-10-25 第147次）**：旧版升级验收完成（1.0.1.0 → 1.0.4.0），并记录两个 Windows 侧限制。
+  - **升级链**：先降级装 `beta.1`（1.0.1.0）→ 再装 1.0.4.0。升级退出码 0，ARP 单条 **1.0.4.0**，`lorekeeper.exe`/`lorekeeper-activate.exe` 均刷新，桌面与开始菜单快捷方式指向 activator 且无参数，Appx 1.0.4.0，32px 图标与新简化帧**逐像素一致（0.0）**，数据根无新写入；启动/关闭（CDP `Lorekeeper 设定司`、`WM_CLOSE` 2.05s 全退）正常。
+  - **限制一**：`bundle/` 的 MSI 文件名只含应用版本，重打包会覆盖同名旧包（原 beta.2 1.0.2.0 已被 1.0.3.0/1.0.4.0 覆盖），要留旧包须另存副本。
+  - **限制二**：降级安装只降文件、**不降 Appx 身份**（Windows 不允许 Appx 降级注册）；发布说明应写「不支持降级，需卸载后重装」。
+  - **Issue #515**：确认在上游仓库，本 fork 不写上游 issue；按决定记为「**本项目不迁移该 DSH 插件**」，其 critical 告警不处理，将来纳入维护时再移植到 DSH ≥0.1.2-rc.1。
+  - **剩余**：多用户 UAC（用户明确先不做）、macOS 真机（无设备）、卸载/重装验收与 NSIS 安装包验收（尚未做）。
+- **上轮（2026-10-25 第146次）**：`#512` 提交期数据变化收尾——产品面早已对齐，补齐了覆盖。
   - **核对结论**：Rust 提交期已返回 `FINALIZED_CHARACTER_SOURCE_CONFLICT` / `FIELD_CONFLICT`；`finalization-step-error.ts` 与上游逐字一致（四码说明 + `retry: described/never` + `planFinalizationRetry` 的 `retired` 分组）；`PostProcessSteps` 按 retired 呈现、不摆重试、不计完成数；`app-errors.ts` 已映射新码。**无需改产品代码**。
   - **补覆盖**：`app-errors.test.ts` 加两条提交期码的中文说明断言（含「当前状态」「生成期间」，且不掉 `FINALIZED_` 码）；`mutation-failure-boundary.test.ts` 加 #512 重试计划用例（当前步骤可重试，`style_analysis` 进 retired）。
   - **验证**：`typecheck`/`lint` 0、全量 vitest **227 文件 / 2873 通过 / 1 跳过**；浏览器套件的四个 #512 场景此前已移植并复跑全绿。

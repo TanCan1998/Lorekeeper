@@ -118,6 +118,17 @@
 - **验证**：`typecheck`/`lint` 0、全量 vitest **227 文件 / 2873 通过 / 1 跳过**（较上轮 +3）；浏览器套件本轮未重跑（仅改单测）。
 - **剩余**：真机类（卸载/重装、NSIS、多用户 UAC、旧版升级、macOS）与 Issue #515 依赖告警决策。
 
+## 本次更新（第 147 次）：旧版升级验收（1.0.1.0 → 1.0.4.0）
+
+- **起点**：本机已装 1.0.4.0。先试「装回 beta.2」，结果只走维护模式（退出码 0、无变更）——**本地 `bundle/` 里的 MSI 文件名只含应用版本（`LoreKeeper_1.0.0-beta.2_*.msi`），两次重打包已把内容换成 1.0.3.0/1.0.4.0，原 beta.2(1.0.2.0) 被覆盖**。要留旧包必须另存副本。
+- **降级**：改装 `beta.1`（1.0.1.0）代替——退出码 0，ARP 变 1.0.1.0、`lorekeeper.exe` 回到 10-20 版本。**但 Appx 身份仍是 1.0.4.0**：Windows 不允许 Appx 降级注册，所以「降级安装」只降文件不降包身份。
+- **升级**：再装 1.0.4.0——退出码 0；ARP 单条 **1.0.4.0**（`{163F9777-…}`）；`lorekeeper.exe` 79,958,528 B / 13:07 刷新；`lorekeeper-activate.exe` 同步更新；桌面与开始菜单快捷方式均指向 `lorekeeper-activate.exe` 且无参数、图标取自当前 ProductIcon；Appx 1.0.4.0。
+- **图标**：升级后 exe 的 32px 图标与新简化帧**逐像素一致（0.0）**，与 beta.1 图标差 25.12。
+- **运行**：经桌面快捷方式启动 → 三进程链、标题 `LoreKeeper`、CDP `Lorekeeper 设定司` / `http://tauri.localhost/`；仅发 `WM_CLOSE` 后 2.05s 全退；`~/.lorekeeper`(10-23)、`~/.vela`(10-16) 无新写入。
+- **结论**：跨版本升级路径（旧→新）干净；降级安装不受支持且会让 Appx 与文件版本不一致，属 Windows 限制，发布说明里应说明「不支持降级，需卸载后重装」。
+- **Issue #515**：确认它在上游仓库（`EthanYoQ/AI-Novel-Writer`），本 fork 的 issues 已关闭，故不改上游 issue；按用户决定记入本仓库交接——**本项目不迁移该 DSH 插件**，其 critical 告警不处理，将来若纳入维护再移植到 DSH ≥0.1.2-rc.1。
+- 证据：`.pi/tmp/upgrade-2026-10-25/{evidence.json, install-beta2.log, install-beta1.log, upgrade-to-1.0.4.0.log, *.png}`（不入库）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。
