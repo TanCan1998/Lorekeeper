@@ -50,6 +50,15 @@
 - **云端**：`5bdaf7b7` 上 Tauri Rust CI [40161780975](https://github.com/TanCan1998/Lorekeeper/actions/runs/40161780975) **1752 通过 0 失败** + all-targets、contract tests、Commit message CI、Gitleaks 全 success。
 - **未做**：本机已装的 1.0.3.0 仍是旧帧；要看任务栏/资源管理器效果需把 `wix.version` 升到 1.0.4.0 再重装（未执行）。
 
+## 本次更新（第 140 次）：1.0.4.0 重装并确认小图标生效
+
+- **版本门禁**：`wix.version` 1.0.3.0 → **1.0.4.0**（同版本 MSI 只走修复，无法刷新已装文件）；`test:contract` 56 通过。
+- **构建**：本机 `pnpm tauri build --bundles msi,nsis`，MSI 53,927,936 B / NSIS 50,162,216 B。
+- **覆盖安装**：`msiexec /i … /qn /norestart` 退出码 **0**；ARP 由 1.0.3.0 升为单条 **1.0.4.0**（ProductCode `{163F9777-…}`，无并存）；Appx 重注册 1.0.4.0；桌面与开始菜单快捷方式仍指向 `lorekeeper-activate.exe` 且无参数。
+- **图标生效**：安装后 `lorekeeper.exe` 的 32px 图标与新 `icon.ico` 32px 简化帧**逐像素一致（差异 0.0）**，与上一版整图缩放帧差异 23.6。
+- **启动与关闭**：经桌面快捷方式拉起，三进程链正常，窗口标题 `LoreKeeper`，CDP `Lorekeeper 设定司` / `http://tauri.localhost/`；`WM_CLOSE` 2.04s 内全部退出；数据根无新写入；未置顶、未激活、未用键鼠。
+- **提醒**：开发树 `wix.version` 现为 1.0.4.0，下次发布须继续递增。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。
