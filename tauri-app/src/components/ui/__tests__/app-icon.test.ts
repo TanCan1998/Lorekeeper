@@ -18,6 +18,18 @@ describe('定稿单星图标', () => {
     expect(svg).not.toMatch(/<script\b|<image\b|<foreignObject\b|(?:href|src)=/i)
   })
 
+  it('小尺寸专用稿只保留四块实色星芒，供 16–32px 帧使用', () => {
+    const bytes = read('public/branding/app-icon-light-small.svg')
+    const svg = bytes.toString('utf8')
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe('f353d2f3c6db7a84fd7b1c44660adba955c1012bc3888cabfe27ac81981731e5')
+    // 极小尺寸靠渐变会被插值糊掉，必须用实色。
+    expect(svg).not.toMatch(/radialGradient/)
+    for (const color of ['#EA4335', '#4285F4', '#34A853', '#FBBC05']) expect(svg).toContain(color)
+    // 星芒在小尺寸稿里要显著更大。
+    expect(svg).toMatch(/scale\(3\.2\)/)
+    expect(svg).not.toMatch(/<script\b|<image\b|<foreignObject\b|(?:href|src)=/i)
+  })
+
   it('让启动页、顶栏与关于页采用同一资源，并保留窗口拖动区域', () => {
     const html = read('index.html').toString('utf8')
     expect(html).toContain('<link rel="icon" type="image/svg+xml" href="/branding/app-icon-light.svg"')
