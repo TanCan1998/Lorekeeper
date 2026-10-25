@@ -1,6 +1,12 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第151次）**：beta.3 版本位点升级完成，三平台打包预热（`publish=false`）全绿并核对产物；**未发布**。
+- **最新维护（2026-10-25 第152次）**：**1.0.0-beta.3 已发布**（GitHub，Latest），并用发布产物完成本机装机验收；AtomGit 待平台拉取标签。
+  - **发布事实**：标签 `lorekeeper-v1.0.0-beta.3` → 源码 `f39249d0`；Release `423392746`，非草稿/非预发布/已 Latest；run [40192325548](https://github.com/TanCan1998/Lorekeeper/actions/runs/40192325548) 全作业 success。
+  - **九附件**：MSI 53,989,376 B（ProductVersion **1.0.5.0**）/ NSIS 50,223,097 B / macos-aarch64 DMG 91,915,101 B / macos-x64 DMG 91,918,117 B + 三份平台清单 + `release-manifest.json` + `SHA256SUMS.txt`；下载 MSI 复算 SHA256 与清单一致。
+  - **发布产物验收**：1.0.4.0 → 发布版 MSI（退出码 0）→ ARP/Appx 均 `1.0.5.0`、快捷方式指向 activator 无参数、32px 图标与仓库 `icon.ico` 一致（0.0）、启动采样 1050 次无可见控制台、CDP 正常、`WM_CLOSE` 2.03s 全退、数据根无写入。
+  - **未完成**：AtomGit 镜像——平台尚未拉取该标签（API 返回 404），`pnpm mirror:release` 未执行；平台拉取后补九附件与匿名读回核验。
+  - **未验证**：多用户 UAC（先不做）、macOS 真机（无设备）。
+- **上轮（2026-10-25 第151次）**：beta.3 版本位点升级 + 三平台打包预热（`publish=false`）全绿并核对产物。
   - **版本**：`package.json` / `tauri.conf.json` / `Cargo.toml` / `Cargo.lock` / launcher 全部到 `1.0.0-beta.3`，`wix.version` **1.0.4.0 → 1.0.5.0**（`test:contract` 56 通过，`assertWixVersion` 满足）。
   - **踩到的坑**：`identity-launcher/Cargo.lock` 还写着 beta.2，构建身份包时被 cargo 改写 → Rust CI 的「工作区不干净」门禁失败（`5e5ece3e`）。补提交 `f39249d0` 后 Rust CI success。
   - **预热**：run `40188547546`（SHA `f39249d0`，`publish=false`）三平台作业全 success，发布作业 skipped；Windows 产物 MSI 53,989,376 B（**ProductVersion 1.0.5.0**）/ NSIS 50,217,907 B，两份 SHA256 与 `manifest.json` 一致（`version=1.0.0-beta.3`、`commit=f39249d0…`、`published=false`）。

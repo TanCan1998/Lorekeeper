@@ -165,6 +165,20 @@
 - **本轮完成清单**（2026-10-25 共 15 轮）：LLM 契约补齐 → 上游 1.3.2 尾巴 → 图标两次放大 + 16–32px 专用帧 → wix 1.0.4.0 重打包与覆盖安装 → 上游 2026-10-25 增量（151 提交）合并与回灌 → 报错文案显示时取语言 → 模型发现按用途筛选 + 模型名候选控件 → 后处理重试按当前状态重算 → 设置页浏览器测试跑通 → #512 覆盖补齐 → 旧版升级验收 → 卸载/重装与 NSIS 验收 → 激活器隐藏控制台窗口。
 - **未做**：多用户 UAC（用户明确先不做）、macOS 真机（无设备）、发布新版本（`wix.version` 已是 1.0.4.0，发布需另行授权）。
 
+## 本次更新（第 152 次）：1.0.0-beta.3 已发布并完成发布产物验收
+
+- **发布**：标签 `lorekeeper-v1.0.0-beta.3` → 源码 **`f39249d0`**（该 SHA 有 Rust 全量 success 记录）；Release id `423392746`，非草稿、非预发布、已设为 **Latest**；run [40192325548](https://github.com/TanCan1998/Lorekeeper/actions/runs/40192325548) 的 prepare / 三平台打包 / 发布作业全部 success。
+- **九个附件**（4 包 + 3 平台清单 + release-manifest + SHA256SUMS）：
+  - MSI 53,989,376 B（ProductVersion **1.0.5.0**，UpgradeCode 未变）；
+  - NSIS 50,223,097 B；
+  - macos aarch64 DMG 91,915,101 B；macos x64 DMG 91,918,117 B。
+  - 下载 MSI 复算 SHA256 与 `SHA256SUMS.txt` **完全一致**。
+- **发布产物装机验收**：从已装 1.0.4.0 安装发布版 MSI（退出码 0）→ ARP `1.0.5.0`、Appx `1.0.5.0`、桌面与开始菜单均指向 `lorekeeper-activate.exe` 且无参数、32px 图标与仓库 `icon.ico` 逐像素一致（0.0）、启动采样 1050 次**无可见控制台窗口**、CDP `Lorekeeper 设定司`、仅 `WM_CLOSE` 后 2.03 秒全退、`~/.lorekeeper`(10-23) 与 `~/.vela`(10-16) 无写入。
+- **文档**：`docs-fork/releases/1.0.0-beta.3.md` 改为「已发布」并回填附件表与验收记录；清单文档保留预热记录。
+- **未完成 — AtomGit**：平台尚未拉取该标签（`GET /releases/lorekeeper-v1.0.0-beta.3` 用 Bearer 认证返回 404），因此 `pnpm mirror:release` 未执行；待平台拉取后上传九附件并匿名读回大小/SHA256。
+- **未验证**：多用户 UAC（用户先不做）、macOS 真机（无设备）。
+- 证据：`.pi/tmp/beta3-release/{evidence.json, install-published.log, installed-beta3-32.png, SHA256SUMS.txt, release-manifest.json, LoreKeeper_1.0.0-beta.3_x64_zh-CN.msi}`（不入库）。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。
