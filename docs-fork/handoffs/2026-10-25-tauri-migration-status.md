@@ -108,6 +108,16 @@
 - **已知偶发**：`AgentMessage.browser.tsx` 在整包并发下偶发 act 超时（单文件复跑通过），已在交接注明，不作为回归。
 - **未提交真实失败**：本轮只改测试与文档，无产品代码变更，未触发 Rust CI。
 
+## 本次更新（第 146 次）：#512 提交期数据变化的覆盖补齐
+
+- **先核对产品面**：Rust `finalized_character_service` 已在提交期返回 `FINALIZED_CHARACTER_SOURCE_CONFLICT` / `FINALIZED_CHARACTER_FIELD_CONFLICT`，`shared/finalization-step-error.ts` 与上游逐字一致（四个码的可读说明 + `retry: described / never` + `planFinalizationRetry` 的 `retired` 分组），`PostProcessSteps.tsx` 已按 retired 呈现、不摆重试、不计入完成数，`app-errors.ts` 已映射两条新码。**产品面无需改动**，缺的是覆盖。
+- **补的两处**：
+  - `i18n/__tests__/app-errors.test.ts` 增加两条提交期码的端到端断言（中文说明含「当前状态」「生成期间」，且不再漏出 `FINALIZED_` 码）；
+  - `mutation-failure-boundary.test.ts` 补 #512 的重试计划用例：现在流程里的步骤都能重试，`style_analysis` 这类旧步骤进 `retired` 而不进重试。
+- `chapter-lifecycle.browser.tsx` 的四个 #512 场景（删角色提交失败、作者改要点、旧步骤仍列出且不摆重试、旧步骤当时成功也不计入完成数）此前已移植，本轮浏览器套件复跑全绿予以确认。
+- **验证**：`typecheck`/`lint` 0、全量 vitest **227 文件 / 2873 通过 / 1 跳过**（较上轮 +3）；浏览器套件本轮未重跑（仅改单测）。
+- **剩余**：真机类（卸载/重装、NSIS、多用户 UAC、旧版升级、macOS）与 Issue #515 依赖告警决策。
+
 ## 交接给下次会话
 
 - 分支 `master`，HEAD 为本快照所在提交；工作区仅既存未跟踪 `tmp-check/`。

@@ -1,6 +1,11 @@
 # 当前交接入口
 
-- **最新维护（2026-10-25 第145次）**：设置页浏览器测试跑通并修正口径（之前「缺 chromium」的待办不再需要装浏览器）。
+- **最新维护（2026-10-25 第146次）**：`#512` 提交期数据变化收尾——产品面早已对齐，补齐了覆盖。
+  - **核对结论**：Rust 提交期已返回 `FINALIZED_CHARACTER_SOURCE_CONFLICT` / `FIELD_CONFLICT`；`finalization-step-error.ts` 与上游逐字一致（四码说明 + `retry: described/never` + `planFinalizationRetry` 的 `retired` 分组）；`PostProcessSteps` 按 retired 呈现、不摆重试、不计完成数；`app-errors.ts` 已映射新码。**无需改产品代码**。
+  - **补覆盖**：`app-errors.test.ts` 加两条提交期码的中文说明断言（含「当前状态」「生成期间」，且不掉 `FINALIZED_` 码）；`mutation-failure-boundary.test.ts` 加 #512 重试计划用例（当前步骤可重试，`style_analysis` 进 retired）。
+  - **验证**：`typecheck`/`lint` 0、全量 vitest **227 文件 / 2873 通过 / 1 跳过**；浏览器套件的四个 #512 场景此前已移植并复跑全绿。
+  - **剩余（只有两类）**：① 真机类：卸载/重装、NSIS 安装包、多用户 UAC、旧版升级、macOS；② [Issue #515](https://github.com/TanCan1998/Lorekeeper/issues/515) 依赖告警等你决策。
+- **上轮（2026-10-25 第145次）**：设置页浏览器测试跑通并修正口径（用系统 Edge 复用 `AI_NOVEL_VITEST_CHROMIUM`，不必装 chromium）。
   - **复用系统 Edge**：`vitest.browser.config.ts` 支持 `AI_NOVEL_VITEST_CHROMIUM`，指向本机 Edge 156 即可，**不下载 Playwright chromium**；用法已写进 [开发指南 §7](../agents/pi-development.md)。
   - **首跑抓到 9 个真失败**（前两轮改动口径没跟上）：`model-discovery.browser.tsx` 8 个、`advanced-model-settings.browser.tsx` 1 个。
   - **修正**：`model-discovery` 取上游版（combobox locator、`purposes` 参数、两档 no_models 文案）+ 改 `installTauriChannelFixture`；`advanced-model-settings` 断言按新措辞 `/Effective output allowance: 6,000\. /`。
